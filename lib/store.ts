@@ -83,24 +83,39 @@ export const taskArg = (task: string): string => (task.startsWith("@") ? ` ${tas
  * its first prompt (already in the session), optionally with a new one. A session
  * pi never wrote never saw the first prompt, so it keeps it.
  *
- * M8: a written session also drops the dispatch's --model, --provider and --thinking.
- * pi records the model and thinking level in the session and restores them on
- * resume, but a flag would win over that: a model switched while the job ran
- * (/model from the agent view) would be undone by every respawn.
+ * M8: a written session also drops the dispatch's --model, --provider and --thinking:
+ * they would undo a model switched while the job ran (/model from the agent view).
+ * `last` is what the worker last reported running; it is passed instead, because pi
+ * does not always record it in the session (a resumed session's model only once it
+ * has answered, a thinking level only when it changes). Without it pi restores what
+ * the session recorded.
  */
-export function respawnCommand(rec: JobRecord, sessionWritten: boolean, prompt?: string): string[] {
+export function respawnCommand(
+	rec: JobRecord,
+	sessionWritten: boolean,
+	prompt?: string,
+	last: { model?: unknown; thinking?: unknown } = {},
+): string[] {
 	if (!sessionWritten) return rec.command;
 	const at = rec.command.indexOf("--", 2);
 	const base = withoutFlags(at === -1 ? rec.command : rec.command.slice(0, at), SESSION_RESTORED_FLAGS);
+	if (typeof last.model === "string" && /^[^/\s-][^\s]*\/\S+$/.test(last.model)) base.push("--model", last.model);
+	if (typeof last.thinking === "string" && /^[a-z]+$/.test(last.thinking)) base.push("--thinking", last.thinking);
 	return prompt ? [...base, "--", taskArg(prompt)] : base;
 }
 
-const SESSION_RESTORED_FLAGS = ["--model", "--provider", "--thinking"];
+/** Flags pi restores from a written session by itself (and would override it if given). */
+export const SESSION_RESTORED_FLAGS = ["--model", "--provider", "--thinking"];
 
-/** argv without these value flags, in both `--flag value` and `--flag=value` form (argv[0..1] kept). */
-function withoutFlags(argv: string[], flags: string[]): string[] {
-	const out = argv.slice(0, 2);
-	for (let i = 2; i < argv.length; i++) {
+/**
+ * argv without these value flags, in both `--flag value` and `--flag=value` form; the
+ * first `keep` entries (execPath, cli) are kept as they are. The value after a flag goes
+ * with it, whatever it looks like: argv here comes from passthroughArgs, which only
+ * copies known flags with their values.
+ */
+export function withoutFlags(argv: string[], flags: string[], keep = 2): string[] {
+	const out = argv.slice(0, keep);
+	for (let i = keep; i < argv.length; i++) {
 		const arg = argv[i]!;
 		if (flags.includes(arg)) i++;
 		else if (!flags.some((f) => arg.startsWith(`${f}=`))) out.push(arg);

@@ -207,13 +207,16 @@ export function shortModel(model: string): string {
 
 /** 950 → "950", 86_400 → "86k", 1_000_000 → "1M", 1_250_000 → "1.3M". */
 export function formatTokens(n: number): string {
-	if (n < 1000) return String(Math.round(n));
-	if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+	if (Math.round(n) < 1000) return String(Math.round(n));
+	// 999_500 rounds to 1000k: that is 1M
+	if (Math.round(n / 1000) < 1000) return `${Math.round(n / 1000)}k`;
 	return `${Math.round(n / 100_000) / 10}M`;
 }
 
+/** The tone of the share as shown: 79.6 shows as 80% and is a warning. */
 export function contextToneOf(percent: number | null): Tone {
 	if (percent === null) return "dim";
+	percent = Math.round(percent);
 	if (percent >= CONTEXT_ERROR_PERCENT) return "error";
 	if (percent >= CONTEXT_WARN_PERCENT) return "warning";
 	return "dim";

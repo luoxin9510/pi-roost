@@ -58,11 +58,30 @@ describe("model and context (M8)", () => {
 	});
 
 	it("formats token counts", () => {
-		expect([950, 86_400, 200_000, 1_000_000, 1_250_000].map(formatTokens)).toEqual(["950", "86k", "200k", "1M", "1.3M"]);
+		expect([950, 999.6, 86_400, 200_000, 999_499, 999_500, 1_000_000, 1_250_000].map(formatTokens)).toEqual([
+			"950",
+			"1k",
+			"86k",
+			"200k",
+			"999k",
+			"1M",
+			"1M",
+			"1.3M",
+		]);
 	});
 
-	it("warns from 80% and errs from 95%", () => {
-		expect([null, 10, 79.9, 80, 94.9, 95, 120].map(contextToneOf)).toEqual(["dim", "dim", "dim", "warning", "warning", "error", "error"]);
+	it("warns from 80% and errs from 95%, as the share is shown (rounded)", () => {
+		expect([null, 10, 79.4, 79.6, 80, 94.4, 94.6, 95, 120].map(contextToneOf)).toEqual([
+			"dim",
+			"dim",
+			"dim",
+			"warning",
+			"warning",
+			"warning",
+			"error",
+			"error",
+			"error",
+		]);
 	});
 
 	it("row column and peek facts", () => {

@@ -61,6 +61,32 @@ describe("respawnCommand", () => {
 		// never written: pi has not recorded the model yet, the flags still choose it
 		expect(respawnCommand({ command: cmd } as never, false)).toEqual(cmd);
 	});
+
+	it("M8: what the worker last reported running is passed instead (pi does not always record it)", async () => {
+		const { respawnCommand } = await import("../lib/store.ts");
+		const cmd = ["node", "pi.js", "--session", "/s.jsonl", "--model", "a/x", "--thinking", "high", "--", "task"];
+		expect(respawnCommand({ command: cmd } as never, true, "go", { model: "b/y", thinking: "low" })).toEqual([
+			"node", "pi.js", "--session", "/s.jsonl", "--model", "b/y", "--thinking", "low", "--", "go",
+		]);
+		// junk in state.json is not passed to pi as flags
+		expect(respawnCommand({ command: cmd } as never, true, undefined, { model: "--evil", thinking: "x y" })).toEqual(["node", "pi.js", "--session", "/s.jsonl"]);
+		expect(respawnCommand({ command: cmd } as never, true, undefined, { model: null, thinking: 3 })).toEqual(["node", "pi.js", "--session", "/s.jsonl"]);
+	});
+});
+
+describe("M8: moving a conversation keeps its own model", () => {
+	const argv = ["node", "/pi.js", "-e", "/x.ts", "--model", "a/x", "--thinking=high", "--provider", "a", "--offline"];
+	const launch = (origin: "adopt" | "fork" | "dispatch" | "bg", extra: { model?: string; thinking?: string } = {}) =>
+		buildLaunch({ task: "", cwd: "/w", sessionFile: "/s.jsonl", name: "x", origin, argv, execPath: "node", env: {}, ...extra }).command.slice(2);
+	it("adopt and fork drop the foreground pi's model flags; dispatch and bg keep them", () => {
+		expect(launch("adopt")).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--offline"]);
+		expect(launch("fork")).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--offline"]);
+		expect(launch("dispatch")).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--model", "a/x", "--thinking=high", "--provider", "a", "--offline"]);
+		expect(launch("bg")).toContain("--model");
+	});
+	it("an explicit choice still wins", () => {
+		expect(launch("adopt", { model: "b/y" })).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--offline", "--model", "b/y"]);
+	});
 });
 
 describe("@ at the start of a task", () => {

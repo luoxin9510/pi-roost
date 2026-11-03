@@ -22,6 +22,7 @@ import {
 	iconOf,
 	modelFacts,
 	rowDetailsOf,
+	shortModel,
 	type Item,
 	items,
 	layout,
@@ -40,6 +41,8 @@ const SPIN_MS = 150;
 /** M8: the row's model and context column only shows while the summary keeps this many columns. */
 const MIN_SUMMARY = 24;
 const MODEL_COL = 20;
+/** M8: how long a sent /model or /thinking may take to show in the session's reports. */
+const SWITCH_CHECK_MS = 8000;
 
 export interface AgentViewOptions {
 	tui: TUI;
@@ -81,6 +84,8 @@ export interface AgentViewOptions {
 	fullscreen?: boolean;
 	/** M8: show each row's model and context window use (default true). */
 	rowDetails?: boolean;
+	/** M8: how long a /model or /thinking switch may take to show (tests shorten it). */
+	switchCheckMs?: number;
 	done: () => void;
 }
 
@@ -119,6 +124,17 @@ interface Columns {
 	shareW: number;
 	ageW: number;
 }
+
+interface Switch {
+	which: "model" | "thinking";
+	value: string;
+	before: string | null;
+	/** Pending switches this one replaced: a report showing one of them is not the outcome. */
+	superseded: string[];
+	timer: NodeJS.Timeout;
+}
+
+const switchKey = (id: string, which: "model" | "thinking") => `${id}:${which}`;
 
 interface Notice {
 	text: string;
@@ -162,6 +178,8 @@ export class AgentView implements Component {
 	private nameWidth = 16;
 	/** M8: the model / context column, the same for every row of a render so it lines up. */
 	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0 };
+	/** M8: switches sent to live sessions, until their reports show them (or do not). */
+	private switches = new Map<string, Switch>();
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -196,6 +214,8 @@ export class AgentView implements Component {
 	dispose(): void {
 		this.closed = true;
 		clearInterval(this.spinner);
+		for (const s of this.switches.values()) clearTimeout(s.timer);
+		this.switches.clear();
 		this.client?.close();
 		this.client = undefined;
 		this.o.setTitle("pi");
@@ -213,6 +233,7 @@ export class AgentView implements Component {
 			if (this.closed) return client.close();
 			this.rows = new Map(jobs.map((j) => [j.id, j]));
 			for (const j of jobs) observeJob(j); // what is already there is not news
+			for (const j of jobs) this.checkSwitch(j); // a switch shown while we were away
 			this.client = client;
 			this.connectError = undefined;
 			// AV-8: pushed events only; reconnect when the daemon goes away.
@@ -237,6 +258,7 @@ export class AgentView implements Component {
 		if (e.event === "job") {
 			if (this.o.cwdFilter && !within(e.job.cwd, this.o.cwdFilter)) return;
 			this.rows.set(e.job.id, e.job);
+			this.checkSwitch(e.job);
 			const kind = observeJob(e.job);
 			if (kind && !this.attached) this.o.notify?.(e.job, kind);
 			if (this.attachWhenLive === e.job.id && !this.attached) {
@@ -900,6 +922,7 @@ export class AgentView implements Component {
 		const values: string[] = which === "model" ? (this.o.models?.() ?? []) : [...THINKING_LEVELS];
 		const apply = (v: string) => this.sendSetting(row, which, v);
 		if (arg) {
+			if (arg === "default") return this.say(`a running session has no default ${which}: pick one (bare /${which})`, "warning");
 			if (which === "model" && !arg.includes("/")) return this.say("use provider/id (bare /model lists them)", "warning");
 			if (values.length > 0 && !values.includes(arg)) {
 				return this.say(which === "model" ? `unknown model ${arg} (bare /model lists them)` : `thinking is one of ${values.join(", ")}`, "warning");
@@ -912,19 +935,79 @@ export class AgentView implements Component {
 		this.openPicker(`${which === "model" ? "Model" : "Thinking"} for ${oneLine(row.name)}`, values, current, apply);
 	}
 
-	private async sendSetting(row: JobRow, which: "model" | "thinking", value: string): Promise<void> {
+	private async sendSetting(picked: JobRow, which: "model" | "thinking", value: string): Promise<void> {
 		if (!this.client) return this.say("background service unavailable", "error");
-		const label = `${which} ${value} · ${row.name}`;
+		// the picker may have been open a while: act on the row as it is now
+		const row = this.rows.get(picked.id);
+		if (!row) return this.say("that session no longer exists", "warning");
+		const pending = this.switches.get(switchKey(row.id, which));
+		// a second switch before the first shows: compare with what the session had before both
+		const before = pending ? pending.before : ((which === "model" ? row.model : row.thinking) ?? null);
 		try {
 			const r = await this.client.request("reply", { id: row.id, text: `/${which} ${value}` });
 			this.reply.setValue("");
-			// a running turn keeps its current request; the next one uses the new setting
-			if (r.delivered) this.say(row.state === "working" ? `${label} (from its next request)` : label, "success");
-			else if (r.respawned) this.say(`${label} · starting it again`, "success");
+			if (r.delivered) {
+				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
+				if (!pending && before === value) return this.say(`${row.name} already uses ${which} ${value}`);
+				this.watchSwitch(row, which, value, before, pending ? [...pending.superseded, pending.value] : []);
+				this.say(`asked ${row.name} to use ${which} ${value}…`);
+			} else if (r.respawned) this.say(`${which} ${value} · starting ${row.name} again`, "success");
 			else if (r.saved) this.say(`saved; ${which} changes when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
+			else if (row.pid !== null || row.endedAt === null) this.say(`${row.name} is starting; try again in a moment`, "warning");
 			else this.say("not delivered: the session is not running", "error");
 		} catch (err) {
 			this.say((err as Error).message, "error");
+		}
+	}
+
+	/** One watch per session and setting: a /thinking does not cancel the check of a /model. */
+	private watchSwitch(row: JobRow, which: "model" | "thinking", value: string, before: string | null, replaced: string[]): void {
+		// the value asked for now is the outcome, even if an earlier switch asked for it too
+		const superseded = [...new Set(replaced)].filter((v) => v !== value);
+		const key = switchKey(row.id, which);
+		const old = this.switches.get(key);
+		if (old) clearTimeout(old.timer);
+		const timer = setTimeout(() => {
+			if (this.switches.get(key)?.timer !== timer) return;
+			this.switches.delete(key);
+			const now = this.rows.get(row.id);
+			if (!now) return;
+			const actual = (which === "model" ? now.model : now.thinking) ?? null;
+			// a report the view missed (a reconnect) may already show it
+			if (actual === value) return this.say(`${now.name} now uses ${which} ${value}`, "success");
+			this.say(
+				// the hint first: a long model id may be cut at 80 columns (the peek names the session)
+				which === "model"
+					? `model switch failed (credentials? envAllowList): still ${actual ? shortModel(actual) : "?"}, not ${shortModel(value)}`
+					: `thinking ${value} not taken (unsupported?): still ${actual ?? "?"}`,
+				"warning",
+			);
+		}, this.o.switchCheckMs ?? SWITCH_CHECK_MS);
+		timer.unref?.();
+		this.switches.set(key, { which, value, before, superseded, timer });
+	}
+
+	/** A report shows a switch (or pi's adjusted thinking level). */
+	private checkSwitch(row: JobRow): void {
+		for (const which of ["model", "thinking"] as const) {
+			const key = switchKey(row.id, which);
+			const s = this.switches.get(key);
+			if (!s) continue;
+			const actual = (which === "model" ? row.model : row.thinking) ?? null;
+			// only a switch this one replaced: from now on that is the value to move away from
+			if (actual !== null && s.superseded.includes(actual)) {
+				s.before = actual;
+				s.superseded = s.superseded.filter((v) => v !== actual);
+				continue;
+			}
+			if (actual === s.before) continue; // not applied yet (the timer decides)
+			clearTimeout(s.timer);
+			this.switches.delete(key);
+			if (actual === s.value) {
+				// a running turn keeps its current request; the next one uses the new setting
+				this.say(`${row.name} now uses ${which} ${s.value}${row.state === "working" ? " (from its next request)" : ""}`, "success");
+			} else if (which === "thinking") this.say(`${row.name} thinks ${actual ?? "?"}: the closest its model supports to ${s.value}`, "warning");
+			else this.say(`${row.name} now uses ${actual ?? "?"}`, "warning");
 		}
 	}
 
@@ -1214,7 +1297,7 @@ export class AgentView implements Component {
 		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
 		if (this.filter()) return "filtering (s: n: o:) · Enter/→ attach · Esc clear";
-		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /model /thinking switch · /stop stops · Esc close";
+		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close · ? keys";
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
 
