@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
@@ -33,6 +33,7 @@ import {
 	readWorkerPid,
 	removeJob,
 	respawnCommand,
+	screenPath,
 	updateState,
 } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
@@ -43,6 +44,8 @@ const CONTINUE = "Continue where you left off.";
 const RECENT_MS = 48 * 60 * 60 * 1000;
 const REAP_CHECK_MS = 30_000;
 const CRASH_RESET_MS = 60_000;
+/** DI-6: a finished shell job's row stays this long. */
+const SHELL_KEEP_MS = Number(process.env.PI_ROOST_SHELL_KEEP_MS) || 5 * 60_000;
 
 class OpError extends Error {
 	code: string;
@@ -121,7 +124,7 @@ function rowOf(id: string): JobRow | undefined {
 	return {
 		id,
 		cwd: rec.cwd,
-		kind: "pi",
+		kind: rec.kind ?? "pi",
 		startedAt: st.startedAt,
 		state: st.state,
 		pid: live ? (readWorkerPid(id) ?? null) : null,
@@ -194,6 +197,14 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 				patch.error = "ended while the background service was off";
 			}
 		}
+	} else if (recs.get(id)?.kind === "shell") {
+		// DI-6: the command's exit status is the outcome; the row goes away a while later
+		patch.state = ex && ex.code === 0 ? "done" : "failed";
+		if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
+		patch.removeAt = now + SHELL_KEEP_MS;
+		// the host flushed its screen on exit: the last output line is the result
+		const line = lastScreenLine(id);
+		if (line) patch.summary = line;
 	} else if (!ex) {
 		patch.state = "failed";
 		patch.error = "host vanished";
@@ -314,16 +325,19 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 	if (!Array.isArray(a.command) || a.command.length === 0 || !a.command.every(str)) {
 		throw new OpError("bad_request", "command must be a non-empty array of strings");
 	}
-	if (!str(a.sessionFile) || !isAbsolute(a.sessionFile)) throw new OpError("bad_request", "sessionFile must be an absolute path");
+	const shell = a.kind === "shell";
+	if (!shell && (!str(a.sessionFile) || !isAbsolute(a.sessionFile))) throw new OpError("bad_request", "sessionFile must be an absolute path");
 	const env: Record<string, string> = {};
 	if (a.env && typeof a.env === "object") {
 		for (const [k, v] of Object.entries(a.env)) if (typeof v === "string") env[k] = v;
 	}
-	const holder = readWriterLock(a.sessionFile);
-	if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
-	for (const id of roster.keys()) {
-		if (recs.get(id)?.sessionFile === a.sessionFile) {
-			throw new OpError("locked", `session is already running as job ${id}`);
+	if (!shell) {
+		const holder = readWriterLock(a.sessionFile);
+		if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
+		for (const id of roster.keys()) {
+			if (recs.get(id)?.sessionFile === a.sessionFile) {
+				throw new OpError("locked", `session is already running as job ${id}`);
+			}
 		}
 	}
 
@@ -340,8 +354,9 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 		id,
 		name,
 		cwd: a.cwd,
-		sessionFile: a.sessionFile,
+		sessionFile: shell ? "" : a.sessionFile,
 		command: a.command,
+		...(shell ? { kind: "shell" as const } : {}),
 		env,
 		...(str(a.model) ? { model: a.model } : {}),
 		...(str(a.thinking) ? { thinking: a.thinking } : {}),
@@ -350,7 +365,7 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 		...(str(a.piVersion) ? { piVersion: a.piVersion } : {}),
 		roostVersion: ROOST_VERSION,
 	};
-	createJob(rec, { state: "working", startedAt: now, updatedAt: now, jobToken: newToken() });
+	createJob(rec, { state: "working", startedAt: now, updatedAt: now, jobToken: newToken(), ...(shell ? { status: "busy" } : {}) });
 	recs.set(id, rec);
 	try {
 		await startHost(rec);
@@ -426,7 +441,8 @@ async function respawn(
 			...(restore
 				? { stateSince: st?.stateSince }
 				: { state: "working" as const, stateSince: now, summary: null, question: null, choices: [] }),
-			status: null,
+			// a shell job has no worker to report: it is busy until it exits
+			status: rec.kind === "shell" ? "busy" : null,
 			waitingFor: null,
 			tool: null,
 			error: null,
@@ -434,6 +450,7 @@ async function respawn(
 			reportedAt: undefined,
 			endedAt: undefined,
 			stopRequested: false,
+			removeAt: undefined,
 			reaped: false,
 			attachSignal: false,
 			restartedAt: now,
@@ -447,6 +464,43 @@ async function respawn(
 	} finally {
 		respawning.delete(id);
 	}
+}
+
+/** DI-6: a shell job's row shows its latest output line; ended ones go after a while. */
+function shellTick(): void {
+	const now = Date.now();
+	for (const [id, rec] of recs) {
+		if (rec.kind !== "shell") continue;
+		const st = readState(id);
+		if (!st) continue;
+		if (!roster.has(id)) {
+			if (typeof st.removeAt === "number" && now >= st.removeAt) {
+				recs.delete(id);
+				removeJob(id);
+				log("info", "shell job expired", { id });
+				push({ event: "removed", id });
+			}
+			continue;
+		}
+		const line = lastScreenLine(id);
+		if (line && line !== st.summary) {
+			updateState(id, { summary: line });
+			pushJob(id);
+		}
+	}
+}
+
+function lastScreenLine(id: string): string | undefined {
+	try {
+		const lines = readFileSync(screenPath(id), "utf8").split("\n");
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const l = lines[i]!.trim();
+			if (l) return l.slice(0, 200);
+		}
+	} catch {
+		// not painted yet
+	}
+	return undefined;
 }
 
 /** When an idle job became idle, if it may be reaped now. */
@@ -546,6 +600,7 @@ async function reply(
 		return { delivered: live, saved: false, stopped: live };
 	}
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
+	if (recs.get(id)?.kind === "shell") throw new OpError("unsupported", "a shell job takes no replies; attach to type into it");
 	const conn = workerConns.get(id);
 	const connected = live && !!conn && !conn.sock.destroyed;
 	// PK-5: commands only make sense live; plain replies wait for the worker.
@@ -666,6 +721,7 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 	shuttingDown = true;
 	log("info", "shutdown", { keepWorkers });
 	clearInterval(watcher);
+	clearInterval(shellWatcher);
 	clearInterval(reaper);
 	if (!keepWorkers) {
 		const ids = [...roster.keys()];
@@ -848,6 +904,8 @@ try {
 } catch {}
 
 const watcher = setInterval(checkHosts, 1000);
+const shellWatcher = setInterval(shellTick, 2000);
+shellWatcher.unref();
 const reaper = setInterval(
 	() => void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) })),
 	Number(process.env.PI_ROOST_REAP_CHECK_MS) || REAP_CHECK_MS,

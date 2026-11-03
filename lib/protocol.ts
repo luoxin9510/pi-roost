@@ -8,7 +8,7 @@ export type DispatchOrigin = "bg" | "dispatch" | "adopt" | "fork";
 export interface JobRow {
 	id: string;
 	cwd: string;
-	kind: "pi";
+	kind: "pi" | "shell";
 	startedAt: number;
 	state: JobStateName;
 	pid: number | null;
@@ -52,6 +52,8 @@ export interface WorkerReport {
 }
 
 export interface DispatchArgs {
+	/** DI-6: "shell" runs `command` without pi (no session file). */
+	kind?: "pi" | "shell";
 	cwd: string;
 	sessionFile: string;
 	command: string[];

@@ -73,6 +73,7 @@ class FakeClient {
 
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
+const launches: { task: string; opts: unknown }[] = [];
 function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void } = {}) {
 	const client = new FakeClient(rows);
 	let renders = 0;
@@ -87,7 +88,16 @@ function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string
 		tui: tui as never,
 		theme: theme as never,
 		cwd: "/w",
-		launch: (task) => ({ cwd: "/w", sessionFile: "/s/x.jsonl", command: ["pi", task], env: {}, name: task, origin: "dispatch" }),
+		launch: (task, o) => {
+			launches.push({ task, opts: o });
+			return { cwd: "/w", sessionFile: "/s/x.jsonl", command: ["pi", task], env: {}, name: task, origin: "dispatch" };
+		},
+		launchShell: (command, cwd) => ({ kind: "shell", cwd, sessionFile: "", command: ["sh", "-lc", command], env: {}, name: `! ${command}`, origin: "dispatch" }),
+		commands: () => [
+			{ name: "review", source: "prompt" },
+			{ name: "settings", source: "builtin" },
+		],
+		models: () => ["a/one", "b/two"],
 		setTitle: () => {},
 		connect: async () => client as unknown as DaemonClient,
 		done: () => doneCalls++,
@@ -267,6 +277,55 @@ describe("AgentView organise (M6a)", () => {
 		view.handleInput("\x1b[1;2B"); // Shift+↓
 		await sleep(10);
 		expect((client.requests.find((r) => r.op === "reorder")?.args as { ids: string[] }).ids).toHaveLength(2);
+		view.dispose();
+	});
+});
+
+describe("AgentView dispatch (M6b)", () => {
+	it("/model and /thinking set defaults for new sessions; pickers when bare", async () => {
+		launches.length = 0;
+		const { view, client } = setup([row()]);
+		await view.start();
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		type(view, "/thinking");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).toContain("Thinking for new sessions");
+		view.handleInput("\x1b[B"); // down: off
+		view.handleInput("\x1b[B"); // minimal
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).toContain("new sessions: model b/two · thinking minimal");
+		type(view, "write the changelog");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(launches.at(-1)).toMatchObject({ task: "write the changelog", opts: { model: "b/two", thinking: "minimal" } });
+		type(view, "/model default");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).not.toContain("model b/two");
+		expect(client.requests.filter((r) => r.op === "dispatch")).toHaveLength(1);
+		view.dispose();
+	});
+
+	it("prompt templates dispatch; other commands are refused and keep the text; ! starts a shell job", async () => {
+		launches.length = 0;
+		const { view, client } = setup([row()]);
+		await view.start();
+		type(view, "/settings");
+		view.handleInput("\r");
+		const out = view.render(80).join("\n");
+		expect(out).toContain("/settings isn't available in agent view");
+		expect(out).toContain("/settings");
+		view.handleInput("\u0003");
+		type(view, "/review the parser");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(launches.at(-1)?.task).toBe("/review the parser");
+		type(view, "! npm test");
+		view.handleInput("\r");
+		await sleep(10);
+		const shell = client.requests.filter((r) => r.op === "dispatch").at(-1)?.args as { kind?: string; command: string[] };
+		expect(shell.kind).toBe("shell");
+		expect(shell.command).toEqual(["sh", "-lc", "npm test"]);
 		view.dispose();
 	});
 });

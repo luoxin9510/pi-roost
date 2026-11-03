@@ -6,7 +6,7 @@ import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isScratchSession } from "../lib/paths.ts";
 import { registerForeground } from "./foreground.ts";
-import { openAgentView } from "./open-view.ts";
+import { openAgentView, setCommandSource } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
 
 // pi-roost entry: one extension, three roles (agent view, foreground, worker).
@@ -15,6 +15,7 @@ import { jobIdentity, registerWorker } from "./worker.ts";
 
 export default function (pi: ExtensionAPI) {
 	setJobEventBus(pi.events); // NT-2
+	setCommandSource(() => pi.getCommands().map((c) => ({ name: c.name, source: c.source })));
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
 	pi.registerFlag("bg-name", { description: "Name for the --bg session", type: "string" });
 	pi.registerFlag("agents", { description: "Open the agent view of background sessions", type: "boolean" });

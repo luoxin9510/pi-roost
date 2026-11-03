@@ -3,6 +3,7 @@ import { type Component, Input, parseKey, type TUI, truncateToWidth, visibleWidt
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
+import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
 import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
@@ -37,7 +38,16 @@ export interface AgentViewOptions {
 	/** AV-7: show only jobs started under this directory. */
 	cwdFilter?: string;
 	/** Builds the dispatch request for a task typed into the view. */
-	launch: (task: string) => DispatchArgs;
+	/** A new pi job; the view adds its /model and /thinking defaults and @dir target. */
+	launch: (task: string, opts?: LaunchOptions) => DispatchArgs;
+	/** DI-6: a shell job (no model). */
+	launchShell?: (command: string, cwd: string) => DispatchArgs;
+	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
+	commands?: () => { name: string; source: string }[];
+	/** DI-4: models for the /model picker, as "provider/id". */
+	models?: () => string[];
+	/** DI-4: past sessions of a directory for /resume. */
+	resumable?: (cwd: string) => Promise<Resumable[]>;
 	setTitle: (title: string) => void;
 	/** Daemon connection; tests pass a fake. */
 	connect?: () => Promise<DaemonClient>;
@@ -55,6 +65,30 @@ export interface AgentViewOptions {
 	/** Screen-reader mode: no animation (PRD accessibility). */
 	reducedMotion?: boolean;
 	done: () => void;
+}
+
+export interface LaunchOptions {
+	cwd?: string;
+	model?: string;
+	thinking?: string;
+	/** /resume: run this existing session instead of a new one. */
+	sessionFile?: string;
+	name?: string;
+	origin?: "dispatch" | "adopt";
+}
+
+export interface Resumable {
+	path: string;
+	name: string;
+	cwd: string;
+	modified: number;
+}
+
+interface Picker {
+	title: string;
+	items: { label: string; value: string }[];
+	index: number;
+	pick: (value: string) => void | Promise<void>;
 }
 
 interface Notice {
@@ -80,6 +114,10 @@ export class AgentView implements Component {
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
 	private groupBy: "state" | "directory" = "state";
+	/** DI-4: defaults for the next dispatches. */
+	private model: string | undefined;
+	private thinking: string | undefined;
+	private picker: Picker | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
 	private ctrlCAt = 0;
@@ -260,11 +298,15 @@ export class AgentView implements Component {
 			this.o.tui.requestRender();
 			return;
 		}
+		if (this.picker) return this.pickerKey(key);
 		if (this.renaming) return this.renameKey(key, data);
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
 
 		switch (key) {
+			case "tab":
+				if (!this.peek && this.completeAt()) return;
+				break;
 			case "ctrl+s":
 				return this.toggleGroupBy();
 			case "ctrl+t":
@@ -426,6 +468,126 @@ export class AgentView implements Component {
 		return this.attachSelected();
 	}
 
+	// ---- in-view commands (DI-4) -----------------------------------------
+
+	/** Returns true when the command was handled here (and the input consumed). */
+	private command(name: string, arg: string): boolean {
+		const done = () => {
+			this.input.setValue("");
+			this.o.tui.requestRender();
+			return true;
+		};
+		switch (name) {
+			case "exit":
+			case "quit":
+				this.o.done();
+				return true;
+			case "model": {
+				if (arg) {
+					this.model = arg === "default" ? undefined : arg;
+					this.say(this.model ? `new sessions use ${this.model}` : "new sessions use the default model");
+					return done();
+				}
+				const models = this.o.models?.() ?? [];
+				this.openPicker("Model for new sessions", ["default", ...models], this.model ?? "default", (v) => {
+					this.model = v === "default" ? undefined : v;
+					this.say(this.model ? `new sessions use ${this.model}` : "new sessions use the default model");
+				});
+				return done();
+			}
+			case "thinking": {
+				const levels: string[] = ["default", ...THINKING_LEVELS];
+				if (arg) {
+					if (!levels.includes(arg)) {
+						this.say(`thinking is one of ${levels.join(", ")}`, "warning");
+						return true;
+					}
+					this.thinking = arg === "default" ? undefined : arg;
+					this.say(`new sessions think ${this.thinking ?? "at the default level"}`);
+					return done();
+				}
+				this.openPicker("Thinking for new sessions", levels, this.thinking ?? "default", (v) => {
+					this.thinking = v === "default" ? undefined : v;
+					this.say(`new sessions think ${this.thinking ?? "at the default level"}`);
+				});
+				return done();
+			}
+			case "resume":
+				void this.resumePicker();
+				return done();
+		}
+		const known = this.o.commands?.().find((c) => c.name === name);
+		if (known && (known.source === "prompt" || known.source === "skill")) return false;
+		this.say(`/${name} isn't available in agent view`, "warning");
+		return true; // the text stays in the input
+	}
+
+	private openPicker(title: string, values: string[], current: string, pick: (v: string) => void | Promise<void>): void {
+		const items = values.map((v) => ({ label: v, value: v }));
+		this.picker = { title, items, index: Math.max(0, values.indexOf(current)), pick };
+		this.o.tui.requestRender();
+	}
+
+	private pickerKey(key: string | undefined): void {
+		const p = this.picker!;
+		if (key === "escape" || key === "ctrl+c") this.picker = undefined;
+		else if (key === "up") p.index = Math.max(0, p.index - 1);
+		else if (key === "down") p.index = Math.min(p.items.length - 1, p.index + 1);
+		else if (key === "pageUp") p.index = Math.max(0, p.index - 10);
+		else if (key === "pageDown") p.index = Math.min(p.items.length - 1, p.index + 10);
+		else if (key === "enter") {
+			this.picker = undefined;
+			const item = p.items[p.index];
+			if (item) void Promise.resolve(p.pick(item.value)).catch((err: unknown) => this.say((err as Error).message, "error"));
+		}
+		this.o.tui.requestRender();
+	}
+
+	/** DI-4 /resume: a past session of this directory without a row becomes a job. */
+	private async resumePicker(): Promise<void> {
+		if (!this.o.resumable) return this.say("/resume is not available here", "warning");
+		const cwd = this.dispatchCwd();
+		const known = new Set([...this.rows.values()].map((r) => r.sessionFile));
+		let sessions: Resumable[];
+		try {
+			sessions = (await this.o.resumable(cwd)).filter((s) => !known.has(s.path));
+		} catch (err) {
+			return this.say((err as Error).message, "error");
+		}
+		if (sessions.length === 0) return this.say("no past sessions to resume here");
+		const byPath = new Map(sessions.map((s) => [s.path, s]));
+		this.picker = {
+			title: "Resume a session in the background",
+			items: sessions.slice(0, 200).map((s) => ({ label: `${oneLine(s.name)} · ${formatAgo(Date.now() - s.modified)}`, value: s.path })),
+			index: 0,
+			pick: async (path) => {
+				const s = byPath.get(path)!;
+				if (!this.client) return this.say("background service unavailable", "error");
+				const args = this.o.launch("", { cwd: s.cwd || cwd, sessionFile: s.path, name: s.name, origin: "adopt" });
+				const { id, name } = await this.client.request("dispatch", args);
+				this.cursor = { kind: "row", id };
+				this.say(`resumed · ${name}`, "success");
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	/** DI-3: Tab completes the @dir being typed. */
+	private completeAt(): boolean {
+		const value = this.input.getValue();
+		const prefix = atPrefix(value);
+		if (prefix === undefined) return false;
+		const first = this.atSuggestions(prefix)[0];
+		if (!first) return true;
+		fill(this.input, `${value.slice(0, value.length - prefix.length)}${first} `);
+		this.o.tui.requestRender();
+		return true;
+	}
+
+	private atSuggestions(prefix: string): string[] {
+		return atCandidates(this.dispatchCwd(), [...new Set([...this.rows.values()].map((r) => r.cwd))], prefix);
+	}
+
 	// ---- organise (AV-K6…K14) --------------------------------------------
 
 	private toggleGroupBy(): void {
@@ -540,17 +702,43 @@ export class AgentView implements Component {
 
 	// ---- actions ---------------------------------------------------------
 
+	/** Where a dispatch goes: the selected directory section when grouping by directory. */
+	private dispatchCwd(): string {
+		if (this.groupBy === "directory") {
+			const it = this.selected();
+			if (it?.section.dir) return it.section.dir;
+			if (it?.kind === "row") return it.row.cwd;
+		}
+		return this.o.cwd;
+	}
+
 	private async dispatch(attach: boolean): Promise<void> {
 		if (this.dispatching) return;
 		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
 		const typed = this.input.getValue();
-		const task = typed.trim();
-		if (task.length < MIN_TASK) return this.say("Too short", "warning");
+		const base = this.dispatchCwd();
+		const parsed = parseInput(typed, base);
+		if (parsed.kind === "command") {
+			const handled = this.command(parsed.name, parsed.arg);
+			if (handled) return;
+			// DI-5: skills and prompt templates run as the job's first prompt
+		}
+		let args: DispatchArgs;
+		if (parsed.kind === "shell") {
+			if (!parsed.command) return this.say("! needs a command", "warning");
+			if (!this.o.launchShell) return this.say("shell jobs are not available here", "warning");
+			args = this.o.launchShell(parsed.command, parsed.cwd ?? base);
+		} else {
+			const task = parsed.kind === "task" ? parsed.task : typed.trim();
+			if (task.length < MIN_TASK) return this.say("Too short", "warning");
+			const cwd = parsed.kind === "task" ? (parsed.cwd ?? base) : base;
+			args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking });
+		}
 		if (!this.client) return this.say("background service unavailable", "error");
 		this.dispatching = true;
 		this.input.setValue("");
 		try {
-			const { id, name } = await this.client.request("dispatch", this.o.launch(task));
+			const { id, name } = await this.client.request("dispatch", args);
 			this.cursor = { kind: "row", id };
 			this.say(`started · ${name}`, "success");
 			if (attach) {
@@ -683,6 +871,11 @@ export class AgentView implements Component {
 		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${oneLine(this.connectError)}`, w)));
 
 		if (this.origin && this.o.banner) out.push(t.fg("accent", truncateToWidth(this.o.banner, w)));
+		if (this.model || this.thinking) {
+			const d = [this.model && `model ${this.model}`, this.thinking && `thinking ${this.thinking}`].filter(Boolean).join(" · ");
+			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
+		}
+		if (this.picker) return [...out, ...this.pickerLines(w)].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
 		if (this.help) return [...out, ...this.helpLines(w)].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
 
 		const sections = this.sections();
@@ -707,7 +900,14 @@ export class AgentView implements Component {
 
 		out.push("");
 		if (this.renaming) out.push(...this.renameInput.render(w));
-		else if (!this.peek) out.push(...this.input.render(w));
+		else if (!this.peek) {
+			out.push(...this.input.render(w));
+			const at = atPrefix(this.input.getValue());
+			if (at !== undefined) {
+				const s = this.atSuggestions(at);
+				out.push(t.fg("dim", truncateToWidth(s.length ? `Tab: ${s.slice(0, 6).map((d) => `@${d}`).join("  ")}` : "no matching directory", w)));
+			}
+		}
 		const f = this.filter();
 		if (f && !list.some((it) => it.kind === "row")) out.push(t.fg("dim", truncateToWidth("no sessions match", w)));
 		if (this.notice) out.push(t.fg(this.notice.tone, truncateToWidth(oneLine(this.notice.text), w)));
@@ -760,6 +960,20 @@ export class AgentView implements Component {
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
 
+	private pickerLines(width: number): string[] {
+		const t = this.o.theme;
+		const p = this.picker!;
+		const height = Math.max(3, (this.o.tui.terminal.rows || 30) - 8);
+		const start = Math.max(0, Math.min(p.index - Math.floor(height / 2), p.items.length - height));
+		const lines = [t.bold(truncateToWidth(p.title, width)), ""];
+		p.items.slice(start, start + height).forEach((it, i) => {
+			const sel = start + i === p.index;
+			lines.push(this.mark(sel, truncateToWidth(sel ? t.fg("accent", it.label) : it.label, Math.max(1, width - 2))));
+		});
+		lines.push("", t.fg("dim", truncateToWidth("↑↓ choose · Enter pick · Esc cancel", width)));
+		return lines;
+	}
+
 	private helpLines(width: number): string[] {
 		const t = this.o.theme;
 		const keys: [string, string][] = [
@@ -777,6 +991,10 @@ export class AgentView implements Component {
 			["Alt+1…9", "attach to row N of this directory"],
 			["Ctrl+F", "find by name (n:)"],
 			["s: n: o:", "filter by state, name, result; combine with spaces"],
+			["@dir task", "start the task in that directory (Tab completes)"],
+			["! command", "run a shell command as a job"],
+			["/model /thinking", "defaults for new sessions (bare: pick; default resets)"],
+			["/resume", "bring back a past session of this directory"],
 			["Esc", "close peek · clear input · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],
@@ -798,6 +1016,13 @@ function fill(input: Input, value: string): void {
 	input.setValue("");
 	// typed in, so the cursor ends after it whatever the user's key bindings
 	for (const ch of value.replace(CONTROL, " ")) input.handleInput(ch);
+}
+
+function formatAgo(ms: number): string {
+	const m = Math.round(ms / 60_000);
+	if (m < 60) return `${m}m ago`;
+	const h = Math.round(m / 60);
+	return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
 
 function oneLine(text: string): string {

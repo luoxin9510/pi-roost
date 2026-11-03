@@ -1,6 +1,6 @@
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveUserConfig } from "../lib/config.ts";
-import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
+import { allowListedEnv, buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
 
@@ -11,6 +11,14 @@ const g = globalThis as { [VIEWS]?: number; [OPENS]?: number };
 
 /** How many times an agent view has been opened in this process. */
 export const agentViewOpens = () => g[OPENS] ?? 0;
+
+// The pi instance's slash commands (DI-5), set by the extension: openAgentView only has a ctx.
+const COMMANDS = Symbol.for("pi-roost.commands");
+type CommandSource = () => { name: string; source: string }[];
+export function setCommandSource(fn: CommandSource | undefined): void {
+	(globalThis as { [COMMANDS]?: CommandSource })[COMMANDS] = fn;
+}
+const commandSource = () => (globalThis as { [COMMANDS]?: CommandSource })[COMMANDS];
 
 /** Whether an agent view is on screen in this process (the ← shortcut stays out of its way). */
 export const agentViewOpen = () => (g[VIEWS] ?? 0) > 0;
@@ -38,24 +46,49 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 				origin: opts.origin,
 				highlightId: opts.origin,
 				banner: opts.banner,
-				launch: (task) => {
-					const sessionFile = SessionManager.create(dispatchCwd).getSessionFile();
+				launch: (task, o = {}) => {
+					const cwd = o.cwd ?? dispatchCwd;
+					const sessionFile = o.sessionFile ?? SessionManager.create(cwd).getSessionFile();
 					if (!sessionFile) throw new Error("could not allocate a session file");
 					return buildLaunch({
 						task,
-						cwd: dispatchCwd,
+						cwd,
 						sessionFile,
-						name: fallbackName(task),
-						origin: "dispatch",
+						name: o.name ?? fallbackName(task),
+						origin: o.origin ?? "dispatch",
 						argv: process.argv,
 						execPath: process.execPath,
 						env: process.env,
 						extraEnv: config.envAllowList,
 						piVersion: VERSION,
-						model: config.dispatchModel,
-						thinking: config.dispatchThinking,
+						model: o.model ?? config.dispatchModel,
+						thinking: o.thinking ?? config.dispatchThinking,
 					});
 				},
+				launchShell: (command, cwd) => ({
+					kind: "shell" as const,
+					cwd,
+					sessionFile: "",
+					command: [process.env.SHELL || "/bin/sh", "-lc", command],
+					env: allowListedEnv(process.env, config.envAllowList),
+					name: `! ${fallbackName(command)}`,
+					origin: "dispatch" as const,
+				}),
+				commands: () => commandSource()?.() ?? [],
+				models: () => {
+					try {
+						return ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+					} catch {
+						return [];
+					}
+				},
+				resumable: async (cwd) =>
+					(await SessionManager.list(cwd)).map((s) => ({
+						path: s.path,
+						name: s.name || fallbackName(s.firstMessage || "session"),
+						cwd: s.cwd,
+						modified: s.modified.getTime(),
+					})),
 				setTitle: (title) => ctx.ui.setTitle(title),
 				groupBy: config.groupBy,
 				onGroupBy: (groupBy) => saveUserConfig({ groupBy }),

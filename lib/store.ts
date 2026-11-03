@@ -13,6 +13,8 @@ export interface JobRecord {
 	model?: string;
 	thinking?: string;
 	origin: "bg" | "dispatch" | "adopt" | "fork";
+	/** DI-6: a shell command instead of pi; absent means pi. */
+	kind?: "pi" | "shell";
 	createdAt: number; // ms epoch
 	piVersion?: string;
 	roostVersion: string;

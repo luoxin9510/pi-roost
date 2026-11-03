@@ -83,7 +83,15 @@ export function buildLaunch(input: LaunchInput) {
 		cwd: input.cwd,
 		sessionFile: input.sessionFile,
 		// "--" so a task that starts with "-" is not read as a flag
-		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, ...(input.task ? ["--", input.task] : [])],
+		// pi reads a message argument starting with @ as a file to attach, even after --
+		command: [
+			input.execPath,
+			input.argv[1]!,
+			"--session",
+			input.sessionFile,
+			...args,
+			...(input.task ? ["--", input.task.startsWith("@") ? ` ${input.task}` : input.task] : []),
+		],
 		env: allowListedEnv(input.env, input.extraEnv),
 		name: input.name,
 		origin: input.origin,

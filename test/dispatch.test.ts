@@ -54,3 +54,10 @@ describe("respawnCommand", () => {
 		expect(respawnCommand(rec, false, "go on")).toEqual((rec as { command: string[] }).command);
 	});
 });
+
+describe("@ at the start of a task", () => {
+	it("is not read by pi as a file argument", () => {
+		const l = buildLaunch({ task: "@someone please look", cwd: "/w", sessionFile: "/s.jsonl", name: "x", origin: "dispatch", argv: ["node", "/pi.js"], execPath: "node", env: {} });
+		expect(l.command.at(-1)).toBe(" @someone please look");
+	});
+});
