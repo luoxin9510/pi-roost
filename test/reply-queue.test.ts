@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ReplyQueue } from "../extensions/worker.ts";
 
-function harness() {
+function harness(opts: { setModel?: () => Promise<boolean> } = {}) {
 	const sent: { text: string; opts: unknown }[] = [];
 	const acks: number[] = [];
 	const notes: string[] = [];
@@ -12,7 +12,7 @@ function harness() {
 		},
 		setSessionName: (n: string) => sent.push({ text: `name:${n}`, opts: null }),
 		setThinkingLevel: (l: string) => sent.push({ text: `thinking:${l}`, opts: null }),
-		setModel: async () => true,
+		setModel: opts.setModel ?? (async () => true),
 	};
 	const ctx = {
 		isIdle: () => state.idle,
@@ -31,6 +31,19 @@ function harness() {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("ReplyQueue", () => {
+	it("M8: a /model that pi refuses (false or a throw) leaves one note, never a prompt", async () => {
+		const no = harness({ setModel: async () => false });
+		no.q.add(1, "/model x/m");
+		await sleep(10);
+		expect(no.notes).toEqual(["pi-roost: cannot switch to x/m: no credentials for x in this session"]);
+		expect(no.sent).toEqual([]);
+		expect(no.acks).toEqual([1]);
+		const boom = harness({ setModel: async () => Promise.reject(new Error("No API key for x/m")) });
+		boom.q.add(1, "/model x/m");
+		await sleep(10);
+		expect(boom.notes).toEqual(["pi-roost: cannot switch model: Error: No API key for x/m"]);
+	});
+
 	it("sends the first reply as a prompt, holds the next until the run starts, then follows up", () => {
 		const h = harness();
 		h.q.add(1, "first");

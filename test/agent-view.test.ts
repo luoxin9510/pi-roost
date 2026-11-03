@@ -43,6 +43,7 @@ class FakeClient {
 	closed = false;
 	rows: JobRow[];
 	dispatchDelay = 0;
+	replyResult: unknown = { delivered: true, saved: false };
 	constructor(rows: JobRow[]) {
 		this.rows = rows;
 	}
@@ -67,7 +68,7 @@ class FakeClient {
 			await new Promise((r) => setTimeout(r, this.dispatchDelay));
 			return { id: "new1", name: "new task" };
 		}
-		if (op === "reply") return { delivered: true, saved: false };
+		if (op === "reply") return this.replyResult;
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		return {};
 	}
@@ -402,11 +403,61 @@ describe("AgentView model and context (M8)", () => {
 		await sleep(10);
 		client.emit({ event: "job", job: { ...a, model: "b/two", thinking: "xhigh" } });
 		expect(view.render(80).join("\n")).toContain("fix login thinks xhigh: the closest its model supports to max");
-		// no credentials in the worker: the row never changes
+		// no credentials in the worker: the row never changes; a /thinking meanwhile does not hide that
 		type(view, "/model a/one");
 		view.handleInput("\r");
+		await sleep(10);
+		type(view, "/thinking low");
+		view.handleInput("\r");
+		await sleep(10);
+		client.emit({ event: "job", job: { ...a, model: "b/two", thinking: "low" } });
+		expect(view.render(80).join("\n")).toContain("fix login now uses thinking low");
 		await sleep(100);
-		expect(view.render(120).join("\n")).toContain("fix login is still on b/two: it could not switch to a/one");
+		// short enough for 80 columns
+		expect(view.render(80).join("\n")).toContain("fix login: still two, switch to one failed (credentials? envAllowList)");
+		view.dispose();
+	});
+
+	it("a second switch before the first shows: the first one's report is not the outcome", async () => {
+		const a = row({ name: "fix login", model: "a/one" });
+		const { view, client } = setup([a], { switchCheckMs: 5000 });
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		type(view, "/model a/one"); // back again, while b/two is still pending: not "already uses"
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(2);
+		client.emit({ event: "job", job: { ...a, model: "b/two" } });
+		expect(view.render(80).join("\n")).not.toContain("now uses");
+		client.emit({ event: "job", job: { ...a, model: "a/one" } });
+		expect(view.render(80).join("\n")).toContain("fix login now uses model a/one");
+		view.dispose();
+	});
+
+	it("the peek footer fits 80 columns; a session that is starting, or gone, gets its own message", async () => {
+		const a = row({ name: "fix login", model: "a/one" });
+		const { view, client } = setup([a]);
+		await view.start();
+		view.handleInput(" ");
+		expect(view.render(80).at(-1)).toContain("Esc close · ? keys");
+		client.replyResult = { delivered: false, saved: false };
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("fix login is starting; try again in a moment");
+		// the row goes while the picker is open
+		client.replyResult = { delivered: true, saved: false };
+		view.handleInput("\x03");
+		type(view, "/model");
+		view.handleInput("\r");
+		client.emit({ event: "removed", id: a.id });
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("that session no longer exists");
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(1);
 		view.dispose();
 	});
 
@@ -432,7 +483,6 @@ describe("AgentView model and context (M8)", () => {
 		const { view } = setup([a, b, c]);
 		await view.start();
 		const lines = view.render(100);
-		const at = (name: string, s: string) => lines.find((l) => l.includes(name))!.indexOf(s);
 		const ages = lines.filter((l) => /one|two/.test(l)).map((l) => l.trimEnd().split(" ").at(-1));
 		expect(new Set(ages.map((x) => x?.length)).size).toBe(2); // the ages really differ in width
 		// CJK is two columns wide: compare columns, not string indices
@@ -441,7 +491,6 @@ describe("AgentView model and context (M8)", () => {
 			return visibleWidth(l.slice(0, l.indexOf(s)));
 		};
 		expect(col("one", "91%")).toBe(col("two", " 4%"));
-		void at;
 		expect(lines.find((l) => l.includes("three"))).not.toContain("%");
 		for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(100);
 		view.dispose();

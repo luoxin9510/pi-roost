@@ -432,7 +432,13 @@ export class ReplyQueue {
 	private applySetting(ctx: ExtensionContext, text: string): boolean {
 		const [cmd, ...rest] = text.split(/\s+/);
 		const arg = rest.join(" ").trim();
-		const warn = (m: string) => ctx.ui.notify(`pi-roost: ${m}`, "warning");
+		const warn = (m: string) => {
+			try {
+				ctx.ui.notify(`pi-roost: ${m}`, "warning");
+			} catch {
+				// a stale ctx (the session switched while setModel ran): nobody to tell
+			}
+		};
 		if (cmd === "/name") {
 			if (arg) this.pi.setSessionName(arg);
 			else warn("/name needs a name");
@@ -536,9 +542,11 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		send();
 		replies.pump();
 	});
-	pi.on("tool_execution_start", (event) => {
+	pi.on("tool_execution_start", (event, ctx) => {
 		if (event.parentToolCallId) return;
 		tracker.toolStart(event.toolName);
+		// the tool call's message is saved by now, whatever other extensions' message_end did
+		tracker.setContext(contextOf(ctx));
 		send();
 	});
 	pi.on("tool_execution_end", (event) => {

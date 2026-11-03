@@ -57,10 +57,27 @@ Two independent reviews (data path; agent view). Fixed:
   tests cover the switch confirmation, adjustment and timeout; shell rows; and
   adopt/fork flags.
 
+Second review, fixed:
+
+- The first round's adopt/fork change could lose a model or thinking level that pi never
+  recorded in the session. pi saves a resumed session's model only once it answers, and a
+  thinking level only when it changes. `/bg`, quit to background and `/fork` now pass the
+  foreground's live model and thinking level. A respawn passes what the worker last
+  reported running, checked before it becomes a flag.
+- Context use is also read at `tool_execution_start`, after the save whatever other
+  extensions do in `message_end`. `warn` survives a stale ctx.
+- Switch checks are kept per session *and* setting, so a `/thinking` no longer cancels the
+  check of a failing `/model`. A switch that replaces a pending one ignores the first one's
+  report. The timeout checks the row again, and a reconnect checks the listed rows. The
+  timeout notice fits 80 columns. A row deleted while the picker is open is refused.
+- Tests: a refused `setModel` (`false` and a throw), a concurrent model and thinking
+  switch, a superseded switch, the 80-column footer, the "starting" and "gone" messages,
+  and the last-reported respawn flags.
+
 Left as is: column widths are measured over all rows, as `nameWidth` is, so they do not
 jump while you filter.
 
 ## Tests
 
-Automated: 17 files, 170 tests (with M9 merged in). Live runs against pi 1.5.0 with an isolated
+Automated: 17 files, 174 tests (with M9 merged in). Live runs against pi 1.5.0 with an isolated
 `PI_ROOST_HOME` and claude-haiku-5-5 / claude-haiku-4-5.

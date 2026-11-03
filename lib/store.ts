@@ -81,15 +81,24 @@ export const taskArg = (task: string): string => (task.startsWith("@") ? ` ${tas
  * its first prompt (already in the session), optionally with a new one. A session
  * pi never wrote never saw the first prompt, so it keeps it.
  *
- * M8: a written session also drops the dispatch's --model, --provider and --thinking.
- * pi records the model and thinking level in the session and restores them on
- * resume, but a flag would win over that: a model switched while the job ran
- * (/model from the agent view) would be undone by every respawn.
+ * M8: a written session also drops the dispatch's --model, --provider and --thinking:
+ * they would undo a model switched while the job ran (/model from the agent view).
+ * `last` is what the worker last reported running; it is passed instead, because pi
+ * does not always record it in the session (a resumed session's model only once it
+ * has answered, a thinking level only when it changes). Without it pi restores what
+ * the session recorded.
  */
-export function respawnCommand(rec: JobRecord, sessionWritten: boolean, prompt?: string): string[] {
+export function respawnCommand(
+	rec: JobRecord,
+	sessionWritten: boolean,
+	prompt?: string,
+	last: { model?: unknown; thinking?: unknown } = {},
+): string[] {
 	if (!sessionWritten) return rec.command;
 	const at = rec.command.indexOf("--", 2);
 	const base = withoutFlags(at === -1 ? rec.command : rec.command.slice(0, at), SESSION_RESTORED_FLAGS);
+	if (typeof last.model === "string" && /^[^/\s-][^\s]*\/\S+$/.test(last.model)) base.push("--model", last.model);
+	if (typeof last.thinking === "string" && /^[a-z]+$/.test(last.thinking)) base.push("--thinking", last.thinking);
 	return prompt ? [...base, "--", taskArg(prompt)] : base;
 }
 

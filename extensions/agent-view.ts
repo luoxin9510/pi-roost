@@ -20,6 +20,7 @@ import {
 	iconOf,
 	modelFacts,
 	rowDetailsOf,
+	shortModel,
 	type Item,
 	items,
 	layout,
@@ -119,8 +120,12 @@ interface Switch {
 	which: "model" | "thinking";
 	value: string;
 	before: string | null;
+	/** The pending switch this one replaced: a report showing it is not the outcome. */
+	superseded?: string;
 	timer: NodeJS.Timeout;
 }
+
+const switchKey = (id: string, which: "model" | "thinking") => `${id}:${which}`;
 
 interface Notice {
 	text: string;
@@ -217,6 +222,7 @@ export class AgentView implements Component {
 			if (this.closed) return client.close();
 			this.rows = new Map(jobs.map((j) => [j.id, j]));
 			for (const j of jobs) observeJob(j); // what is already there is not news
+			for (const j of jobs) this.checkSwitch(j); // a switch shown while we were away
 			this.client = client;
 			this.connectError = undefined;
 			// AV-8: pushed events only; reconnect when the daemon goes away.
@@ -903,15 +909,18 @@ export class AgentView implements Component {
 	private async sendSetting(picked: JobRow, which: "model" | "thinking", value: string): Promise<void> {
 		if (!this.client) return this.say("background service unavailable", "error");
 		// the picker may have been open a while: act on the row as it is now
-		const row = this.rows.get(picked.id) ?? picked;
-		const before = (which === "model" ? row.model : row.thinking) ?? null;
+		const row = this.rows.get(picked.id);
+		if (!row) return this.say("that session no longer exists", "warning");
+		const pending = this.switches.get(switchKey(row.id, which));
+		// a second switch before the first shows: compare with what the session had before both
+		const before = pending ? pending.before : ((which === "model" ? row.model : row.thinking) ?? null);
 		try {
 			const r = await this.client.request("reply", { id: row.id, text: `/${which} ${value}` });
 			this.reply.setValue("");
 			if (r.delivered) {
 				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
-				if (before === value) return this.say(`${row.name} already uses ${which} ${value}`);
-				this.watchSwitch(row, which, value, before);
+				if (!pending && before === value) return this.say(`${row.name} already uses ${which} ${value}`);
+				this.watchSwitch(row, which, value, before, pending?.value);
 				this.say(`asked ${row.name} to use ${which} ${value}…`);
 			} else if (r.respawned) this.say(`${which} ${value} · starting ${row.name} again`, "success");
 			else if (r.saved) this.say(`saved; ${which} changes when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
@@ -922,39 +931,52 @@ export class AgentView implements Component {
 		}
 	}
 
-	private watchSwitch(row: JobRow, which: "model" | "thinking", value: string, before: string | null): void {
-		const old = this.switches.get(row.id);
+	/** One watch per session and setting: a /thinking does not cancel the check of a /model. */
+	private watchSwitch(row: JobRow, which: "model" | "thinking", value: string, before: string | null, superseded?: string): void {
+		const key = switchKey(row.id, which);
+		const old = this.switches.get(key);
 		if (old) clearTimeout(old.timer);
 		const timer = setTimeout(() => {
-			if (this.switches.get(row.id)?.timer !== timer) return;
-			this.switches.delete(row.id);
+			if (this.switches.get(key)?.timer !== timer) return;
+			this.switches.delete(key);
 			const now = this.rows.get(row.id);
 			if (!now) return;
-			const actual = (which === "model" ? now.model : now.thinking) ?? "?";
+			const actual = (which === "model" ? now.model : now.thinking) ?? null;
+			// a report the view missed (a reconnect) may already show it
+			if (actual === value) return this.say(`${now.name} now uses ${which} ${value}`, "success");
 			this.say(
 				which === "model"
-					? `${now.name} is still on ${actual}: it could not switch to ${value} (no credentials in the background session? see envAllowList)`
-					: `${now.name} still thinks ${actual}: its model may not support ${value}`,
+					? `${now.name}: still ${actual ? shortModel(actual) : "?"}, switch to ${shortModel(value)} failed (credentials? envAllowList)`
+					: `${now.name}: still thinks ${actual ?? "?"}; ${value} not supported?`,
 				"warning",
 			);
 		}, this.o.switchCheckMs ?? SWITCH_CHECK_MS);
 		timer.unref?.();
-		this.switches.set(row.id, { which, value, before, timer });
+		this.switches.set(key, { which, value, before, superseded, timer });
 	}
 
-	/** A report shows the switch (or pi's adjusted thinking level). */
+	/** A report shows a switch (or pi's adjusted thinking level). */
 	private checkSwitch(row: JobRow): void {
-		const s = this.switches.get(row.id);
-		if (!s) return;
-		const actual = (s.which === "model" ? row.model : row.thinking) ?? null;
-		if (actual === s.before) return; // not applied yet
-		clearTimeout(s.timer);
-		this.switches.delete(row.id);
-		if (actual === s.value) {
-			// a running turn keeps its current request; the next one uses the new setting
-			this.say(`${row.name} now uses ${s.which} ${s.value}${row.state === "working" ? " (from its next request)" : ""}`, "success");
-		} else if (s.which === "thinking") this.say(`${row.name} thinks ${actual ?? "?"}: the closest its model supports to ${s.value}`, "warning");
-		else this.say(`${row.name} now uses ${actual ?? "?"}`, "warning");
+		for (const which of ["model", "thinking"] as const) {
+			const key = switchKey(row.id, which);
+			const s = this.switches.get(key);
+			if (!s) continue;
+			const actual = (which === "model" ? row.model : row.thinking) ?? null;
+			// only the switch this one replaced: from now on that is the value to move away from
+			if (s.superseded !== undefined && actual === s.superseded) {
+				s.before = s.superseded;
+				s.superseded = undefined;
+				continue;
+			}
+			if (actual === s.before) continue; // not applied yet (the timer decides)
+			clearTimeout(s.timer);
+			this.switches.delete(key);
+			if (actual === s.value) {
+				// a running turn keeps its current request; the next one uses the new setting
+				this.say(`${row.name} now uses ${which} ${s.value}${row.state === "working" ? " (from its next request)" : ""}`, "success");
+			} else if (which === "thinking") this.say(`${row.name} thinks ${actual ?? "?"}: the closest its model supports to ${s.value}`, "warning");
+			else this.say(`${row.name} now uses ${actual ?? "?"}`, "warning");
+		}
 	}
 
 	/** AV-K12: stop; again within 2 s delete; on a header, the whole group. */
