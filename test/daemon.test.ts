@@ -343,7 +343,7 @@ describe("worker reports", () => {
 		const context = { tokens: 86_000, window: 200_000, percent: 43 };
 		await client.request("report", { id, token, report: report({ thinking: "high", context }) });
 		expect(await find(client, id)).toMatchObject({ model: "x/y", thinking: "high", context });
-		// a worker before 0.2 sends neither field: the last known values stay
+		// a worker before 0.1.5 sends neither field: the last known values stay
 		await client.request("report", { id, token, report: report() });
 		expect(await find(client, id)).toMatchObject({ thinking: "high", context });
 		// garbage is dropped, not stored

@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - 2026-11-03
+## [0.1.5] - 2026-11-03
 
 - Agents talk to each other: `roost_spawn` starts a background child whose report comes back
   by itself, `roost_send` messages another session, `roost_agents` lists the reachable ones.

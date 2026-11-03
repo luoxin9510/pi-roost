@@ -96,7 +96,7 @@ export interface WorkerReport {
 	error: string | null;
 	name: string | null;
 	model: string | null;
-	/** M8; absent from workers before 0.2. */
+	/** M8; absent from workers before 0.1.5. */
 	thinking?: string | null;
 	context?: ContextInfo | null;
 	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
