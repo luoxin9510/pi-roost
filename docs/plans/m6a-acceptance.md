@@ -43,5 +43,23 @@ Two `--bg` jobs, in `e2e/` and `e2e/sub/`; `pi --agents`.
 | Ctrl+C, Ctrl+T | row moved under `Pinned (1)`; `--json` `pinned: true` |
 | Ctrl+R, new name, Enter | row `renamed live job`; still so after the worker's next reports |
 
-Automated: 14 files, 118 tests (filters, directory layout, manual order,
+Automated (before review): 14 files, 118 tests (filters, directory layout, manual order,
 view keys with a fake daemon, daemon organise ops).
+
+## Review fixes (PR #7)
+
+- A rename of an ended, reaped or not-yet-connected job no longer reverts:
+  the daemon queues `/name <new>` as a pending reply (applied when the
+  worker next runs) and keeps its name over reports of the old one until
+  the session reports the new name.
+- Manual order is stored with the section it was made in (`orderKey`) and
+  ignored elsewhere; Shift+↑/↓ sends the whole section (folded rows too)
+  and is refused while a filter applies.
+- Directory sections never fold (live rows stayed hidden past ~18 rows).
+- → attaches while filtering; a header's Ctrl+X confirmation is tied to
+  the rows on screen; Ctrl+S keeps the selected row; prefilled inputs no
+  longer depend on the Ctrl+E binding.
+- Duplicate names: `attach <name>` reports `ambiguous` with the ids;
+  renames are not suffixed.
+
+Automated: 14 files, 119 tests.

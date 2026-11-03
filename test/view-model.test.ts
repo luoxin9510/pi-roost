@@ -27,6 +27,7 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		reaped: false,
 		pinned: false,
 		order: null,
+		orderKey: null,
 		...over,
 	};
 }
@@ -102,10 +103,11 @@ describe("layout options (M6a)", () => {
 
 	it("keeps manual order below untouched rows", async () => {
 		const { ordered } = await import("../lib/view-model.ts");
-		const a = row({ id: "a", order: 1 });
-		const b = row({ id: "b", order: 0 });
+		const a = row({ id: "a", order: 1, orderKey: "working" });
+		const b = row({ id: "b", order: 0, orderKey: "working" });
 		const c = row({ id: "c" });
-		expect(ordered([a, b, c], () => 0).map((r) => r.id)).toEqual(["c", "b", "a"]);
+		const d = row({ id: "d", order: 0, orderKey: "completed" }); // ordered in another group
+		expect(ordered([a, b, c, d], () => 0, "working").map((r) => r.id)).toEqual(["c", "d", "b", "a"]);
 	});
 });
 

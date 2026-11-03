@@ -299,7 +299,7 @@ export class AgentView implements Component {
 				if (text) break;
 				return this.moveAndRender("end");
 			case "right":
-				if (text) break;
+				if (text && !this.filter()) break;
 				return void this.attachSelected();
 			case "escape":
 				return this.escape();
@@ -429,8 +429,10 @@ export class AgentView implements Component {
 	// ---- organise (AV-K6…K14) --------------------------------------------
 
 	private toggleGroupBy(): void {
+		const row = this.selectedRow() ?? this.selected()?.section.rows[0];
 		this.groupBy = this.groupBy === "state" ? "directory" : "state";
 		this.collapsed.clear();
+		this.cursor = row ? { kind: "row", id: row.id } : undefined;
 		try {
 			this.o.onGroupBy?.(this.groupBy);
 		} catch (err) {
@@ -501,20 +503,24 @@ export class AgentView implements Component {
 	private async reorder(dir: 1 | -1): Promise<void> {
 		const it = this.selected();
 		if (it?.kind !== "row" || !this.client) return;
-		const rows = it.section.rows;
+		if (this.filter()) return this.say("clear the filter to reorder", "warning");
+		// the whole section, including rows folded into "… N more"
+		const full = layout([...this.rows.values()], { groupBy: this.groupBy }).find((s) => s.key === it.section.key);
+		const rows = full?.rows ?? it.section.rows;
 		const i = rows.findIndex((r) => r.id === it.row.id);
 		const j = i + dir;
 		if (j < 0 || j >= rows.length) return;
 		const ids = rows.map((r) => r.id);
 		[ids[i], ids[j]] = [ids[j]!, ids[i]!];
 		// apply locally at once; the daemon's events confirm it
+		const key = it.section.key;
 		ids.forEach((id, n) => {
 			const r = this.rows.get(id);
-			if (r) this.rows.set(id, { ...r, order: n });
+			if (r) this.rows.set(id, { ...r, order: n, orderKey: key });
 		});
 		this.o.tui.requestRender();
 		try {
-			await this.client.request("reorder", { ids });
+			await this.client.request("reorder", { ids, key });
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -589,7 +595,7 @@ export class AgentView implements Component {
 		if (!it) return;
 		const targets = it.kind === "row" ? [it.row] : it.section.rows;
 		if (targets.length === 0) return;
-		const key = it.kind === "row" ? it.row.id : `group:${it.section.key}`;
+		const key = it.kind === "row" ? it.row.id : `group:${it.section.key}:${targets.map((r) => r.id).join(",")}`;
 		const now = Date.now();
 		const armed = this.armedStop?.id === key && now - this.armedStop.at < DOUBLE_PRESS_MS;
 		this.armedStop = { id: key, at: now };
@@ -789,8 +795,9 @@ const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
 
 /** Put text in an input with the cursor after it (setValue leaves the cursor where it was). */
 function fill(input: Input, value: string): void {
-	input.setValue(value);
-	input.handleInput("\x05"); // line end
+	input.setValue("");
+	// typed in, so the cursor ends after it whatever the user's key bindings
+	for (const ch of value.replace(CONTROL, " ")) input.handleInput(ch);
 }
 
 function oneLine(text: string): string {

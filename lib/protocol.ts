@@ -31,6 +31,8 @@ export interface JobRow {
 	pinned: boolean;
 	/** AV-K13: the user's position within its group, or null when never moved. */
 	order: number | null;
+	/** The section the order belongs to (a state group or `dir:<cwd>`); stale elsewhere. */
+	orderKey: string | null;
 }
 
 /** What a worker reports about itself (full snapshot every time). */
@@ -90,7 +92,7 @@ export interface OpArgs {
 	pin: { id: string; pinned: boolean };
 	rename: { id: string; name: string };
 	/** AV-K13: these jobs, in this order (the rest of their group keeps its place). */
-	reorder: { ids: string[] };
+	reorder: { ids: string[]; key: string };
 }
 
 export interface OpResults {

@@ -140,6 +140,7 @@ function rowOf(id: string): JobRow | undefined {
 		reaped: !live && st.reaped === true,
 		pinned: st.pinned === true,
 		order: typeof st.order === "number" ? st.order : null,
+		orderKey: typeof st.orderKey === "string" ? st.orderKey : null,
 	};
 }
 
@@ -600,7 +601,9 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		choices: Array.isArray(r.choices) ? r.choices.filter(str).slice(0, 20).map((c) => c.slice(0, 200)) : [],
 		tool: opt(r.tool, 100),
 		error: opt(r.error, 1000),
-		displayName: opt(r.name, 200),
+		// a rename the session has not taken yet keeps the daemon's name
+		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : opt(r.name, 200),
+		...(str(st.pendingName) && opt(r.name, 200) === st.pendingName ? { pendingName: null } : {}),
 		model: opt(r.model, 200),
 		reportedAt: Date.now(),
 		attachSignal: r.attachSignal === true,
@@ -615,7 +618,7 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 }
 
 /** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
-async function rename(args: { id?: unknown; name?: unknown } | undefined): Promise<{ id: string; name: string }> {
+function rename(args: { id?: unknown; name?: unknown } | undefined): { id: string; name: string } {
 	const id = requireJob(args);
 	const name = typeof args?.name === "string" ? args.name.replace(/\s+/g, " ").trim().slice(0, 200) : "";
 	if (!name) throw new OpError("bad_request", "empty name");
@@ -623,10 +626,14 @@ async function rename(args: { id?: unknown; name?: unknown } | undefined): Promi
 	const next = { ...rec, name };
 	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
 	recs.set(id, next);
-	updateState(id, { displayName: name });
-	// the worker's session takes the name too, so its next report does not undo it
+	// The session takes the name too, whenever its worker next runs (now, or after a
+	// respawn): until it reports that name, the daemon's name wins over the report.
+	const st = readState(id);
+	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
+	const pending = pendingReplies(id).filter((r) => !r.text.startsWith("/name "));
+	updateState(id, { displayName: name, pendingName: name, replySeq: seq, pendingReplies: [...pending, { seq, text: `/name ${name}` }] });
 	const conn = workerConns.get(id);
-	if (roster.has(id) && conn && !conn.sock.destroyed) await reply({ id, text: `/name ${name}` });
+	if (roster.has(id) && conn && !conn.sock.destroyed) send(conn, { event: "deliver", id, seq, text: `/name ${name}` });
 	pushJob(id);
 	log("info", "rename", { id, name });
 	return { id, name };
@@ -762,8 +769,10 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return rename(args);
 		case "reorder": {
 			const ids: unknown = args?.ids;
+			const key: unknown = args?.key;
 			if (!Array.isArray(ids) || !ids.every((v) => str(v) && recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
-			ids.forEach((id: string, i: number) => updateState(id, { order: i }));
+			if (!str(key)) throw new OpError("bad_request", "key required");
+			ids.forEach((id: string, i: number) => updateState(id, { order: i, orderKey: key }));
 			for (const id of ids) pushJob(id);
 			return {};
 		}

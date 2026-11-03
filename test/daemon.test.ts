@@ -579,13 +579,27 @@ describe("organise ops", () => {
 		const b = await client.request("dispatch", args("sleep 30", { name: "beta" }));
 		expect(await client.request("pin", { id: a.id, pinned: true })).toEqual({ id: a.id, pinned: true });
 		await client.request("rename", { id: b.id, name: "  gamma   ray " });
-		await client.request("reorder", { ids: [b.id, a.id] });
+		await client.request("reorder", { ids: [b.id, a.id], key: "working" });
 		const ra = await find(client, a.id);
 		const rb = await find(client, b.id);
-		expect(ra).toMatchObject({ pinned: true, order: 1 });
+		expect(ra).toMatchObject({ pinned: true, order: 1, orderKey: "working" });
 		expect(rb).toMatchObject({ name: "gamma ray", order: 0 });
 		expect((await client.request("resolve", { query: "gamma" })).id).toBe(b.id);
 		await expect(client.request("rename", { id: b.id, name: " " })).rejects.toMatchObject({ code: "bad_request" });
-		await expect(client.request("reorder", { ids: ["nope"] })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(client.request("reorder", { ids: ["nope"], key: "working" })).rejects.toMatchObject({ code: "bad_request" });
+	});
+
+	it("a rename outlives reports of the old session name and waits for the worker as a /name reply", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30", { name: "old" }));
+		await waitFor(async () => (await find(client, id))?.pid);
+		await client.request("rename", { id, name: "new name" });
+		expect(readState(id)?.pendingReplies).toEqual([{ seq: 1, text: "/name new name" }]);
+		const token = readState(id)?.jobToken as string;
+		const report = (name: string) => ({ state: "working" as const, status: "busy" as const, waitingFor: null, summary: null, question: null, choices: [], tool: null, error: null, name, model: null });
+		await client.request("report", { id, token, report: report("old") });
+		expect((await find(client, id))?.name).toBe("new name");
+		await client.request("report", { id, token, report: report("new name") });
+		expect(readState(id)?.pendingName).toBeNull();
 	});
 });

@@ -22,7 +22,6 @@ export interface JobState {
 	state: "working" | "blocked" | "done" | "failed" | "stopped";
 	hostPid?: number;
 	hostToken?: string; // processStartToken of the host
-	workerPid?: number;
 	startedAt: number;
 	endedAt?: number;
 	updatedAt: number;

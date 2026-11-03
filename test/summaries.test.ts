@@ -40,6 +40,7 @@ const row = (over: Partial<JobRow> = {}): JobRow => ({
 	reaped: false,
 		pinned: false,
 		order: null,
+		orderKey: null,
 	...over,
 });
 

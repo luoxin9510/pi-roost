@@ -51,10 +51,14 @@ export interface LayoutOptions {
 const byNewest = (a: JobRow, b: JobRow) => b.startedAt - a.startedAt;
 const byEnded = (a: JobRow, b: JobRow) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt);
 
-/** AV-K13: rows the user reordered keep that order, below the ones never moved. */
-export function ordered(list: JobRow[], cmp: (a: JobRow, b: JobRow) => number): JobRow[] {
-	const loose = list.filter((r) => r.order === null).sort(cmp);
-	const placed = list.filter((r) => r.order !== null).sort((a, b) => a.order! - b.order! || cmp(a, b));
+/**
+ * AV-K13: rows the user reordered in this section keep that order, below the ones
+ * never moved here (an order made in another group or grouping does not apply).
+ */
+export function ordered(list: JobRow[], cmp: (a: JobRow, b: JobRow) => number, key?: string): JobRow[] {
+	const isPlaced = (r: JobRow) => r.order !== null && (key === undefined || r.orderKey === key);
+	const loose = list.filter((r) => !isPlaced(r)).sort(cmp);
+	const placed = list.filter(isPlaced).sort((a, b) => a.order! - b.order! || cmp(a, b));
 	return [...loose, ...placed];
 }
 
@@ -79,7 +83,7 @@ export function layout(all: JobRow[], opts: LayoutOptions = {}): Section[] {
 	const sections: Section[] = [];
 	if (opts.groupBy === "directory") {
 		const pin = GROUPS[0]!;
-		const pins = ordered(rows.filter((r) => groupOf(r, pinned) === "pinned"), byNewest);
+		const pins = ordered(rows.filter((r) => groupOf(r, pinned) === "pinned"), byNewest, "pinned");
 		if (pins.length > 0 || keepEmpty) sections.push({ ...pin, rows: pins, hidden: 0, collapsed: !filter && collapsed.has(pin.key) });
 		const byDir = new Map<string, JobRow[]>();
 		for (const r of rows) if (groupOf(r, pinned) !== "pinned") byDir.set(r.cwd, [...(byDir.get(r.cwd) ?? []), r]);
@@ -91,7 +95,9 @@ export function layout(all: JobRow[], opts: LayoutOptions = {}): Section[] {
 				dir,
 				title: shortPath(dir),
 				hint: "",
-				...fold(ordered(list, byNewest)),
+				// no folding here: a directory's live rows must stay visible
+				rows: ordered(list, byNewest, key),
+				hidden: 0,
 				collapsed: !filter && collapsed.has(key),
 			});
 		}
@@ -100,7 +106,7 @@ export function layout(all: JobRow[], opts: LayoutOptions = {}): Section[] {
 	const buckets = new Map<GroupKey, JobRow[]>(GROUPS.map((g) => [g.key, []]));
 	for (const row of rows) buckets.get(groupOf(row, pinned))!.push(row);
 	for (const g of GROUPS) {
-		const list = ordered(buckets.get(g.key)!, g.key === "completed" ? byEnded : byNewest);
+		const list = ordered(buckets.get(g.key)!, g.key === "completed" ? byEnded : byNewest, g.key);
 		if (list.length === 0 && !keepEmpty) continue;
 		const shown = g.key === "completed" ? fold(list) : { rows: list, hidden: 0 };
 		sections.push({ ...g, ...shown, collapsed: !filter && collapsed.has(g.key) });
