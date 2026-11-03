@@ -63,7 +63,23 @@ export function registerForeground(pi: ExtensionAPI): void {
 	let stopQuitKeys: (() => void) | undefined;
 	let footer: Footer | undefined;
 	/** BG-9: hand the session to the daemon once pi has let go of it on quit. */
-	let handoff: { file: string; cwd: string; name: string; prompt: string; config: ReturnType<typeof loadConfig> } | undefined;
+	let handoff:
+		| { file: string; cwd: string; name: string; prompt: string; config: ReturnType<typeof loadConfig>; live: LiveSettings }
+		| undefined;
+	/**
+	 * M8: the model and thinking level this pi runs now. A session handed to the daemon does
+	 * not always record them (pi saves a resumed session's model only once it answers), so
+	 * the worker is started with them rather than with this pi's original flags.
+	 */
+	const liveSettings = (ctx: ExtensionContext): LiveSettings => {
+		let thinking: string | undefined;
+		try {
+			thinking = pi.getThinkingLevel();
+		} catch {
+			// no session: leave it to the session file
+		}
+		return { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, thinking };
+	};
 	let startupTimer: NodeJS.Timeout | undefined;
 
 	// a first message given on the command line arrives as input right after startup
@@ -139,6 +155,8 @@ export function registerForeground(pi: ExtensionAPI): void {
 				name: ctx.sessionManager.getSessionName() ?? conversationName(ctx) ?? "conversation",
 				prompt: wasRunning ? CONTINUE : "",
 				config: loadConfig(ctx.cwd),
+				// ctx is gone by session_shutdown
+				live: liveSettings(ctx),
 			};
 		}
 		if (running) {
@@ -242,6 +260,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 					env: process.env,
 					extraEnv: h.config.envAllowList,
 					piVersion: VERSION,
+					...h.live,
 				}),
 			);
 			process.once("exit", () => process.stdout.write(`\nbackgrounded · ${id} · ${name}\n  pi --agents to see it\n`));
@@ -294,6 +313,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 						env: process.env,
 						extraEnv: config.envAllowList,
 						piVersion: VERSION,
+						...liveSettings(ctx),
 					}),
 				);
 				ctx.ui.notify(`session running · ${name} · ${id} — open it from /agents`, "info");
@@ -376,6 +396,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 		const cwd = ctx.cwd;
 		const argv = process.argv;
 		const config = loadConfig(cwd);
+		const live = liveSettings(ctx); // before the switch: ctx is stale after it
 		mkdirSync(scratchDir(), { recursive: true, mode: 0o700 });
 		const scratch = join(scratchDir(), `${Date.now()}-${process.pid}.jsonl`);
 
@@ -400,6 +421,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 							env: process.env,
 							extraEnv: config.envAllowList,
 							piVersion: VERSION,
+							...live,
 						}),
 					));
 				} catch (err) {
@@ -433,6 +455,11 @@ export function registerForeground(pi: ExtensionAPI): void {
 }
 
 /** DI-9 fallback for an unnamed conversation: its first user message. */
+interface LiveSettings {
+	model?: string;
+	thinking?: string;
+}
+
 function conversationName(ctx: ExtensionContext): string | undefined {
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;

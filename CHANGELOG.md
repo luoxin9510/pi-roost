@@ -20,7 +20,10 @@
 - `/model` and `/thinking` in a peek switch that running session (bare: a picker).
 - `pi-roost --json`, `pi-roost/api` and the daemon's rows gain `thinking` and `context`.
 - Fix: a respawned session no longer goes back to the model and thinking level it was
-  dispatched with; it keeps the ones recorded in its session.
+  dispatched with; it keeps the ones recorded in its session. The same applies to `/bg`,
+  `/fork` and `/resume`, which used to pass on the foreground pi's own `--model`.
+- The peek confirms a switch only once the session reports it, and says when it did not
+  happen (for example, no credentials in the background session).
 
 ## [0.1.1] - 2026-11-03
 

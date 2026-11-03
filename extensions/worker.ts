@@ -63,9 +63,13 @@ export class Reporter {
 	private job: JobIdentity;
 	private onDeliver: (item: DeliverItem) => void;
 
-	constructor(job: JobIdentity, onDeliver: (item: DeliverItem) => void = () => {}) {
+	/** Row text and context use alone go out at most this often (tests shorten it). */
+	private intervalMs: number;
+
+	constructor(job: JobIdentity, onDeliver: (item: DeliverItem) => void = () => {}, intervalMs = SUMMARY_INTERVAL_MS) {
 		this.job = job;
 		this.onDeliver = onDeliver;
+		this.intervalMs = intervalMs;
 	}
 
 	/** `urgent`: send now even when only the row text changed (a model summary). */
@@ -100,7 +104,7 @@ export class Reporter {
 		if (this.closed || this.inflight || !this.latest || this.latest === this.sent) return;
 		const urgent = this.urgentPending || stateChanged(this.sent, this.latest);
 		if (!urgent && this.latest.summary === this.sent?.summary && sameContext(this.latest.context, this.sent?.context)) return;
-		const due = urgent ? Date.now() : Math.max(Date.now(), this.sentAt + SUMMARY_INTERVAL_MS);
+		const due = urgent ? Date.now() : Math.max(Date.now(), this.sentAt + this.intervalMs);
 		if (this.timer && due >= this.dueAt) return;
 		clearTimeout(this.timer);
 		this.dueAt = due;
@@ -430,7 +434,13 @@ export class ReplyQueue {
 	private applySetting(ctx: ExtensionContext, text: string): boolean {
 		const [cmd, ...rest] = text.split(/\s+/);
 		const arg = rest.join(" ").trim();
-		const warn = (m: string) => ctx.ui.notify(`pi-roost: ${m}`, "warning");
+		const warn = (m: string) => {
+			try {
+				ctx.ui.notify(`pi-roost: ${m}`, "warning");
+			} catch {
+				// a stale ctx (the session switched while setModel ran): nobody to tell
+			}
+		};
 		if (cmd === "/name") {
 			if (arg) this.pi.setSessionName(arg);
 			else warn("/name needs a name");
@@ -445,7 +455,16 @@ export class ReplyQueue {
 			const slash = arg.indexOf("/");
 			const model = slash > 0 ? ctx.modelRegistry.find(arg.slice(0, slash), arg.slice(slash + 1)) : undefined;
 			if (!model) warn(`unknown model "${arg}" (use provider/id)`);
-			else void this.pi.setModel(model).catch((err: unknown) => warn(`cannot switch model: ${String(err)}`));
+			// false (or a throw) when this process has no credentials for it; the agent view
+			// sees the row keep its old model and says so
+			else {
+				void this.pi
+					.setModel(model)
+					.then((ok) => {
+						if (ok === false) warn(`cannot switch to ${arg}: no credentials for ${model.provider} in this session`);
+					})
+					.catch((err: unknown) => warn(`cannot switch model: ${String(err)}`));
+			}
 			return true;
 		}
 		return false;
@@ -525,9 +544,11 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		send();
 		replies.pump();
 	});
-	pi.on("tool_execution_start", (event) => {
+	pi.on("tool_execution_start", (event, ctx) => {
 		if (event.parentToolCallId) return;
 		tracker.toolStart(event.toolName);
+		// the tool call's message is saved by now, whatever other extensions' message_end did
+		tracker.setContext(contextOf(ctx));
 		send();
 	});
 	pi.on("tool_execution_end", (event) => {
@@ -539,8 +560,12 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		replies.messageEnded(event.message as never);
 		if (event.message.role !== "assistant") return;
 		tracker.assistantMessage(event.message);
-		tracker.setContext(contextOf(ctx));
 		send();
+		// pi saves the message after its message_end handlers: read the context use once it
+		// is in the session, or the share is one model request behind
+		setImmediate(() => {
+			if (tracker.setContext(contextOf(ctx))) send();
+		});
 	});
 	pi.on("agent_settled", (event, ctx) => {
 		tracker.agentSettled(event.aborted);
@@ -613,6 +638,10 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	});
 	// a compaction shrinks the context: the row should not keep the old share
 	pi.on("session_compact", (_event, ctx) => {
+		if (tracker.setContext(contextOf(ctx))) send();
+	});
+	// /tree moves to another branch, with another context
+	pi.on("session_tree", (_event, ctx) => {
 		if (tracker.setContext(contextOf(ctx))) send();
 	});
 	// After the tracker's handlers: pi runs handlers in registration order, and these

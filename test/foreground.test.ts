@@ -185,6 +185,44 @@ describe("/bg", () => {
 		expect(f.calls.switches[1]).not.toMatch(/scratch/);
 	});
 
+	it("M8: /bg and quit to background start the worker on this pi's live model and thinking, not its original flags", async () => {
+		const argv = process.argv;
+		process.argv = [argv[0]!, "/pi.js", "--model", "old/x", "--thinking", "high", "--provider", "old"];
+		try {
+			const { pi, emit, emitAsync, commands } = fakePi();
+			pi.getThinkingLevel = () => "low";
+			registerForeground(pi);
+			const f = fakeCtx();
+			(f.ctx as any).model = { provider: "a", id: "m" }; // switched with /model since start
+			emit("session_start", {}, f.ctx);
+			await commands.get("bg")!("", f.ctx);
+			const bg = (dispatched.at(-1) as { command: string[] }).command.slice(2);
+			expect(bg).toEqual(["--session", sessionFile, "--model", "a/m", "--thinking", "low"]);
+			// quit: taken in the dialog, before ctx goes away
+			const q = fakePi();
+			q.pi.getThinkingLevel = () => "medium";
+			registerForeground(q.pi);
+			const g = fakeCtx();
+			(g.ctx as any).model = { provider: "b", id: "n" };
+			q.emit("session_start", { reason: "resume" }, g.ctx);
+			q.emit("agent_start");
+			selectAnswer = (o) => o[0];
+			g.ctx.abort = () => q.emit("agent_settled", { aborted: true });
+			g.press("\x04");
+			await new Promise((res) => setTimeout(res, 20));
+			(g.ctx as any).model = undefined; // gone by session_shutdown
+			await q.emitAsync("session_shutdown", { reason: "quit" });
+			const quit = (dispatched.at(-1) as { command: string[] }).command;
+			expect(quit).toContain("b/n");
+			expect(quit).toContain("medium");
+			expect(quit).not.toContain("old/x");
+			expect(quit).not.toContain("--provider");
+			void emitAsync;
+		} finally {
+			process.argv = argv;
+		}
+	});
+
 	it("interrupts a running turn after its tool and continues in the worker", async () => {
 		const { pi, emit, commands } = fakePi();
 		registerForeground(pi);

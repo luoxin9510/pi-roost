@@ -30,7 +30,71 @@ Thresholds are fixed (80 / 95 %), not settings.
 Both are older than what pi-roost already needs (`parentToolCallId`, 0.99.0), so the
 minimum pi version does not change.
 
+## Review fixes (PR #15)
+
+Two independent reviews (data path; agent view). Fixed:
+
+- A switch is no longer reported as done when it is only sent. The peek says "asked … to
+  use …", then "now uses …" once a report shows it. If no report shows it within 8 s, it
+  says "still on …" (for a model, most likely no credentials in the background session's
+  environment). A thinking level that pi lowered is shown as the closest one supported. The
+  worker also checks `pi.setModel`'s `false` result.
+- Context use after an assistant message is read once pi has saved the message (pi runs
+  `message_end` handlers first), so the share is no longer one request behind. `/tree`
+  refreshes it too.
+- `/bg`, quitting into the background, `/fork` and `/resume` (origins `adopt`/`fork`)
+  no longer pass the foreground pi's `--model`/`--provider`/`--thinking`: the session's own
+  model wins, as on respawn. An explicit `/model` from the view still wins.
+- The peek footer fits 80 columns again (`/model` is under `?`).
+- The tone follows the rounded share (79.6 % shows as 80 % and is a warning).
+- `formatTokens(999_500)` is `1M`, not `1000k`. `contextFrom` rejects a window that
+  rounds to 0.
+- The row is re-read when a picker choice is sent. A session that is starting gets
+  "try again in a moment". `/model default` in a peek explains that a running session has
+  no default.
+- Tests: the alignment test really has ages of different widths and a CJK model name.
+  The reporter test waits for the throttled send instead of flushing with `close()`. New
+  tests cover the switch confirmation, adjustment and timeout; shell rows; and
+  adopt/fork flags.
+
+Second review, fixed:
+
+- The first round's adopt/fork change could lose a model or thinking level that pi never
+  recorded in the session. pi saves a resumed session's model only once it answers, and a
+  thinking level only when it changes. `/bg`, quit to background and `/fork` now pass the
+  foreground's live model and thinking level. A respawn passes what the worker last
+  reported running, checked before it becomes a flag.
+- Context use is also read at `tool_execution_start`, after the save whatever other
+  extensions do in `message_end`. `warn` survives a stale ctx.
+- Switch checks are kept per session *and* setting, so a `/thinking` no longer cancels the
+  check of a failing `/model`. A switch that replaces a pending one ignores the first one's
+  report. The timeout checks the row again, and a reconnect checks the listed rows. The
+  timeout notice fits 80 columns. A row deleted while the picker is open is refused.
+- Tests: a refused `setModel` (`false` and a throw), a concurrent model and thinking
+  switch, a superseded switch, the 80-column footer, the "starting" and "gone" messages,
+  and the last-reported respawn flags.
+
+Third review, fixed:
+
+- If a hand-off's worker ends before its first report, the respawn falls back to the
+  model and thinking level it was dispatched with (`rec.model` / `rec.thinking`).
+- A test checks that `/bg` and quit to background pass the live model and thinking
+  level, and not this pi's original `--model` / `--provider`. The respawn wiring has a
+  daemon test.
+- The timeout notice puts its hint first (`model switch failed (credentials?
+  envAllowList): still …, not …`), so a long model id is what gets cut.
+- Superseded switches are a list. With three switches in a row, only the last value
+  counts as the outcome, and the same switch sent twice confirms at once.
+
+Known limit: if a model's provider disappears (removed from `models.json`, or its
+extension is uninstalled), a respawn's `--model` makes pi exit with "not found". The
+crash restart is bounded to one try. Dispatch flags have always behaved this way. Start
+the session again with another model, or remove the job.
+
+Left as is: column widths are measured over all rows, as `nameWidth` is, so they do not
+jump while you filter.
+
 ## Tests
 
-Automated: 16 files, 151 tests. Live runs against pi 1.5.0 with an isolated
+Automated: 17 files, 177 tests (with M9 merged in). Live runs against pi 1.5.0 with an isolated
 `PI_ROOST_HOME` and claude-haiku-5-5 / claude-haiku-4-5.

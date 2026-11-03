@@ -43,6 +43,7 @@ class FakeClient {
 	closed = false;
 	rows: JobRow[];
 	dispatchDelay = 0;
+	replyResult: unknown = { delivered: true, saved: false };
 	constructor(rows: JobRow[]) {
 		this.rows = rows;
 	}
@@ -67,7 +68,7 @@ class FakeClient {
 			await new Promise((r) => setTimeout(r, this.dispatchDelay));
 			return { id: "new1", name: "new task" };
 		}
-		if (op === "reply") return { delivered: true, saved: false };
+		if (op === "reply") return this.replyResult;
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		return {};
 	}
@@ -76,7 +77,7 @@ class FakeClient {
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
 const launches: { task: string; opts: unknown }[] = [];
-function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void } = {}) {
+function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void; switchCheckMs?: number } = {}) {
 	const client = new FakeClient(rows);
 	let renders = 0;
 	let doneCalls = 0;
@@ -105,6 +106,7 @@ function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string
 		done: () => doneCalls++,
 		reducedMotion: true,
 		onGroupBy: opts.onGroupBy,
+		switchCheckMs: opts.switchCheckMs,
 	});
 	return { view, client, renders: () => renders, done: () => doneCalls };
 }
@@ -408,19 +410,148 @@ describe("AgentView model and context (M8)", () => {
 		const screen = view.render(80).join("\n");
 		expect(screen).toContain("unknown model nope/x");
 		expect(screen).not.toContain("new sessions:");
+		view.handleInput("\x03"); // a refused command stays in the input to be fixed: clear it
+		type(view, "/model default");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).toContain("a running session has no default model");
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(2);
+		view.dispose();
+	});
+
+	it("a switch is reported as asked, then confirmed by the session's report or flagged when it does not show", async () => {
+		const a = row({ name: "fix login", model: "a/one", thinking: "high" });
+		const { view, client } = setup([a], { switchCheckMs: 60 });
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("asked fix login to use model b/two");
+		client.emit({ event: "job", job: { ...a, model: "b/two" } });
+		expect(view.render(80).join("\n")).toContain("fix login now uses model b/two (from its next request)");
+		// pi lowers a level the model does not support
+		type(view, "/thinking max");
+		view.handleInput("\r");
+		await sleep(10);
+		client.emit({ event: "job", job: { ...a, model: "b/two", thinking: "xhigh" } });
+		expect(view.render(80).join("\n")).toContain("fix login thinks xhigh: the closest its model supports to max");
+		// no credentials in the worker: the row never changes; a /thinking meanwhile does not hide that
+		type(view, "/model a/one");
+		view.handleInput("\r");
+		await sleep(10);
+		type(view, "/thinking low");
+		view.handleInput("\r");
+		await sleep(10);
+		client.emit({ event: "job", job: { ...a, model: "b/two", thinking: "low" } });
+		expect(view.render(80).join("\n")).toContain("fix login now uses thinking low");
+		await sleep(100);
+		// short enough for 80 columns
+		expect(view.render(80).join("\n")).toContain("model switch failed (credentials? envAllowList): still two, not one");
+		view.dispose();
+	});
+
+	it("a second switch before the first shows: the first one's report is not the outcome", async () => {
+		const a = row({ name: "fix login", model: "a/one" });
+		const { view, client } = setup([a], { switchCheckMs: 5000 });
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		type(view, "/model a/one"); // back again, while b/two is still pending: not "already uses"
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(2);
+		client.emit({ event: "job", job: { ...a, model: "b/two" } });
+		expect(view.render(80).join("\n")).not.toContain("now uses");
+		client.emit({ event: "job", job: { ...a, model: "a/one" } });
+		expect(view.render(80).join("\n")).toContain("fix login now uses model a/one");
+		view.dispose();
+	});
+
+	it("three switches in a row: only the last one's value is the outcome; the same switch twice confirms at once", async () => {
+		const a = row({ name: "fix login", model: "p/a" });
+		const { view, client } = setup([a], { switchCheckMs: 5000 });
+		const models = ["p/a", "p/b", "p/c"];
+		(view as any).o.models = () => models;
+		await view.start();
+		view.handleInput(" ");
+		for (const m of ["p/b", "p/a", "p/c"]) {
+			type(view, `/model ${m}`);
+			view.handleInput("\r");
+			await sleep(10);
+		}
+		for (const m of ["p/b", "p/a"]) {
+			client.emit({ event: "job", job: { ...a, model: m } });
+			expect(view.render(100).join("\n")).not.toContain("now uses");
+		}
+		client.emit({ event: "job", job: { ...a, model: "p/c" } });
+		expect(view.render(100).join("\n")).toContain("fix login now uses model p/c");
+		// the same switch twice: its report confirms it, no timer needed
+		for (let i = 0; i < 2; i++) {
+			type(view, "/model p/b");
+			view.handleInput("\r");
+			await sleep(10);
+		}
+		client.emit({ event: "job", job: { ...a, model: "p/b" } });
+		expect(view.render(100).join("\n")).toContain("fix login now uses model p/b");
+		view.dispose();
+	});
+
+	it("the peek footer fits 80 columns; a session that is starting, or gone, gets its own message", async () => {
+		const a = row({ name: "fix login", model: "a/one" });
+		const { view, client } = setup([a]);
+		await view.start();
+		view.handleInput(" ");
+		expect(view.render(80).at(-1)).toContain("Esc close · ? keys");
+		client.replyResult = { delivered: false, saved: false };
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("fix login is starting; try again in a moment");
+		// the row goes while the picker is open
+		client.replyResult = { delivered: true, saved: false };
+		view.handleInput("\x03");
+		type(view, "/model");
+		view.handleInput("\r");
+		client.emit({ event: "removed", id: a.id });
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("that session no longer exists");
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(1);
+		view.dispose();
+	});
+
+	it("a shell row has no model to switch", async () => {
+		const s = row({ name: "tests", kind: "shell", model: null });
+		const { view, client } = setup([s]);
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model a/one");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("a shell job has no model");
+		expect(client.requests.some((r) => r.op === "reply")).toBe(false);
 		view.dispose();
 	});
 
 	it("the column lines up across rows, whatever the model name or age", async () => {
 		const now = Date.now();
-		const a = row({ name: "one", model: "anthropic/claude-haiku-5-5", context: { tokens: 1, window: 100, percent: 91 }, stateSince: now - 600_000 });
-		const b = row({ name: "two", model: "x/short", context: { tokens: 1, window: 100, percent: 4 }, stateSince: now - 5_000 });
-		const c = row({ name: "three", kind: "shell", model: null, stateSince: now - 5_000 });
+		// working rows age from startedAt: "10m" and "5s" differ in width
+		const a = row({ name: "one", model: "anthropic/claude-haiku-5-5", context: { tokens: 1, window: 100, percent: 91 }, startedAt: now - 600_000 });
+		const b = row({ name: "two", model: "x/模型很长的名字也要对齐", context: { tokens: 1, window: 100, percent: 4 }, startedAt: now - 5_000 });
+		const c = row({ name: "three", kind: "shell", model: null, startedAt: now - 5_000 });
 		const { view } = setup([a, b, c]);
 		await view.start();
 		const lines = view.render(100);
-		const at = (name: string, s: string) => lines.find((l) => l.includes(name))!.indexOf(s);
-		expect(at("one", "91%")).toBe(at("two", " 4%"));
+		const ages = lines.filter((l) => /one|two/.test(l)).map((l) => l.trimEnd().split(" ").at(-1));
+		expect(new Set(ages.map((x) => x?.length)).size).toBe(2); // the ages really differ in width
+		// CJK is two columns wide: compare columns, not string indices
+		const col = (name: string, s: string) => {
+			const l = lines.find((x) => x.includes(name))!;
+			return visibleWidth(l.slice(0, l.indexOf(s)));
+		};
+		expect(col("one", "91%")).toBe(col("two", " 4%"));
 		expect(lines.find((l) => l.includes("three"))).not.toContain("%");
 		for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(100);
 		view.dispose();

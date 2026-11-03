@@ -139,11 +139,13 @@ to delete). Press `?` in the view for every key.
 **See and switch each session's model.** Every row shows the session's model and how full
 its context window is (`claude-opus-5-5 · 43%`, yellow from 80%, red from 95%); the peek
 adds the thinking level and the token counts (`ctx 86k / 200k`). In a peek, `/model` and
-`/thinking` switch that session (bare: pick from a list). A turn in progress finishes its
-current model request, and the next request uses the new model. The switch is saved in
+`/thinking` switch that session (bare: pick from a list). The view says when the session
+shows the switch, or that it did not (for a model, usually no credentials in the
+background session: see `envAllowList`). A turn in progress finishes its current model
+request, and the next request uses the new model. The switch is saved in
 the session, so a session that is restarted later keeps it.
 
-**查看并切换每个会话的模型。** 每一行都显示这个会话用的模型，以及上下文窗口用了多少（`claude-opus-5-5 · 43%`，80% 起变黄，95% 起变红）。偷看时还会显示 thinking 级别和 token 数（`ctx 86k / 200k`）。在偷看里输入 `/model`、`/thinking`，就能切换这个会话的模型和 thinking 级别（不带参数则从列表里选）。正在执行的一轮会先跑完当前这次模型请求，下一次请求就用新模型。切换会记录在会话里，会话之后重启也会保留。
+**查看并切换每个会话的模型。** 每一行都显示这个会话用的模型，以及上下文窗口用了多少（`claude-opus-5-5 · 43%`，80% 起变黄，95% 起变红）。偷看时还会显示 thinking 级别和 token 数（`ctx 86k / 200k`）。在偷看里输入 `/model`、`/thinking`，就能切换这个会话的模型和 thinking 级别（不带参数则从列表里选）。会话真正切换后，视图会提示；没切换成功也会提示（模型切换失败通常是后台会话里没有对应的凭据，见 `envAllowList`）。正在执行的一轮会先跑完当前这次模型请求，下一次请求就用新模型。切换会记录在会话里，会话之后重启也会保留。
 
 ## Agents talking to each other · agent 之间通信
 
