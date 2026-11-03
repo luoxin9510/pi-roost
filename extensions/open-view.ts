@@ -1,5 +1,5 @@
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { loadConfig } from "../lib/config.ts";
+import { loadConfig, saveUserConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
@@ -57,6 +57,8 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					});
 				},
 				setTitle: (title) => ctx.ui.setTitle(title),
+				groupBy: config.groupBy,
+				onGroupBy: (groupBy) => saveUserConfig({ groupBy }),
 				notify: (row, kind) => {
 					const { title, body } = notifyText(row, kind);
 					const seq = notifySequence(resolveNotify(config.notify), title, body);

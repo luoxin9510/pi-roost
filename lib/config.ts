@@ -1,8 +1,9 @@
 // pi-roost settings (PRD §8.1): ~/.pi/agent/roost.json, overridden per project
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { readJson } from "./atomic.ts";
+import { readJson, writeJsonAtomic } from "./atomic.ts";
 
 export interface RoostConfig {
 	leftArrowOpensAgents: boolean;
@@ -56,6 +57,14 @@ export function loadConfig(cwd: string): RoostConfig {
 	// nor which provider receives transcript excerpts (or what they cost)
 	delete project.summaryModel;
 	return { ...DEFAULTS, ...user, ...project };
+}
+
+/** Change user settings (AV-K6 persists the grouping); other keys are kept as written. */
+export function saveUserConfig(patch: Partial<RoostConfig>): void {
+	const file = userConfigPath();
+	const cur = readJson<Record<string, unknown>>(file) ?? {};
+	mkdirSync(dirname(file), { recursive: true });
+	writeJsonAtomic(file, { ...cur, ...patch });
 }
 
 /** Settings that belong to the user, not a project (the daemon has no project). */

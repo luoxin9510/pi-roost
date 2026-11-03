@@ -25,6 +25,9 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		error: null,
 		stateSince: T0 + n,
 		reaped: false,
+		pinned: false,
+		order: null,
+		orderKey: null,
 		...over,
 	};
 }
@@ -87,5 +90,37 @@ describe("rows", () => {
 		expect(titleText(counts([]))).toBe("pi agents");
 		expect(sentenceOf(rows[0]!)).toBe("waiting in a dialog");
 		expect(sentenceOf(row({ state: "failed", error: "429", status: null }))).toBe("429");
+	});
+});
+
+describe("layout options (M6a)", () => {
+	it("groups by directory with pinned first, newest directory first", async () => {
+		const { layout } = await import("../lib/view-model.ts");
+		const rows = [row({ cwd: "/a", startedAt: 1 }), row({ cwd: "/b", startedAt: 5 }), row({ cwd: "/a", pinned: true })];
+		const s = layout(rows, { groupBy: "directory" });
+		expect(s.map((x) => x.key)).toEqual(["pinned", "dir:/b", "dir:/a"]);
+	});
+
+	it("keeps manual order below untouched rows", async () => {
+		const { ordered } = await import("../lib/view-model.ts");
+		const a = row({ id: "a", order: 1, orderKey: "working" });
+		const b = row({ id: "b", order: 0, orderKey: "working" });
+		const c = row({ id: "c" });
+		const d = row({ id: "d", order: 0, orderKey: "completed" }); // ordered in another group
+		expect(ordered([a, b, c, d], () => 0, "working").map((r) => r.id)).toEqual(["c", "d", "b", "a"]);
+	});
+});
+
+describe("filters (DI-7)", () => {
+	it("parses only filter tokens and matches every kind", async () => {
+		const { parseFilter, matches } = await import("../lib/filter.ts");
+		expect(parseFilter("fix the bug")).toBeUndefined();
+		expect(parseFilter("n:fix and more")).toBeUndefined();
+		const f = parseFilter("s:comp n:fix o:")!;
+		expect(matches(row({ name: "Fix it", state: "failed", error: "boom" }), f)).toBe(true);
+		expect(matches(row({ name: "Fix it", state: "failed" }), f)).toBe(false); // bare o: needs a result
+		expect(matches(row({ name: "other", state: "done", summary: "x" }), f)).toBe(false);
+		expect(matches(row({ state: "blocked" }), parseFilter("s:needs")!)).toBe(true);
+		expect(matches(row({ pinned: true }), parseFilter("s:pinned")!)).toBe(true);
 	});
 });

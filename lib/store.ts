@@ -22,7 +22,6 @@ export interface JobState {
 	state: "working" | "blocked" | "done" | "failed" | "stopped";
 	hostPid?: number;
 	hostToken?: string; // processStartToken of the host
-	workerPid?: number;
 	startedAt: number;
 	endedAt?: number;
 	updatedAt: number;
@@ -53,6 +52,15 @@ export const readState = (id: string): JobState | undefined => readJson<JobState
 export const readExit = (id: string): ExitRecord | undefined => readJson<ExitRecord>(exitPath(id));
 export const writeExit = (id: string, rec: ExitRecord): void => writeJsonAtomic(exitPath(id), rec);
 export const clearExit = (id: string): void => rmSync(exitPath(id), { force: true });
+
+// The host's own record of its worker: state.json has a single writer, the daemon.
+const workerFile = (id: string) => join(jobDir(id), "worker.json");
+export const writeWorker = (id: string, pid: number): void => writeJsonAtomic(workerFile(id), { pid, at: Date.now() });
+export const clearWorker = (id: string): void => rmSync(workerFile(id), { force: true });
+export function readWorkerPid(id: string): number | undefined {
+	const pid = readJson<{ pid?: unknown }>(workerFile(id))?.pid;
+	return typeof pid === "number" ? pid : undefined;
+}
 
 /** The argv a host starts: a respawn replaces the dispatch command (no first prompt again). */
 export function launchCommand(rec: JobRecord, st: JobState | undefined): string[] {

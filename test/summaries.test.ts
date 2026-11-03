@@ -38,6 +38,9 @@ const row = (over: Partial<JobRow> = {}): JobRow => ({
 	error: null,
 	stateSince: 0,
 	reaped: false,
+		pinned: false,
+		order: null,
+		orderKey: null,
 	...over,
 });
 

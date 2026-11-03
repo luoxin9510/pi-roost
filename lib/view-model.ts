@@ -1,5 +1,7 @@
 // Agent view layout as data (PRD §6.1): groups, row icons, ages, counts.
 // Rendering lives in extensions/agent-view.ts; this module is pure.
+import { homedir } from "node:os";
+import { type Filter, matches } from "./filter.ts";
 import type { JobRow } from "./protocol.ts";
 
 export type GroupKey = "pinned" | "needs-input" | "working" | "completed";
@@ -15,7 +17,10 @@ export const GROUPS: { key: GroupKey; title: string; hint: string }[] = [
 export type Tone = "accent" | "warning" | "dim" | "success" | "error" | "muted";
 
 export interface Section {
-	key: GroupKey;
+	/** A state group, or `dir:<cwd>` when grouping by directory (AV-K6). */
+	key: string;
+	/** The directory of a directory section. */
+	dir?: string;
 	title: string;
 	hint: string;
 	rows: JobRow[];
@@ -26,8 +31,8 @@ export interface Section {
 
 export type Item = { kind: "header"; section: Section } | { kind: "row"; row: JobRow; section: Section };
 
-export function groupOf(row: JobRow, pinned: ReadonlySet<string>): GroupKey {
-	if (pinned.has(row.id)) return "pinned";
+export function groupOf(row: JobRow, pinned: ReadonlySet<string> = new Set()): GroupKey {
+	if (row.pinned || pinned.has(row.id)) return "pinned";
 	if (row.state === "blocked") return "needs-input";
 	if (row.state === "working") return "working";
 	return "completed";
@@ -35,7 +40,10 @@ export function groupOf(row: JobRow, pinned: ReadonlySet<string>): GroupKey {
 
 export interface LayoutOptions {
 	pinned?: ReadonlySet<string>;
-	collapsed?: ReadonlySet<GroupKey>;
+	collapsed?: ReadonlySet<string>;
+	groupBy?: "state" | "directory";
+	/** DI-7: only matching rows; groups open and nothing folds while it applies. */
+	filter?: Filter;
 	/** Completed rows shown before folding the rest (AV-5). */
 	maxCompleted?: number;
 }
@@ -43,23 +51,65 @@ export interface LayoutOptions {
 const byNewest = (a: JobRow, b: JobRow) => b.startedAt - a.startedAt;
 const byEnded = (a: JobRow, b: JobRow) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt);
 
+/**
+ * AV-K13: rows the user reordered in this section keep that order, below the ones
+ * never moved here (an order made in another group or grouping does not apply).
+ */
+export function ordered(list: JobRow[], cmp: (a: JobRow, b: JobRow) => number, key?: string): JobRow[] {
+	const isPlaced = (r: JobRow) => r.order !== null && (key === undefined || r.orderKey === key);
+	const loose = list.filter((r) => !isPlaced(r)).sort(cmp);
+	const placed = list.filter(isPlaced).sort((a, b) => a.order! - b.order! || cmp(a, b));
+	return [...loose, ...placed];
+}
+
+/** `~/…` for paths under the home directory. */
+export function shortPath(dir: string, home = homedir()): string {
+	return home && (dir === home || dir.startsWith(`${home}/`)) ? `~${dir.slice(home.length)}` : dir;
+}
+
+const activity = (r: JobRow) => Math.max(r.startedAt, r.stateSince, r.endedAt ?? 0);
+
 /** Sections in display order; empty ones are dropped unless nothing exists at all (AV-2). */
-export function layout(rows: JobRow[], opts: LayoutOptions = {}): Section[] {
+export function layout(all: JobRow[], opts: LayoutOptions = {}): Section[] {
 	const pinned = opts.pinned ?? new Set<string>();
-	const collapsed = opts.collapsed ?? new Set<GroupKey>();
+	const collapsed = opts.collapsed ?? new Set<string>();
+	const filter = opts.filter;
+	const rows = filter ? all.filter((r) => matches(r, filter)) : all;
+	const keepEmpty = !filter && all.length === 0;
+	const fold = (list: JobRow[]) =>
+		!filter && opts.maxCompleted !== undefined && list.length > opts.maxCompleted
+			? { rows: list.slice(0, opts.maxCompleted), hidden: list.length - opts.maxCompleted }
+			: { rows: list, hidden: 0 };
+	const sections: Section[] = [];
+	if (opts.groupBy === "directory") {
+		const pin = GROUPS[0]!;
+		const pins = ordered(rows.filter((r) => groupOf(r, pinned) === "pinned"), byNewest, "pinned");
+		if (pins.length > 0 || keepEmpty) sections.push({ ...pin, rows: pins, hidden: 0, collapsed: !filter && collapsed.has(pin.key) });
+		const byDir = new Map<string, JobRow[]>();
+		for (const r of rows) if (groupOf(r, pinned) !== "pinned") byDir.set(r.cwd, [...(byDir.get(r.cwd) ?? []), r]);
+		const dirs = [...byDir.entries()].sort((a, b) => Math.max(...b[1].map(activity)) - Math.max(...a[1].map(activity)));
+		for (const [dir, list] of dirs) {
+			const key = `dir:${dir}`;
+			sections.push({
+				key,
+				dir,
+				title: shortPath(dir),
+				hint: "",
+				// no folding here: a directory's live rows must stay visible
+				rows: ordered(list, byNewest, key),
+				hidden: 0,
+				collapsed: !filter && collapsed.has(key),
+			});
+		}
+		return sections;
+	}
 	const buckets = new Map<GroupKey, JobRow[]>(GROUPS.map((g) => [g.key, []]));
 	for (const row of rows) buckets.get(groupOf(row, pinned))!.push(row);
-	const sections: Section[] = [];
 	for (const g of GROUPS) {
-		const list = buckets.get(g.key)!.sort(g.key === "completed" ? byEnded : byNewest);
-		if (list.length === 0 && rows.length > 0) continue;
-		let shown = list;
-		let hidden = 0;
-		if (g.key === "completed" && opts.maxCompleted !== undefined && list.length > opts.maxCompleted) {
-			shown = list.slice(0, opts.maxCompleted);
-			hidden = list.length - shown.length;
-		}
-		sections.push({ ...g, rows: shown, hidden, collapsed: collapsed.has(g.key) });
+		const list = ordered(buckets.get(g.key)!, g.key === "completed" ? byEnded : byNewest, g.key);
+		if (list.length === 0 && !keepEmpty) continue;
+		const shown = g.key === "completed" ? fold(list) : { rows: list, hidden: 0 };
+		sections.push({ ...g, ...shown, collapsed: !filter && collapsed.has(g.key) });
 	}
 	return sections;
 }

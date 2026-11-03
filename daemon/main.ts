@@ -9,7 +9,7 @@ import { loadUserConfig } from "../lib/config.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
-import { daemonLogPath, daemonSocketPath, ensureDirs, rosterPath, runtimeDir } from "../lib/paths.ts";
+import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, rosterPath, runtimeDir } from "../lib/paths.ts";
 import { isAlive, processStartToken, sameProcess } from "../lib/proc.ts";
 import {
 	type DaemonStatus,
@@ -24,11 +24,13 @@ import {
 	type JobRecord,
 	type JobState,
 	clearExit,
+	clearWorker,
 	createJob,
 	listJobIds,
 	readExit,
 	readJob,
 	readState,
+	readWorkerPid,
 	removeJob,
 	respawnCommand,
 	updateState,
@@ -122,7 +124,7 @@ function rowOf(id: string): JobRow | undefined {
 		kind: "pi",
 		startedAt: st.startedAt,
 		state: st.state,
-		pid: live ? (st.workerPid ?? null) : null,
+		pid: live ? (readWorkerPid(id) ?? null) : null,
 		// status and waitingFor describe a live worker only (PRD §6.8)
 		status: live ? ((st.status as JobRow["status"]) ?? null) : null,
 		waitingFor: live ? ((st.waitingFor as JobRow["waitingFor"]) ?? null) : null,
@@ -136,6 +138,9 @@ function rowOf(id: string): JobRow | undefined {
 		error: text(st.error),
 		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
 		reaped: !live && st.reaped === true,
+		pinned: st.pinned === true,
+		order: typeof st.order === "number" ? st.order : null,
+		orderKey: typeof st.orderKey === "string" ? st.orderKey : null,
 	};
 }
 
@@ -416,6 +421,7 @@ async function respawn(
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
 		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
 		clearExit(id);
+		clearWorker(id);
 		updateState(id, {
 			...(restore
 				? { stateSince: st?.stateSince }
@@ -424,7 +430,7 @@ async function respawn(
 			waitingFor: null,
 			tool: null,
 			error: null,
-			workerPid: undefined,
+
 			reportedAt: undefined,
 			endedAt: undefined,
 			stopRequested: false,
@@ -595,7 +601,9 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		choices: Array.isArray(r.choices) ? r.choices.filter(str).slice(0, 20).map((c) => c.slice(0, 200)) : [],
 		tool: opt(r.tool, 100),
 		error: opt(r.error, 1000),
-		displayName: opt(r.name, 200),
+		// a rename the session has not taken yet keeps the daemon's name
+		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : opt(r.name, 200),
+		...(str(st.pendingName) && opt(r.name, 200) === st.pendingName ? { pendingName: null } : {}),
 		model: opt(r.model, 200),
 		reportedAt: Date.now(),
 		attachSignal: r.attachSignal === true,
@@ -607,6 +615,28 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	});
 	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
 	pushJob(id);
+}
+
+/** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
+function rename(args: { id?: unknown; name?: unknown } | undefined): { id: string; name: string } {
+	const id = requireJob(args);
+	const name = typeof args?.name === "string" ? args.name.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+	if (!name) throw new OpError("bad_request", "empty name");
+	const rec = recs.get(id)!;
+	const next = { ...rec, name };
+	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
+	recs.set(id, next);
+	// The session takes the name too, whenever its worker next runs (now, or after a
+	// respawn): until it reports that name, the daemon's name wins over the report.
+	const st = readState(id);
+	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
+	const pending = pendingReplies(id).filter((r) => !r.text.startsWith("/name "));
+	updateState(id, { displayName: name, pendingName: name, replySeq: seq, pendingReplies: [...pending, { seq, text: `/name ${name}` }] });
+	const conn = workerConns.get(id);
+	if (roster.has(id) && conn && !conn.sock.destroyed) send(conn, { event: "deliver", id, seq, text: `/name ${name}` });
+	pushJob(id);
+	log("info", "rename", { id, name });
+	return { id, name };
 }
 
 function requireJob(args: unknown): string {
@@ -693,7 +723,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 					const ref = roster.get(id);
 					log("warn", "host did not stop, killing", { id });
 					const st = readState(id);
-					for (const pid of [st?.workerPid, ref?.hostPid]) {
+					for (const pid of [readWorkerPid(id), ref?.hostPid]) {
 						if (typeof pid !== "number") continue;
 						try {
 							process.kill(pid, "SIGKILL");
@@ -727,6 +757,24 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			const id = requireJob(args);
 			const prompt = typeof args?.prompt === "string" && args.prompt.trim() ? args.prompt.trim() : undefined;
 			return { results: [await respawn(id, { restart: args?.restart === true, prompt })] };
+		}
+		case "pin": {
+			const id = requireJob(args);
+			const pinned = args?.pinned === true;
+			updateState(id, { pinned });
+			pushJob(id);
+			return { id, pinned };
+		}
+		case "rename":
+			return rename(args);
+		case "reorder": {
+			const ids: unknown = args?.ids;
+			const key: unknown = args?.key;
+			if (!Array.isArray(ids) || !ids.every((v) => str(v) && recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
+			if (!str(key)) throw new OpError("bad_request", "key required");
+			ids.forEach((id: string, i: number) => updateState(id, { order: i, orderKey: key }));
+			for (const id of ids) pushJob(id);
+			return {};
 		}
 		case "report":
 			acceptReport(conn, args);
