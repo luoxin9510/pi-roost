@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0] - 2026-11-03
+
+- Agents talk to each other: `roost_spawn` starts a background child whose report comes back
+  by itself, `roost_send` messages another session, `roost_agents` lists the reachable ones.
+  Foreground sessions take part too; children show as `↳ name` in the agent view.
+- Reach is limited to the spawn tree unless `agentExternalMessages` is set; spawn limits
+  `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal`; `agentTools: false`
+  turns the tools off.
+- Background workers no longer pass their job token to the commands they run.
+
 ## [0.1.1] - 2026-11-03
 
 - README in English and Chinese, section by section.

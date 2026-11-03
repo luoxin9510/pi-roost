@@ -72,3 +72,63 @@ describe("ReplyQueue", () => {
 		expect(h.acks).toEqual([1]);
 	});
 });
+
+describe("ReplyQueue agent items (M9)", () => {
+	function agentHarness(branch: unknown[] = []) {
+		const custom: { message: any; opts: any }[] = [];
+		const acks: [number, boolean][] = [];
+		const state = { running: false, idle: true, dialog: false };
+		const pi = {
+			sendUserMessage: async () => {},
+			sendMessage: async (message: unknown, opts: unknown) => void custom.push({ message, opts }),
+		};
+		const ctx = { isIdle: () => state.idle, ui: { notify() {} }, sessionManager: { getBranch: () => branch } };
+		const q = new ReplyQueue(pi as never, {
+			ctx: () => ctx as never,
+			running: () => state.running,
+			dialogOpen: () => state.dialog,
+			ack: (seq, exact) => acks.push([seq, exact === true]),
+		});
+		return { q, custom, acks, state, ctx };
+	}
+	const item = (seq: number, kind: "message" | "report" = "message") => ({ seq, text: `<agent-message>${seq}</agent-message>`, kind, from: "p", relation: "parent" });
+
+	it("starts a run when idle, steers while running, acknowledges only once pi has it", () => {
+		const h = agentHarness();
+		h.q.add(item(1));
+		expect(h.custom[0]!.opts).toEqual({ triggerTurn: true });
+		expect(h.custom[0]!.message).toMatchObject({ customType: "pi-roost-agent-message", details: { seq: 1, kind: "message" } });
+		expect(h.q.takeAgentStart()).toBe(true);
+		expect(h.acks).toEqual([]);
+		h.state.running = true;
+		h.state.idle = false;
+		h.q.add(item(2, "report"));
+		expect(h.custom[1]!.opts).toEqual({ triggerTurn: true, deliverAs: "steer" });
+		expect(h.q.takeAgentStart()).toBe(false);
+		h.q.messageEnded({ role: "custom", customType: "pi-roost-agent-message", details: { seq: 1 } });
+		expect(h.acks).toEqual([[1, true]]);
+		h.q.settled();
+		expect(h.acks).toEqual([
+			[1, true],
+			[2, true],
+		]);
+	});
+
+	it("waits while a dialog is open", () => {
+		const h = agentHarness();
+		h.state.dialog = true;
+		h.q.add(item(3));
+		expect(h.custom).toEqual([]);
+		h.state.dialog = false;
+		h.q.pump();
+		expect(h.custom).toHaveLength(1);
+	});
+
+	it("drops a resend the session already holds (after a restart)", () => {
+		const h = agentHarness([{ type: "custom_message", customType: "pi-roost-agent-message", details: { seq: 7 } }]);
+		h.q.noteSession(h.ctx as never);
+		h.q.add(item(7));
+		expect(h.custom).toEqual([]);
+		expect(h.acks).toEqual([[7, true]]);
+	});
+});

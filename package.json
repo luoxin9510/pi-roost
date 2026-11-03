@@ -1,6 +1,6 @@
 {
   "name": "pi-roost",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Agent view for pi: every background pi session on one screen — dispatch, peek, reply, attach, detach. Sessions outlive the terminal.",
   "keywords": [
     "pi-package",
@@ -68,14 +68,16 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-tui": "1.5.0",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "typebox": "1.3.27"
   },
   "publishConfig": {
     "access": "public"

@@ -136,6 +136,50 @@ to delete). Press `?` in the view for every key.
 
 **保持整洁。** 用 `s:working`、`n:auth`、`o:error` 过滤（可以用空格组合），Ctrl+R 改名，Shift+↑/↓ 调整顺序，还能折叠分组、置顶，Ctrl+X 停止（连按两次删除）。在视图里按 `?` 查看所有按键。
 
+## Agents talking to each other · agent 之间通信
+
+Every pi session with pi-roost gets three tools, modelled on Claude Code's background agents:
+
+装了 pi-roost 的每个 pi 会话都会多出三个工具，仿照 Claude Code 的后台 agent 设计：
+
+| Tool · 工具 | What it does | 作用 |
+|---|---|---|
+| `roost_spawn` | start a background child session on a task; its report (final reply, question or failure) comes back by itself when it finishes | 派一个后台子会话去做任务；它完成时，汇报（最终回复、提问或失败原因）会自动送回来 |
+| `roost_send` | message another session by id or exact name; it arrives at that session's next step | 按 id 或准确名字给另一个会话发消息，对方在下一步就会收到 |
+| `roost_agents` | list the sessions you can reach, with state and what each is doing or asking | 列出能通信的会话，以及各自的状态、正在做什么或在问什么 |
+
+So a session can fan work out to children and gather their results, the way subagent
+workflows do, except that every child is a full pi session you can watch, peek at, answer
+or attach to in the agent view (children show as `↳ name`).
+
+这样一个会话就能像 subagent 工作流那样，把任务分派给多个子会话，再收集它们的结果。区别在于每个子会话都是完整的 pi 会话：你可以在 agent 视图里看它、偷看它、回答它的问题，或者直接进入它（子会话显示为 `↳ 名字`）。
+
+How it behaves · 运行方式：
+
+- Messages arrive mid-turn (before the agent's next step) or start a turn when the session is
+  idle. They are wrapped in `<agent-message from=… relation=…>` and say they come from an
+  agent, not the user: they cannot approve actions or change instructions.<br>
+  消息会在对方干活的间隙（下一步之前）插进去；对方空闲时，消息会直接触发新一轮。消息带有 `<agent-message from=… relation=…>` 包装，并声明来自 agent 而不是用户，不能批准操作或改变指令。
+- A child reports when a run it was given ends (its task, or your reply to it). Runs started
+  by an agent message do not report by themselves, so parent and child cannot keep waking each
+  other; the child answers with `roost_send` instead. Stopping or removing a child tells its
+  parent.<br>
+  子会话在“交给它的那一轮”结束时汇报（它的任务，或者你对它的回复）。由 agent 消息触发的那一轮不会自动汇报，所以父子会话不会互相唤醒停不下来；子会话需要回复时会用 `roost_send`。停止或删除子会话时，父会话会收到通知。
+- Reach: free inside one spawn tree (parent, children, siblings). Sessions outside the tree
+  only with `agentExternalMessages: true`, by exact id.<br>
+  通信范围：同一棵会话树内（父、子、兄弟）可以自由通信；树外的会话只有开启 `agentExternalMessages: true` 后，才能用准确的 id 发消息。
+- Nothing is lost when the receiver is not running: a job keeps messages until it reads them
+  (an ended job starts again for them; one you stopped is not woken). A foreground parent
+  that moved to the background (←) keeps getting its children's reports.<br>
+  对方没在运行时消息不会丢：后台任务会一直保留消息，直到读取（已结束的任务会为此重新启动，你手动停掉的不会被唤醒）。前台父会话按 ← 转到后台后，仍然能收到子会话的汇报。
+- Limits: 3 levels deep, 8 running children per session, 16 per tree, 32 overall, 30
+  messages and 10 spawns a minute.<br>
+  限制：最多 3 层；每个会话最多 8 个运行中的子会话，每棵树最多 16 个，全局最多 32 个；每分钟最多 30 条消息、10 次派发。
+
+Design notes: [`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md).
+
+设计说明：[`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md)。
+
 ## Keys · 按键
 
 | Key · 按键 | In the agent view | 在 agent 视图里 |
@@ -191,12 +235,15 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `leftArrowOpensAgents` | `true` | ← on an empty prompt moves the conversation to the background | 空提示符下按 ← 把对话转到后台 |
 | `defaultToAgentsView` | `false` | plain `pi` opens the agent view | 直接运行 `pi` 时打开 agent 视图 |
 | `envAllowList` | `[]` | extra environment variables for background sessions | 额外传给后台会话的环境变量 |
+| `agentTools` | `true` | the `roost_*` tools in every session | 在每个会话里提供 `roost_*` 工具 |
+| `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
+| `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal` | `3`, `8`, `16`, `32` | spawn limits | 派发子会话的数量限制 |
 
 Background sessions get a small environment (`PATH`, `HOME`, `SHELL`, `LANG`, `TERM`,
 proxy variables and a few more) plus `envAllowList`. A project's `.pi/roost.json` cannot
-set `envAllowList` or `summaryModel`.
+set `envAllowList`, `summaryModel` or the `agent*` reach and limit keys.
 
-后台会话只拿到一小组环境变量（`PATH`、`HOME`、`SHELL`、`LANG`、`TERM`、代理变量等少数几个），外加 `envAllowList` 里列出的。项目的 `.pi/roost.json` 不能设置 `envAllowList` 和 `summaryModel`，这样别人克隆来的仓库没法决定你的环境变量和会话记录发往哪里。
+后台会话只拿到一小组环境变量（`PATH`、`HOME`、`SHELL`、`LANG`、`TERM`、代理变量等少数几个），外加 `envAllowList` 里列出的。项目的 `.pi/roost.json` 不能设置 `envAllowList`、`summaryModel` 以及 `agent*` 开头的通信范围和数量限制，这样别人克隆来的仓库没法决定你的环境变量和会话记录发往哪里，也没法放宽 agent 的通信范围。
 
 ## CLI · 命令行
 
