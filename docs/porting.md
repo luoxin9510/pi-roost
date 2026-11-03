@@ -1,4 +1,4 @@
-# pi-roost 移植说明（基于 ec5394b / v0.2.0）
+# pi-roost 移植说明（基于 ec5394b / v0.1.5）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
 > 用法：对照源码 `git checkout ec5394b`（main，M8 与 M9 均已合入）逐节实现，每节末尾有验收标准。
@@ -412,7 +412,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ---
 
-## 附录 A：daemon op 一览（v0.2.0）
+## 附录 A：daemon op 一览（v0.1.5）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -450,6 +450,6 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 |---|---|
 | `0a6a80c` | v0.1.1，M1–M7 |
 | `a89e146` | M9 agent 间通信合入 |
-| `ec5394b` | M8 模型与上下文合入（本文依据，v0.2.0） |
+| `ec5394b` | M8 模型与上下文合入（本文依据，v0.1.5） |
 
 所需 pi 最低版本以 `parentToolCallId`（0.99.0）为准；M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早。

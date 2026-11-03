@@ -801,7 +801,7 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : opt(r.name, 200),
 		...(str(st.pendingName) && opt(r.name, 200) === st.pendingName ? { pendingName: null } : {}),
 		model: opt(r.model, 200),
-		// M8: workers before 0.2 send neither; keep what is known then
+		// M8: workers before 0.1.5 send neither; keep what is known then
 		...(r.thinking !== undefined ? { thinking: opt(r.thinking, 20) } : {}),
 		...(r.context !== undefined ? { context: contextFrom(r.context) } : {}),
 		reportedAt: Date.now(),
