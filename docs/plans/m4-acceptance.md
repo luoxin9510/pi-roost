@@ -78,3 +78,13 @@ not only pi-roost's.
 - A project `.pi/roost.json` can no longer set `envAllowList` (a cloned
   repository must not choose which environment reaches its workers).
 - `isScratchSession` resolves paths; the open-view counter is process-wide.
+
+Re-review (fix commit): if another extension cancels the switch to the
+fresh session, pi says to use /new; ← waits for open dialogs even during
+the tool wait; a first turn that has not written its file yet is refused
+("wait for the first reply") instead of being interrupted.
+
+Known limits: a session file that does not exist yet takes pi's process
+cwd (the extension API has no cwd override), so after `/resume` of another
+project's session the hand-off and fresh sessions are recorded under the
+directory pi was started in. ← needs the interactive TUI (no RPC mode).

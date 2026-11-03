@@ -122,12 +122,13 @@ export function registerForeground(pi: ExtensionAPI): void {
 			);
 			stopKeys = ctx.ui.onTerminalInput((data) => {
 				if (isKeyRelease(data) || !matchesKey(data, Key.left)) return undefined;
+				if (dialogs > 0) return undefined; // a dialog may open while we wait for a tool
 				if (moving) {
 					moving.skip(); // BG-2: ← again skips the wait
 					return { consume: true };
 				}
 				if (Date.now() < pendingUntil) return { consume: true };
-				if (dialogs > 0 || agentViewOpen() || !isPromptEditor(focusedOf(tui))) return undefined;
+				if (agentViewOpen() || !isPromptEditor(focusedOf(tui))) return undefined;
 				if (ctx.ui.getEditorText().length > 0) return undefined;
 				// Only commands get a context that can switch sessions: submit /bg instead.
 				ctx.ui.setEditorText("/bg");
@@ -168,6 +169,14 @@ export function registerForeground(pi: ExtensionAPI): void {
 		if (isScratchSession(original)) return refuse("this is an empty hand-off session", "info");
 		if (dialogs > 0) return refuse("answer the open dialog first");
 		if (compacting) return refuse("the conversation is being compacted; try again when it is done");
+
+		// pi writes a session file with its first reply: before that there is nothing to
+		// move, and ← simply opens the agent view.
+		if (!existsSync(original)) {
+			if (running) return refuse("wait for the first reply, then move this conversation", "info");
+			await openAgentView(ctx);
+			return false;
+		}
 
 		let firstPrompt = prompt;
 		if (running) {
@@ -215,13 +224,6 @@ export function registerForeground(pi: ExtensionAPI): void {
 			await new Promise((r) => setImmediate(r));
 		}
 
-		// pi writes a session file with its first reply: before that there is nothing to
-		// move, and ← simply opens the agent view.
-		if (!existsSync(original)) {
-			await openAgentView(ctx);
-			return false;
-		}
-
 		const name = ctx.sessionManager.getSessionName() ?? conversationName(ctx) ?? "conversation";
 		const cwd = ctx.cwd;
 		const argv = process.argv;
@@ -267,7 +269,14 @@ export function registerForeground(pi: ExtensionAPI): void {
 				// Leave the hand-off session for a fresh conversation beside the moved one
 				// (newSession would stay in the scratch directory). Written lazily, as usual.
 				const fresh = SessionManager.create(cwd, dirname(original)).getSessionFile();
-				if (fresh) await next.switchSession(fresh);
+				let left = false;
+				try {
+					left = !!fresh && !(await next.switchSession(fresh)).cancelled;
+				} catch {
+					// fall through to the original below
+				}
+				// the original belongs to the worker now: say how to get out of the hand-off session
+				if (!left) next.ui.notify("pi-roost: could not open a fresh session; use /new", "warning");
 			},
 		});
 		if (result.cancelled) return refuse("another extension cancelled the switch");
