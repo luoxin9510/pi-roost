@@ -4,16 +4,50 @@
 
 # pi-roost
 
-**Every background pi session on one screen.** Start tasks, see which ones are working,
-waiting for you or done, peek at them, answer them, and jump in and out. Sessions keep
-running when you close the terminal.
+**Every background pi session on one screen.** · [中文介绍](#中文介绍)
 
 [![npm version](https://img.shields.io/npm/v/pi-roost?style=for-the-badge)](https://www.npmjs.com/package/pi-roost)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-blue?style=for-the-badge)](#install)
 
+Run many pi sessions at once without juggling terminals. Hand a task to the background,
+keep working, and come back when something needs you. pi-roost lists every session on one
+screen: what each one is doing right now, which one is asking you a question, and what has
+finished. Answer from the list, jump into any session, jump back out. Close the terminal and
+the sessions keep going.
+
+- **Fire and forget.** Type a task, press Enter, and it runs in the background.
+- **See everything at a glance.** A live one-line summary per session, grouped into
+  *Needs input*, *Working* and *Completed*.
+- **Answer without switching.** Peek at a session and reply right in the list.
+- **Jump in, jump out.** Enter opens a session full-screen; ← on its empty prompt brings
+  you back.
+- **Move what you already have.** ← on an empty prompt (or `/bg`) sends the current
+  conversation to the background, right where it was.
+- **Outlives the terminal.** A per-user daemon keeps the sessions alive.
+
 pi-roost is a plain pi package: one extension, a small per-user daemon and a PTY host per
 session. Pi itself is not changed.
+
+## 中文介绍
+
+**一个屏幕，管理所有后台 pi 会话。**
+
+想同时跑好几个 pi 任务，又不想开一堆终端窗口来回切换？把任务交给后台，你继续干自己的事，等有会话需要你时再回来。pi-roost 把所有会话列在同一个屏幕上：每个会话此刻在做什么，哪个在等你回答，哪些已经完成，一目了然。你可以直接在列表里回复，随时进入任意一个会话，也随时退回列表。关掉终端，会话照样在跑。
+
+- **派完就走**：输入任务，按回车，它就在后台跑起来。
+- **一眼看全**：每个会话一行实时摘要，按“需要输入 / 进行中 / 已完成”分组。
+- **不切换就回复**：按空格偷看会话，在列表里直接回答它的问题。
+- **随进随出**：回车进入会话全屏操作，在它的空提示符下按 ← 回到列表。
+- **聊到一半也能转后台**：在任意会话的空提示符下按 ←（或输入 `/bg`），当前对话原样转到后台继续跑。
+- **不怕关终端**：每个用户一个常驻的后台守护进程，会话不会随终端一起退出。
+
+```bash
+pi install npm:pi-roost
+pi --agents
+```
+
+建议在 `~/.pi/agent/roost.json` 里配置一个便宜的摘要模型，例如 `{"summaryModel": "anthropic/claude-haiku-5-5"}`，这样会话会自动命名、显示进度摘要。完整的按键、配置和 CLI 说明见下面的英文文档。
 
 ## Install
 
