@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { JobRow } from "../lib/protocol.ts";
-import { ageOf, counts, formatDuration, headerText, iconOf, items, layout, sentenceOf, titleText } from "../lib/view-model.ts";
+import {
+	ageOf,
+	contextToneOf,
+	counts,
+	formatDuration,
+	formatTokens,
+	headerText,
+	iconOf,
+	items,
+	layout,
+	modelFacts,
+	rowDetailsOf,
+	sentenceOf,
+	shortModel,
+	titleText,
+} from "../lib/view-model.ts";
 
 const T0 = 1_000_000;
 let n = 0;
@@ -22,6 +37,8 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		question: null,
 		choices: [],
 		model: null,
+		thinking: null,
+		context: null,
 		error: null,
 		stateSince: T0 + n,
 		reaped: false,
@@ -31,6 +48,35 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		...over,
 	};
 }
+
+describe("model and context (M8)", () => {
+	it("short model names drop the provider and a date suffix", () => {
+		expect(shortModel("anthropic/claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
+		expect(shortModel("corp/qwen/qwen3-8b")).toBe("qwen/qwen3-8b");
+		expect(shortModel("openai/gpt-5@2026-01-15")).toBe("gpt-5");
+		expect(shortModel("bare")).toBe("bare");
+	});
+
+	it("formats token counts", () => {
+		expect([950, 86_400, 200_000, 1_000_000, 1_250_000].map(formatTokens)).toEqual(["950", "86k", "200k", "1M", "1.3M"]);
+	});
+
+	it("warns from 80% and errs from 95%", () => {
+		expect([null, 10, 79.9, 80, 94.9, 95, 120].map(contextToneOf)).toEqual(["dim", "dim", "dim", "warning", "warning", "error", "error"]);
+	});
+
+	it("row column and peek facts", () => {
+		const r = row({ model: "anthropic/claude-opus-5-5", thinking: "high", context: { tokens: 86_000, window: 200_000, percent: 43.2 } });
+		expect(rowDetailsOf(r)).toEqual({ model: "claude-opus-5-5", context: "43%", tone: "dim" });
+		expect(modelFacts(r)).toEqual(["anthropic/claude-opus-5-5", "thinking high", "ctx 86k / 200k (43%)"]);
+		const compacted = row({ model: "a/m", context: { tokens: null, window: 200_000, percent: null } });
+		expect(rowDetailsOf(compacted)?.context).toBe("?%");
+		expect(modelFacts(compacted).at(-1)).toContain("ctx ? / 200k");
+		expect(rowDetailsOf(row({ kind: "shell", model: "a/m" }))).toBeNull();
+		expect(rowDetailsOf(row({ model: null, context: null }))).toBeNull();
+		expect(rowDetailsOf(row({ model: "a/m", context: { tokens: 196_000, window: 200_000, percent: 98 } }))?.tone).toBe("error");
+	});
+});
 
 describe("layout", () => {
 	it("groups in order and hides empty groups", () => {

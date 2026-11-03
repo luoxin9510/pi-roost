@@ -5,13 +5,14 @@ import { DaemonClient } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { AGENT_MESSAGE_TYPE, RESULT_MAX } from "../lib/comms.ts";
 import { messageText } from "../lib/heuristics.ts";
-import type { ArgsOf, Event, Op, ResultOf, WorkerReport } from "../lib/protocol.ts";
+import type { ArgsOf, ContextInfo, Event, Op, ResultOf, WorkerReport } from "../lib/protocol.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 import { registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
 	CUSTOM_DIALOG_MS,
 	FIRST_PROMPT_MS,
 	SUMMARY_INTERVAL_MS,
+	sameContext,
 	stateChanged,
 	WorkerTracker,
 } from "../lib/worker-state.ts";
@@ -96,7 +97,7 @@ export class Reporter {
 	private schedule(): void {
 		if (this.closed || this.inflight || !this.latest || this.latest === this.sent) return;
 		const urgent = this.urgentPending || stateChanged(this.sent, this.latest);
-		if (!urgent && this.latest.summary === this.sent?.summary) return;
+		if (!urgent && this.latest.summary === this.sent?.summary && sameContext(this.latest.context, this.sent?.context)) return;
 		const due = urgent ? Date.now() : Math.max(Date.now(), this.sentAt + SUMMARY_INTERVAL_MS);
 		if (this.timer && due >= this.dueAt) return;
 		clearTimeout(this.timer);
@@ -292,8 +293,9 @@ export class ReplyQueue {
 		while (ctx && this.queue.length > 0) {
 			const next = this.queue[0]!;
 			if (isAgentKind(next.kind)) {
-				if (!this.pumpAgent(ctx, next)) return;
-				continue;
+				if (this.pumpAgent(ctx, next)) continue;
+				this.applySettingsBehind(ctx);
+				return;
 			}
 			if (this.applySetting(ctx, next.text)) {
 				this.done(next.seq);
@@ -311,6 +313,24 @@ export class ReplyQueue {
 				this.awaitingStart = Date.now();
 			} else return this.retry(); // compacting: prompts are refused until it ends
 			this.done(next.seq);
+		}
+	}
+
+	/**
+	 * While an agent item waits (dialog, start, compaction), /name, /model and /thinking
+	 * right behind it need not: apply them, up to the first user reply, which keeps its turn.
+	 * lastSeq stays put, so a resent agent item is still recognised as not yet handed.
+	 */
+	private applySettingsBehind(ctx: ExtensionContext): void {
+		for (let i = 1; i < this.queue.length; ) {
+			const it = this.queue[i]!;
+			if (isAgentKind(it.kind)) {
+				i++;
+				continue;
+			}
+			if (!this.applySetting(ctx, it.text)) return;
+			this.queue.splice(i, 1);
+			this.env.ack(it.seq);
 		}
 	}
 
@@ -430,6 +450,19 @@ export class ReplyQueue {
 	}
 }
 
+/** M8: pi's context window use for the row; null when the model has no known window. */
+export function contextOf(ctx: ExtensionContext): ContextInfo | null {
+	try {
+		const u = ctx.getContextUsage();
+		if (!u || !(u.contextWindow > 0)) return null;
+		const tokens = typeof u.tokens === "number" ? Math.round(u.tokens) : null;
+		const percent = typeof u.percent === "number" ? Math.round(u.percent * 10) / 10 : null;
+		return { tokens, window: u.contextWindow, percent };
+	} catch {
+		return null; // a stale ctx after a session switch
+	}
+}
+
 /** Worker role (PRD C6): report this session's state, take replies, detach keys. */
 export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	const tracker = new WorkerTracker();
@@ -468,6 +501,8 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		tracker.start({
 			name: ctx.sessionManager.getSessionName() ?? null,
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
+			thinking: thinkingOf(pi),
+			context: contextOf(ctx),
 			// a reload keeps the run going; any other start is a different conversation
 			fresh: event.reason !== "reload",
 		});
@@ -498,14 +533,16 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		tracker.toolEnd();
 		send();
 	});
-	pi.on("message_end", (event) => {
+	pi.on("message_end", (event, ctx) => {
 		replies.messageEnded(event.message as never);
 		if (event.message.role !== "assistant") return;
 		tracker.assistantMessage(event.message);
+		tracker.setContext(contextOf(ctx));
 		send();
 	});
-	pi.on("agent_settled", (event) => {
+	pi.on("agent_settled", (event, ctx) => {
 		tracker.agentSettled(event.aborted);
+		tracker.setContext(contextOf(ctx));
 		send();
 		replies.settled();
 		const userJoined = replies.takeUserJoined();
@@ -561,9 +598,20 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		tracker.rename(event.name);
 		send();
 	});
-	pi.on("model_select", (event) => {
+	pi.on("model_select", (event, ctx) => {
 		tracker.setModel(`${event.model.provider}/${event.model.id}`);
+		// a model with another window changes the share in use; pi may clamp the thinking level
+		tracker.setContext(contextOf(ctx));
+		tracker.setThinking(thinkingOf(pi));
 		send();
+	});
+	pi.on("thinking_level_select", (event) => {
+		tracker.setThinking(event.level);
+		send();
+	});
+	// a compaction shrinks the context: the row should not keep the old share
+	pi.on("session_compact", (_event, ctx) => {
+		if (tracker.setContext(contextOf(ctx))) send();
 	});
 	// After the tracker's handlers: pi runs handlers in registration order, and these
 	// read the tracker's view of the same event (run ids, settled state).
@@ -581,6 +629,14 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		reporter = undefined;
 		await closing?.close();
 	});
+}
+
+function thinkingOf(pi: ExtensionAPI): string | null {
+	try {
+		return pi.getThinkingLevel() ?? null;
+	} catch {
+		return null;
+	}
 }
 
 /** A delivered reply or agent item (M9 adds the kind). */

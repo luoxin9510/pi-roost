@@ -335,6 +335,24 @@ describe("worker reports", () => {
 		});
 	});
 
+	it("M8: takes thinking and context use, validates them, and keeps them when a report has neither", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		const context = { tokens: 86_000, window: 200_000, percent: 43 };
+		await client.request("report", { id, token, report: report({ thinking: "high", context }) });
+		expect(await find(client, id)).toMatchObject({ model: "x/y", thinking: "high", context });
+		// a worker before 0.2 sends neither field: the last known values stay
+		await client.request("report", { id, token, report: report() });
+		expect(await find(client, id)).toMatchObject({ thinking: "high", context });
+		// garbage is dropped, not stored
+		await client.request("report", { id, token, report: report({ context: { tokens: "lots", window: -1 } }) });
+		expect((await find(client, id))?.context).toBeNull();
+		await client.request("report", { id, token, report: report({ context: { tokens: null, window: 200_000, percent: null } }) });
+		expect((await find(client, id))?.context).toEqual({ tokens: null, window: 200_000, percent: null });
+	});
+
 	it("keeps the last reported state when the worker exits cleanly, clears live fields", async () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", args("sleep 1.5"));

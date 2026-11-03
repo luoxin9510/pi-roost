@@ -35,6 +35,8 @@ const row = (over: Partial<JobRow> = {}): JobRow => ({
 	question: null,
 	choices: [],
 	model: null,
+	thinking: null,
+	context: null,
 	error: null,
 	stateSince: 0,
 	reaped: false,

@@ -66,6 +66,22 @@ afterEach(async () => {
 });
 
 describe("Reporter", () => {
+	it("M8: a thinking change goes out at once; context use alone waits but is not dropped", async () => {
+		await listen();
+		const r = new Reporter({ id: "j", token: "t", socket: sock });
+		r.update(base);
+		await sleep(50);
+		r.update({ ...base, thinking: "high" });
+		await sleep(50);
+		expect(received.map((x) => x.thinking ?? null)).toEqual([null, "high"]);
+		const context = { tokens: 5000, window: 200_000, percent: 2.5 };
+		r.update({ ...base, thinking: "high", context });
+		await sleep(50);
+		expect(received).toHaveLength(2); // throttled like the row text
+		await r.close(); // the pending one is flushed
+		expect(received.at(-1)?.context).toEqual(context);
+	});
+
 	it("sends state changes at once, one request at a time, latest wins", async () => {
 		await listen();
 		delayMs = 100;

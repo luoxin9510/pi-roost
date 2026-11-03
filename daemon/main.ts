@@ -37,6 +37,7 @@ import {
 	type PeerRow,
 	type SendResult,
 	type WorkerReport,
+	contextFrom,
 	encodeLine,
 } from "../lib/protocol.ts";
 import {
@@ -176,6 +177,8 @@ function rowOf(id: string): JobRow | undefined {
 		question: text(st.question),
 		choices: Array.isArray(st.choices) ? st.choices.filter((c): c is string => typeof c === "string") : [],
 		model: text(st.model) ?? rec.model ?? null,
+		thinking: text(st.thinking) ?? rec.thinking ?? null,
+		context: rec.kind === "shell" ? null : contextFrom(st.context),
 		error: text(st.error),
 		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
 		reaped: !live && st.reaped === true,
@@ -755,6 +758,9 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : opt(r.name, 200),
 		...(str(st.pendingName) && opt(r.name, 200) === st.pendingName ? { pendingName: null } : {}),
 		model: opt(r.model, 200),
+		// M8: workers before 0.2 send neither; keep what is known then
+		...(r.thinking !== undefined ? { thinking: opt(r.thinking, 20) } : {}),
+		...(r.context !== undefined ? { context: contextFrom(r.context) } : {}),
 		reportedAt: Date.now(),
 		attachSignal: r.attachSignal === true,
 		// a turn that ends normally clears the crash budget (DM-5)

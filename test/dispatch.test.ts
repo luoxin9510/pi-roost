@@ -49,9 +49,17 @@ describe("respawnCommand", () => {
 	const rec = { command: ["node", "pi.js", "--session", "/s.jsonl", "--model", "m", "--", "the task"] } as never;
 	it("drops the first prompt once the session exists, optionally adding a new one", async () => {
 		const { respawnCommand } = await import("../lib/store.ts");
-		expect(respawnCommand(rec, true)).toEqual(["node", "pi.js", "--session", "/s.jsonl", "--model", "m"]);
-		expect(respawnCommand(rec, true, "go on")).toEqual(["node", "pi.js", "--session", "/s.jsonl", "--model", "m", "--", "go on"]);
+		expect(respawnCommand(rec, true)).toEqual(["node", "pi.js", "--session", "/s.jsonl"]);
+		expect(respawnCommand(rec, true, "go on")).toEqual(["node", "pi.js", "--session", "/s.jsonl", "--", "go on"]);
 		expect(respawnCommand(rec, false, "go on")).toEqual((rec as { command: string[] }).command);
+	});
+
+	it("M8: a written session restores its own model and thinking level, so their flags go", async () => {
+		const { respawnCommand } = await import("../lib/store.ts");
+		const cmd = ["node", "pi.js", "--session", "/s.jsonl", "-e", "/x.ts", "--provider", "p", "--model=p/m", "--thinking", "high", "--offline", "--", "task"];
+		expect(respawnCommand({ command: cmd } as never, true)).toEqual(["node", "pi.js", "--session", "/s.jsonl", "-e", "/x.ts", "--offline"]);
+		// never written: pi has not recorded the model yet, the flags still choose it
+		expect(respawnCommand({ command: cmd } as never, false)).toEqual(cmd);
 	});
 });
 

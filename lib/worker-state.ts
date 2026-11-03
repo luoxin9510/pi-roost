@@ -1,7 +1,7 @@
 // The worker role's view of its own session (PRD §6.8), as a reducer over
 // pi events. Pure apart from the injected clock, so it is unit-tested directly.
 import { clip, extractChoices, lastLine, looksLikeQuestion, messageText, questionLine } from "./heuristics.ts";
-import type { JobStatus, WaitingFor, WorkerReport } from "./protocol.ts";
+import type { ContextInfo, JobStatus, WaitingFor, WorkerReport } from "./protocol.ts";
 
 /** Time without a turn starting before an empty session counts as waiting for its first prompt. */
 export const FIRST_PROMPT_MS = 5000;
@@ -25,15 +25,19 @@ export class WorkerTracker {
 	private sawTurn = false;
 	private name: string | null = null;
 	private model: string | null = null;
+	private thinking: string | null = null;
+	private context: ContextInfo | null = null;
 	/** SM-2: the summary model's line for the finished turn, or its progress line while running. */
 	private modelSummary: string | null = null;
 	/** Bumped at every run start: a late summary for an older run is dropped. */
 	private generation = 0;
 
 	/** A session (re)starts in this worker: /new, /resume and /fork begin from scratch. */
-	start(info: { name?: string | null; model?: string | null; fresh: boolean }): void {
+	start(info: { name?: string | null; model?: string | null; thinking?: string | null; context?: ContextInfo | null; fresh: boolean }): void {
 		this.name = info.name ?? null;
 		this.model = info.model ?? null;
+		this.thinking = info.thinking ?? null;
+		this.context = info.context ?? null;
 		if (!info.fresh) return;
 		this.running = false;
 		this.settled = undefined;
@@ -155,6 +159,18 @@ export class WorkerTracker {
 		this.model = model;
 	}
 
+	setThinking(level: string | null): void {
+		this.thinking = level;
+	}
+
+	/** M8: the latest context window use; true when it changed. */
+	setContext(context: ContextInfo | null): boolean {
+		const next = context ? { tokens: context.tokens, window: context.window, percent: context.percent } : null;
+		if (sameContext(this.context, next)) return false;
+		this.context = next;
+		return true;
+	}
+
 	/** No turn started yet; called once FIRST_PROMPT_MS after session start. */
 	firstPromptTimeout(messageCount: number): void {
 		if (this.sawTurn || this.running || this.dialogs.length > 0) return;
@@ -200,6 +216,8 @@ export class WorkerTracker {
 			error: this.settled === "failed" ? this.error : null,
 			name: this.name,
 			model: this.model,
+			thinking: this.thinking,
+			context: this.context,
 		};
 	}
 
@@ -215,7 +233,12 @@ export class WorkerTracker {
 	}
 }
 
-/** Whether two reports differ in more than row text (those are sent at once). */
+export function sameContext(a: ContextInfo | null | undefined, b: ContextInfo | null | undefined): boolean {
+	if (!a || !b) return !a && !b;
+	return a.tokens === b.tokens && a.window === b.window && a.percent === b.percent;
+}
+
+/** Whether two reports differ in more than row text and context use (those are sent at once). */
 export function stateChanged(a: WorkerReport | undefined, b: WorkerReport): boolean {
 	if (!a) return true;
 	return (
@@ -225,6 +248,7 @@ export function stateChanged(a: WorkerReport | undefined, b: WorkerReport): bool
 		a.question !== b.question ||
 		a.name !== b.name ||
 		a.model !== b.model ||
+		(a.thinking ?? null) !== (b.thinking ?? null) ||
 		a.error !== b.error ||
 		a.tool !== b.tool ||
 		a.choices.join("\n") !== b.choices.join("\n")

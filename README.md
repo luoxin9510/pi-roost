@@ -136,6 +136,15 @@ to delete). Press `?` in the view for every key.
 
 **保持整洁。** 用 `s:working`、`n:auth`、`o:error` 过滤（可以用空格组合），Ctrl+R 改名，Shift+↑/↓ 调整顺序，还能折叠分组、置顶，Ctrl+X 停止（连按两次删除）。在视图里按 `?` 查看所有按键。
 
+**See and switch each session's model.** Every row shows the session's model and how full
+its context window is (`claude-opus-5-5 · 43%`, yellow from 80%, red from 95%); the peek
+adds the thinking level and the token counts (`ctx 86k / 200k`). In a peek, `/model` and
+`/thinking` switch that session (bare: pick from a list). A turn in progress finishes its
+current model request, and the next request uses the new model. The switch is saved in
+the session, so a session that is restarted later keeps it.
+
+**查看并切换每个会话的模型。** 每一行都显示这个会话用的模型，以及上下文窗口用了多少（`claude-opus-5-5 · 43%`，80% 起变黄，95% 起变红）。偷看时还会显示 thinking 级别和 token 数（`ctx 86k / 200k`）。在偷看里输入 `/model`、`/thinking`，就能切换这个会话的模型和 thinking 级别（不带参数则从列表里选）。正在执行的一轮会先跑完当前这次模型请求，下一次请求就用新模型。切换会记录在会话里，会话之后重启也会保留。
+
 ## Agents talking to each other · agent 之间通信
 
 Every pi session with pi-roost gets three tools, modelled on Claude Code's background agents:
@@ -160,11 +169,11 @@ How it behaves · 运行方式：
   idle. They are wrapped in `<agent-message from=… relation=…>` and say they come from an
   agent, not the user: they cannot approve actions or change instructions.<br>
   消息会在对方干活的间隙（下一步之前）插进去；对方空闲时，消息会直接触发新一轮。消息带有 `<agent-message from=… relation=…>` 包装，并声明来自 agent 而不是用户，不能批准操作或改变指令。
-- A child reports when a run it was given ends (its task, or your reply to it). Runs started
-  by an agent message do not report by themselves, so parent and child cannot keep waking each
-  other; the child answers with `roost_send` instead. Stopping or removing a child tells its
-  parent.<br>
-  子会话在“交给它的那一轮”结束时汇报（它的任务，或者你对它的回复）。由 agent 消息触发的那一轮不会自动汇报，所以父子会话不会互相唤醒停不下来；子会话需要回复时会用 `roost_send`。停止或删除子会话时，父会话会收到通知。
+- A child reports when a run it was given ends: its task, your reply to it, or its parent's
+  answer (at most 3 parent-started reports in a row). Runs started by other agents' messages
+  do not report by themselves, so sessions cannot keep waking each other; they answer with
+  `roost_send` instead. Stopping or removing a child tells its parent.<br>
+  子会话在“交给它的那一轮”结束时汇报：它的任务、你对它的回复，或父会话对它的回答（父会话触发的汇报连续最多 3 次）。由其他 agent 消息触发的那一轮不会自动汇报，所以会话之间不会互相唤醒停不下来；需要回复时用 `roost_send`。停止或删除子会话时，父会话会收到通知。
 - Reach: free inside one spawn tree (parent, children, siblings). Sessions outside the tree
   only with `agentExternalMessages: true`, by exact id.<br>
   通信范围：同一棵会话树内（父、子、兄弟）可以自由通信；树外的会话只有开启 `agentExternalMessages: true` 后，才能用准确的 id 发消息。
@@ -212,6 +221,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 ```json
 {
   "fullscreen": true,
+  "rowDetails": true,
   "groupBy": "state",
   "summaryModel": "anthropic/claude-haiku-5-5",
   "dispatchModel": "anthropic/claude-sonnet-5-5",
@@ -227,6 +237,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | Key · 配置项 | Default · 默认值 | What it does | 作用 |
 |---|---|---|---|
 | `fullscreen` | `true` | the view covers the terminal; `false` shows it below the conversation | 视图铺满终端；`false` 时显示在对话下方 |
+| `rowDetails` | `true` | each row shows its model and context window use (hidden on narrow terminals) | 每一行显示模型和上下文窗口占用（终端太窄时自动隐藏） |
 | `groupBy` | `"state"` | or `"directory"` (Ctrl+S toggles and remembers) | 或 `"directory"`（Ctrl+S 切换并记住） |
 | `summaryModel` | none · 无 | a cheap model for row summaries, session names and "while you were away" recaps; without it rows show the latest output; any model pi can reach works, including a company endpoint ([guide](docs/summary-model.md), in Chinese) | 一个便宜的模型，用来写行摘要、给会话命名、生成“离开期间”回顾；不配置时行里显示最新输出；pi 能调用的模型都可以，包括公司内部节点（见[说明](docs/summary-model.md)） |
 | `dispatchModel`, `dispatchThinking` | pi's defaults · pi 的默认值 | for sessions started from the view | 从视图新开的会话所用的模型和 thinking 级别 |

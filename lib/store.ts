@@ -80,12 +80,30 @@ export const taskArg = (task: string): string => (task.startsWith("@") ? ` ${tas
  * Command for restarting a job from its session file: the dispatch command without
  * its first prompt (already in the session), optionally with a new one. A session
  * pi never wrote never saw the first prompt, so it keeps it.
+ *
+ * M8: a written session also drops the dispatch's --model, --provider and --thinking.
+ * pi records the model and thinking level in the session and restores them on
+ * resume, but a flag would win over that: a model switched while the job ran
+ * (/model from the agent view) would be undone by every respawn.
  */
 export function respawnCommand(rec: JobRecord, sessionWritten: boolean, prompt?: string): string[] {
 	if (!sessionWritten) return rec.command;
 	const at = rec.command.indexOf("--", 2);
-	const base = at === -1 ? rec.command : rec.command.slice(0, at);
+	const base = withoutFlags(at === -1 ? rec.command : rec.command.slice(0, at), SESSION_RESTORED_FLAGS);
 	return prompt ? [...base, "--", taskArg(prompt)] : base;
+}
+
+const SESSION_RESTORED_FLAGS = ["--model", "--provider", "--thinking"];
+
+/** argv without these value flags, in both `--flag value` and `--flag=value` form (argv[0..1] kept). */
+function withoutFlags(argv: string[], flags: string[]): string[] {
+	const out = argv.slice(0, 2);
+	for (let i = 2; i < argv.length; i++) {
+		const arg = argv[i]!;
+		if (flags.includes(arg)) i++;
+		else if (!flags.some((f) => arg.startsWith(`${f}=`))) out.push(arg);
+	}
+	return out;
 }
 
 export function updateState(id: string, patch: Partial<JobState>): JobState {

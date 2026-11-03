@@ -18,6 +18,8 @@ import {
 	formatDuration,
 	headerText,
 	iconOf,
+	modelFacts,
+	rowDetailsOf,
 	type Item,
 	items,
 	layout,
@@ -33,6 +35,9 @@ const DOUBLE_PRESS_MS = 2000; // Ctrl+X delete, Ctrl+C exit
 const RESTART_ASK_MS = 3000;
 const NOTICE_MS = 4000;
 const SPIN_MS = 150;
+/** M8: the row's model and context column only shows while the summary keeps this many columns. */
+const MIN_SUMMARY = 24;
+const MODEL_COL = 20;
 
 export interface AgentViewOptions {
 	tui: TUI;
@@ -70,6 +75,8 @@ export interface AgentViewOptions {
 	reducedMotion?: boolean;
 	/** Render exactly the terminal's height: list at the top, input and keys at the bottom. */
 	fullscreen?: boolean;
+	/** M8: show each row's model and context window use (default true). */
+	rowDetails?: boolean;
 	done: () => void;
 }
 
@@ -95,6 +102,13 @@ interface Picker {
 	items: { label: string; value: string }[];
 	index: number;
 	pick: (value: string) => void | Promise<void>;
+}
+
+interface Columns {
+	mode: "full" | "share" | "none";
+	modelW: number;
+	shareW: number;
+	ageW: number;
 }
 
 interface Notice {
@@ -135,6 +149,8 @@ export class AgentView implements Component {
 	private closed = false;
 	private connectError: string | undefined;
 	private nameWidth = 16;
+	/** M8: the model / context column, the same for every row of a render so it lines up. */
+	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0 };
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -832,6 +848,9 @@ export class AgentView implements Component {
 			return this.say("that session no longer exists", "warning");
 		}
 		if (!text || !this.client) return;
+		// M8: /model and /thinking in a peek change that session, with the same pickers as for new ones
+		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
+		if (setting) return this.sessionSetting(row, setting[1] as "model" | "thinking", (setting[2] ?? "").trim());
 		try {
 			const r = await this.client.request("reply", { id: row.id, text });
 			this.reply.setValue("");
@@ -840,6 +859,40 @@ export class AgentView implements Component {
 				this.say(row.waitingFor === "dialog" ? "queued; attach (→) to answer the dialog" : `sent · ${row.name}`, "success");
 			} else if (r.respawned) this.say(`sent · starting ${row.name} again`, "success");
 			else if (r.saved) this.say(`saved; it is sent when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
+			else this.say("not delivered: the session is not running", "error");
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	/** M8: switch a session's model or thinking level from its peek. */
+	private sessionSetting(row: JobRow, which: "model" | "thinking", arg: string): void {
+		if (row.kind === "shell") return this.say("a shell job has no model", "warning");
+		const values: string[] = which === "model" ? (this.o.models?.() ?? []) : [...THINKING_LEVELS];
+		const apply = (v: string) => this.sendSetting(row, which, v);
+		if (arg) {
+			if (which === "model" && !arg.includes("/")) return this.say("use provider/id (bare /model lists them)", "warning");
+			if (values.length > 0 && !values.includes(arg)) {
+				return this.say(which === "model" ? `unknown model ${arg} (bare /model lists them)` : `thinking is one of ${values.join(", ")}`, "warning");
+			}
+			return void apply(arg);
+		}
+		if (values.length === 0) return this.say("no models available", "warning");
+		this.reply.setValue("");
+		const current = (which === "model" ? row.model : row.thinking) ?? "";
+		this.openPicker(`${which === "model" ? "Model" : "Thinking"} for ${oneLine(row.name)}`, values, current, apply);
+	}
+
+	private async sendSetting(row: JobRow, which: "model" | "thinking", value: string): Promise<void> {
+		if (!this.client) return this.say("background service unavailable", "error");
+		const label = `${which} ${value} · ${row.name}`;
+		try {
+			const r = await this.client.request("reply", { id: row.id, text: `/${which} ${value}` });
+			this.reply.setValue("");
+			// a running turn keeps its current request; the next one uses the new setting
+			if (r.delivered) this.say(row.state === "working" ? `${label} (from its next request)` : label, "success");
+			else if (r.respawned) this.say(`${label} · starting it again`, "success");
+			else if (r.saved) this.say(`saved; ${which} changes when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
 			else this.say("not delivered: the session is not running", "error");
 		} catch (err) {
 			this.say((err as Error).message, "error");
@@ -983,6 +1036,7 @@ export class AgentView implements Component {
 		const sections = this.sections();
 		const list = items(sections);
 		this.nameWidth = Math.max(1, Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(oneLine(r.name)) + (r.parentSession ? 2 : 0)))));
+		this.columns = this.columnsFor(all, Math.max(1, w - 2), now);
 		const sel = this.selectedIndex(list);
 		const empty = all.length === 0;
 		list.forEach((it, i) => {
@@ -1038,10 +1092,49 @@ export class AgentView implements Component {
 		const pad = " ".repeat(Math.max(0, this.nameWidth - visibleWidth(name)));
 		const styled = row.id === this.o.highlightId ? t.bold(t.fg(nameToneOf(row.id), name)) : t.fg(nameToneOf(row.id), name);
 		const head = `${t.fg(icon.tone, icon.glyph)} ${styled}${pad}  `;
-		const room = width - visibleWidth(head) - age.length - 2;
+		const detail = this.detailText(row);
+		const ageCol = t.fg("dim", age.padStart(this.columns.ageW));
+		const tail = detail ? `${detail}  ${ageCol}` : ageCol;
+		const room = width - visibleWidth(head) - visibleWidth(tail) - 2;
 		const summary = room > 4 ? t.fg(row.pid === null ? "dim" : "muted", truncateToWidth(oneLine(sentenceOf(row)), room)) : "";
-		const gap = Math.max(1, width - visibleWidth(head) - visibleWidth(summary) - age.length);
-		return `${head}${summary}${" ".repeat(gap)}${t.fg("dim", age)}`;
+		const gap = Math.max(1, width - visibleWidth(head) - visibleWidth(summary) - visibleWidth(tail));
+		return `${head}${summary}${" ".repeat(gap)}${tail}`;
+	}
+
+	/**
+	 * M8: how much of the model / context column fits. The summary keeps MIN_SUMMARY
+	 * columns: on a narrow terminal the column shrinks to the share, then goes.
+	 */
+	private columnsFor(rows: JobRow[], width: number, now: number): Columns {
+		const ageW = Math.max(0, ...rows.map((r) => ageOf(r, now).length));
+		const none: Columns = { mode: "none", modelW: 0, shareW: 0, ageW };
+		if (this.o.rowDetails === false) return none;
+		const ds = rows.map(rowDetailsOf).filter((d): d is NonNullable<typeof d> => d !== null);
+		const modelW = Math.min(MODEL_COL, Math.max(0, ...ds.map((d) => (d.model ? visibleWidth(oneLine(d.model)) : 0))));
+		const shareW = Math.max(0, ...ds.map((d) => d.context?.length ?? 0));
+		// what the summary keeps: the row minus icon, name, the column, the age and the gaps
+		const room = (col: number) => width - (2 + this.nameWidth + 2) - col - 2 - ageW - 2;
+		const full = modelW + (modelW && shareW ? 3 : 0) + shareW;
+		if (full > 0 && room(full) >= MIN_SUMMARY) return { mode: "full", modelW, shareW, ageW };
+		if (shareW > 0 && room(shareW) >= MIN_SUMMARY) return { mode: "share", modelW: 0, shareW, ageW };
+		return none;
+	}
+
+	/** M8: "claude-opus-5-5 · 43%", padded to the column (blank for a row without them). */
+	private detailText(row: JobRow): string {
+		const c = this.columns;
+		if (c.mode === "none") return "";
+		const t = this.o.theme;
+		const d = rowDetailsOf(row);
+		const share = d?.context ? t.fg(d.tone, d.context.padStart(c.shareW)) : " ".repeat(c.shareW);
+		if (c.mode === "share") return share;
+		const raw = d?.model ? truncateToWidth(oneLine(d.model), c.modelW) : "";
+		// right-aligned as a block: the shares line up, the model sits next to its share
+		const lead = (w: number) => " ".repeat(Math.max(0, c.modelW - w));
+		if (c.shareW === 0) return lead(visibleWidth(raw)) + t.fg("dim", raw);
+		if (c.modelW === 0) return share;
+		if (!raw) return `${lead(0)}   ${share}`;
+		return `${lead(visibleWidth(raw))}${t.fg("dim", raw)}${t.fg("dim", d?.context ? " · " : "   ")}${share}`;
 	}
 
 	/** PK-1: the full sentence, choices, waiting time, and the reply input. */
@@ -1058,13 +1151,18 @@ export class AgentView implements Component {
 				? `needs input · waiting ${formatDuration(now - row.stateSince)}`
 				: row.state + (row.status ? ` · ${row.status}` : ""),
 		];
-		if (row.model) facts.push(row.model);
 		if (row.parentSession) {
 			const parent = [...this.rows.values()].find((r) => r.sessionFile === row.parentSession && r.id !== row.id);
 			facts.push(`child of ${parent ? oneLine(parent.name) : "a foreground session"}`);
 		}
 		facts.push(row.id);
 		lines.push(`    ${t.fg("dim", truncateToWidth(facts.join(" · "), inner))}`);
+		// M8: model, thinking and context window on a line of their own
+		const model = modelFacts(row);
+		if (model.length > 0) {
+			const tone = row.context ? rowDetailsOf(row)?.tone ?? "dim" : "dim";
+			lines.push(`    ${t.fg(tone, truncateToWidth(model.join(" · "), inner))}`);
+		}
 		if (row.waitingFor === "dialog") lines.push(`    ${t.fg("warning", "a dialog is open: attach (→) to answer it; replies wait for it")}`);
 		for (const l of this.reply.render(inner)) lines.push(`    ${l}`);
 		return lines;
@@ -1074,7 +1172,7 @@ export class AgentView implements Component {
 		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
 		if (this.filter()) return "filtering (s: n: o:) · Enter/→ attach · Esc clear";
-		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close";
+		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /model /thinking switch · /stop stops · Esc close";
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
 
@@ -1115,6 +1213,7 @@ export class AgentView implements Component {
 			["@dir task", "start the task in that directory (Tab completes)"],
 			["! command", "run a shell command as a job"],
 			["/model /thinking", "defaults for new sessions (bare: pick; default resets)"],
+			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "bring back a past session of this directory"],
 			["Esc", "close peek · clear input · exit"],
 			["Ctrl+C", "clear input; twice to exit"],

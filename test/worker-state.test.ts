@@ -174,6 +174,26 @@ describe("WorkerTracker", () => {
 	});
 });
 
+describe("model, thinking and context (M8)", () => {
+	it("reports them, and only a thinking change counts as a state change", () => {
+		const t = new WorkerTracker();
+		t.start({ fresh: true, model: "a/m", thinking: "high", context: { tokens: 1000, window: 200_000, percent: 0.5 } });
+		const a = t.report();
+		expect(a).toMatchObject({ model: "a/m", thinking: "high", context: { tokens: 1000, window: 200_000, percent: 0.5 } });
+		expect(t.setContext({ tokens: 1000, window: 200_000, percent: 0.5 })).toBe(false);
+		expect(t.setContext({ tokens: 90_000, window: 200_000, percent: 45 })).toBe(true);
+		const b = t.report();
+		expect(stateChanged(a, b)).toBe(false); // context use alone goes out with the row text
+		t.setThinking("low");
+		expect(stateChanged(b, t.report())).toBe(true);
+		// after a compaction pi does not know the size until the next reply
+		t.setContext({ tokens: null, window: 200_000, percent: null });
+		expect(t.report().context).toEqual({ tokens: null, window: 200_000, percent: null });
+		t.setContext(null);
+		expect(t.report().context).toBeNull();
+	});
+});
+
 describe("restore after a respawn", () => {
 	it("takes the state from the session's last reply", () => {
 		const t = new WorkerTracker();

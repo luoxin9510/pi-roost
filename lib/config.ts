@@ -16,6 +16,8 @@ export interface RoostConfig {
 	groupBy: "state" | "directory";
 	/** The agent view covers the whole terminal (false: below the conversation, like the editor). */
 	fullscreen: boolean;
+	/** M8: each row shows its model and context window use. */
+	rowDetails: boolean;
 	/** NT-1: how the agent view makes the terminal notify. */
 	notify: "auto" | "osc9" | "osc777" | "bell" | "off";
 	/** M9: the roost_agents / roost_send / roost_spawn tools in every session. */
@@ -47,6 +49,7 @@ export const DEFAULTS: RoostConfig = {
 	envAllowList: [],
 	groupBy: "state",
 	fullscreen: true,
+	rowDetails: true,
 	notify: "auto",
 	agentTools: true,
 	agentExternalMessages: false,
@@ -68,6 +71,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	}
 	if (Array.isArray(r.envAllowList)) out.envAllowList = r.envAllowList.filter((v): v is string => typeof v === "string");
 	if (typeof r.fullscreen === "boolean") out.fullscreen = r.fullscreen;
+	if (typeof r.rowDetails === "boolean") out.rowDetails = r.rowDetails;
 	if (r.groupBy === "state" || r.groupBy === "directory") out.groupBy = r.groupBy;
 	for (const k of ["agentTools", "agentExternalMessages"] as const) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
 	for (const k of ["agentMaxDepth", "agentMaxChildren", "agentMaxTree", "agentMaxTotal"] as const) {

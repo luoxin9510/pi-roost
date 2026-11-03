@@ -125,6 +125,24 @@ describe("ReplyQueue agent items (M9)", () => {
 		expect(h.custom).toHaveLength(1);
 	});
 
+	it("applies settings behind a waiting agent item, up to the next user reply", () => {
+		const h = agentHarness();
+		const names: string[] = [];
+		(h.q as any).pi.setSessionName = (n: string) => names.push(n);
+		h.state.dialog = true;
+		h.q.add(item(1));
+		h.q.add({ seq: 2, text: "/name First" });
+		h.q.add({ seq: 3, text: "hello" });
+		h.q.add({ seq: 4, text: "/name Second" });
+		expect(names).toEqual(["First"]);
+		expect(h.acks).toEqual([[2, false]]);
+		expect(h.custom).toEqual([]);
+		// the agent item keeps its place and is still handed over once it may be
+		h.state.dialog = false;
+		h.q.pump();
+		expect(h.custom).toHaveLength(1);
+	});
+
 	it("drops a resend the session already holds (after a restart)", () => {
 		const h = agentHarness([
 			{ type: "custom_message", customType: "pi-roost-agent-message", details: { seq: 7, job: "j1" } },
