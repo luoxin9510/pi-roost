@@ -3,7 +3,7 @@ import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { DaemonClient } from "../lib/client.ts";
 import { existsSync } from "node:fs";
-import { buildLaunch, fallbackName, type Isolation, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
+import { buildLaunch, fallbackName, type Isolation, isolationDefault, prepareIsolation, refusedByDaemon } from "../lib/dispatch.ts";
 import { loadConfig } from "../lib/config.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isScratchSession } from "../lib/paths.ts";
@@ -105,11 +105,13 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 	const existing = ctx.sessionManager.getSessionFile();
 	// M10: a worktree only for a new session (a session already written has its cwd)
 	const fresh = !existing || !existsSync(existing);
+	// pi --session <file> --bg names its session: a config default does not replace it
+	const namedSession = process.argv.some((a) => a === "--session" || a.startsWith("--session="));
 	const flag = pi.getFlag("worktree") === true;
-	if (flag && !fresh) return fail("--worktree starts a new session; it cannot be combined with --session");
+	if (flag && (namedSession || !fresh)) return fail("--worktree starts a new session; it cannot be combined with --session");
 	let iso: Isolation;
 	try {
-		iso = prepareIsolation(ctx.cwd, name, flag || (fresh && isolationDefault(loadConfig(ctx.cwd).worktreeIsolation, false)), flag);
+		iso = prepareIsolation(ctx.cwd, name, flag || (fresh && !namedSession && isolationDefault(loadConfig(ctx.cwd).worktreeIsolation, false)), flag);
 	} catch (err) {
 		return fail((err as Error).message);
 	}
@@ -154,7 +156,7 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 		});
 		ctx.shutdown();
 	} catch (err) {
-		iso.discard();
+		if (refusedByDaemon(err)) iso.discard();
 		fail((err as Error).message);
 	} finally {
 		client?.close();

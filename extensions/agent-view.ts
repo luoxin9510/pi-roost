@@ -12,6 +12,7 @@ import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
+import { refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
 import {
 	ageOf,
@@ -860,7 +861,7 @@ export class AgentView implements Component {
 				await this.attachTo(id);
 			}
 		} catch (err) {
-			discard?.();
+			if (refusedByDaemon(err)) discard?.();
 			if (!this.input.getValue()) this.input.setValue(typed);
 			this.say((err as Error).message, "error");
 		} finally {

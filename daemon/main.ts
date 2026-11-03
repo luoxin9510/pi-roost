@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
@@ -131,6 +131,8 @@ interface Conn {
 
 /** M9: connected foreground pi sessions, by peer id. */
 const fgPeers = new Map<string, Conn>();
+/** M10: rm could not stop the worker: its worktree is not cleaned up. */
+const workerAlive = new Set<string>();
 /** M9: jobs being removed (their end is reported as a removal, once). */
 const removing = new Set<string>();
 const messageLimiter = new RateLimiter(MESSAGES_PER_MINUTE);
@@ -304,7 +306,9 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	}
 	if (daemonEnded && !shuttingDown && recs.get(id)?.parentSession) {
 		const why = removing.has(id) ? "removed by the user" : patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
-		void withWorktreeLine(id, reportBody({ state: "ended", error: why })).then((body) => routeReport(id, body));
+		// a removal cleans the worktree up at the same time: its state would be stale
+		const body = reportBody({ state: "ended", error: why });
+		void (removing.has(id) ? Promise.resolve(body) : withWorktreeLine(id, body)).then((b) => routeReport(id, b));
 	}
 }
 
@@ -380,6 +384,14 @@ function str(v: unknown): v is string {
 	return typeof v === "string" && v.length > 0;
 }
 
+function realPath(p: string): string {
+	try {
+		return realpathSync(p);
+	} catch {
+		return p;
+	}
+}
+
 function isDir(p: string): boolean {
 	try {
 		return statSync(p).isDirectory();
@@ -400,6 +412,16 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	if (a.env && typeof a.env === "object") {
 		for (const [k, v] of Object.entries(a.env)) if (typeof v === "string") env[k] = v;
 	}
+	// before the lock and roster checks: nothing may await between them and recs.set
+	let worktree: WorktreeInfo | undefined;
+	if (a.worktree !== undefined) {
+		if (shell) throw new OpError("bad_request", "shell jobs run without a worktree");
+		if (!(await validWorktree(a.worktree))) throw new OpError("bad_request", "worktree is not one pi-roost made");
+		const w = a.worktree as WorktreeInfo;
+		if (!isInside(realPath(a.cwd), realPath(w.path))) throw new OpError("bad_request", "cwd must be inside the worktree");
+		worktree = { path: w.path, branch: w.branch, repo: w.repo, base: w.base };
+	}
+
 	if (!shell) {
 		const holder = readWriterLock(a.sessionFile);
 		if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
@@ -408,15 +430,6 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 				throw new OpError("locked", `session is already running as job ${id}`);
 			}
 		}
-	}
-
-	let worktree: WorktreeInfo | undefined;
-	if (a.worktree !== undefined) {
-		if (shell) throw new OpError("bad_request", "shell jobs run without a worktree");
-		if (!(await validWorktree(a.worktree))) throw new OpError("bad_request", "worktree is not one pi-roost made");
-		const w = a.worktree as WorktreeInfo;
-		if (!isInside(a.cwd, w.path)) throw new OpError("bad_request", "cwd must be inside the worktree");
-		worktree = { path: w.path, branch: w.branch, repo: w.repo, base: w.base };
 	}
 
 	let id = newJobId();
@@ -1235,10 +1248,14 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 						} catch {}
 					}
 					await waitGone([id], 2000);
-					if (roster.has(id)) finalize(id, "killed by rm");
+					if (roster.has(id)) {
+						// not gone even after SIGKILL: it may still be writing there, leave the worktree alone
+						if (recs.get(id)?.worktree) workerAlive.add(id);
+						finalize(id, "killed by rm");
+					}
 				}
 			}
-			const w = recs.get(id)?.worktree;
+			const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
 			recs.delete(id);
 			shellPids.delete(id);
 			stopping.delete(id);

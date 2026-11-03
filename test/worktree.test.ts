@@ -92,7 +92,7 @@ describe("worktree", () => {
 		writeFileSync(join(w.path, "src", "a.txt"), "b\n");
 		git(w.path, "commit", "-q", "-am", "work");
 		const st = await worktreeStatus(w);
-		expect(st).toEqual({ exists: true, dirty: false, ahead: 1 });
+		expect(st).toEqual({ exists: true, dirty: false, ignored: false, ahead: 1, atBase: false });
 		expect(worktreeLine(w, st)).toBe(`Worktree: ${w.path} · branch ${w.branch} · 1 commit on it`);
 		expect(await cleanupWorktree(w, false)).toMatchObject({ removed: true, branchKept: true, reason: "1 commit on the branch" });
 		expect(existsSync(w.path)).toBe(false);
@@ -109,6 +109,40 @@ describe("worktree", () => {
 		const w2 = createWorktree(r, "y", rand);
 		expect(await cleanupWorktree(w2, true)).toMatchObject({ removed: false, reason: "another session uses it" });
 		expect(existsSync(w2.path)).toBe(true);
+	});
+
+	it("keeps ignored files and a branch moved behind base", async () => {
+		const r = repo();
+		writeFileSync(join(r, ".gitignore"), ".env\n");
+		git(r, "add", ".");
+		git(r, "commit", "-q", "-m", "ignore");
+		const w = createWorktree(r, "x", rand);
+		writeFileSync(join(w.path, ".env"), "SECRET=1\n");
+		expect(await cleanupWorktree(w, false)).toMatchObject({ removed: false, reason: expect.stringContaining("ignores") });
+		expect(existsSync(join(w.path, ".env"))).toBe(true);
+		rmSync(join(w.path, ".env"));
+		git(w.path, "reset", "-q", "--hard", "HEAD~1");
+		expect(await cleanupWorktree(w, false)).toMatchObject({ removed: true, branchKept: true, reason: "the branch moved" });
+		expect(git(r, "branch", "--list", w.branch)).toContain(w.branch);
+	});
+
+	it("discard after a refused dispatch removes only what holds nothing", async () => {
+		const { discardWorktree } = await import("../lib/worktree.ts");
+		const r = repo();
+		const dirty = createWorktree(r, "d", rand);
+		writeFileSync(join(dirty.path, "work.txt"), "x\n");
+		discardWorktree(dirty);
+		expect(existsSync(join(dirty.path, "work.txt"))).toBe(true);
+		const committed = createWorktree(r, "c", rand);
+		writeFileSync(join(committed.path, "src", "a.txt"), "c\n");
+		git(committed.path, "commit", "-q", "-am", "c");
+		discardWorktree(committed);
+		expect(existsSync(committed.path)).toBe(false);
+		expect(git(r, "branch", "--list", committed.branch)).toContain(committed.branch);
+		const clean = createWorktree(r, "e", rand);
+		discardWorktree(clean);
+		expect(existsSync(clean.path)).toBe(false);
+		expect(git(r, "branch", "--list", clean.branch)).toBe("");
 	});
 
 	it("keeps a worktree that switched branches", async () => {
@@ -128,6 +162,14 @@ describe("worktree", () => {
 });
 
 describe("prepareIsolation", () => {
+	it("only a refusal by the daemon allows the undo", async () => {
+		const { refusedByDaemon } = await import("../lib/dispatch.ts");
+		const { DaemonError } = await import("../lib/client.ts");
+		expect(refusedByDaemon(new DaemonError("limit", "limit"))).toBe(true);
+		expect(refusedByDaemon(new DaemonError("daemon connection closed", "closed"))).toBe(false);
+		expect(refusedByDaemon(new Error("spawn timed out"))).toBe(false);
+	});
+
 	it("explicit requests fail outside a repository; defaults fall back with a note", async () => {
 		const { prepareIsolation, isolationDefault } = await import("../lib/dispatch.ts");
 		const plain = realpathSync(mkdtempSync(join(tmpdir(), "roost-wt-")));

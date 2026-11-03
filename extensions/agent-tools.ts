@@ -7,7 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../lib/comms.ts";
 import { loadConfig } from "../lib/config.ts";
-import { buildLaunch, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
+import { buildLaunch, fallbackName, isolationDefault, prepareIsolation, refusedByDaemon } from "../lib/dispatch.ts";
 import type { ArgsOf, Op, PeerRow, ResultOf, SendResult } from "../lib/protocol.ts";
 
 export interface AgentLink {
@@ -109,9 +109,12 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 			const config = loadConfig(cwd);
 			// M10: a worktree when asked, or by the user's default (which falls back outside a repository)
 			const iso = prepareIsolation(cwd, name, params.worktree ?? isolationDefault(config.worktreeIsolation, true), params.worktree === true);
+			const sessionFile = SessionManager.create(iso.cwd).getSessionFile();
+			if (!sessionFile) {
+				iso.discard();
+				throw new Error("could not allocate a session file");
+			}
 			try {
-				const sessionFile = SessionManager.create(iso.cwd).getSessionFile();
-				if (!sessionFile) throw new Error("could not allocate a session file");
 				const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 				const launch = buildLaunch({
 					task,
@@ -133,7 +136,8 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 				const note = iso.note ? ` Note: ${iso.note}.` : "";
 				return text(`Started ${r.name} (${r.id}).${where}${note} Its report arrives here as a message when it finishes; keep working meanwhile.`);
 			} catch (err) {
-				iso.discard();
+				// a timeout or a dropped connection may follow a start: then the worktree stays
+				if (refusedByDaemon(err)) iso.discard();
 				throw err;
 			}
 		},

@@ -214,9 +214,10 @@ each other.
   changes` when there are), so its parent knows what to review or merge.<br>
   会话会被告知它在这个 worktree 里工作、要在自己的分支上提交。子会话的汇报末尾带一行 `Worktree: <路径> · branch <分支> · 2 commits on it`（有未提交改动时还会注明 `uncommitted changes`），父会话据此知道该审查或合并什么。
 - Deleting the session (Ctrl+X twice, `pi-roost rm`) removes what holds no work: a clean
-  worktree goes; its branch goes too unless it has commits. A worktree with uncommitted
-  changes, or one another session uses, is kept and you are told where it is.<br>
-  删除会话（连按两次 Ctrl+X，或 `pi-roost rm`）时，只清理没有成果的部分：干净的 worktree 会被删掉，分支没有新提交的话也一起删；有未提交改动、或者还有别的会话在用的 worktree 会保留，并告诉你它在哪。
+  worktree goes; its branch goes too unless it moved. A worktree with uncommitted changes,
+  files git ignores (`.env`, build output, `node_modules`), or another session in it, is
+  kept and you are told where it is.<br>
+  删除会话（连按两次 Ctrl+X，或 `pi-roost rm`）时，只清理没有成果的部分：干净的 worktree 会被删掉，分支没动过的话也一起删；有未提交改动、有被 git 忽略的文件（`.env`、构建产物、`node_modules`）、或者还有别的会话在用的 worktree 会保留，并告诉你它在哪。
 - A session is isolated from its first prompt; it never moves into a worktree later (pi
   would ask about the changed directory). The main checkout's `git status` stays clean:
   `.pi/worktrees/` is added to the repository's `info/exclude`.<br>

@@ -136,10 +136,16 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
 	return { path, branch, repo: top, base, cwd: existsSync(inside) ? inside : path, sourceDirty };
 }
 
-/** Undo createWorktree after a dispatch that failed (nothing was done in it). */
+/**
+ * Undo createWorktree after a dispatch the daemon refused. Even then only what holds
+ * nothing: a clean worktree (ignored files count), a branch still at its base.
+ */
 export function discardWorktree(w: WorktreeInfo): void {
-	tryGit(w.repo, ["worktree", "remove", "--force", "--", w.path]);
-	tryGit(w.repo, ["branch", "-D", "--", w.branch]);
+	if (existsSync(w.path)) {
+		if (tryGit(w.path, ["status", "--porcelain", "--ignored"]) !== "") return;
+		if (tryGit(w.repo, ["worktree", "remove", "--", w.path]) === undefined) return;
+	}
+	if (tryGit(w.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]) === w.base) tryGit(w.repo, ["branch", "-D", "--", w.branch]);
 }
 
 const TAG = /^[a-z0-9-]{1,32}-[0-9a-f]{4}$/;
@@ -182,18 +188,30 @@ export interface WorktreeStatus {
 	exists: boolean;
 	/** Uncommitted or untracked changes. */
 	dirty: boolean;
+	/** Files git ignores (.env, build output, node_modules): rm would delete them. */
+	ignored: boolean;
 	/** Commits on the branch beyond base (null when git cannot say). */
 	ahead: number | null;
+	/** The branch still points at base: deleting it loses nothing. */
+	atBase: boolean;
 }
 
 export async function worktreeStatus(w: WorktreeInfo): Promise<WorktreeStatus> {
 	const exists = existsSync(w.path);
-	const [porcelain, count] = await Promise.all([
-		exists ? gitAsync(w.path, ["status", "--porcelain"]) : Promise.resolve(""),
+	const [porcelain, count, tip] = await Promise.all([
+		exists ? gitAsync(w.path, ["status", "--porcelain", "--ignored"]) : Promise.resolve(""),
 		gitAsync(existsSync(w.repo) ? w.repo : w.path, ["rev-list", "--count", `${w.base}..refs/heads/${w.branch}`]),
+		gitAsync(existsSync(w.repo) ? w.repo : w.path, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]),
 	]);
+	const lines = porcelain === undefined ? ["?"] : porcelain.split("\n").filter(Boolean);
 	const ahead = count !== undefined && /^\d+$/.test(count) ? Number(count) : null;
-	return { exists, dirty: exists && porcelain !== "", ahead };
+	return {
+		exists,
+		dirty: exists && lines.some((l) => !l.startsWith("!!")),
+		ignored: exists && lines.some((l) => l.startsWith("!!")),
+		ahead,
+		atBase: tip === w.base,
+	};
 }
 
 /** The last line of a child's report (M9). */
@@ -241,10 +259,13 @@ export async function cleanupWorktree(w: WorktreeInfo, inUse: boolean): Promise<
 		// only ever the worktree pi-roost made, still on its own branch
 		if (!(await validWorktree(w))) return out(false, true, "it is no longer on its branch");
 		if (st.dirty) return out(false, true, "it has uncommitted changes");
+		if (st.ignored) return out(false, true, "it has files git ignores (.env, build output, dependencies)");
 		if ((await gitAsync(w.repo, ["worktree", "remove", "--", w.path], 20_000)) === undefined) return out(false, true, "git worktree remove failed");
 	} else await gitAsync(w.repo, ["worktree", "prune"]);
-	if (st.ahead === 0 && (await gitAsync(w.repo, ["branch", "-D", "--", w.branch])) !== undefined) return out(true, false);
-	return out(true, true, st.ahead === null ? undefined : `${st.ahead} commit${st.ahead === 1 ? "" : "s"} on the branch`);
+	// a branch moved anywhere (even behind base) keeps whatever it points at
+	if (st.atBase && (await gitAsync(w.repo, ["branch", "-D", "--", w.branch])) !== undefined) return out(true, false);
+	const reason = st.ahead ? `${st.ahead} commit${st.ahead === 1 ? "" : "s"} on the branch` : st.atBase ? undefined : "the branch moved";
+	return out(true, true, reason);
 }
 
 /** What rm did with a session's worktree, for the CLI and the view. */

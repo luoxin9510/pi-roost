@@ -105,9 +105,16 @@ After the job is stopped and its records removed, the daemon cleans up its workt
 1. Another job's cwd is inside the worktree (a `/fork` of it, an `@dir` dispatch): keep.
 2. The worktree directory is gone: `git worktree prune`; the branch is kept if it has
    commits beyond base, else deleted.
-3. Uncommitted or untracked changes: keep the worktree and the branch.
-4. Clean, with commits beyond base: `git worktree remove`, keep the branch.
-5. Clean, no commits beyond base: `git worktree remove`, `git branch -D`.
+3. Uncommitted or untracked changes, or ignored files (`.env`, build output: a plain
+   `git worktree remove` would delete them): keep the worktree and the branch.
+4. Clean, branch moved (commits beyond base, or reset elsewhere): `git worktree remove`,
+   keep the branch.
+5. Clean, branch still at base: `git worktree remove`, `git branch -D`.
+
+rm that could not stop the worker (still there after SIGKILL) skips cleanup. A dispatch
+error undoes the fresh worktree only when the daemon refused it (an error code other than
+`closed`): a timeout or a dropped connection may come after the session started. The undo
+itself removes only a clean worktree and a branch at base.
 
 `rm` returns `worktree: { path, branch, removed, branchKept, reason? }`; the CLI prints
 it, the view shows it as its message. Nothing with work in it is ever deleted; a kept

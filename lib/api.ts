@@ -8,7 +8,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { attachToHost, type DetachReason } from "./attach.ts";
 import { join } from "node:path";
 import { DaemonClient, packageRoot } from "./client.ts";
-import { buildLaunch, fallbackName, prepareIsolation } from "./dispatch.ts";
+import { buildLaunch, fallbackName, prepareIsolation, refusedByDaemon } from "./dispatch.ts";
 import { hostSocketPath } from "./paths.ts";
 import type { JobRow } from "./protocol.ts";
 import { ensureLive } from "./resume.ts";
@@ -88,7 +88,7 @@ export async function spawn(opts: SpawnOptions): Promise<{ id: string; name: str
 		);
 		return iso.worktree ? { ...r, worktree: { path: iso.worktree.path, branch: iso.worktree.branch } } : r;
 	} catch (err) {
-		iso.discard();
+		if (refusedByDaemon(err)) iso.discard();
 		throw err;
 	}
 }

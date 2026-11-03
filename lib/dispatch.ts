@@ -1,5 +1,6 @@
 // Building a background job's launch request from a foreground pi process.
 import { isAbsolute, resolve } from "node:path";
+import { DaemonError } from "./client.ts";
 import { taskArg } from "./store.ts";
 import { createWorktree, discardWorktree, type WorktreeInfo, WorktreeError } from "./worktree.ts";
 
@@ -112,8 +113,16 @@ export interface Isolation {
 	worktree?: WorktreeInfo;
 	/** For the user or the spawning agent: uncommitted changes left behind, or why it is not isolated. */
 	note?: string;
-	/** Undo after a failed dispatch. */
+	/** Undo after a dispatch that never reached the daemon or that it refused (see refusedByDaemon). */
 	discard: () => void;
+}
+
+/**
+ * M10: whether a dispatch error means no session started, so its worktree may go. A
+ * dropped connection or a timeout may come after the daemon started it: keep the worktree.
+ */
+export function refusedByDaemon(err: unknown): boolean {
+	return err instanceof DaemonError && typeof err.code === "string" && err.code !== "closed";
 }
 
 /**
