@@ -38,8 +38,11 @@ export default function (pi: ExtensionAPI) {
 
 async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: string): Promise<void> {
 	const fail = (message: string) => {
-		process.exitCode = 1;
-		process.once("exit", () => process.stderr.write(`pi-roost: ${message}\n`));
+		// pi exits through process.exit(0); an exit listener can still change the code.
+		process.once("exit", () => {
+			process.stderr.write(`pi-roost: ${message}\n`);
+			process.exitCode = 1;
+		});
 		ctx.shutdown();
 	};
 	if (!ctx.hasUI) return fail("--bg needs interactive mode; it cannot be combined with -p or --mode");

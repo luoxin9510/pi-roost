@@ -61,7 +61,8 @@ async function cmdAttach(query: string | undefined): Promise<void> {
 	const reason = await attachToHost(hostSocketPath(row.id), { stdin: process.stdin, stdout: process.stdout });
 	const note =
 		reason === "exit" ? "session ended" : reason === "takeover" ? "attached elsewhere" : reason === "error" ? "connection lost" : "detached";
-	process.stdout.write(`\r\n${note} · ${row.id} · ${row.name}\r\n`);
+	// The worker left the cursor wherever its editor was; print below its last frame.
+	process.stdout.write(`\x1b[${process.stdout.rows || 24};1H\r\n${note} · ${row.id} · ${row.name}\r\n`);
 }
 
 async function cmdLogs(query: string | undefined): Promise<void> {
