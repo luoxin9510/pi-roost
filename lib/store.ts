@@ -18,6 +18,9 @@ export interface JobRecord {
 	createdAt: number; // ms epoch
 	piVersion?: string;
 	roostVersion: string;
+	/** M9: spawned by roost_spawn: the spawner's session (or `peer:<id>`), the tree's root. */
+	parentSession?: string;
+	rootSession?: string;
 }
 
 export interface JobState {

@@ -18,7 +18,27 @@ export interface RoostConfig {
 	fullscreen: boolean;
 	/** NT-1: how the agent view makes the terminal notify. */
 	notify: "auto" | "osc9" | "osc777" | "bell" | "off";
+	/** M9: the roost_agents / roost_send / roost_spawn tools in every session. */
+	agentTools: boolean;
+	/** M9: messages to sessions outside the sender's spawn tree (user config only). */
+	agentExternalMessages: boolean;
+	/** M9 spawn limits (user config only). */
+	agentMaxDepth: number;
+	agentMaxChildren: number;
+	agentMaxTree: number;
+	agentMaxTotal: number;
 }
+
+/** Keys a project's .pi/roost.json may not set. */
+const USER_ONLY = [
+	"envAllowList",
+	"summaryModel",
+	"agentExternalMessages",
+	"agentMaxDepth",
+	"agentMaxChildren",
+	"agentMaxTree",
+	"agentMaxTotal",
+] as const;
 
 export const DEFAULTS: RoostConfig = {
 	leftArrowOpensAgents: true,
@@ -28,6 +48,12 @@ export const DEFAULTS: RoostConfig = {
 	groupBy: "state",
 	fullscreen: true,
 	notify: "auto",
+	agentTools: true,
+	agentExternalMessages: false,
+	agentMaxDepth: 3,
+	agentMaxChildren: 8,
+	agentMaxTree: 16,
+	agentMaxTotal: 32,
 };
 
 function pick(raw: unknown): Partial<RoostConfig> {
@@ -43,6 +69,11 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (Array.isArray(r.envAllowList)) out.envAllowList = r.envAllowList.filter((v): v is string => typeof v === "string");
 	if (typeof r.fullscreen === "boolean") out.fullscreen = r.fullscreen;
 	if (r.groupBy === "state" || r.groupBy === "directory") out.groupBy = r.groupBy;
+	for (const k of ["agentTools", "agentExternalMessages"] as const) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
+	for (const k of ["agentMaxDepth", "agentMaxChildren", "agentMaxTree", "agentMaxTotal"] as const) {
+		const v = r[k];
+		if (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 1000) out[k] = v;
+	}
 	if (r.notify === "auto" || r.notify === "osc9" || r.notify === "osc777" || r.notify === "bell" || r.notify === "off") {
 		out.notify = r.notify;
 	}
@@ -56,10 +87,10 @@ export function userConfigPath(): string {
 export function loadConfig(cwd: string): RoostConfig {
 	const user = pick(readJson(userConfigPath()));
 	const project = pick(readJson(join(cwd, ".pi", "roost.json")));
-	// A cloned repository must not choose which of your environment reaches its workers.
-	delete project.envAllowList;
-	// nor which provider receives transcript excerpts (or what they cost)
-	delete project.summaryModel;
+	// A cloned repository must not choose which of your environment reaches its workers,
+	// which provider receives transcript excerpts (or what they cost), nor how far its
+	// agents may reach and multiply.
+	for (const k of USER_ONLY) delete project[k];
 	return { ...DEFAULTS, ...user, ...project };
 }
 

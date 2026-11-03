@@ -107,7 +107,7 @@ describe("Reporter", () => {
 		await listen();
 		const got: string[] = [];
 		pushOnReply = { id: "j", text: "hello" };
-		const r = new Reporter({ id: "j", token: "t", socket: sock }, (_seq, t) => got.push(t));
+		const r = new Reporter({ id: "j", token: "t", socket: sock }, (item) => void got.push(item.text));
 		r.update(base);
 		await sleep(100);
 		pushOnReply = { id: "other", text: "nope" };

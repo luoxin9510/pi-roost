@@ -3,7 +3,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { DaemonClient } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
-import type { WorkerReport } from "../lib/protocol.ts";
+import { AGENT_MESSAGE_TYPE, RESULT_MAX } from "../lib/comms.ts";
+import { messageText } from "../lib/heuristics.ts";
+import type { ArgsOf, Event, Op, ResultOf, WorkerReport } from "../lib/protocol.ts";
+import { registerAgentTools } from "./agent-tools.ts";
 import { registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
 	CUSTOM_DIALOG_MS,
@@ -19,10 +22,20 @@ export interface JobIdentity {
 	socket: string;
 }
 
-/** Set in a worker's environment by the PTY host. */
+const SAVED = Symbol.for("pi-roost.jobIdentity");
+
+/**
+ * Set in a worker's environment by the PTY host. The token is removed from the
+ * environment once read (M9), so a /reload finds the identity kept in this process.
+ */
 export function jobIdentity(env: NodeJS.ProcessEnv = process.env): JobIdentity | undefined {
 	const { PI_JOB_ID: id, PI_JOB_TOKEN: token, PI_DAEMON_SOCK: socket } = env;
-	return id && token && socket ? { id, token, socket } : undefined;
+	const g = globalThis as { [SAVED]?: JobIdentity };
+	if (id && token && socket) {
+		if (env === process.env) g[SAVED] = { id, token, socket };
+		return { id, token, socket };
+	}
+	return env === process.env && g[SAVED]?.id === id ? g[SAVED] : undefined;
 }
 
 const REQUEST_TIMEOUT_MS = 4000;
@@ -45,9 +58,9 @@ export class Reporter {
 	private retryMs = 500;
 	private closed = false;
 	private job: JobIdentity;
-	private onDeliver: (seq: number, text: string) => void;
+	private onDeliver: (item: DeliverItem) => void;
 
-	constructor(job: JobIdentity, onDeliver: (seq: number, text: string) => void = () => {}) {
+	constructor(job: JobIdentity, onDeliver: (item: DeliverItem) => void = () => {}) {
 		this.job = job;
 		this.onDeliver = onDeliver;
 	}
@@ -106,8 +119,26 @@ export class Reporter {
 	}
 
 	/** Tell the daemon a reply reached pi; best effort, a lost ack means a resend that is deduplicated. */
-	ack(seq: number): void {
-		this.client?.request("ack", { id: this.job.id, token: this.job.token, seq }).catch(() => {});
+	ack(seq: number, exact = false): void {
+		this.client?.request("ack", { id: this.job.id, token: this.job.token, seq, ...(exact ? { exact } : {}) }).catch(() => {});
+	}
+
+	/**
+	 * M9: a request on this worker's own connection, which the daemon knows as this job
+	 * once a report went through on it.
+	 */
+	async call<O extends Op>(op: O, args: ArgsOf<O>): Promise<ResultOf<O>> {
+		if (this.closed) throw new Error("this session is shutting down");
+		if (!this.client || !this.sent) {
+			if (this.inflight) await this.inflight;
+			if ((!this.client || !this.sent) && this.latest) await this.request(this.latest);
+		}
+		const client = this.client;
+		if (!client || !this.sent) throw new Error("the pi-roost background service is not reachable");
+		return Promise.race([
+			client.request(op, args),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${op} timed out`)), 15_000).unref?.()),
+		]);
 	}
 
 	private async request(report: WorkerReport): Promise<void> {
@@ -116,7 +147,7 @@ export class Reporter {
 				const fresh = await DaemonClient.connect(this.job.socket);
 				// Replies come back on the connection this worker reports on.
 				fresh.onEvent((e) => {
-					if (e.event === "deliver" && e.id === this.job.id) this.onDeliver(e.seq, e.text);
+					if (e.event === "deliver" && e.id === this.job.id) this.onDeliver(e);
 				});
 				// A daemon restart drops the connection: report again at once so replies
 				// can reach an idle worker that has nothing new to say.
@@ -212,7 +243,15 @@ const THINKING = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "m
  * prompt before streaming begins would be rejected (and pi only logs it).
  */
 export class ReplyQueue {
-	private queue: { seq: number; text: string }[] = [];
+	private queue: DeliverItem[] = [];
+	/** M9: agent items handed to pi, acknowledged once pi has them in the session. */
+	private handed = new Set<number>();
+	/** M9: agent items already in this session (seen, or found on start), as `job:seq`. */
+	private seen = new Set<string>();
+	/** M9: the agent item that started the run now starting, if one did. */
+	private agentStarter: DeliverItem | undefined;
+	/** M9: a user reply joined the current run (it is the user's run then). */
+	private userJoined = false;
 	private lastSeq = 0;
 	private awaitingStart = 0;
 	private timer: NodeJS.Timeout | undefined;
@@ -221,7 +260,9 @@ export class ReplyQueue {
 		ctx: () => ExtensionContext | undefined;
 		running: () => boolean;
 		dialogOpen: () => boolean;
-		ack: (seq: number) => void;
+		ack: (seq: number, exact?: boolean) => void;
+		/** M9: seqs restart with each job of a session; agent items are told apart by job. */
+		jobId?: string;
 	};
 
 	constructor(pi: ExtensionAPI, env: ReplyQueue["env"]) {
@@ -229,9 +270,17 @@ export class ReplyQueue {
 		this.env = env;
 	}
 
-	add(seq: number, text: string): void {
-		if (seq <= this.lastSeq || this.queue.some((q) => q.seq === seq)) return this.env.ack(seq); // a resend
-		this.queue.push({ seq, text });
+	add(item: DeliverItem | number, legacyText?: string): void {
+		const it: DeliverItem = typeof item === "number" ? { seq: item, text: legacyText ?? "" } : item;
+		const { seq } = it;
+		const agent = isAgentKind(it.kind);
+		if (agent && this.seen.has(this.seenKey(seq))) return this.env.ack(seq, true); // already in the session
+		if (seq <= this.lastSeq || this.queue.some((q) => q.seq === seq) || this.handed.has(seq)) {
+			// a resend; an agent item handed to pi is acknowledged when pi has it
+			if (!this.handed.has(seq)) this.env.ack(seq, agent);
+			return;
+		}
+		this.queue.push(it);
 		this.queue.sort((a, b) => a.seq - b.seq);
 		this.pump();
 	}
@@ -242,6 +291,10 @@ export class ReplyQueue {
 		const ctx = this.env.ctx();
 		while (ctx && this.queue.length > 0) {
 			const next = this.queue[0]!;
+			if (isAgentKind(next.kind)) {
+				if (!this.pumpAgent(ctx, next)) return;
+				continue;
+			}
 			if (this.applySetting(ctx, next.text)) {
 				this.done(next.seq);
 				continue;
@@ -252,6 +305,7 @@ export class ReplyQueue {
 			if (this.awaitingStart && Date.now() - this.awaitingStart < START_WAIT_MS) return this.retry();
 			if (running) {
 				void this.pi.sendUserMessage(next.text, { deliverAs: "followUp", expandPromptTemplates: true });
+				this.userJoined = true;
 			} else if (ctx.isIdle()) {
 				void this.pi.sendUserMessage(next.text, { expandPromptTemplates: true });
 				this.awaitingStart = Date.now();
@@ -264,6 +318,85 @@ export class ReplyQueue {
 		this.queue.shift();
 		this.lastSeq = Math.max(this.lastSeq, seq);
 		this.env.ack(seq);
+	}
+
+	/** M9: hand an agent message or report to pi; false when it has to wait. */
+	private pumpAgent(ctx: ExtensionContext, next: DeliverItem): boolean {
+		// a dialog is the user's: the message waits for it (the sender was told)
+		if (this.env.dialogOpen()) return false;
+		const running = this.env.running();
+		if (running) this.awaitingStart = 0;
+		if (this.awaitingStart && Date.now() - this.awaitingStart < START_WAIT_MS) {
+			this.retry();
+			return false;
+		}
+		const message = {
+			customType: AGENT_MESSAGE_TYPE,
+			content: next.text,
+			display: true,
+			details: { seq: next.seq, job: this.env.jobId ?? null, kind: next.kind, from: next.from ?? null, relation: next.relation ?? null },
+		};
+		if (running) void this.pi.sendMessage(message, { triggerTurn: true, deliverAs: "steer" });
+		else if (ctx.isIdle()) {
+			void this.pi.sendMessage(message, { triggerTurn: true });
+			this.awaitingStart = Date.now();
+			this.agentStarter = next;
+		} else {
+			this.retry(); // compacting
+			return false;
+		}
+		this.queue.shift();
+		this.lastSeq = Math.max(this.lastSeq, next.seq);
+		this.handed.add(next.seq);
+		this.seen.add(this.seenKey(next.seq));
+		return true;
+	}
+
+	private seenKey(seq: number): string {
+		return `${this.env.jobId ?? ""}:${seq}`;
+	}
+
+	/** M9: seqs of agent items this session already holds (after a restart). */
+	noteSession(ctx: ExtensionContext): void {
+		for (const e of ctx.sessionManager.getBranch()) {
+			const m = (e as { type?: string; message?: { role?: string; customType?: string; details?: { seq?: unknown } } }).message;
+			const custom = (e.type === "custom_message" ? e : m?.role === "custom" ? m : undefined) as
+				| { customType?: string; details?: { seq?: unknown; job?: unknown } }
+				| undefined;
+			const d = custom?.details;
+			// only items of this job: another job of the same session counted its own seqs
+			if (custom?.customType === AGENT_MESSAGE_TYPE && typeof d?.seq === "number" && d.job === (this.env.jobId ?? null)) {
+				this.seen.add(this.seenKey(d.seq));
+			}
+		}
+	}
+
+	/** M9: pi took an agent item into the session. */
+	messageEnded(message: { role?: string; customType?: string; details?: unknown }): void {
+		const seq = (message.details as { seq?: unknown } | undefined)?.seq;
+		if (message.role !== "custom" || message.customType !== AGENT_MESSAGE_TYPE || typeof seq !== "number") return;
+		if (this.handed.delete(seq)) this.env.ack(seq, true);
+	}
+
+	/** M9: a run ended: whatever was steered into it is in the session by now. */
+	settled(): void {
+		for (const seq of this.handed) this.env.ack(seq, true);
+		this.handed.clear();
+	}
+
+	/** M9: the agent item that started the run now starting (undefined: a task or the user). */
+	takeAgentStart(): DeliverItem | undefined {
+		const v = this.agentStarter;
+		this.agentStarter = undefined;
+		this.userJoined = false;
+		return v;
+	}
+
+	/** M9: a user reply was steered into the current run. */
+	takeUserJoined(): boolean {
+		const v = this.userJoined;
+		this.userJoined = false;
+		return v;
 	}
 
 	private retry(): void {
@@ -311,17 +444,27 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		ctx: () => current,
 		running: () => tracker.isRunning(),
 		dialogOpen: () => dialogOpen > 0,
-		ack: (seq) => reporter?.ack(seq),
+		ack: (seq, exact) => reporter?.ack(seq, exact),
+		jobId: job.id,
 	});
+	// M9: a background child reports the end of a run it was given: its task, a user's
+	// reply, or a message from its parent (answering a question it asked). Runs started by
+	// anything else (a sibling, a report) do not report, and parent-message runs report
+	// at most MAX_MESSAGE_REPORTS times in a row, so two sessions cannot wake each other
+	// forever.
+	const child = process.env.PI_ROOST_CHILD === "1";
+	let starter: DeliverItem | undefined;
+	let messageReports = 0;
 	// attachSignal: this worker handles the host's SIGUSR2 on attach and detach (AT-5)
-	const send = (urgent = false) => reporter?.update({ ...tracker.report(), attachSignal: true }, urgent);
+	const send = (urgent = false) => reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true }, urgent);
 
 	pi.on("session_start", (event, ctx: ExtensionContext) => {
 		current = ctx;
 		dialogOpen = 0;
 		stopKeys?.();
 		stopKeys = ctx.hasUI ? registerDetachKeys(ctx, job, () => dialogOpen > 0) : undefined;
-		reporter = new Reporter(job, (seq, text) => replies.add(seq, text));
+		reporter = new Reporter(job, (item) => replies.add(item));
+		replies.noteSession(ctx);
 		tracker.start({
 			name: ctx.sessionManager.getSessionName() ?? null,
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
@@ -340,6 +483,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	});
 
 	pi.on("agent_start", () => {
+		starter = replies.takeAgentStart();
 		tracker.agentStart();
 		send();
 		replies.pump();
@@ -355,6 +499,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		send();
 	});
 	pi.on("message_end", (event) => {
+		replies.messageEnded(event.message as never);
 		if (event.message.role !== "assistant") return;
 		tracker.assistantMessage(event.message);
 		send();
@@ -362,8 +507,29 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	pi.on("agent_settled", (event) => {
 		tracker.agentSettled(event.aborted);
 		send();
+		replies.settled();
+		const userJoined = replies.takeUserJoined();
+		let worthy = !starter || userJoined;
+		if (!worthy && starter?.kind === "message" && starter.relation === "parent" && messageReports < MAX_MESSAGE_REPORTS) {
+			worthy = true;
+			messageReports++;
+		}
+		if (!starter || userJoined) messageReports = 0;
+		if (child && !event.aborted && worthy && current) void handBack(current);
+		starter = undefined;
 		replies.pump();
 	});
+
+	const handBack = async (ctx: ExtensionContext) => {
+		const r = tracker.report();
+		// a dialog is for a human; the parent cannot answer it
+		if (r.waitingFor === "dialog" || (r.state !== "done" && r.state !== "blocked" && r.state !== "failed")) return;
+		const last = lastAssistant(ctx);
+		const result = last ? messageText(last as never).trim().slice(0, RESULT_MAX) : "";
+		await reporter
+			?.call("handback", { state: r.state, result: result || null, question: r.question, error: r.error })
+			.catch(() => {});
+	};
 	pi.on("ui_prompt_start", (event) => {
 		dialogOpen++;
 		clearTimeout(customTimer);
@@ -403,6 +569,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	// read the tracker's view of the same event (run ids, settled state).
 	registerSummaries(pi, { tracker, send: () => send(true), ctx: () => current });
 	registerRecap(pi, { tracker, send: () => send(), ctx: () => current });
+	registerAgentTools(pi, { call: (op, args) => (reporter ? reporter.call(op, args) : Promise.reject(new Error("not connected"))) });
 
 	pi.on("session_shutdown", async () => {
 		current = undefined;
@@ -415,6 +582,12 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		await closing?.close();
 	});
 }
+
+/** A delivered reply or agent item (M9 adds the kind). */
+export type DeliverItem = Pick<Extract<Event, { event: "deliver" }>, "seq" | "text" | "kind" | "from" | "relation">;
+
+const isAgentKind = (k: DeliverItem["kind"]) => k === "message" || k === "report";
+const MAX_MESSAGE_REPORTS = 3;
 
 function lastAssistant(ctx: ExtensionContext): { content?: unknown; stopReason?: string; errorMessage?: string } | undefined {
 	const branch = ctx.sessionManager.getBranch();

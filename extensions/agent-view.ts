@@ -982,7 +982,7 @@ export class AgentView implements Component {
 
 		const sections = this.sections();
 		const list = items(sections);
-		this.nameWidth = Math.max(1, Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(oneLine(r.name))))));
+		this.nameWidth = Math.max(1, Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(oneLine(r.name)) + (r.parentSession ? 2 : 0)))));
 		const sel = this.selectedIndex(list);
 		const empty = all.length === 0;
 		list.forEach((it, i) => {
@@ -1033,7 +1033,8 @@ export class AgentView implements Component {
 		const t = this.o.theme;
 		const icon = iconOf(row, this.frame, !this.o.reducedMotion);
 		const age = ageOf(row, now);
-		const name = truncateToWidth(oneLine(row.name), this.nameWidth);
+		// M9: a spawned session is marked as someone's child
+		const name = truncateToWidth(oneLine(`${row.parentSession ? "↳ " : ""}${row.name}`), this.nameWidth);
 		const pad = " ".repeat(Math.max(0, this.nameWidth - visibleWidth(name)));
 		const styled = row.id === this.o.highlightId ? t.bold(t.fg(nameToneOf(row.id), name)) : t.fg(nameToneOf(row.id), name);
 		const head = `${t.fg(icon.tone, icon.glyph)} ${styled}${pad}  `;
@@ -1058,6 +1059,10 @@ export class AgentView implements Component {
 				: row.state + (row.status ? ` · ${row.status}` : ""),
 		];
 		if (row.model) facts.push(row.model);
+		if (row.parentSession) {
+			const parent = [...this.rows.values()].find((r) => r.sessionFile === row.parentSession && r.id !== row.id);
+			facts.push(`child of ${parent ? oneLine(parent.name) : "a foreground session"}`);
+		}
 		facts.push(row.id);
 		lines.push(`    ${t.fg("dim", truncateToWidth(facts.join(" · "), inner))}`);
 		if (row.waitingFor === "dialog") lines.push(`    ${t.fg("warning", "a dialog is open: attach (→) to answer it; replies wait for it")}`);
