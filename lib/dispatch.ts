@@ -47,16 +47,19 @@ export function fallbackName(task: string): string {
 }
 
 export interface LaunchInput {
+	/** First prompt; empty starts the worker idle on its session. */
 	task: string;
 	cwd: string;
 	sessionFile: string;
 	name: string;
-	origin: "bg" | "dispatch";
+	origin: "bg" | "dispatch" | "adopt" | "fork";
 	/** The dispatching pi's own argv (process.argv), for extensions and model flags. */
 	argv: string[];
 	execPath: string;
 	env: NodeJS.ProcessEnv;
 	piVersion?: string;
+	/** Extra variable names to carry (settings envAllowList). */
+	extraEnv?: string[];
 	/** Overrides from the agent view's /model and /thinking (DI-4). */
 	model?: string;
 	thinking?: string;
@@ -80,8 +83,8 @@ export function buildLaunch(input: LaunchInput) {
 		cwd: input.cwd,
 		sessionFile: input.sessionFile,
 		// "--" so a task that starts with "-" is not read as a flag
-		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, "--", input.task],
-		env: allowListedEnv(input.env),
+		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, ...(input.task ? ["--", input.task] : [])],
+		env: allowListedEnv(input.env, input.extraEnv),
 		name: input.name,
 		origin: input.origin,
 		...(input.model ? { model: input.model } : {}),

@@ -39,6 +39,10 @@ export interface AgentViewOptions {
 	connect?: () => Promise<DaemonClient>;
 	/** AV-9: a row to keep bold (the conversation just moved to the background). */
 	highlightId?: string;
+	/** BG-5: Esc goes back into this job (the conversation that just moved) instead of leaving. */
+	origin?: string;
+	/** Shown above the list until the user returns to the origin. */
+	banner?: string;
 	/** Screen-reader mode: no animation (PRD accessibility). */
 	reducedMotion?: boolean;
 	done: () => void;
@@ -74,8 +78,14 @@ export class AgentView implements Component {
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
 
+	private origin: string | undefined;
+	/** Esc/Enter came before the moved conversation's worker was up: attach once it is. */
+	private attachWhenLive: string | undefined;
+
 	constructor(o: AgentViewOptions) {
 		this.o = o;
+		this.origin = o.origin;
+		if (o.origin) this.cursor = { kind: "row", id: o.origin };
 		this.input.focused = true;
 	}
 
@@ -137,6 +147,12 @@ export class AgentView implements Component {
 		if (e.event === "job") {
 			if (this.o.cwdFilter && !within(e.job.cwd, this.o.cwdFilter)) return;
 			this.rows.set(e.job.id, e.job);
+			if (this.attachWhenLive === e.job.id && !this.attached) {
+				if (e.job.pid) {
+					this.attachWhenLive = undefined;
+					void this.attachTo(e.job.id).catch((err: unknown) => this.say(String(err), "error"));
+				} else if (e.job.endedAt !== null) this.attachWhenLive = undefined;
+			}
 		} else if (e.event === "removed") this.rows.delete(e.id);
 		this.render0();
 	}
@@ -304,6 +320,23 @@ export class AgentView implements Component {
 			this.o.tui.requestRender();
 			return;
 		}
+		const origin = this.origin;
+		if (origin) {
+			const row = this.rows.get(origin);
+			if (row?.pid) {
+				this.origin = undefined; // back here after detaching, Esc leaves
+				void this.attachTo(origin).catch((err: unknown) => this.say(String(err), "error"));
+				return;
+			}
+			if (!row || row.endedAt === null) {
+				// dispatch answered before the worker's first report reached the view
+				this.origin = undefined;
+				this.attachWhenLive = origin;
+				this.say("Your conversation is starting…", "accent");
+				return;
+			}
+		}
+		this.attachWhenLive = undefined;
 		this.o.done();
 	}
 
@@ -462,7 +495,8 @@ export class AgentView implements Component {
 		if (!short) out.push(t.fg("border", "─".repeat(w)));
 		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${oneLine(this.connectError)}`, w)));
 
-		if (this.help) return [...out, ...this.helpLines(w)];
+		if (this.origin && this.o.banner) out.push(t.fg("accent", truncateToWidth(this.o.banner, w)));
+		if (this.help) return [...out, ...this.helpLines(w)].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
 
 		const sections = this.sections();
 		const list = items(sections);
@@ -529,6 +563,7 @@ export class AgentView implements Component {
 	}
 
 	private footer(): string {
+		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
 		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close";
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
