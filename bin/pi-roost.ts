@@ -5,6 +5,7 @@ import { attachToHost } from "../lib/attach.ts";
 import { DaemonClient, DaemonError } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { ensureLive } from "../lib/resume.ts";
+import { cleanupText } from "../lib/worktree.ts";
 import { daemonLogPath, hostSocketPath, runtimeDir } from "../lib/paths.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
@@ -108,8 +109,10 @@ async function cmdLogs(query: string | undefined): Promise<void> {
 async function cmdStopOrRm(op: "stop" | "rm", query: string | undefined): Promise<void> {
 	await withDaemon(async (c) => {
 		const row = await findRow(c, query);
-		await c.request(op, { id: row.id });
+		const r = await c.request(op, { id: row.id });
 		process.stdout.write(`${op === "stop" ? "stopped" : "removed"} · ${row.id} · ${row.name}\n`);
+		const w = "worktree" in r ? r.worktree : undefined;
+		if (w) process.stdout.write(`  ${cleanupText(w)}\n`);
 	});
 }
 

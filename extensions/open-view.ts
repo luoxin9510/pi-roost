@@ -1,6 +1,6 @@
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveUserConfig } from "../lib/config.ts";
-import { allowListedEnv, buildLaunch, fallbackName } from "../lib/dispatch.ts";
+import { allowListedEnv, buildLaunch, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import { readWriterLock } from "../lib/locks.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
@@ -50,15 +50,24 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 				origin: opts.origin,
 				highlightId: opts.origin,
 				banner: opts.banner,
+				worktreeDefault: isolationDefault(config.worktreeIsolation, false),
 				launch: (task, o = {}) => {
-					const cwd = o.cwd ?? dispatchCwd;
+					const name = o.name ?? fallbackName(task);
+					// M10: only a new session can start in a worktree; a resumed one keeps its cwd
+					const fresh = !o.sessionFile;
+					const want = fresh && (o.worktree ?? isolationDefault(config.worktreeIsolation, false));
+					const iso = prepareIsolation(o.cwd ?? dispatchCwd, name, want, fresh && o.worktree === true);
+					const cwd = iso.cwd;
 					const sessionFile = o.sessionFile ?? SessionManager.create(cwd).getSessionFile();
-					if (!sessionFile) throw new Error("could not allocate a session file");
-					return buildLaunch({
+					if (!sessionFile) {
+						iso.discard();
+						throw new Error("could not allocate a session file");
+					}
+					const launch = buildLaunch({
 						task,
 						cwd,
 						sessionFile,
-						name: o.name ?? fallbackName(task),
+						name,
 						origin: o.origin ?? "dispatch",
 						argv: process.argv,
 						execPath: process.execPath,
@@ -69,6 +78,7 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						model: o.model ?? (o.origin === "adopt" ? undefined : config.dispatchModel),
 						thinking: o.thinking ?? (o.origin === "adopt" ? undefined : config.dispatchThinking),
 					});
+					return { ...launch, ...(iso.worktree ? { worktree: iso.worktree, discard: iso.discard } : {}), ...(iso.note ? { note: iso.note } : {}) };
 				},
 				launchShell: (command, cwd) => ({
 					kind: "shell" as const,

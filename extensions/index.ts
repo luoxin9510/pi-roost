@@ -2,7 +2,9 @@ import { setJobEventBus } from "../lib/job-events.ts";
 import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { DaemonClient } from "../lib/client.ts";
-import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
+import { existsSync } from "node:fs";
+import { buildLaunch, fallbackName, type Isolation, isolationDefault, prepareIsolation, refusedByDaemon } from "../lib/dispatch.ts";
+import { loadConfig } from "../lib/config.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isScratchSession } from "../lib/paths.ts";
 import { registerForeground } from "./foreground.ts";
@@ -19,6 +21,7 @@ export default function (pi: ExtensionAPI) {
 	setCommandSource(() => pi.getCommands().map((c) => ({ name: c.name, source: c.source })));
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
 	pi.registerFlag("bg-name", { description: "Name for the --bg session", type: "string" });
+	pi.registerFlag("worktree", { description: "With --bg: run the session in its own git worktree and branch", type: "boolean" });
 	pi.registerFlag("agents", { description: "Open the agent view of background sessions", type: "boolean" });
 	pi.registerFlag("agents-cwd", { description: "Limit the agent view to sessions under <dir>", type: "string" });
 
@@ -95,12 +98,28 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 	if (!ctx.hasUI) return fail("--bg needs interactive mode; it cannot be combined with -p or --mode");
 	if (task.trim().length === 0) return fail('--bg needs a task, e.g. pi --bg "run the tests"');
 
-	// The current session file when there is one (pi --session <file> --bg), else a
-	// fresh path; pi writes session files lazily, so neither needs to exist yet.
-	const sessionFile = ctx.sessionManager.getSessionFile() ?? SessionManager.create(ctx.cwd).getSessionFile();
-	if (!sessionFile) return fail("could not allocate a session file");
 	const nameFlag = pi.getFlag("bg-name");
 	const name = typeof nameFlag === "string" && nameFlag.trim() ? nameFlag.trim() : fallbackName(task);
+	// The current session file when there is one (pi --session <file> --bg), else a
+	// fresh path; pi writes session files lazily, so neither needs to exist yet.
+	const existing = ctx.sessionManager.getSessionFile();
+	// M10: a worktree only for a new session (a session already written has its cwd)
+	const fresh = !existing || !existsSync(existing);
+	// pi --session <file> --bg names its session: a config default does not replace it
+	const namedSession = process.argv.some((a) => a === "--session" || a.startsWith("--session="));
+	const flag = pi.getFlag("worktree") === true;
+	if (flag && (namedSession || !fresh)) return fail("--worktree starts a new session; it cannot be combined with --session");
+	let iso: Isolation;
+	try {
+		iso = prepareIsolation(ctx.cwd, name, flag || (fresh && !namedSession && isolationDefault(loadConfig(ctx.cwd).worktreeIsolation, false)), flag);
+	} catch (err) {
+		return fail((err as Error).message);
+	}
+	const sessionFile = iso.worktree ? SessionManager.create(iso.cwd).getSessionFile() : (existing ?? SessionManager.create(ctx.cwd).getSessionFile());
+	if (!sessionFile) {
+		iso.discard();
+		return fail("could not allocate a session file");
+	}
 
 	let client: DaemonClient | undefined;
 	try {
@@ -109,10 +128,11 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 			"dispatch",
 			buildLaunch({
 				task,
-				cwd: ctx.cwd,
+				cwd: iso.cwd,
 				sessionFile,
 				name,
 				origin: "bg",
+				worktree: iso.worktree,
 				argv: process.argv,
 				execPath: process.execPath,
 				env: process.env,
@@ -124,6 +144,8 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 			process.stdout.write(
 				[
 					`backgrounded · ${id} · ${finalName}`,
+					...(iso.worktree ? [`  worktree ${iso.worktree.path} · branch ${iso.worktree.branch}`] : []),
+					...(iso.note ? [`  note: ${iso.note}`] : []),
 					`  pi-roost attach ${id}   open it`,
 					`  pi-roost logs ${id}     last screen`,
 					`  pi-roost stop ${id}     stop it`,
@@ -134,6 +156,7 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 		});
 		ctx.shutdown();
 	} catch (err) {
+		if (refusedByDaemon(err)) iso.discard();
 		fail((err as Error).message);
 	} finally {
 		client?.close();

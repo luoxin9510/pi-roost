@@ -8,6 +8,10 @@
 - Reach is limited to the spawn tree unless `agentExternalMessages` is set; spawn limits
   `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal`; `agentTools: false`
   turns the tools off.
+- Worktrees: a new session can run in its own git worktree and branch (`roost_spawn`
+  `worktree: true`, `/worktree` in the agent view, `pi --bg --worktree`, `worktreeIsolation`).
+  A child's report names its branch and commits; `rm` removes a worktree only when it holds
+  no uncommitted work, and a branch only when it has no commits.
 - Background workers no longer keep their job token in the environment of the commands
   they run (a convenience, not a boundary: your own processes can still read the job's files).
 - Rows show each session's model and context window use (`claude-opus-5-5 · 43%`;

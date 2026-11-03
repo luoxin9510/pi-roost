@@ -189,6 +189,44 @@ Design notes: [`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md).
 
 设计说明：[`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md)。
 
+## Worktrees · 独立 worktree
+
+A new background session can work in its own git worktree and branch, so several
+sessions (above all `roost_spawn` children) edit the same repository without overwriting
+each other.
+
+新开的后台会话可以在自己的 git worktree 和分支里工作。这样多个会话（尤其是 `roost_spawn` 派出的子会话）改同一个仓库时，不会互相覆盖。
+
+| Ask for it · 怎么开 | | |
+|---|---|---|
+| `roost_spawn` | `worktree: true` | the agent decides per child · 由 agent 按子会话决定 |
+| agent view · agent 视图 | `/worktree` (toggle; `on`, `off`, `default`) | for the next new sessions · 对之后新开的会话生效 |
+| `pi --bg` | `--worktree` | |
+| `pi-roost/api` | `spawn({ worktree: true })` | |
+| config · 配置 | `worktreeIsolation`: `"off"`, `"children"`, `"all"` | the default · 默认值 |
+
+- The worktree is `<repo>/.pi/worktrees/<name>-<4 hex>` on branch `roost/<name>-<4 hex>`,
+  made from the current commit. Uncommitted changes and ignored files (`node_modules`,
+  `.env`) are not in it; you are told when the checkout has uncommitted changes.<br>
+  worktree 建在 `<仓库>/.pi/worktrees/<名字>-<4位十六进制>`，分支叫 `roost/<名字>-<4位十六进制>`，从当前提交创建。未提交的改动和被忽略的文件（`node_modules`、`.env`）不会带过去；如果原目录有未提交改动，会提示你。
+- The session is told it works there and should commit on its branch. A child's report
+  ends with `Worktree: <path> · branch <name> · 2 commits on it` (and `uncommitted
+  changes` when there are), so its parent knows what to review or merge.<br>
+  会话会被告知它在这个 worktree 里工作、要在自己的分支上提交。子会话的汇报末尾带一行 `Worktree: <路径> · branch <分支> · 2 commits on it`（有未提交改动时还会注明 `uncommitted changes`），父会话据此知道该审查或合并什么。
+- Deleting the session (Ctrl+X twice, `pi-roost rm`) removes what holds no work: a clean
+  worktree goes; its branch goes too unless it moved. A worktree with uncommitted changes,
+  files git ignores (`.env`, build output, `node_modules`), or another session in it, is
+  kept and you are told where it is.<br>
+  删除会话（连按两次 Ctrl+X，或 `pi-roost rm`）时，只清理没有成果的部分：干净的 worktree 会被删掉，分支没动过的话也一起删；有未提交改动、有被 git 忽略的文件（`.env`、构建产物、`node_modules`）、或者还有别的会话在用的 worktree 会保留，并告诉你它在哪。
+- A session is isolated from its first prompt; it never moves into a worktree later (pi
+  would ask about the changed directory). The main checkout's `git status` stays clean:
+  `.pi/worktrees/` is added to the repository's `info/exclude`.<br>
+  会话从第一条提示词起就在 worktree 里，不会中途搬进去（否则 pi 会弹窗询问目录变了）。主仓库的 `git status` 不受影响：`.pi/worktrees/` 已加入仓库的 `info/exclude`。
+
+Design notes: [`docs/plans/m10-worktree-isolation.md`](docs/plans/m10-worktree-isolation.md).
+
+设计说明：[`docs/plans/m10-worktree-isolation.md`](docs/plans/m10-worktree-isolation.md)。
+
 ## Keys · 按键
 
 | Key · 按键 | In the agent view | 在 agent 视图里 |
@@ -246,6 +284,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `leftArrowOpensAgents` | `true` | ← on an empty prompt moves the conversation to the background | 空提示符下按 ← 把对话转到后台 |
 | `defaultToAgentsView` | `false` | plain `pi` opens the agent view | 直接运行 `pi` 时打开 agent 视图 |
 | `envAllowList` | `[]` | extra environment variables for background sessions | 额外传给后台会话的环境变量 |
+| `worktreeIsolation` | `"off"` | `"children"`: `roost_spawn` children get their own worktree; `"all"`: every new session; outside a git repository they run without one | `"children"`：`roost_spawn` 派出的子会话各用独立 worktree；`"all"`：所有新会话都用；不在 git 仓库里时照常运行、不建 worktree |
 | `agentTools` | `true` | the `roost_*` tools in every session | 在每个会话里提供 `roost_*` 工具 |
 | `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
 | `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal` | `3`, `8`, `16`, `32` | spawn limits | 派发子会话的数量限制 |

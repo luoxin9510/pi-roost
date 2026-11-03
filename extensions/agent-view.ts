@@ -11,6 +11,8 @@ import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/disp
 import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
+import { cleanupText } from "../lib/worktree.ts";
+import { refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
 import {
 	ageOf,
@@ -48,11 +50,13 @@ export interface AgentViewOptions {
 	cwdFilter?: string;
 	/** Builds the dispatch request for a task typed into the view. */
 	/** A new pi job; the view adds its /model and /thinking defaults and @dir target. */
-	launch: (task: string, opts?: LaunchOptions) => DispatchArgs;
+	launch: (task: string, opts?: LaunchOptions) => LaunchRequest;
 	/** DI-6: a shell job (no model). */
 	launchShell?: (command: string, cwd: string) => DispatchArgs;
 	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
 	commands?: () => { name: string; source: string }[];
+	/** M10: new sessions get a worktree unless /worktree off (config worktreeIsolation "all"). */
+	worktreeDefault?: boolean;
 	/** DI-4: models for the /model picker, as "provider/id". */
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
@@ -80,10 +84,15 @@ export interface AgentViewOptions {
 	done: () => void;
 }
 
+/** A dispatch request, plus (M10) how to undo its worktree and what to tell the user. */
+export type LaunchRequest = DispatchArgs & { discard?: () => void; note?: string };
+
 export interface LaunchOptions {
 	cwd?: string;
 	model?: string;
 	thinking?: string;
+	/** M10: in its own git worktree (undefined: the user's default). */
+	worktree?: boolean;
 	/** /resume: run this existing session instead of a new one. */
 	sessionFile?: string;
 	name?: string;
@@ -139,6 +148,8 @@ export class AgentView implements Component {
 	/** DI-4: defaults for the next dispatches. */
 	private model: string | undefined;
 	private thinking: string | undefined;
+	/** M10: /worktree for the next dispatches (undefined: the user's default). */
+	private worktree: boolean | undefined;
 	private picker: Picker | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
@@ -586,6 +597,17 @@ export class AgentView implements Component {
 				});
 				return done();
 			}
+			case "worktree": {
+				const v = arg.toLowerCase();
+				if (v && !["on", "off", "default"].includes(v)) {
+					this.say("/worktree takes on, off or default (bare: toggle)", "warning");
+					return true;
+				}
+				this.worktree = v === "default" ? undefined : v === "on" ? true : v === "off" ? false : !(this.worktree ?? this.o.worktreeDefault === true);
+				const on = this.worktree ?? this.o.worktreeDefault === true;
+				this.say(on ? "new sessions get their own git worktree" : "new sessions work in the directory itself");
+				return done();
+			}
 			case "resume":
 				void this.resumePicker();
 				return done();
@@ -809,7 +831,7 @@ export class AgentView implements Component {
 			if (handled) return;
 			// DI-5: skills and prompt templates run as the job's first prompt
 		}
-		let args: DispatchArgs;
+		let args: LaunchRequest;
 		if (parsed.kind === "shell") {
 			if (!parsed.command) return this.say("! needs a command", "warning");
 			if (!this.o.launchShell) return this.say("shell jobs are not available here", "warning");
@@ -818,21 +840,28 @@ export class AgentView implements Component {
 			const task = parsed.kind === "task" ? parsed.task : typed.trim();
 			if (task.length < MIN_TASK) return this.say("Too short", "warning");
 			const cwd = parsed.kind === "task" ? (parsed.cwd ?? base) : base;
-			args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking });
+			try {
+				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree });
+			} catch (err) {
+				return this.say((err as Error).message, "error");
+			}
 		}
+		const { discard, note, ...request } = args;
 		if (!this.client) return this.say("background service unavailable", "error");
 		this.dispatching = true;
 		this.input.setValue("");
 		try {
-			const { id, name } = await this.client.request("dispatch", args);
+			const { id, name } = await this.client.request("dispatch", request);
 			this.cursor = { kind: "row", id };
-			this.say(`started · ${name}`, "success");
+			const where = request.worktree ? ` · ⎇ ${request.worktree.branch}` : "";
+			this.say(`started · ${name}${where}${note ? ` · ${note}` : ""}`, note ? "warning" : "success");
 			if (attach) {
 				const deadline = Date.now() + 3000;
 				while (!this.rows.get(id)?.pid && Date.now() < deadline) await sleep(50);
 				await this.attachTo(id);
 			}
 		} catch (err) {
+			if (refusedByDaemon(err)) discard?.();
 			if (!this.input.getValue()) this.input.setValue(typed);
 			this.say((err as Error).message, "error");
 		} finally {
@@ -913,9 +942,18 @@ export class AgentView implements Component {
 		try {
 			if (armed || targets.every((r) => r.pid === null)) {
 				if (!armed) return this.say("Ctrl+X again to delete", "warning");
-				for (const r of targets) await this.client.request("rm", { id: r.id });
+				const kept: string[] = [];
+				let only = "";
+				for (const r of targets) {
+					const res = await this.client.request("rm", { id: r.id });
+					if (res.worktree) {
+						only = cleanupText(res.worktree);
+						if (!res.worktree.removed || res.worktree.branchKept) kept.push(only);
+					}
+				}
 				this.armedStop = undefined;
-				this.say(targets.length === 1 ? `deleted · ${targets[0]!.name}` : `deleted ${targets.length} sessions`);
+				if (targets.length === 1) this.say(`deleted · ${targets[0]!.name}${only ? ` · ${only}` : ""}`, kept.length > 0 ? "warning" : "muted");
+				else this.say(`deleted ${targets.length} sessions${kept.length > 0 ? ` · ${kept.length} worktrees or branches kept` : ""}`, kept.length > 0 ? "warning" : "muted");
 			} else {
 				for (const r of targets) if (r.pid !== null) await this.client.request("stop", { id: r.id });
 				this.say(`stopping${targets.length > 1 ? ` ${targets.length} sessions` : ""} · Ctrl+X again to delete`, "warning");
@@ -1021,8 +1059,9 @@ export class AgentView implements Component {
 		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${oneLine(this.connectError)}`, w)));
 
 		if (this.origin && this.o.banner) out.push(t.fg("accent", truncateToWidth(this.o.banner, w)));
-		if (this.model || this.thinking) {
-			const d = [this.model && `model ${this.model}`, this.thinking && `thinking ${this.thinking}`].filter(Boolean).join(" · ");
+		const wt = this.worktree ?? this.o.worktreeDefault === true;
+		if (this.model || this.thinking || wt) {
+			const d = [this.model && `model ${this.model}`, this.thinking && `thinking ${this.thinking}`, wt && "own worktree"].filter(Boolean).join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
 		}
 		if (this.picker || this.help) {
@@ -1155,6 +1194,9 @@ export class AgentView implements Component {
 			const parent = [...this.rows.values()].find((r) => r.sessionFile === row.parentSession && r.id !== row.id);
 			facts.push(`child of ${parent ? oneLine(parent.name) : "a foreground session"}`);
 		}
+		if (row.worktree) {
+			facts.push(`⎇ ${oneLine(row.worktree.branch)}`);
+		}
 		facts.push(row.id);
 		lines.push(`    ${t.fg("dim", truncateToWidth(facts.join(" · "), inner))}`);
 		// M8: model, thinking and context window on a line of their own
@@ -1213,6 +1255,7 @@ export class AgentView implements Component {
 			["@dir task", "start the task in that directory (Tab completes)"],
 			["! command", "run a shell command as a job"],
 			["/model /thinking", "defaults for new sessions (bare: pick; default resets)"],
+			["/worktree", "new sessions in their own git worktree and branch (toggle)"],
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "bring back a past session of this directory"],
 			["Esc", "close peek · clear input · exit"],

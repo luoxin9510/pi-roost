@@ -308,6 +308,38 @@ describe("AgentView dispatch (M6b)", () => {
 		view.dispose();
 	});
 
+	it("/worktree toggles a worktree for new sessions; the request carries it, not the undo", async () => {
+		launches.length = 0;
+		const { view, client } = setup([row({ worktree: { path: "/w/.pi/worktrees/x-0001", branch: "roost/x-0001" } })]);
+		await view.start();
+		type(view, "/worktree");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).toContain("new sessions: own worktree");
+		const discarded: string[] = [];
+		const o = (view as unknown as { o: { launch: (t: string, x: unknown) => unknown } }).o;
+		const plain = o.launch;
+		o.launch = (t, x) => ({
+			...(plain(t, x) as object),
+			worktree: { path: "/w/.pi/worktrees/y-0002", branch: "roost/y-0002", repo: "/w", base: "0".repeat(40) },
+			discard: () => discarded.push(t),
+			note: "uncommitted changes in /w are not in its worktree",
+		});
+		type(view, "write the changelog");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(launches.at(-1)).toMatchObject({ opts: { worktree: true } });
+		const sent = client.requests.find((r) => r.op === "dispatch")!.args as Record<string, unknown>;
+		expect(sent.worktree).toMatchObject({ branch: "roost/y-0002" });
+		expect(sent).not.toHaveProperty("discard");
+		expect(sent).not.toHaveProperty("note");
+		expect(discarded).toEqual([]);
+		expect(view.render(80).join("\n")).toContain("⎇ roost/y-0002");
+		type(view, "/worktree off");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).not.toContain("own worktree");
+		view.dispose();
+	});
+
 	it("prompt templates dispatch; other commands are refused and keep the text; ! starts a shell job", async () => {
 		launches.length = 0;
 		const { view, client } = setup([row()]);
