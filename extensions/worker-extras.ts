@@ -21,6 +21,8 @@ import {
 import type { WorkerTracker } from "../lib/worker-state.ts";
 
 const PROGRESS_MS = Number(process.env.PI_ROOST_PROGRESS_MS) || 5 * 60_000; // SM-2
+// the first one sooner, so a long turn does not sit on an empty row for five minutes
+const FIRST_PROGRESS_MS = Math.min(PROGRESS_MS, Number(process.env.PI_ROOST_FIRST_PROGRESS_MS) || 45_000);
 const ASK_TIMEOUT_MS = 20_000;
 const RECAP_WAIT_MS = 4_000;
 export const RECAP_ENTRY = "pi-roost-recap";
@@ -50,7 +52,9 @@ export async function askSummaryModel(
 		const reply = await registry.complete(
 			model,
 			{ systemPrompt: system, messages: [{ role: "user", content: user, timestamp: Date.now() }] },
-			{ maxTokens: 400, signal: AbortSignal.timeout(timeoutMs) },
+			// no thinking for a one-line answer (models that think by default, such as
+			// claude-haiku-5-5, spent the whole budget on it); room to spare where it cannot be off
+			{ thinkingEnabled: false, maxTokens: 1024, signal: AbortSignal.timeout(timeoutMs) } as never,
 		);
 		if (reply.stopReason === "error" || reply.stopReason === "aborted") return undefined;
 		return messageText(reply);
@@ -93,11 +97,14 @@ function firstUserText(ctx: ExtensionContext): string | undefined {
 /** SM-2 (turn-end and long-turn summaries) and DI-9 (auto-name). */
 export function registerSummaries(pi: ExtensionAPI, d: Deps): void {
 	let progress: NodeJS.Timeout | undefined;
+	let firstProgress: NodeJS.Timeout | undefined;
 	let naming = false;
 
 	const stopProgress = () => {
 		clearInterval(progress);
+		clearTimeout(firstProgress);
 		progress = undefined;
+		firstProgress = undefined;
 	};
 
 	pi.on("agent_start", () => {
@@ -105,13 +112,16 @@ export function registerSummaries(pi: ExtensionAPI, d: Deps): void {
 		if (!ctx || !summaryModelSet(ctx)) return;
 		stopProgress();
 		const run = d.tracker.runId();
-		progress = setInterval(async () => {
+		const tick = async () => {
 			const c = d.ctx();
 			if (!c) return stopProgress();
 			const text = await askSummaryModel(c, PROGRESS_SYSTEM, transcriptTail(transcriptLines(c)));
 			const line = text ? parseField(text, "summary", 80) : undefined;
 			if (line && d.tracker.applyProgressSummary(run, line)) d.send();
-		}, PROGRESS_MS);
+		};
+		firstProgress = setTimeout(() => void tick(), FIRST_PROGRESS_MS);
+		progress = setInterval(() => void tick(), PROGRESS_MS);
+		firstProgress.unref?.();
 		progress.unref?.();
 	});
 

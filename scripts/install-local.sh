@@ -28,6 +28,10 @@ mv "$tmp/unpacked/package" "$stage"
 # pi provides @earendil-works/* to extensions itself; only the runtime deps are needed.
 # (the tarball already has dist/; skipping scripts also skips the root prepare. node-pty ships prebuilds)
 (cd "$stage" && npm install --silent --omit=dev --omit=peer --no-audit --no-fund --ignore-scripts)
+# no prebuild for this platform (Linux): build node-pty, which the skipped scripts would have
+if [ ! -d "$stage/node_modules/node-pty/prebuilds/$(node -p 'process.platform + "-" + process.arch')" ]; then
+	(cd "$stage" && npm rebuild node-pty --silent)
+fi
 # npm drops spawn-helper's exec bit when scripts are skipped; node-pty cannot spawn without it
 find "$stage/node_modules/node-pty" -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
 

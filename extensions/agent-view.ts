@@ -1051,8 +1051,12 @@ export class AgentView implements Component {
 		const sentence = sentenceOf(row).replace(CONTROL, " ");
 		for (const chunk of wrap(sentence, inner)) lines.push(`    ${chunk}`);
 		row.choices.forEach((c, i) => lines.push(`    ${t.fg("accent", `${i + 1}.`)} ${truncateToWidth(oneLine(c), Math.max(1, inner - 4))}`));
-		const facts: string[] = [row.state + (row.status ? ` · ${row.status}` : "")];
-		if (row.state === "blocked") facts.push(`waiting ${formatDuration(now - row.stateSince)}`);
+		// a blocked row's status is always "waiting": say it once, with how long
+		const facts: string[] = [
+			row.state === "blocked"
+				? `needs input · waiting ${formatDuration(now - row.stateSince)}`
+				: row.state + (row.status ? ` · ${row.status}` : ""),
+		];
 		if (row.model) facts.push(row.model);
 		facts.push(row.id);
 		lines.push(`    ${t.fg("dim", truncateToWidth(facts.join(" · "), inner))}`);

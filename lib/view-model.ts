@@ -205,7 +205,8 @@ export function sentenceOf(row: JobRow): string {
 	if (row.summary) return row.summary;
 	if (row.state !== "working") return "done";
 	// a command that prints nothing has no line to show
-	return row.kind === "shell" && row.pid !== null ? "running" : "starting…";
+	if (row.pid === null) return "starting…";
+	return row.kind === "shell" ? "running" : "working…";
 }
 
 function waitingLabel(row: JobRow): string {
