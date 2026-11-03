@@ -1,65 +1,83 @@
 {
-	"name": "pi-roost",
-	"version": "0.1.0",
-	"private": true,
-	"type": "module",
-	"description": "Agent view for pi: one screen for every background pi session — dispatch, peek, reply, attach, detach",
-	"keywords": [
-		"pi-package",
-		"pi",
-		"agents",
-		"background",
-		"agent-view"
-	],
-	"license": "MIT",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/luoxin9510/pi-roost.git"
-	},
-	"engines": {
-		"node": ">=20"
-	},
-	"pi": {
-		"extensions": [
-			"./extensions/index.ts"
-		]
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*"
-	},
-	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "1.5.0",
-		"@earendil-works/pi-tui": "1.5.0",
-		"@types/node": "^24.0.0",
-		"typescript": "^5.9.0",
-		"vitest": "^4.1.0"
-	},
-	"scripts": {
-		"build": "tsc -p tsconfig.build.json",
-		"check": "tsc --noEmit",
-		"test": "vitest run",
-		"prepare": "npm run build",
-		"install:local": "sh scripts/install-local.sh"
-	},
-	"dependencies": {
-		"@xterm/headless": "^6.0.0",
-		"node-pty": "^1.1.0"
-	},
-	"bin": {
-		"pi-roost": "dist/bin/pi-roost.js"
-	},
-	"files": [
-		"extensions",
-		"lib",
-		"dist",
-		"README.md"
-	],
-	"exports": {
-		"./api": {
-			"types": "./dist/lib/api.d.ts",
-			"default": "./dist/lib/api.js"
-		},
-		"./package.json": "./package.json"
-	}
+  "name": "pi-roost",
+  "version": "0.1.0",
+  "description": "Agent view for pi: every background pi session on one screen — dispatch, peek, reply, attach, detach. Sessions outlive the terminal.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "agents",
+    "background",
+    "agent-view",
+    "sessions"
+  ],
+  "homepage": "https://github.com/luoxin9510/pi-roost#readme",
+  "bugs": {
+    "url": "https://github.com/luoxin9510/pi-roost/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luoxin9510/pi-roost.git"
+  },
+  "license": "MIT",
+  "author": "nuckcole",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "bin": {
+    "pi-roost": "dist/bin/pi-roost.js"
+  },
+  "exports": {
+    "./api": {
+      "types": "./dist/lib/api.d.ts",
+      "default": "./dist/lib/api.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/luoxin9510/pi-roost/main/assets/agent-view.png"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepare": "npm run build",
+    "install:local": "sh scripts/install-local.sh",
+    "prepublishOnly": "npm run check && npm test && npm run build"
+  },
+  "dependencies": {
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
