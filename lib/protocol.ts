@@ -83,6 +83,8 @@ export interface WorkerReport {
 	model: string | null;
 	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
 	attachSignal?: boolean;
+	/** M9: the worker takes agent messages and reports (custom messages, per-item acks). */
+	agentItems?: boolean;
 }
 
 export interface DispatchArgs {
@@ -137,6 +139,8 @@ export interface OpArgs {
 	spawn: { launch: DispatchArgs };
 	/** M9, on a worker connection: the run it was spawned for (or a user turn) ended. */
 	handback: HandbackArgs;
+	/** M9, on a foreground peer connection: the report with this ref reached pi. */
+	peer_ack: { ref: string };
 }
 
 export interface OpResults {
@@ -162,6 +166,7 @@ export interface OpResults {
 	send: SendResult;
 	spawn: { id: string; name: string };
 	handback: { routed: boolean };
+	peer_ack: {};
 }
 
 export type Op = keyof OpArgs;
@@ -188,6 +193,8 @@ export type Event =
 			kind?: "reply" | "message" | "report";
 			from?: string;
 			relation?: string;
+			/** M9: a report to a foreground peer, acknowledged with peer_ack. */
+			ref?: string;
 	  };
 
 export class LineReader {

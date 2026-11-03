@@ -8,7 +8,8 @@
 - Reach is limited to the spawn tree unless `agentExternalMessages` is set; spawn limits
   `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal`; `agentTools: false`
   turns the tools off.
-- Background workers no longer pass their job token to the commands they run.
+- Background workers no longer keep their job token in the environment of the commands
+  they run (a convenience, not a boundary: your own processes can still read the job's files).
 
 ## [0.1.1] - 2026-11-03
 

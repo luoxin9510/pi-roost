@@ -158,6 +158,7 @@ const report = (over: Record<string, unknown> = {}) => ({
 	error: null,
 	name: null,
 	model: null,
+	agentItems: true,
 	...over,
 });
 
@@ -257,7 +258,38 @@ describe("agent messaging through the daemon", () => {
 		await c.request("peer_register", { session: p.session, name: "top", cwd: work, pid: process.pid });
 		const rep = await waitFor(() => delivered(events, "report")[0]);
 		expect(rep.text).toContain("Which branch?");
+		// kept on the child until the foreground pi says it has it
+		expect(readState(childId)?.undeliveredReports).toHaveLength(1);
+		await c.request("peer_ack", { ref: rep.ref! });
 		expect(readState(childId)?.undeliveredReports).toEqual([]);
+	});
+
+	it("a worker from before M9 is not handed agent items", async () => {
+		await startDaemon();
+		const p = await foreground("old");
+		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+		const { c, events } = await connect();
+		const token = readState(childId)?.jobToken as string;
+		await c.request("report", { id: childId, token, report: report({ agentItems: undefined }) });
+		expect(await p.c.request("send", { to: childId, message: "hello" })).toMatchObject({ outcome: "queued" });
+		expect(delivered(events, "message")).toEqual([]);
+		// once it says it takes them, it gets what waited
+		await c.request("report", { id: childId, token, report: report() });
+		await waitFor(() => delivered(events, "message")[0]);
+	});
+
+	it("removing a live child tells its parent once", async () => {
+		await startDaemon();
+		const p = await foreground("rmparent");
+		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+		await p.c.request("rm", { id: childId });
+		await waitFor(() => delivered(p.events, "report")[0]);
+		await new Promise((r) => setTimeout(r, 300));
+		const reports = delivered(p.events, "report");
+		expect(reports).toHaveLength(1);
+		expect(reports[0]!.text).toContain("removed by the user");
 	});
 
 	it("rate limit per sender", async () => {

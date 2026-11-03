@@ -49,12 +49,15 @@ export function registerForegroundPeer(pi: ExtensionAPI): void {
 
 	const identity = (c: ExtensionContext) => `${c.sessionManager.getSessionFile() ?? ""}\0${nameOf(c)}`;
 
-	async function connect(): Promise<DaemonClient> {
+	/** `start`: start the daemon if it is not running (a tool call); reconnects only connect. */
+	async function connect(start: boolean): Promise<DaemonClient> {
 		if (client) return client;
 		connecting ??= (async () => {
-			const fresh = await DaemonClient.connectOrStart();
+			const fresh = start ? await DaemonClient.connectOrStart() : await DaemonClient.connect();
+			// Only this pi's registration gets deliveries on this connection; one can arrive
+			// before the peer_register response has been read, so do not filter by id.
 			fresh.onEvent((e) => {
-				if (e.event === "deliver" && e.id === peerId && (e.kind === "message" || e.kind === "report")) receive(e);
+				if (e.event === "deliver" && (e.kind === "message" || e.kind === "report")) receive(e);
 			});
 			fresh.onClose(() => {
 				if (client !== fresh) return;
@@ -70,20 +73,26 @@ export function registerForegroundPeer(pi: ExtensionAPI): void {
 		return connecting;
 	}
 
-	async function ensure(): Promise<DaemonClient> {
+	async function ensure(start = true): Promise<DaemonClient> {
 		const c = ctx;
 		if (!eligible(c)) throw new Error("agent messaging needs an interactive pi session with pi-roost");
 		active = true;
-		const cl = await connect();
+		const cl = await connect(start);
 		const want = identity(c);
 		if (registeredAs !== want) {
-			const r = await cl.request("peer_register", {
-				session: c.sessionManager.getSessionFile(),
-				name: nameOf(c),
-				cwd: c.cwd,
-				pid: process.pid,
-			});
-			peerId = r.id;
+			try {
+				const r = await cl.request("peer_register", {
+					session: c.sessionManager.getSessionFile(),
+					name: nameOf(c),
+					cwd: c.cwd,
+					pid: process.pid,
+				});
+				peerId = r.id;
+			} catch (err) {
+				// e.g. another pi holds this session: trying again will not help
+				if ((err as { code?: string }).code === "unauthorized") active = false;
+				throw err;
+			}
 			registeredAs = want;
 			backoff = 500;
 		}
@@ -93,7 +102,8 @@ export function registerForegroundPeer(pi: ExtensionAPI): void {
 	function scheduleReconnect(): void {
 		clearTimeout(reconnectTimer);
 		reconnectTimer = setTimeout(() => {
-			void ensure().catch(() => {
+			// the daemon was stopped: do not start it again from here
+			void ensure(false).catch(() => {
 				backoff = Math.min(backoff * 2, 10_000);
 				if (active) scheduleReconnect();
 			});
@@ -126,6 +136,8 @@ export function registerForegroundPeer(pi: ExtensionAPI): void {
 				void pi.sendMessage(message, { triggerTurn: true });
 				startedAt = Date.now();
 			}
+			// a report is kept on the child until pi has it
+			if (e.ref) void client?.request("peer_ack", { ref: e.ref }).catch(() => {});
 		}
 	}
 
@@ -164,7 +176,11 @@ export function registerForegroundPeer(pi: ExtensionAPI): void {
 		compacting = false;
 		startedAt = 0;
 		if (!eligible(c)) return;
-		if (active || hasChildren(c.sessionManager.getSessionFile())) void ensure().catch(() => scheduleReconnect());
+		if (active || hasChildren(c.sessionManager.getSessionFile())) {
+			void ensure().catch(() => {
+				if (active) scheduleReconnect();
+			});
+		}
 	});
 	pi.on("session_shutdown", (event) => {
 		ctx = undefined;

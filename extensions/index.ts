@@ -68,7 +68,8 @@ export default function (pi: ExtensionAPI) {
 
 	const job = jobIdentity();
 	if (job) {
-		// M9: commands and scripts the agent runs must not be able to act as this job
+		// M9: commands the agent runs do not inherit the token (same-user processes can still
+		// read it from the job's files: a guard against accidents, not a boundary)
 		delete process.env.PI_JOB_TOKEN;
 		registerWorker(pi, job);
 	} else {

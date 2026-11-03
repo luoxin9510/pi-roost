@@ -17,6 +17,7 @@ import {
 	type Relation,
 	relationOf,
 	reportBody,
+	sanitizeName,
 	SPAWNS_PER_MINUTE,
 	type TreeNode,
 } from "../lib/comms.ts";
@@ -122,10 +123,14 @@ interface Conn {
 	sock: Socket;
 	subscribed: boolean;
 	peer?: PeerIdentity;
+	/** M9: the worker on this connection takes agent items (older workers would inject them as user input). */
+	agentItems?: boolean;
 }
 
 /** M9: connected foreground pi sessions, by peer id. */
 const fgPeers = new Map<string, Conn>();
+/** M9: jobs being removed (their end is reported as a removal, once). */
+const removing = new Set<string>();
 const messageLimiter = new RateLimiter(MESSAGES_PER_MINUTE);
 const spawnLimiter = new RateLimiter(SPAWNS_PER_MINUTE);
 
@@ -282,7 +287,7 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		);
 	}
 	if (daemonEnded && !shuttingDown && recs.get(id)?.parentSession) {
-		const why = patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
+		const why = removing.has(id) ? "removed by the user" : patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
 		void routeReport(id, reportBody({ state: "ended", error: why }));
 	}
 }
@@ -639,7 +644,7 @@ function pendingReplies(id: string): PendingReply[] {
 /** (Re)send every reply the worker has not acknowledged; the worker drops seqs it has seen. */
 function flushPending(id: string, conn: Conn): void {
 	const pending = pendingReplies(id);
-	for (const r of pending) send(conn, deliverEvent(id, r));
+	for (const r of pending) if (!isAgentItem(r) || conn.agentItems) send(conn, deliverEvent(id, r));
 	if (pending.length > 0) log("info", "delivered pending replies", { id, count: pending.length });
 }
 
@@ -717,12 +722,16 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	const st = readState(id);
 	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
 	if (!roster.has(id) || stopping.has(id)) return; // ended or being stopped: the daemon owns the state now
+	const takesAgentItems = (args.report as { agentItems?: unknown } | undefined)?.agentItems === true;
+	const gained = takesAgentItems && !conn.agentItems && workerConns.get(id) === conn;
+	conn.agentItems = takesAgentItems;
+	if (gained) flushPending(id, conn);
 	if (workerConns.get(id) !== conn) {
 		workerConns.set(id, conn);
 		conn.peer = { kind: "job", id };
 		flushPending(id, conn);
 		const session = recs.get(id)?.sessionFile;
-		if (session) void retryReports(session);
+		if (session) setImmediate(() => void retryReports(session));
 	}
 	const r = args.report;
 	if (!r || !REPORT_STATES.has(r.state as string) || !REPORT_STATUS.has(r.status as string)) {
@@ -851,6 +860,9 @@ function peerName(peer: PeerIdentity): string {
 
 const EXTERNAL_RECENT_MS = 48 * 60 * 60 * 1000;
 
+/** Text from another session, for a model or a terminal: no control characters. */
+const plain = (v: string | null) => (v === null ? null : v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " "));
+
 /** The sessions `peer` may reach, one row per session (its current holder). */
 function peerRows(peer: PeerIdentity): (PeerRow & { key: string })[] {
 	const me = sessionKeyOf(peer);
@@ -884,8 +896,8 @@ function peerRows(peer: PeerIdentity): (PeerRow & { key: string })[] {
 			state: row.state,
 			status: row.status,
 			waitingFor: row.waitingFor,
-			summary: row.summary,
-			question: row.question,
+			summary: plain(row.summary),
+			question: plain(row.question),
 			cwd: row.cwd,
 		});
 	}
@@ -914,13 +926,13 @@ async function deliverAgent(
 	key: string,
 	kind: AgentKind,
 	text: string,
-	meta: { from: string; relation: Relation },
+	meta: { from: string; relation: Relation; ref?: string },
 ): Promise<Omit<SendResult, "relation">> {
 	const h = holderOf(key);
 	if (!h) return { outcome: "not running", id: "", name: "" };
 	const name = holderName(h);
 	if (h.kind === "fg") {
-		send(h.conn, { event: "deliver", id: h.id, seq: 0, text, kind, from: meta.from, relation: meta.relation });
+		send(h.conn, { event: "deliver", id: h.id, seq: 0, text, kind, from: sanitizeName(meta.from), relation: meta.relation, ...(meta.ref ? { ref: meta.ref } : {}) });
 		return { outcome: "delivered", id: h.id, name };
 	}
 	const id = h.id;
@@ -932,11 +944,13 @@ async function deliverAgent(
 		throw new OpError("full", `${MAX_PENDING_AGENT} agent messages are already waiting for ${name}`);
 	}
 	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
-	const item: PendingReply = { seq, text, kind, from: meta.from, relation: meta.relation };
+	const item: PendingReply = { seq, text, kind, from: sanitizeName(meta.from), relation: meta.relation };
 	updateState(id, { replySeq: seq, pendingReplies: [...pending, item] });
 	const dialog = st?.waitingFor === "dialog" ? { dialog: true } : {};
 	const conn = workerConns.get(id);
 	if (live && conn && !conn.sock.destroyed) {
+		// a worker from before M9 gets it after a respawn --all, not as user input now
+		if (!conn.agentItems) return { outcome: "queued", id, name, ...dialog };
 		send(conn, deliverEvent(id, item));
 		return { outcome: "delivered", id, name, ...dialog };
 	}
@@ -971,15 +985,44 @@ async function sendMessage(conn: Conn, args: { to?: unknown; message?: unknown }
 	return { ...r, id: r.id || target.id, name: r.name || target.name, relation: target.relation };
 }
 
-/** A report for the parent of `childId`; kept on the child when nobody holds the parent's session. */
-async function routeReport(childId: string, body: string): Promise<boolean> {
+interface HeldReport {
+	ref: string;
+	body: string;
+}
+
+function heldReports(id: string): HeldReport[] {
+	const h = readState(id)?.undeliveredReports;
+	if (!Array.isArray(h)) return [];
+	return h
+		.map((x, i) => (typeof x === "string" ? { ref: `${id}:old${i}`, body: x } : x))
+		.filter((x): x is HeldReport => !!x && typeof x.ref === "string" && typeof x.body === "string");
+}
+
+function setHeld(id: string, held: HeldReport[]): void {
+	if (recs.has(id)) updateState(id, { undeliveredReports: held.slice(-5) });
+}
+
+let reportRefs = 0;
+
+/**
+ * A report for the parent of `childId`. A job parent keeps it in its queue; a foreground
+ * parent has it until it acknowledges (peer_ack), so until then, or when nobody holds the
+ * parent's session, it stays on the child and is sent again when the session is held.
+ */
+async function routeReport(childId: string, body: string, ref = `${childId}:${Date.now().toString(36)}${(reportRefs++).toString(36)}`): Promise<boolean> {
 	const rec = recs.get(childId);
 	const parentKey = rec?.parentSession;
 	if (!rec || !parentKey) return false;
 	const from = rowOf(childId)?.name ?? rec.name;
 	const text = envelope({ from, id: childId, relation: "child", kind: "report", body });
+	const hold = () => {
+		const held = heldReports(childId).filter((x) => x.ref !== ref);
+		setHeld(childId, [...held, { ref, body }]);
+	};
+	const h = holderOf(parentKey);
+	if (h?.kind === "fg") hold(); // until the foreground pi has it
 	try {
-		const r = await deliverAgent(parentKey, "report", text, { from, relation: "child" });
+		const r = await deliverAgent(parentKey, "report", text, { from, relation: "child", ref });
 		if (r.outcome !== "not running" && r.outcome !== "stopped") {
 			log("info", "report", { from: childId, to: r.id, outcome: r.outcome });
 			return true;
@@ -987,11 +1030,8 @@ async function routeReport(childId: string, body: string): Promise<boolean> {
 	} catch (err) {
 		log("warn", "report delivery failed", { id: childId, error: String(err) });
 	}
-	if (recs.has(childId)) {
-		const held = Array.isArray(readState(childId)?.undeliveredReports) ? (readState(childId)!.undeliveredReports as string[]) : [];
-		updateState(childId, { undeliveredReports: [...held, body].slice(-5) });
-		log("info", "report held", { id: childId });
-	}
+	hold();
+	log("info", "report held", { id: childId });
 	return false;
 }
 
@@ -999,17 +1039,24 @@ async function routeReport(childId: string, body: string): Promise<boolean> {
 async function retryReports(parentKey: string): Promise<void> {
 	for (const rec of [...recs.values()]) {
 		if (rec.parentSession !== parentKey) continue;
-		const held = readState(rec.id)?.undeliveredReports;
-		if (!Array.isArray(held) || held.length === 0) continue;
-		updateState(rec.id, { undeliveredReports: [] });
-		for (const body of held) if (typeof body === "string") await routeReport(rec.id, body);
+		for (const r of heldReports(rec.id)) await routeReport(rec.id, r.body, r.ref);
 	}
+}
+
+/** A foreground pi has a report: forget the copy kept on the child. */
+function peerAck(conn: Conn, args: { ref?: unknown } | undefined): {} {
+	const peer = requirePeer(conn);
+	if (peer.kind !== "fg") throw new OpError("unsupported", "only foreground peers acknowledge reports");
+	const ref = typeof args?.ref === "string" ? args.ref : "";
+	const childId = ref.split(":")[0] ?? "";
+	if (recs.has(childId)) setHeld(childId, heldReports(childId).filter((x) => x.ref !== ref));
+	return {};
 }
 
 async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Promise<{ routed: boolean }> {
 	const peer = requirePeer(conn);
 	if (peer.kind !== "job") throw new OpError("unsupported", "only a background session reports back");
-	if (!recs.get(peer.id)?.parentSession) return { routed: false };
+	if (!recs.get(peer.id)?.parentSession || stopping.has(peer.id)) return { routed: false };
 	const state = args?.state;
 	if (state !== "done" && state !== "blocked" && state !== "failed") throw new OpError("bad_request", "invalid state");
 	const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.slice(0, max) : null);
@@ -1038,7 +1085,8 @@ function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd
 	conn.peer = { kind: "fg", id, session, name, cwd, pid };
 	// the newest registration for a session wins (a pi re-opened on it)
 	fgPeers.set(id, conn);
-	if (session) void retryReports(session);
+	// after the response: the client only takes deliveries for the id it is told
+	if (session) setImmediate(() => void retryReports(session));
 	return { id };
 }
 
@@ -1047,6 +1095,10 @@ async function spawnChild(conn: Conn, args: { launch?: DispatchArgs } | undefine
 	const launch = args?.launch;
 	if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch required");
 	if (launch.kind === "shell") throw new OpError("unsupported", "roost_spawn starts pi sessions");
+	// a fresh session for the child, never one that exists or another job uses
+	if (!str(launch.sessionFile) || existsSync(launch.sessionFile) || [...recs.values()].some((r) => r.sessionFile === launch.sessionFile)) {
+		throw new OpError("bad_request", "a spawn needs a new session file");
+	}
 	const me = sessionKeyOf(peer);
 	const node = treeNode(me);
 	const cfg = loadUserConfig();
@@ -1132,7 +1184,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		}
 		case "rm": {
 			const id = requireJob(args);
-			if (roster.has(id) && recs.get(id)?.parentSession) await routeReport(id, reportBody({ state: "ended", error: "removed by the user" }));
+			// a live child's end is reported by finalize, as a removal
+			if (roster.has(id)) removing.add(id);
 			if (roster.has(id)) {
 				await terminateHost(id);
 				if (!(await waitGone([id], WAIT_MS))) {
@@ -1152,6 +1205,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			recs.delete(id);
 			shellPids.delete(id);
 			stopping.delete(id);
+			removing.delete(id);
 			removeJob(id);
 			log("info", "rm", { id });
 			push({ event: "removed", id });
@@ -1214,6 +1268,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return spawnChild(conn, args);
 		case "handback":
 			return handback(conn, args);
+		case "peer_ack":
+			return peerAck(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
 	}

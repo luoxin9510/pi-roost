@@ -88,6 +88,7 @@ describe("ReplyQueue agent items (M9)", () => {
 			running: () => state.running,
 			dialogOpen: () => state.dialog,
 			ack: (seq, exact) => acks.push([seq, exact === true]),
+			jobId: "j1",
 		});
 		return { q, custom, acks, state, ctx };
 	}
@@ -97,14 +98,14 @@ describe("ReplyQueue agent items (M9)", () => {
 		const h = agentHarness();
 		h.q.add(item(1));
 		expect(h.custom[0]!.opts).toEqual({ triggerTurn: true });
-		expect(h.custom[0]!.message).toMatchObject({ customType: "pi-roost-agent-message", details: { seq: 1, kind: "message" } });
-		expect(h.q.takeAgentStart()).toBe(true);
+		expect(h.custom[0]!.message).toMatchObject({ customType: "pi-roost-agent-message", details: { seq: 1, job: "j1", kind: "message" } });
+		expect(h.q.takeAgentStart()).toMatchObject({ seq: 1, relation: "parent" });
 		expect(h.acks).toEqual([]);
 		h.state.running = true;
 		h.state.idle = false;
 		h.q.add(item(2, "report"));
 		expect(h.custom[1]!.opts).toEqual({ triggerTurn: true, deliverAs: "steer" });
-		expect(h.q.takeAgentStart()).toBe(false);
+		expect(h.q.takeAgentStart()).toBeUndefined();
 		h.q.messageEnded({ role: "custom", customType: "pi-roost-agent-message", details: { seq: 1 } });
 		expect(h.acks).toEqual([[1, true]]);
 		h.q.settled();
@@ -125,10 +126,16 @@ describe("ReplyQueue agent items (M9)", () => {
 	});
 
 	it("drops a resend the session already holds (after a restart)", () => {
-		const h = agentHarness([{ type: "custom_message", customType: "pi-roost-agent-message", details: { seq: 7 } }]);
+		const h = agentHarness([
+			{ type: "custom_message", customType: "pi-roost-agent-message", details: { seq: 7, job: "j1" } },
+			// another job of the same session numbered its own items
+			{ type: "custom_message", customType: "pi-roost-agent-message", details: { seq: 8, job: "j0" } },
+		]);
 		h.q.noteSession(h.ctx as never);
 		h.q.add(item(7));
 		expect(h.custom).toEqual([]);
 		expect(h.acks).toEqual([[7, true]]);
+		h.q.add(item(8));
+		expect(h.custom).toHaveLength(1);
 	});
 });

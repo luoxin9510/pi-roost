@@ -246,9 +246,12 @@ export class ReplyQueue {
 	private queue: DeliverItem[] = [];
 	/** M9: agent items handed to pi, acknowledged once pi has them in the session. */
 	private handed = new Set<number>();
-	/** M9: agent items already in this session (seen, or found on start). */
-	private seen = new Set<number>();
-	private agentStarted = false;
+	/** M9: agent items already in this session (seen, or found on start), as `job:seq`. */
+	private seen = new Set<string>();
+	/** M9: the agent item that started the run now starting, if one did. */
+	private agentStarter: DeliverItem | undefined;
+	/** M9: a user reply joined the current run (it is the user's run then). */
+	private userJoined = false;
 	private lastSeq = 0;
 	private awaitingStart = 0;
 	private timer: NodeJS.Timeout | undefined;
@@ -258,6 +261,8 @@ export class ReplyQueue {
 		running: () => boolean;
 		dialogOpen: () => boolean;
 		ack: (seq: number, exact?: boolean) => void;
+		/** M9: seqs restart with each job of a session; agent items are told apart by job. */
+		jobId?: string;
 	};
 
 	constructor(pi: ExtensionAPI, env: ReplyQueue["env"]) {
@@ -269,7 +274,7 @@ export class ReplyQueue {
 		const it: DeliverItem = typeof item === "number" ? { seq: item, text: legacyText ?? "" } : item;
 		const { seq } = it;
 		const agent = isAgentKind(it.kind);
-		if (agent && this.seen.has(seq)) return this.env.ack(seq, true); // already in the session
+		if (agent && this.seen.has(this.seenKey(seq))) return this.env.ack(seq, true); // already in the session
 		if (seq <= this.lastSeq || this.queue.some((q) => q.seq === seq) || this.handed.has(seq)) {
 			// a resend; an agent item handed to pi is acknowledged when pi has it
 			if (!this.handed.has(seq)) this.env.ack(seq, agent);
@@ -300,6 +305,7 @@ export class ReplyQueue {
 			if (this.awaitingStart && Date.now() - this.awaitingStart < START_WAIT_MS) return this.retry();
 			if (running) {
 				void this.pi.sendUserMessage(next.text, { deliverAs: "followUp", expandPromptTemplates: true });
+				this.userJoined = true;
 			} else if (ctx.isIdle()) {
 				void this.pi.sendUserMessage(next.text, { expandPromptTemplates: true });
 				this.awaitingStart = Date.now();
@@ -328,13 +334,13 @@ export class ReplyQueue {
 			customType: AGENT_MESSAGE_TYPE,
 			content: next.text,
 			display: true,
-			details: { seq: next.seq, kind: next.kind, from: next.from ?? null, relation: next.relation ?? null },
+			details: { seq: next.seq, job: this.env.jobId ?? null, kind: next.kind, from: next.from ?? null, relation: next.relation ?? null },
 		};
 		if (running) void this.pi.sendMessage(message, { triggerTurn: true, deliverAs: "steer" });
 		else if (ctx.isIdle()) {
 			void this.pi.sendMessage(message, { triggerTurn: true });
 			this.awaitingStart = Date.now();
-			this.agentStarted = true;
+			this.agentStarter = next;
 		} else {
 			this.retry(); // compacting
 			return false;
@@ -342,16 +348,26 @@ export class ReplyQueue {
 		this.queue.shift();
 		this.lastSeq = Math.max(this.lastSeq, next.seq);
 		this.handed.add(next.seq);
-		this.seen.add(next.seq);
+		this.seen.add(this.seenKey(next.seq));
 		return true;
+	}
+
+	private seenKey(seq: number): string {
+		return `${this.env.jobId ?? ""}:${seq}`;
 	}
 
 	/** M9: seqs of agent items this session already holds (after a restart). */
 	noteSession(ctx: ExtensionContext): void {
 		for (const e of ctx.sessionManager.getBranch()) {
 			const m = (e as { type?: string; message?: { role?: string; customType?: string; details?: { seq?: unknown } } }).message;
-			const custom = e.type === "custom_message" ? (e as unknown as { customType?: string; details?: { seq?: unknown } }) : m?.role === "custom" ? m : undefined;
-			if (custom?.customType === AGENT_MESSAGE_TYPE && typeof custom.details?.seq === "number") this.seen.add(custom.details.seq);
+			const custom = (e.type === "custom_message" ? e : m?.role === "custom" ? m : undefined) as
+				| { customType?: string; details?: { seq?: unknown; job?: unknown } }
+				| undefined;
+			const d = custom?.details;
+			// only items of this job: another job of the same session counted its own seqs
+			if (custom?.customType === AGENT_MESSAGE_TYPE && typeof d?.seq === "number" && d.job === (this.env.jobId ?? null)) {
+				this.seen.add(this.seenKey(d.seq));
+			}
 		}
 	}
 
@@ -368,10 +384,18 @@ export class ReplyQueue {
 		this.handed.clear();
 	}
 
-	/** M9: whether the run that is starting was started by an agent item (no report for it). */
-	takeAgentStart(): boolean {
-		const v = this.agentStarted;
-		this.agentStarted = false;
+	/** M9: the agent item that started the run now starting (undefined: a task or the user). */
+	takeAgentStart(): DeliverItem | undefined {
+		const v = this.agentStarter;
+		this.agentStarter = undefined;
+		this.userJoined = false;
+		return v;
+	}
+
+	/** M9: a user reply was steered into the current run. */
+	takeUserJoined(): boolean {
+		const v = this.userJoined;
+		this.userJoined = false;
 		return v;
 	}
 
@@ -421,12 +445,18 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		running: () => tracker.isRunning(),
 		dialogOpen: () => dialogOpen > 0,
 		ack: (seq, exact) => reporter?.ack(seq, exact),
+		jobId: job.id,
 	});
-	// M9: a background child reports the end of each run it did not start for an agent
+	// M9: a background child reports the end of a run it was given: its task, a user's
+	// reply, or a message from its parent (answering a question it asked). Runs started by
+	// anything else (a sibling, a report) do not report, and parent-message runs report
+	// at most MAX_MESSAGE_REPORTS times in a row, so two sessions cannot wake each other
+	// forever.
 	const child = process.env.PI_ROOST_CHILD === "1";
-	let agentRun = false;
+	let starter: DeliverItem | undefined;
+	let messageReports = 0;
 	// attachSignal: this worker handles the host's SIGUSR2 on attach and detach (AT-5)
-	const send = (urgent = false) => reporter?.update({ ...tracker.report(), attachSignal: true }, urgent);
+	const send = (urgent = false) => reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true }, urgent);
 
 	pi.on("session_start", (event, ctx: ExtensionContext) => {
 		current = ctx;
@@ -453,7 +483,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	});
 
 	pi.on("agent_start", () => {
-		agentRun = replies.takeAgentStart();
+		starter = replies.takeAgentStart();
 		tracker.agentStart();
 		send();
 		replies.pump();
@@ -478,8 +508,15 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		tracker.agentSettled(event.aborted);
 		send();
 		replies.settled();
-		if (child && !event.aborted && !agentRun && current) void handBack(current);
-		agentRun = false;
+		const userJoined = replies.takeUserJoined();
+		let worthy = !starter || userJoined;
+		if (!worthy && starter?.kind === "message" && starter.relation === "parent" && messageReports < MAX_MESSAGE_REPORTS) {
+			worthy = true;
+			messageReports++;
+		}
+		if (!starter || userJoined) messageReports = 0;
+		if (child && !event.aborted && worthy && current) void handBack(current);
+		starter = undefined;
 		replies.pump();
 	});
 
@@ -550,6 +587,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 export type DeliverItem = Pick<Extract<Event, { event: "deliver" }>, "seq" | "text" | "kind" | "from" | "relation">;
 
 const isAgentKind = (k: DeliverItem["kind"]) => k === "message" || k === "report";
+const MAX_MESSAGE_REPORTS = 3;
 
 function lastAssistant(ctx: ExtensionContext): { content?: unknown; stopReason?: string; errorMessage?: string } | undefined {
 	const branch = ctx.sessionManager.getBranch();

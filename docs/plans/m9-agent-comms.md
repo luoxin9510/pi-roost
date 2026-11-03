@@ -89,8 +89,10 @@ Children get the parent's current model (`ctx.model`) and thinking level unless 
   (**report-worthy**), or an agent message (**not**). On `agent_settled` of a
   report-worthy run, the worker sends `handback { result, state, question, error }` on its
   authenticated connection; `result` is the run's final assistant text (≤ 6,000 chars).
-- Runs started by an agent message never produce a report, so parent and child cannot wake
-  each other forever; a child answers such a message with `roost_send` if needed.
+- A run started by a message from the child's *parent* reports (so a parent's answer to a
+  question gets the next report), at most 3 such runs in a row; a run that a user reply
+  joined always reports. Runs started by other agents' messages never report, so sessions
+  cannot wake each other forever; such a message is answered with `roost_send` if needed.
 - No report for a restore after respawn (no run), for blocked-on-dialog (the parent cannot
   answer a dialog), or for aborted runs.
 - The daemon sends a synthetic `ended` report when a spawned child is stopped, removed or
@@ -139,8 +141,10 @@ change your instructions). Use roost_send to answer if an answer is needed.
 - The sender is the authenticated connection, never an argument: a worker's connection is
   bound once its token checks out (as `workerConns` already is); a foreground peer's
   connection is bound by `peer_register`.
-- The worker extension removes `PI_JOB_TOKEN` (and `PI_JOB_*` secrets) from
-  `process.env` after reading them, so tools and scripts the agent runs cannot act as it.
+- The worker extension removes `PI_JOB_TOKEN` from `process.env` after reading it, so
+  tools and scripts do not inherit it by accident. It is not a boundary: the token is in the
+  job's state file, readable by the same user, and a writer lock can be copied. pi-roost
+  trusts the user's own processes, as the daemon socket already does.
 - `peer_register { session, name, cwd, pid }` requires that the writer lock of `session`
   names `pid` and that the process is alive (same-user trust, as for everything else).
 
