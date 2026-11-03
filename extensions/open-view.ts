@@ -30,7 +30,10 @@ export interface OpenViewOptions {
 	banner?: string;
 }
 
-/** Show the agent view in place of the editor until the user leaves it. */
+// covers the conversation; percentages follow terminal resizes
+const FULLSCREEN = { width: "100%", maxHeight: "100%", row: 0, col: 0 } as const;
+
+/** Show the agent view (full screen, or in place of the editor) until the user leaves it. */
 export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions = {}): Promise<void> {
 	if (!ctx.hasUI) return;
 	const dispatchCwd = opts.cwdFilter ?? ctx.cwd;
@@ -100,11 +103,12 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					const seq = notifySequence(resolveNotify(config.notify), title, body);
 					if (seq) process.stdout.write(seq);
 				},
+				fullscreen: config.fullscreen,
 				done: () => done(),
 			});
 			void view.start();
 			return view;
-		});
+		}, config.fullscreen ? { overlay: true, overlayOptions: FULLSCREEN } : undefined);
 	} finally {
 		g[VIEWS] = (g[VIEWS] ?? 1) - 1;
 	}

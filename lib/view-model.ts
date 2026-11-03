@@ -202,7 +202,10 @@ export function sentenceOf(row: JobRow): string {
 	if (row.state === "blocked") return row.question ?? row.summary ?? waitingLabel(row);
 	if (row.state === "failed") return row.error ?? row.summary ?? "failed";
 	if (row.state === "stopped") return row.summary ?? "stopped";
-	return row.summary ?? (row.state === "working" ? "starting…" : "done");
+	if (row.summary) return row.summary;
+	if (row.state !== "working") return "done";
+	// a command that prints nothing has no line to show
+	return row.kind === "shell" && row.pid !== null ? "running" : "starting…";
 }
 
 function waitingLabel(row: JobRow): string {

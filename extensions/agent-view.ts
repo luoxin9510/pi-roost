@@ -68,6 +68,8 @@ export interface AgentViewOptions {
 	banner?: string;
 	/** Screen-reader mode: no animation (PRD accessibility). */
 	reducedMotion?: boolean;
+	/** Render exactly the terminal's height: list at the top, input and keys at the bottom. */
+	fullscreen?: boolean;
 	done: () => void;
 }
 
@@ -928,8 +930,29 @@ export class AgentView implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		const lines = this.renderLines(width);
+		if (!this.o.fullscreen) return lines;
+		return fitScreen(lines, this.o.tui.terminal.rows || 30, this.selLine, this.bottomFrom, {
+			selectedEnd: this.selEnd,
+			keep: this.headLines,
+		});
+	}
+
+	/**
+	 * In render: the selected row's first and last line (with its peek and reply input),
+	 * the first line of the bottom block (input, keys), and the fixed lines on top.
+	 */
+	private selLine = -1;
+	private selEnd = -1;
+	private bottomFrom = -1;
+	private headLines = 2;
+
+	private renderLines(width: number): string[] {
 		const t = this.o.theme;
 		const w = Math.max(1, width);
+		this.selLine = -1;
+		this.selEnd = -1;
+		this.bottomFrom = -1;
 		const now = Date.now();
 		// the peeked row vanished (deleted, folded, collapsed): never reply to another one
 		if (this.peek && !this.itemList().some((it) => it.kind === "row" && it.row.id === this.peekId)) this.closePeek();
@@ -941,6 +964,7 @@ export class AgentView implements Component {
 
 		out.push(truncateToWidth(t.bold("pi agents") + t.fg("dim", `  ${headerText(c)}`), w));
 		if (!short) out.push(t.fg("border", "─".repeat(w)));
+		this.headLines = out.length;
 		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${oneLine(this.connectError)}`, w)));
 
 		if (this.origin && this.o.banner) out.push(t.fg("accent", truncateToWidth(this.o.banner, w)));
@@ -948,8 +972,13 @@ export class AgentView implements Component {
 			const d = [this.model && `model ${this.model}`, this.thinking && `thinking ${this.thinking}`].filter(Boolean).join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
 		}
-		if (this.picker) return [...out, ...this.pickerLines(w)].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
-		if (this.help) return [...out, ...this.helpLines(w)].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
+		if (this.picker || this.help) {
+			const rows = this.o.tui.terminal.rows || 30;
+			const body = this.picker ? this.pickerLines(w, rows - out.length) : this.helpLines(w, rows - out.length);
+			// its last line (how to leave) stays on screen
+			this.bottomFrom = out.length + body.length - 1;
+			return [...out, ...body].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
+		}
 
 		const sections = this.sections();
 		const list = items(sections);
@@ -962,16 +991,23 @@ export class AgentView implements Component {
 				const s = it.section;
 				const label = `${s.collapsed ? "▸" : "▾"} ${s.title}${s.rows.length || s.hidden ? ` (${s.rows.length + s.hidden})` : ""}`;
 				const hint = empty ? t.fg("dim", `  ${s.hint}`) : "";
+				if (isSel) this.selLine = out.length;
 				out.push(this.mark(isSel, truncateToWidth(t.bold(label) + hint, Math.max(1, w - 2))));
 				return;
 			}
+			if (isSel) this.selLine = out.length;
 			out.push(truncateToWidth(this.mark(isSel, this.rowLine(it.row, Math.max(1, w - 2), now)), w));
+			// the peek belongs right under its row, before the section's "… N more"
+			if (isSel && this.peek) out.push(...this.peekLines(it.row, w, now));
+			if (isSel) this.selEnd = out.length - 1;
 			const lastOfSection = list[i + 1]?.kind !== "row" || list[i + 1]?.section !== it.section;
 			if (lastOfSection && it.section.hidden > 0) out.push(truncateToWidth(`  ${t.fg("dim", `… ${it.section.hidden} more`)}`, w));
-			if (isSel && this.peek) out.push(...this.peekLines(it.row, w, now));
 		});
 
+		// a peek's lines belong with its row; the input and keys stay at the bottom
+		if (this.selEnd === -1) this.selEnd = this.selLine;
 		out.push("");
+		this.bottomFrom = out.length;
 		if (this.renaming) out.push(...this.renameInput.render(w));
 		else if (!this.peek) {
 			out.push(...this.input.render(w));
@@ -1033,10 +1069,11 @@ export class AgentView implements Component {
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
 
-	private pickerLines(width: number): string[] {
+	/** `room`: the lines left under the header. */
+	private pickerLines(width: number, room: number): string[] {
 		const t = this.o.theme;
 		const p = this.picker!;
-		const height = Math.max(3, (this.o.tui.terminal.rows || 30) - 8);
+		const height = Math.max(1, Math.min(p.items.length, room - 4));
 		const start = Math.max(0, Math.min(p.index - Math.floor(height / 2), p.items.length - height));
 		const lines = [t.bold(truncateToWidth(p.title, width)), ""];
 		p.items.slice(start, start + height).forEach((it, i) => {
@@ -1047,7 +1084,8 @@ export class AgentView implements Component {
 		return lines;
 	}
 
-	private helpLines(width: number): string[] {
+	/** `room`: the lines left under the header; two columns when one does not fit. */
+	private helpLines(width: number, room: number): string[] {
 		const t = this.o.theme;
 		const keys: [string, string][] = [
 			["↑ ↓ PgUp PgDn Home End", "move"],
@@ -1073,13 +1111,51 @@ export class AgentView implements Component {
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],
 		];
-		return [
-			"",
-			...keys.map(([k, v]) => truncateToWidth(`  ${t.fg("accent", k.padEnd(24))}${v}`, width)),
-			"",
-			t.fg("dim", "any key to close"),
-		];
+		const line = (k: string, v: string, w: number) => truncateToWidth(`  ${t.fg("accent", k.padEnd(24))}${v}`, w);
+		let body = keys.map(([k, v]) => line(k, v, width));
+		if (keys.length + 3 > room && width >= 70) {
+			const half = Math.ceil(keys.length / 2);
+			const col = Math.floor(width / 2);
+			body = keys.slice(0, half).map(([k, v], i) => {
+				const left = line(k, v, col - 1);
+				const right = keys[half + i];
+				return right ? left + " ".repeat(Math.max(1, col - visibleWidth(left))) + line(right[0], right[1], width - col) : left;
+			});
+		}
+		return ["", ...body, "", t.fg("dim", "any key to close")];
 	}
+}
+
+/**
+ * Full screen: exactly `rows` lines. The bottom block (input, notices, keys) is pinned
+ * to the last lines; the first `keep` lines (title, rule) stay; the rest scrolls so the
+ * selection — `selected` to `selectedEnd`, a row with its peek — is visible, its end
+ * (the reply input) first. Lines from `bottom` on are the bottom block (-1: none).
+ */
+export function fitScreen(
+	lines: string[],
+	rows: number,
+	selected: number,
+	bottom: number,
+	opts: { selectedEnd?: number; keep?: number } = {},
+): string[] {
+	const height = Math.max(1, rows);
+	const top = bottom === -1 ? lines : lines.slice(0, bottom);
+	const foot = bottom === -1 ? [] : lines.slice(bottom).slice(-height);
+	const room = height - foot.length;
+	let body = top;
+	if (top.length > room) {
+		// a tiny screen gives up the title before the selection
+		const keep = Math.max(0, Math.min(opts.keep ?? 2, room - 1));
+		const rest = room - keep;
+		const lo = Math.max(keep, Math.min(selected, top.length - 1));
+		const hi = Math.max(lo, Math.min(opts.selectedEnd ?? lo, top.length - 1));
+		let start = Math.min(hi - rest + 1 + Math.floor(rest / 3), lo); // some context after, the start shown
+		start = Math.max(start, hi - rest + 1); // but never losing the end
+		start = Math.max(keep, Math.min(start, top.length - rest));
+		body = [...top.slice(0, keep), ...top.slice(start, start + rest)];
+	}
+	return [...body, ...Array(Math.max(0, room - body.length)).fill(""), ...foot].slice(0, height);
 }
 
 // Control characters other than newlines would corrupt the line-based renderer.

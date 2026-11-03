@@ -115,6 +115,10 @@ function hostGone(ref: HostRef): boolean {
 	return ref.hostToken ? !sameProcess(ref.hostPid, ref.hostToken) : false;
 }
 
+// the worker pid each shell row was last pushed with: a command that prints nothing
+// still has to show (and attach) once its host is up
+const shellPids = new Map<string, number | null>();
+
 function rowOf(id: string): JobRow | undefined {
 	const rec = recs.get(id);
 	const st = readState(id);
@@ -374,6 +378,7 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 		await startHost(rec);
 	} catch (err) {
 		recs.delete(id);
+		shellPids.delete(id);
 		removeJob(id);
 		throw err;
 	}
@@ -487,11 +492,15 @@ function shellTick(): void {
 				log("info", "shell job expired", { id });
 				push({ event: "removed", id });
 			}
+			shellPids.delete(id);
 			continue;
 		}
 		const line = lastScreenLine(id);
-		if (line && line !== st.summary) {
-			updateState(id, { summary: line });
+		const pid = readWorkerPid(id) ?? null;
+		const changed = Boolean(line && line !== st.summary);
+		if (changed) updateState(id, { summary: line });
+		if (changed || shellPids.get(id) !== pid) {
+			shellPids.set(id, pid);
 			pushJob(id);
 		}
 	}
@@ -797,6 +806,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 				}
 			}
 			recs.delete(id);
+			shellPids.delete(id);
 			stopping.delete(id);
 			removeJob(id);
 			log("info", "rm", { id });
