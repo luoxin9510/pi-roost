@@ -116,6 +116,16 @@ describe("subagent panel", () => {
 		expect(short[0]).toContain("3 subagents · 1 waiting · 1 working · ↓");
 	});
 
+	it("one row at most still shows the selection; a key to press again replaces the hint", () => {
+		const rows = Array.from({ length: 3 }, () => row());
+		const one = renderPanel(view(rows, { maxRows: 1, focused: true, sel: 2 }), 100, plain);
+		expect(one[0]!.startsWith("› ")).toBe(true);
+		expect(one[1]).toContain("… 2 more");
+		const armed = renderPanel(view(rows, { focused: true, notice: "x again stops child" }), 100, plain);
+		expect(armed.at(-1)).toBe("  x again stops child");
+		expect(renderPanel(view(rows, { notice: "x again stops child" }), 100, plain).at(-1)).toContain("↓ select");
+	});
+
 	it("reads the panel keys", () => {
 		expect(keyOf("\x1b[B")).toBe("down");
 		expect(keyOf("\x1b[A")).toBe("up");

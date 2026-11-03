@@ -69,6 +69,8 @@ export interface PanelView {
 	termRows: number;
 	/** A row that just needs input or finished (SP-13). */
 	flash?: ReadonlySet<string>;
+	/** Replaces the key hint: a key that needs pressing again. */
+	notice?: string;
 }
 
 type Fg = (color: Parameters<Theme["fg"]>[0], text: string) => string;
@@ -90,7 +92,7 @@ export function renderPanel(v: PanelView, width: number, fg: Fg, bold: (s: strin
 	}
 	const max = Math.max(1, v.maxRows);
 	const overflow = v.rows.length > max;
-	const shownCount = overflow ? max - 1 : v.rows.length;
+	const shownCount = overflow ? Math.max(1, max - 1) : v.rows.length;
 	// keep the selection on screen
 	const start = overflow ? Math.min(Math.max(0, v.sel - shownCount + 1), v.rows.length - shownCount) : 0;
 	const shown = v.rows.slice(start, start + shownCount);
@@ -118,8 +120,8 @@ export function renderPanel(v: PanelView, width: number, fg: Fg, bold: (s: strin
 		lines.push(fit(`${lead}${fg(icon.tone, icon.glyph)} ${nameText}${pad}  ${tail}`));
 	}
 	if (overflow) lines.push(fit(fg("dim", `  … ${v.rows.length - shownCount} more (/agents)`)));
-	const hint = v.focused ? "  ↵ open · x stop · Esc back" : `  ↓ select subagent${v.rows.length === 1 ? "" : "s"}`;
-	lines.push(fit(fg("dim", hint)));
+	if (v.notice && v.focused) lines.push(fit(fg("warning", `  ${oneLine(v.notice)}`)));
+	else lines.push(fit(fg("dim", v.focused ? "  ↵ open · x stop · Esc back" : `  ↓ select subagent${v.rows.length === 1 ? "" : "s"}`)));
 	return lines;
 }
 
@@ -130,7 +132,7 @@ export function keyOf(data: string): PanelKey | undefined {
 	if (matchesKey(data, Key.down)) return "down";
 	if (matchesKey(data, Key.up)) return "up";
 	if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) return "open";
-	if (data === "x") return "stop";
+	if (data === "x" || matchesKey(data, "x")) return "stop";
 	if (matchesKey(data, Key.escape) || matchesKey(data, Key.left)) return "back";
 	return "other";
 }
@@ -140,8 +142,15 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	let ctx: ExtensionContext | undefined;
 	let tui: TUI | undefined;
 	let client: DaemonClient | undefined;
-	let connecting = false;
+	/** Bumped by unwatch: a connect from an earlier session drops itself. */
+	let gen = 0;
+	let connectingGen = -1;
 	let watching = false;
+	let backoff = 2000;
+	/** A key that needs pressing again (Enter on an ended child, x on a running one). */
+	let armed: { id: string; key: "open" | "stop"; at: number } | undefined;
+	const ARM_MS = 2500;
+	const flashTimers = new Set<NodeJS.Timeout>();
 	let all = new Map<string, JobRow>();
 	let rows: JobRow[] = [];
 	const hidden = new Set<string>();
@@ -160,7 +169,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	let stopKeys: (() => void) | undefined;
 	let lastStates = new Map<string, string>();
 	let maxRows = 5;
-	let enabled = true;
+	let enabled = false;
 
 	const session = () => {
 		try {
@@ -222,6 +231,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 					frame,
 					termRows: tui?.terminal.rows ?? 0,
 					flash,
+					notice: armedNotice(),
 				},
 				width,
 				(c, t) => theme.fg(c, t),
@@ -233,6 +243,30 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	let theme: Theme | undefined;
 	const themeOf = () => theme;
 
+	function armedNotice(): string | undefined {
+		if (!armed || Date.now() - armed.at > ARM_MS) return undefined;
+		const row = rows.find((r) => r.id === armed!.id);
+		if (!row) return undefined;
+		return armed.key === "open" ? `${oneLine(row.name)} is ${row.state} · ↵ again starts it` : `x again stops ${oneLine(row.name)}`;
+	}
+
+	/** True when this is the second press of `key` on `row` in time; otherwise arms it. */
+	function confirmed(row: JobRow, key: "open" | "stop"): boolean {
+		const now = Date.now();
+		if (armed && armed.id === row.id && armed.key === key && now - armed.at <= ARM_MS) {
+			armed = undefined;
+			return true;
+		}
+		armed = { id: row.id, key, at: now };
+		const t = setTimeout(() => {
+			flashTimers.delete(t);
+			requestRender();
+		}, ARM_MS + 50);
+		t.unref?.();
+		flashTimers.add(t);
+		return false;
+	}
+
 	function onEvent(e: Event): void {
 		if (e.event === "job") {
 			all.set(e.job.id, e.job);
@@ -242,10 +276,13 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			// SP-13: a child that starts waiting or finishes stands out until the panel is used
 			if (before && before !== now && (now === "blocked" || now === "done" || now === "failed") && e.job.parentSession === session()) {
 				flash.add(e.job.id);
-				setTimeout(() => {
+				const t = setTimeout(() => {
+					flashTimers.delete(t);
 					flash.delete(e.job.id);
 					requestRender();
-				}, 5000).unref?.();
+				}, 5000);
+				t.unref?.();
+				flashTimers.add(t);
 			}
 		} else if (e.event === "removed") {
 			all.delete(e.id);
@@ -256,9 +293,11 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	}
 
 	async function watch(): Promise<void> {
-		if (!enabled || client || connecting || !ctx) return;
+		if (!enabled || !ctx) return;
 		watching = true;
-		connecting = true;
+		const my = gen;
+		if (client || connectingGen === my) return;
+		connectingGen = my;
 		let c: DaemonClient | undefined;
 		try {
 			// never starts the daemon: the panel only shows what is there
@@ -266,34 +305,41 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			c.onEvent(onEvent);
 			await c.request("subscribe", {});
 			const { jobs } = await c.request("list", { all: true });
-			if (!watching) return c.close();
+			if (my !== gen || !watching) return c.close();
 			all = new Map(jobs.map((j) => [j.id, j]));
 			lastStates = new Map(jobs.map((j) => [j.id, j.state]));
 			client = c;
+			backoff = 2000;
 			const live = c;
 			c.onClose(() => {
 				if (client !== live) return;
 				client = undefined;
-				if (watching) scheduleReconnect();
+				if (watching && my === gen) scheduleReconnect();
 			});
 			recompute();
 			requestRender();
 		} catch {
 			c?.close();
-			if (watching) scheduleReconnect();
+			if (watching && my === gen) scheduleReconnect();
 		} finally {
-			connecting = false;
+			if (connectingGen === my) connectingGen = -1;
 		}
 	}
 
 	function scheduleReconnect(): void {
 		clearTimeout(reconnectTimer);
-		reconnectTimer = setTimeout(() => void watch(), 2000);
+		reconnectTimer = setTimeout(() => void watch(), backoff);
 		reconnectTimer.unref?.();
+		backoff = Math.min(backoff * 2, 30_000);
 	}
 
 	function unwatch(): void {
+		gen++;
 		watching = false;
+		armed = undefined;
+		for (const t of flashTimers) clearTimeout(t);
+		flashTimers.clear();
+		flash.clear();
 		clearTimeout(reconnectTimer);
 		clearTimeout(renderTimer);
 		renderTimer = undefined;
@@ -338,6 +384,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			if (failure) c.ui.notify(`pi-roost: could not open ${oneLine(row.name)}: ${oneLine(failure)}`, "error");
 			else if (reason === "takeover") c.ui.notify(`pi-roost: ${oneLine(row.name)} was opened elsewhere`, "warning");
 			else if (reason === "exit") c.ui.notify(`pi-roost: ${oneLine(row.name)} ended`, "info");
+			else if (reason === "error" || reason === "closed") c.ui.notify(`pi-roost: lost the connection to ${oneLine(row.name)}`, "error");
 		} catch {
 			// a stale context after a session switch
 		}
@@ -357,7 +404,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			} finally {
 				if (c !== client) c.close();
 			}
-			ctx?.ui.notify(`pi-roost: stopping ${oneLine(row.name)} · x again hides it`, "info");
+			ctx?.ui.notify(`pi-roost: stopping ${oneLine(row.name)} · x on it again hides it`, "info");
 		} catch (err) {
 			ctx?.ui.notify(`pi-roost: could not stop ${oneLine(row.name)}: ${(err as Error).message}`, "error");
 		}
@@ -390,12 +437,14 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				break;
 			case "open": {
 				const row = rows[sel];
-				if (row) void enter(row);
+				// an ended child starts again only on a second press (a reaped one just wakes up)
+				if (row && (row.pid !== null || row.reaped || confirmed(row, "open"))) void enter(row);
 				break;
 			}
 			case "stop": {
 				const row = rows[sel];
-				if (row) void stopOrHide(row);
+				// stopping loses the turn in progress: press twice; hiding a stopped one does not
+				if (row && (row.pid === null || confirmed(row, "stop"))) void stopOrHide(row);
 				break;
 			}
 			default:
@@ -417,19 +466,22 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (_event, c) => {
-		ctx = c;
 		stopKeys?.();
 		stopKeys = undefined;
 		unwatch();
 		dialogs = 0;
 		hidden.clear();
+		// off until every check passes: headless and scratch sessions never connect
+		enabled = false;
+		ctx = undefined;
 		if (!c.hasUI || pi.getFlag("agents") === true || typeof pi.getFlag("bg") === "string") return;
 		const file = c.sessionManager.getSessionFile();
 		if (isScratchSession(file)) return;
 		const config = loadConfig(c.cwd);
-		enabled = config.subagentPanel;
+		if (!config.subagentPanel) return;
+		enabled = true;
+		ctx = c;
 		maxRows = config.subagentPanelRows;
-		if (!enabled) return;
 		c.ui.setWidget(
 			WIDGET_KEY,
 			(t, th) => {
@@ -451,7 +503,9 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	pi.registerCommand("subagents", {
 		description: "Select this session's subagents in the panel below the prompt",
 		handler: async (_args, c) => {
+			if (!enabled) return c.ui.notify("pi-roost: the subagent panel is off here", "info");
 			await watch();
+			for (let i = 0; i < 20 && !client && connectingGen !== -1; i++) await new Promise((r) => setTimeout(r, 50));
 			if (rows.length === 0) return c.ui.notify("pi-roost: this session has no subagents", "info");
 			focused = true;
 			select(0);
@@ -467,5 +521,8 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			ctx?.ui.setWidget(WIDGET_KEY, undefined);
 		} catch {}
 		ctx = undefined;
+		tui = undefined;
+		theme = undefined;
+		enabled = false;
 	});
 }

@@ -10,15 +10,19 @@ https://claude.ai/artifact/1bnS9z9j9TGV13UVBuQbkp), modelled on Claude Code's su
 |---|---|---|
 | SP-1–SP-4 | panel below the editor while the session has children; a row each (icon, name, age, sentence, `⎇ branch`, `(+N)` descendants); at most `subagentPanelRows` with `… N more (/agents)`; key hint | `extensions/subagent-panel.ts` `renderPanel` |
 | SP-5, SP-6 | ↓ on an empty prompt (focus probe, no dialog, no agent view) selects; ↑↓ move, ↑ on the first row / Esc / ← leave; any other key leaves and goes to the prompt | `onInput` |
-| SP-7–SP-9 | Enter / → attaches (an ended child is respawned first); the child's detach keys return; the parent's turn keeps running meanwhile | `enter` (same flow as the agent view) |
+| SP-7–SP-9 | Enter / → attaches; an ended child needs Enter twice (as the agent view's DM-7), a reaped one just wakes; the child's detach keys return; the parent's turn keeps running meanwhile | `enter` (same flow as the agent view) |
 | SP-10 | live rows from daemon events; connects only when the session has children (`hasChildren`) or after a `roost_spawn` | `watch` |
-| SP-11 | `x` stops a running child (the parent gets `ended (stopped)`), on a stopped one hides its row | `stopOrHide` |
+| SP-11 | `x` twice stops a running child (the parent gets `ended (stopped)`); on a stopped one `x` hides its row | `stopOrHide`, `confirmed` |
 | SP-12 | grandchildren counted as `(+N)` | `descendantCounts` |
 | SP-13 | a child that starts waiting or finishes is highlighted for 5 s | `flash` |
 | SP-14 | `/subagents` selects the panel | command |
 | — | the panel works in an attached worker too (nested attach) | registered for both roles |
 
 Not done (P2): SP-15 stop all, SP-16 message a child from the panel.
+
+Review fixes: headless and scratch sessions never connect; a connect from an earlier
+session drops itself (generation counter); timers cleared on session switch; reconnect
+backs off to 30 s; "lost the connection" is reported.
 
 ## Checks
 
