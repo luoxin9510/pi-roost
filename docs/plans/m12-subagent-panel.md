@@ -18,7 +18,8 @@ https://claude.ai/artifact/1bnS9z9j9TGV13UVBuQbkp), modelled on Claude Code's su
 | SP-14 | `/subagents` selects the panel | command |
 | — | the panel works in an attached worker too (nested attach) | registered for both roles |
 
-Not done (P2): SP-15 stop all, SP-16 message a child from the panel.
+| SP-15 | `K` twice stops every running child; `/subagents stop` asks, then does it (Claude Code's Ctrl+X Ctrl+K is taken: pi binds Ctrl+X to copy) | `stopAll` |
+| SP-16 | `m` opens a line under the selected row; Enter sends it as a reply from the user (a run that reports back), Esc cancels | `openComposer`, `sendMessage` |
 
 Review fixes: headless and scratch sessions never connect; a connect from an earlier
 session drops itself (generation counter); timers cleared on session switch; reconnect

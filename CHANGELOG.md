@@ -4,7 +4,8 @@
 
 - Subagent panel: a session's `roost_spawn` children are listed below its prompt; ↓ on an
   empty prompt selects one, Enter opens it, its detach keys come back; `x` stops (then
-  hides), `/subagents` selects the panel. Settings `subagentPanel`, `subagentPanelRows`.
+  hides), `m` messages the selected child, `K` twice (or `/subagents stop`) stops them all,
+  `/subagents` selects the panel. Settings `subagentPanel`, `subagentPanelRows`.
 - `/fork <prompt>` is now `/bg-fork <prompt>`: the old name collided with pi's built-in
   `/fork`, so pi left it out of autocomplete.
 - pi-mobile: the phone's **New session** can start a background session (a starter on

@@ -86,7 +86,7 @@ describe("subagent panel", () => {
 		expect(lines[2]).toContain("↓ select subagents");
 		const focused = renderPanel(view([a, b], { focused: true, sel: 1 }), 120, plain);
 		expect(focused[1]!.startsWith("› ")).toBe(true);
-		expect(focused[2]).toContain("↵ open · x stop · Esc back");
+		expect(focused[2]).toContain("↵ open · m message · x stop · K stop all · Esc back");
 	});
 
 	it("caps the rows and keeps the selection on screen", () => {
@@ -126,6 +126,19 @@ describe("subagent panel", () => {
 		expect(renderPanel(view(rows, { notice: "x again stops child" }), 100, plain).at(-1)).toContain("↓ select");
 	});
 
+	it("writes a message under the selected row; the hint follows", () => {
+		const rows = [row({ name: "red" }), row({ name: "blue" })];
+		const lines = renderPanel(view(rows, { focused: true, sel: 1, composer: (w: number) => "message blue › hi".slice(0, w) }), 80, plain);
+		expect(lines[2]).toBe("    message blue › hi");
+		expect(lines.at(-1)).toBe("  ↵ send · Esc cancel");
+		expect(renderPanel(view(rows, { focused: true }), 120, plain).at(-1)).toContain("m message · x stop · K stop all");
+		for (const w of [1, 5, 7, 20]) {
+			for (const l of renderPanel(view(rows, { focused: true, sel: 1, composer: () => "message blue › a long draft ".repeat(5) }), w, plain)) {
+				expect(visibleWidth(l)).toBeLessThanOrEqual(w);
+			}
+		}
+	});
+
 	it("reads the panel keys", () => {
 		expect(keyOf("\x1b[B")).toBe("down");
 		expect(keyOf("\x1b[A")).toBe("up");
@@ -134,6 +147,8 @@ describe("subagent panel", () => {
 		expect(keyOf("x")).toBe("stop");
 		expect(keyOf("\x1b")).toBe("back");
 		expect(keyOf("\x1b[D")).toBe("back");
+		expect(keyOf("m")).toBe("message");
+		expect(keyOf("K")).toBe("stopAll");
 		expect(keyOf("a")).toBe("other");
 	});
 });
