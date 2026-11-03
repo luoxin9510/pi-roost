@@ -14,6 +14,7 @@ const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
 usage:
   pi-roost attach <id|name>        open a background session (Ctrl+Z detaches)
   pi-roost logs <id|name>          print its current or last screen
+  pi-roost reply <id|name> <text>  send a reply (queued as a follow-up while it works)
   pi-roost stop <id|name>          stop it
   pi-roost rm <id|name>            stop it and delete its record
   pi-roost --json [--all] [--cwd <dir>]
@@ -26,7 +27,8 @@ const ENDED_CUTOFF_MS = 48 * 60 * 60 * 1000;
 
 class UsageError extends Error {}
 
-const isLive = (row: JobRow) => row.state === "working" || row.state === "blocked";
+// A finished turn still has a live worker to attach to; only the process matters.
+const isLive = (row: JobRow) => row.pid !== null;
 
 async function withDaemon<T>(fn: (client: DaemonClient) => Promise<T>): Promise<T> {
 	const client = await DaemonClient.connectOrStart();
@@ -85,6 +87,18 @@ async function cmdStopOrRm(op: "stop" | "rm", query: string | undefined): Promis
 		const row = await findRow(c, query);
 		await c.request(op, { id: row.id });
 		process.stdout.write(`${op === "stop" ? "stopped" : "removed"} · ${row.id} · ${row.name}\n`);
+	});
+}
+
+async function cmdReply(query: string | undefined, words: string[]): Promise<void> {
+	const text = words.join(" ").trim();
+	if (!text) throw new UsageError("reply needs text");
+	await withDaemon(async (c) => {
+		const row = await findRow(c, query);
+		const r = await c.request("reply", { id: row.id, text });
+		const what = r.stopped ? "stopped" : r.delivered ? "sent" : r.saved ? "saved for its next start" : "not delivered (the session is not running)";
+		process.stdout.write(`${what} · ${row.id} · ${row.name}\n`);
+		if (!r.delivered && !r.saved) process.exitCode = 1;
 	});
 }
 
@@ -153,6 +167,9 @@ async function main(argv: string[]): Promise<number> {
 				break;
 			case "logs":
 				await cmdLogs(rest[0]);
+				break;
+			case "reply":
+				await cmdReply(rest[0], rest.slice(1));
 				break;
 			case "stop":
 			case "rm":

@@ -72,6 +72,9 @@ export interface OpArgs {
 	shutdown: { keepWorkers?: boolean };
 	subscribe: {};
 	report: { id: string; token: string; report: WorkerReport };
+	reply: { id: string; text: string };
+	/** Worker → daemon: the reply with this seq was handed to pi. */
+	ack: { id: string; token: string; seq: number };
 }
 
 export interface OpResults {
@@ -85,6 +88,9 @@ export interface OpResults {
 	shutdown: {};
 	subscribe: {};
 	report: {};
+	/** delivered: handed to the live worker; saved: kept for its next start (PK-5). */
+	reply: { delivered: boolean; saved: boolean; stopped?: boolean };
+	ack: {};
 }
 
 export type Op = keyof OpArgs;
@@ -98,7 +104,11 @@ export type OkResponse<O extends Op = Op> = { id: number; ok: true; result: OpRe
 export type ErrResponse = { id: number; ok: false; error: string; code?: string };
 export type Response<O extends Op = Op> = OkResponse<O> | ErrResponse;
 
-export type Event = { event: "job"; job: JobRow } | { event: "removed"; id: string };
+export type Event =
+	| { event: "job"; job: JobRow }
+	| { event: "removed"; id: string }
+	/** Daemon → worker, on the connection the worker reports on. */
+	| { event: "deliver"; id: string; seq: number; text: string };
 
 export class LineReader {
 	private decoder = new StringDecoder("utf8");
