@@ -7,7 +7,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../lib/comms.ts";
 import { loadConfig } from "../lib/config.ts";
-import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
+import { buildLaunch, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import type { ArgsOf, Op, PeerRow, ResultOf, SendResult } from "../lib/protocol.ts";
 
 export interface AgentLink {
@@ -91,38 +91,51 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 		name: "roost_spawn",
 		label: "Spawn agent",
 		description:
-			"Start a background pi session (a child) on a task. It runs on its own and its report (final reply, question or failure) arrives here as a message when it finishes; do not poll for it. Good for independent work in parallel. You can message it with roost_send.",
+			"Start a background pi session (a child) on a task. It runs on its own and its report (final reply, question or failure) arrives here as a message when it finishes; do not poll for it. Good for independent work in parallel. You can message it with roost_send. Children that edit files at the same time should get worktree: true (each works on its own git branch from the last commit; its report names the branch to review or merge).",
 		parameters: Type.Object({
 			task: Type.String({ description: "The child's first prompt: everything it needs to know" }),
 			name: Type.Optional(Type.String({ description: "Short name shown in the agent view" })),
 			cwd: Type.Optional(Type.String({ description: "Working directory (default: yours)" })),
 			model: Type.Optional(Type.String({ description: "provider/id (default: your current model)" })),
 			thinking: Type.Optional(Type.String({ description: "Thinking level (default: yours)" })),
+			worktree: Type.Optional(Type.Boolean({ description: "Run in its own git worktree and branch (default: the user's setting)" })),
 		}),
 		async execute(_id, params, _signal, _update, ctx) {
 			const task = params.task.trim();
 			if (!task) throw new Error("task is empty");
 			const cwd = params.cwd ? resolve(ctx.cwd, params.cwd) : ctx.cwd;
 			if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
-			const sessionFile = SessionManager.create(cwd).getSessionFile();
-			if (!sessionFile) throw new Error("could not allocate a session file");
-			const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-			const launch = buildLaunch({
-				task,
-				cwd,
-				sessionFile,
-				name: params.name?.trim() || fallbackName(task),
-				origin: "dispatch",
-				argv: process.argv,
-				execPath: process.execPath,
-				env: process.env,
-				extraEnv: loadConfig(cwd).envAllowList,
-				piVersion: VERSION,
-				model: params.model?.trim() || current,
-				thinking: params.thinking?.trim() || pi.getThinkingLevel(),
-			});
-			const r = await link.call("spawn", { launch });
-			return text(`Started ${r.name} (${r.id}). Its report arrives here as a message when it finishes; keep working meanwhile.`);
+			const name = params.name?.trim() || fallbackName(task);
+			const config = loadConfig(cwd);
+			// M10: a worktree when asked, or by the user's default (which falls back outside a repository)
+			const iso = prepareIsolation(cwd, name, params.worktree ?? isolationDefault(config.worktreeIsolation, true), params.worktree === true);
+			try {
+				const sessionFile = SessionManager.create(iso.cwd).getSessionFile();
+				if (!sessionFile) throw new Error("could not allocate a session file");
+				const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+				const launch = buildLaunch({
+					task,
+					cwd: iso.cwd,
+					sessionFile,
+					name,
+					origin: "dispatch",
+					argv: process.argv,
+					execPath: process.execPath,
+					env: process.env,
+					extraEnv: config.envAllowList,
+					piVersion: VERSION,
+					model: params.model?.trim() || current,
+					thinking: params.thinking?.trim() || pi.getThinkingLevel(),
+					worktree: iso.worktree,
+				});
+				const r = await link.call("spawn", { launch });
+				const where = iso.worktree ? ` It works in ${iso.worktree.path} on branch ${iso.worktree.branch}.` : "";
+				const note = iso.note ? ` Note: ${iso.note}.` : "";
+				return text(`Started ${r.name} (${r.id}).${where}${note} Its report arrives here as a message when it finishes; keep working meanwhile.`);
+			} catch (err) {
+				iso.discard();
+				throw err;
+			}
 		},
 	});
 }

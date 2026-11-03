@@ -49,6 +49,8 @@ export interface JobRow {
 	/** M9: the session that spawned this one (roost_spawn), and its tree's root. */
 	parentSession?: string | null;
 	rootSession?: string | null;
+	/** M10: the session's own git worktree. */
+	worktree?: { path: string; branch: string } | null;
 }
 
 /** M9: a session an agent may message (roost_agents). */
@@ -115,6 +117,8 @@ export interface DispatchArgs {
 	thinking?: string;
 	origin: DispatchOrigin;
 	piVersion?: string;
+	/** M10: the worktree the dispatching side made for this session (cwd is inside it). */
+	worktree?: { path: string; branch: string; repo: string; base: string };
 }
 
 export interface DaemonStatus {
@@ -164,7 +168,8 @@ export interface OpResults {
 	list: { jobs: JobRow[] };
 	dispatch: { id: string; name: string };
 	stop: { id: string };
-	rm: { id: string };
+	/** M10: what happened to the session's worktree. */
+	rm: { id: string; worktree?: { path: string; branch: string; removed: boolean; branchKept: boolean; reason?: string } };
 	resolve: { id: string };
 	status: DaemonStatus;
 	shutdown: {};

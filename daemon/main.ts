@@ -57,6 +57,7 @@ import {
 	updateState,
 } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
+import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
 const CONTINUE = "Continue where you left off.";
@@ -187,7 +188,19 @@ function rowOf(id: string): JobRow | undefined {
 		orderKey: typeof st.orderKey === "string" ? st.orderKey : null,
 		parentSession: rec.parentSession ?? null,
 		rootSession: rec.rootSession ?? null,
+		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch } : null,
 	};
+}
+
+/** M10: a child's report ends with where its work is. */
+async function withWorktreeLine(id: string, body: string): Promise<string> {
+	const w = recs.get(id)?.worktree;
+	if (!w) return body;
+	try {
+		return `${body}\n\n${worktreeLine(w, await worktreeStatus(w))}`;
+	} catch {
+		return body;
+	}
 }
 
 function send(conn: Conn, value: unknown): void {
@@ -291,7 +304,7 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	}
 	if (daemonEnded && !shuttingDown && recs.get(id)?.parentSession) {
 		const why = removing.has(id) ? "removed by the user" : patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
-		void routeReport(id, reportBody({ state: "ended", error: why }));
+		void withWorktreeLine(id, reportBody({ state: "ended", error: why })).then((body) => routeReport(id, body));
 	}
 }
 
@@ -397,6 +410,15 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		}
 	}
 
+	let worktree: WorktreeInfo | undefined;
+	if (a.worktree !== undefined) {
+		if (shell) throw new OpError("bad_request", "shell jobs run without a worktree");
+		if (!(await validWorktree(a.worktree))) throw new OpError("bad_request", "worktree is not one pi-roost made");
+		const w = a.worktree as WorktreeInfo;
+		if (!isInside(a.cwd, w.path)) throw new OpError("bad_request", "cwd must be inside the worktree");
+		worktree = { path: w.path, branch: w.branch, repo: w.repo, base: w.base };
+	}
+
 	let id = newJobId();
 	while (recs.has(id)) id = newJobId();
 	const base = str(a.name) ? a.name : id;
@@ -420,6 +442,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		createdAt: now,
 		...(str(a.piVersion) ? { piVersion: a.piVersion } : {}),
 		roostVersion: ROOST_VERSION,
+		...(worktree ? { worktree } : {}),
 		...extra,
 	};
 	createJob(rec, { state: "working", startedAt: now, updatedAt: now, jobToken: newToken(), ...(shell ? { status: "busy" } : {}) });
@@ -489,7 +512,14 @@ async function respawn(
 			const holder = readWriterLock(rec.sessionFile);
 			if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
 		}
-		if (!isDir(rec.cwd)) throw new OpError("bad_request", `cwd is gone: ${rec.cwd}`);
+		if (!isDir(rec.cwd)) {
+			throw new OpError(
+				"bad_request",
+				rec.worktree
+					? `its worktree is gone: ${rec.worktree.path} (branch ${rec.worktree.branch}; git worktree add ${rec.worktree.path} ${rec.worktree.branch} brings it back)`
+					: `cwd is gone: ${rec.cwd}`,
+			);
+		}
 		if (!recs.has(id)) throw new OpError("not_found", `job ${id} was removed`);
 		const st = readState(id);
 		const written = !shell && existsSync(rec.sessionFile);
@@ -1067,7 +1097,7 @@ async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Pr
 	if (state !== "done" && state !== "blocked" && state !== "failed") throw new OpError("bad_request", "invalid state");
 	const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.slice(0, max) : null);
 	const body = reportBody({ state, result: text(args?.result, 6000), question: text(args?.question, 2000), error: text(args?.error, 1000) });
-	return { routed: await routeReport(peer.id, body) };
+	return { routed: await routeReport(peer.id, await withWorktreeLine(peer.id, body)) };
 }
 
 function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd?: unknown; pid?: unknown } | undefined): { id: string } {
@@ -1208,6 +1238,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 					if (roster.has(id)) finalize(id, "killed by rm");
 				}
 			}
+			const w = recs.get(id)?.worktree;
 			recs.delete(id);
 			shellPids.delete(id);
 			stopping.delete(id);
@@ -1215,7 +1246,18 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			removeJob(id);
 			log("info", "rm", { id });
 			push({ event: "removed", id });
-			return { id };
+			if (!w) return { id };
+			// M10: remove what holds no work; never fail rm over it
+			let worktree: CleanupResult;
+			try {
+				const inUse =
+					[...recs.values()].some((r) => isInside(r.cwd, w.path)) || [...fgPeers.values()].some((c) => c.peer?.kind === "fg" && isInside(c.peer.cwd, w.path));
+				worktree = await cleanupWorktree(w, inUse);
+			} catch (err) {
+				worktree = { path: w.path, branch: w.branch, removed: false, branchKept: true, reason: String(err) };
+			}
+			log("info", "rm worktree", { id, ...worktree });
+			return { id, worktree };
 		}
 		case "respawn": {
 			if (args?.all === true) {

@@ -1,5 +1,5 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isAlive } from "../lib/proc.ts";
 import type { Event } from "../lib/protocol.ts";
 import { listJobIds, readJob, readState } from "../lib/store.ts";
+import { createWorktree } from "../lib/worktree.ts";
 
 describe("comms pieces", () => {
 	it("relations inside and outside a tree", () => {
@@ -305,5 +306,49 @@ describe("agent messaging through the daemon", () => {
 		for (const e of delivered(w.events, "message")) await w.c.request("ack", { id: childId, token: w.token, seq: e.seq, exact: true });
 		for (let i = 0; i < 9; i++) await p.c.request("send", { to: childId, message: `n${i}` });
 		await expect(p.c.request("send", { to: childId, message: "too fast" })).rejects.toMatchObject({ code: "rate_limited" });
+	});
+});
+
+describe("worktrees through the daemon (M10)", () => {
+	const git = (cwd: string, ...args: string[]) =>
+		execFileSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+
+	function repo(): string {
+		const r = realpathSync(work);
+		git(r, "init", "-q", "-b", "main");
+		writeFileSync(join(r, "a.txt"), "a\n");
+		git(r, "add", ".");
+		git(r, "commit", "-q", "-m", "init");
+		return r;
+	}
+
+	it("stores a worktree, rejects a forged one, names the branch in reports, cleans up on rm", async () => {
+		await startDaemon();
+		const r = repo();
+		const p = await foreground("wtparent");
+		const made = createWorktree(r, "child", () => "abcd");
+		const wt = { path: made.path, branch: made.branch, repo: made.repo, base: made.base };
+		// a record that points rm at the main branch is refused
+		await expect(
+			p.c.request("spawn", { launch: { ...launch("sleep 30"), cwd: r, worktree: { ...wt, path: r, branch: "main" } } }),
+		).rejects.toMatchObject({ code: "bad_request" });
+		await expect(p.c.request("spawn", { launch: { ...launch("sleep 30"), cwd: r, worktree: wt } })).rejects.toThrow(/inside the worktree/);
+
+		const { id: childId } = await p.c.request("spawn", { launch: { ...launch("sleep 30", "wtchild"), cwd: made.cwd, worktree: wt } });
+		expect(readJob(childId)?.worktree).toEqual(wt);
+		const row = await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId && j.pid));
+		expect(row.worktree).toEqual({ path: wt.path, branch: wt.branch });
+
+		writeFileSync(join(made.path, "a.txt"), "b\n");
+		git(made.path, "commit", "-q", "-am", "work");
+		const w = await worker(childId);
+		await w.c.request("handback", { state: "done", result: "done", question: null, error: null });
+		const rep = await waitFor(() => delivered(p.events, "report")[0]);
+		expect(rep.text).toContain(`Worktree: ${wt.path} · branch ${wt.branch} · 1 commit on it`);
+
+		const res = await p.c.request("rm", { id: childId });
+		expect(res.worktree).toMatchObject({ removed: true, branchKept: true });
+		expect(existsSync(wt.path)).toBe(false);
+		expect(git(r, "branch", "--list", wt.branch)).toContain(wt.branch);
 	});
 });

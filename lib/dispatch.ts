@@ -1,6 +1,7 @@
 // Building a background job's launch request from a foreground pi process.
 import { isAbsolute, resolve } from "node:path";
 import { taskArg } from "./store.ts";
+import { createWorktree, discardWorktree, type WorktreeInfo, WorktreeError } from "./worktree.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
 const BOOL_FLAGS = new Set(["-ne", "--no-extensions", "--offline"]);
@@ -64,6 +65,8 @@ export interface LaunchInput {
 	/** Overrides from the agent view's /model and /thinking (DI-4). */
 	model?: string;
 	thinking?: string;
+	/** M10: the worktree made for it (prepareIsolation); cwd is inside it. */
+	worktree?: WorktreeInfo;
 }
 
 /** The daemon dispatch request for a new background pi running `task`. */
@@ -99,5 +102,43 @@ export function buildLaunch(input: LaunchInput) {
 		...(input.model ? { model: input.model } : {}),
 		...(input.thinking ? { thinking: input.thinking } : {}),
 		...(input.piVersion ? { piVersion: input.piVersion } : {}),
+		...(input.worktree ? { worktree: input.worktree } : {}),
 	};
+}
+
+export interface Isolation {
+	/** Where the session starts. */
+	cwd: string;
+	worktree?: WorktreeInfo;
+	/** For the user or the spawning agent: uncommitted changes left behind, or why it is not isolated. */
+	note?: string;
+	/** Undo after a failed dispatch. */
+	discard: () => void;
+}
+
+/**
+ * M10: a worktree for a new session when one is wanted. `explicit`: asked for by this
+ * dispatch (an error outside a repository); otherwise a config default that falls back.
+ */
+export function prepareIsolation(cwd: string, name: string, want: boolean, explicit: boolean): Isolation {
+	const none = (note?: string): Isolation => ({ cwd, ...(note ? { note } : {}), discard: () => {} });
+	if (!want) return none();
+	try {
+		const w = createWorktree(cwd, name);
+		const worktree: WorktreeInfo = { path: w.path, branch: w.branch, repo: w.repo, base: w.base };
+		return {
+			cwd: w.cwd,
+			worktree,
+			...(w.sourceDirty ? { note: `uncommitted changes in ${w.repo} are not in its worktree` } : {}),
+			discard: () => discardWorktree(worktree),
+		};
+	} catch (err) {
+		if (explicit || !(err instanceof WorktreeError)) throw err;
+		return none(`no worktree: ${err.message}`);
+	}
+}
+
+/** M10: whether a new session gets a worktree by default. */
+export function isolationDefault(setting: "off" | "children" | "all", child: boolean): boolean {
+	return setting === "all" || (setting === "children" && child);
 }

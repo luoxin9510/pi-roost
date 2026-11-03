@@ -20,6 +20,8 @@ export interface RoostConfig {
 	rowDetails: boolean;
 	/** NT-1: how the agent view makes the terminal notify. */
 	notify: "auto" | "osc9" | "osc777" | "bell" | "off";
+	/** M10: new sessions in their own git worktree: none, roost_spawn children, or every pi dispatch. */
+	worktreeIsolation: "off" | "children" | "all";
 	/** M9: the roost_agents / roost_send / roost_spawn tools in every session. */
 	agentTools: boolean;
 	/** M9: messages to sessions outside the sender's spawn tree (user config only). */
@@ -51,6 +53,7 @@ export const DEFAULTS: RoostConfig = {
 	fullscreen: true,
 	rowDetails: true,
 	notify: "auto",
+	worktreeIsolation: "off",
 	agentTools: true,
 	agentExternalMessages: false,
 	agentMaxDepth: 3,
@@ -73,6 +76,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (typeof r.fullscreen === "boolean") out.fullscreen = r.fullscreen;
 	if (typeof r.rowDetails === "boolean") out.rowDetails = r.rowDetails;
 	if (r.groupBy === "state" || r.groupBy === "directory") out.groupBy = r.groupBy;
+	if (r.worktreeIsolation === "off" || r.worktreeIsolation === "children" || r.worktreeIsolation === "all") out.worktreeIsolation = r.worktreeIsolation;
 	for (const k of ["agentTools", "agentExternalMessages"] as const) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
 	for (const k of ["agentMaxDepth", "agentMaxChildren", "agentMaxTree", "agentMaxTotal"] as const) {
 		const v = r[k];

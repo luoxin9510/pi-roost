@@ -21,6 +21,8 @@ export interface JobRecord {
 	/** M9: spawned by roost_spawn: the spawner's session (or `peer:<id>`), the tree's root. */
 	parentSession?: string;
 	rootSession?: string;
+	/** M10: its own git worktree (made at dispatch, cleaned up on rm). */
+	worktree?: { path: string; branch: string; repo: string; base: string };
 }
 
 export interface JobState {

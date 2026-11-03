@@ -6,6 +6,8 @@ import { hostControl } from "../lib/hostclient.ts";
 import { AGENT_MESSAGE_TYPE, RESULT_MAX } from "../lib/comms.ts";
 import { messageText } from "../lib/heuristics.ts";
 import type { ArgsOf, ContextInfo, Event, Op, ResultOf, WorkerReport } from "../lib/protocol.ts";
+import { readJob } from "../lib/store.ts";
+import { worktreeNote } from "../lib/worktree.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 import { registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
@@ -617,6 +619,12 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	// read the tracker's view of the same event (run ids, settled state).
 	registerSummaries(pi, { tracker, send: () => send(true), ctx: () => current });
 	registerRecap(pi, { tracker, send: () => send(), ctx: () => current });
+	// M10: a session in its own worktree is told so, every run (it is not in the session file)
+	const worktree = readJob(job.id)?.worktree;
+	if (worktree) {
+		const note = worktreeNote(worktree);
+		pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${note}` }));
+	}
 	registerAgentTools(pi, { call: (op, args) => (reporter ? reporter.call(op, args) : Promise.reject(new Error("not connected"))) });
 
 	pi.on("session_shutdown", async () => {
