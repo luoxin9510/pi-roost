@@ -2,7 +2,8 @@
 
 ## [0.1.1] - 2026-11-03
 
-- README: a fuller introduction, in English and Chinese.
+- README in English and Chinese, section by section.
+- docs/summary-model.md: using a company LLM endpoint as the summary model (in Chinese).
 
 ## [0.1.0] - 2026-11-03
 
