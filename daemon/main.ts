@@ -115,6 +115,10 @@ function hostGone(ref: HostRef): boolean {
 	return ref.hostToken ? !sameProcess(ref.hostPid, ref.hostToken) : false;
 }
 
+// the worker pid each shell row was last pushed with: a command that prints nothing
+// still has to show (and attach) once its host is up
+const shellPids = new Map<string, number | null>();
+
 function rowOf(id: string): JobRow | undefined {
 	const rec = recs.get(id);
 	const st = readState(id);
@@ -374,6 +378,7 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 		await startHost(rec);
 	} catch (err) {
 		recs.delete(id);
+		shellPids.delete(id);
 		removeJob(id);
 		throw err;
 	}
@@ -474,10 +479,6 @@ async function respawn(
 }
 
 /** DI-6: a shell job's row shows its latest output line; ended ones go after a while. */
-// the worker pid each shell row was last pushed with: a command that prints nothing
-// still has to show (and attach) once its host is up
-const shellPids = new Map<string, number | null>();
-
 function shellTick(): void {
 	const now = Date.now();
 	for (const [id, rec] of recs) {
@@ -805,6 +806,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 				}
 			}
 			recs.delete(id);
+			shellPids.delete(id);
 			stopping.delete(id);
 			removeJob(id);
 			log("info", "rm", { id });

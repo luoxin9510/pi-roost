@@ -18,23 +18,28 @@ echo "pi-roost: packing $(node -p 'require("./package.json").version')"
 npm pack --silent --pack-destination "$tmp" >/dev/null # prepare runs the build
 tarball=$(ls "$tmp"/*.tgz)
 
-# A daemon started from the old copy would launch new jobs with the new files.
-if [ -f "$dest/dist/bin/pi-roost.js" ]; then
-	node "$dest/dist/bin/pi-roost.js" daemon stop >/dev/null 2>&1 || true
-fi
-
-mkdir -p "$tmp/unpacked"
+# Build the new copy beside the old one, so nothing ever runs from a half-installed
+# directory (a daemon imports node-pty lazily).
+stage="$dest.new"
+rm -rf "$stage"
+mkdir -p "$tmp/unpacked" "$(dirname "$dest")"
 tar -xzf "$tarball" -C "$tmp/unpacked"
-rm -rf "$dest"
-mkdir -p "$(dirname "$dest")"
-mv "$tmp/unpacked/package" "$dest"
-
+mv "$tmp/unpacked/package" "$stage"
 # pi provides @earendil-works/* to extensions itself; only the runtime deps are needed.
-(cd "$dest" && npm install --silent --omit=dev --omit=peer --no-audit --no-fund --ignore-scripts)
 # (the tarball already has dist/; skipping scripts also skips the root prepare. node-pty ships prebuilds)
+(cd "$stage" && npm install --silent --omit=dev --omit=peer --no-audit --no-fund --ignore-scripts)
 # npm drops spawn-helper's exec bit when scripts are skipped; node-pty cannot spawn without it
-find "$dest/node_modules/node-pty" -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
+find "$stage/node_modules/node-pty" -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
 
+# A daemon started from the old copy would launch new jobs with the new files: stop it
+# (the next pi starts the new one), keeping the background sessions running.
+if [ -f "$dest/dist/bin/pi-roost.js" ]; then
+	node "$dest/dist/bin/pi-roost.js" daemon stop --keep-workers >/dev/null 2>&1 || true
+fi
+rm -rf "$dest.old"
+[ -d "$dest" ] && mv "$dest" "$dest.old"
+mv "$stage" "$dest"
+# hosts still running keep files open in the old copy; it goes at the next install
 if pi list 2>/dev/null | grep -q "local-packages/pi-roost\|$dest"; then
 	echo "pi-roost: already registered with pi"
 else

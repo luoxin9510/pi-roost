@@ -28,4 +28,24 @@ describe("fitScreen", () => {
 		expect(fitScreen(L(5, "t"), 3, 0, 1)).toHaveLength(3);
 		expect(fitScreen(L(50, "t"), 3, -1, -1)).toHaveLength(3);
 	});
+
+	it("shows a peeked row's reply input, and the row when it fits", () => {
+		// row 20, its peek 21..26 (the reply input last), bottom from 27
+		const out = fitScreen([...L(27, "L"), ...L(2, "b")], 12, 20, 27, { selectedEnd: 26 });
+		expect(out).toContain("L26");
+		expect(out).toContain("L20");
+		expect(out.slice(-2)).toEqual(["b0", "b1"]);
+	});
+
+	it("a peek taller than the screen keeps its end", () => {
+		const out = fitScreen([...L(40, "L"), "b"], 8, 5, 40, { selectedEnd: 30 });
+		expect(out).toContain("L30");
+		expect(out).toHaveLength(8);
+	});
+
+	it("a tiny screen gives up the title before the selection", () => {
+		expect(fitScreen([...L(10, "L"), "A", "B"], 3, 7, 10)).toEqual(["L7", "A", "B"]);
+		expect(fitScreen([...L(10, "L"), "A", "B"], 4, 7, 10)).toEqual(["L0", "L7", "A", "B"]);
+		expect(fitScreen([...L(10, "L"), "A"], 5, 7, 10, { keep: 1 })).toEqual(["L0", "L6", "L7", "L8", "A"]);
+	});
 });
