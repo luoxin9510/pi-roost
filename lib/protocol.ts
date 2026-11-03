@@ -41,6 +41,8 @@ export interface WorkerReport {
 	error: string | null;
 	name: string | null;
 	model: string | null;
+	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
+	attachSignal?: boolean;
 }
 
 export interface DispatchArgs {

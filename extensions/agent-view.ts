@@ -3,6 +3,7 @@ import { type Component, Input, parseKey, type TUI, truncateToWidth, visibleWidt
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
+import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
 import {
@@ -39,6 +40,8 @@ export interface AgentViewOptions {
 	setTitle: (title: string) => void;
 	/** Daemon connection; tests pass a fake. */
 	connect?: () => Promise<DaemonClient>;
+	/** NT-1: a job needs input or finished while the view is on screen. */
+	notify?: (row: JobRow, kind: "needs_input" | "completed") => void;
 	/** AV-9: a row to keep bold (the conversation just moved to the background). */
 	highlightId?: string;
 	/** BG-5: Esc goes back into this job (the conversation that just moved) instead of leaving. */
@@ -127,6 +130,7 @@ export class AgentView implements Component {
 			const { jobs } = await client.request("list", this.o.cwdFilter ? { cwd: this.o.cwdFilter } : {});
 			if (this.closed) return client.close();
 			this.rows = new Map(jobs.map((j) => [j.id, j]));
+			for (const j of jobs) observeJob(j); // what is already there is not news
 			this.client = client;
 			this.connectError = undefined;
 			// AV-8: pushed events only; reconnect when the daemon goes away.
@@ -151,13 +155,18 @@ export class AgentView implements Component {
 		if (e.event === "job") {
 			if (this.o.cwdFilter && !within(e.job.cwd, this.o.cwdFilter)) return;
 			this.rows.set(e.job.id, e.job);
+			const kind = observeJob(e.job);
+			if (kind && !this.attached) this.o.notify?.(e.job, kind);
 			if (this.attachWhenLive === e.job.id && !this.attached) {
 				if (e.job.pid) {
 					this.attachWhenLive = undefined;
 					void this.attachTo(e.job.id).catch((err: unknown) => this.say(String(err), "error"));
 				} else if (e.job.endedAt !== null) this.attachWhenLive = undefined;
 			}
-		} else if (e.event === "removed") this.rows.delete(e.id);
+		} else if (e.event === "removed") {
+			this.rows.delete(e.id);
+			forgetJob(e.id);
+		}
 		this.render0();
 	}
 

@@ -13,6 +13,8 @@ export interface RoostConfig {
 	dispatchThinking?: string;
 	envAllowList: string[];
 	groupBy: "state" | "directory";
+	/** NT-1: how the agent view makes the terminal notify. */
+	notify: "auto" | "osc9" | "osc777" | "bell" | "off";
 }
 
 export const DEFAULTS: RoostConfig = {
@@ -21,6 +23,7 @@ export const DEFAULTS: RoostConfig = {
 	reapIdleMinutes: 60,
 	envAllowList: [],
 	groupBy: "state",
+	notify: "auto",
 };
 
 function pick(raw: unknown): Partial<RoostConfig> {
@@ -35,6 +38,9 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	}
 	if (Array.isArray(r.envAllowList)) out.envAllowList = r.envAllowList.filter((v): v is string => typeof v === "string");
 	if (r.groupBy === "state" || r.groupBy === "directory") out.groupBy = r.groupBy;
+	if (r.notify === "auto" || r.notify === "osc9" || r.notify === "osc777" || r.notify === "bell" || r.notify === "off") {
+		out.notify = r.notify;
+	}
 	return out;
 }
 

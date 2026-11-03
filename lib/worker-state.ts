@@ -25,6 +25,10 @@ export class WorkerTracker {
 	private sawTurn = false;
 	private name: string | null = null;
 	private model: string | null = null;
+	/** SM-2: the summary model's line for the finished turn, or its progress line while running. */
+	private modelSummary: string | null = null;
+	/** Bumped at every run start: a late summary for an older run is dropped. */
+	private generation = 0;
 
 	/** A session (re)starts in this worker: /new, /resume and /fork begin from scratch. */
 	start(info: { name?: string | null; model?: string | null; fresh: boolean }): void {
@@ -55,11 +59,48 @@ export class WorkerTracker {
 	}
 
 	private resetRun(): void {
+		this.generation++;
+		this.modelSummary = null;
 		this.tool = null;
 		this.text = "";
 		this.error = null;
 		this.question = null;
 		this.choices = [];
+	}
+
+	/** Identifies the current run for asynchronous summaries. */
+	runId(): number {
+		return this.generation;
+	}
+
+	/** The latest assistant text of this run (the summary model's input). */
+	lastText(): string {
+		return this.text;
+	}
+
+	/** SM-2 at turn end: the model may reword the row and correct question detection. */
+	applyTurnSummary(run: number, s: { summary: string; kind: "done" | "question"; reply: string | null }): boolean {
+		if (run !== this.generation || this.running || this.dialogs.length > 0) return false;
+		if (this.settled !== "done" && this.settled !== "blocked") return false;
+		this.modelSummary = s.summary;
+		if (s.kind === "question" && this.settled === "done") {
+			this.settled = "blocked";
+			this.question = questionLine(this.text) || s.summary;
+			this.choices = extractChoices(this.text);
+		} else if (s.kind === "done" && this.settled === "blocked") {
+			this.settled = "done";
+			this.question = null;
+			this.choices = [];
+		}
+		if (s.kind === "question" && s.reply && !this.choices.includes(s.reply)) this.choices = [s.reply, ...this.choices];
+		return true;
+	}
+
+	/** SM-2 during a long turn: a fresh line every few minutes. */
+	applyProgressSummary(run: number, summary: string): boolean {
+		if (run !== this.generation || !this.running) return false;
+		this.modelSummary = summary;
+		return true;
 	}
 
 	isRunning(): boolean {
@@ -166,6 +207,7 @@ export class WorkerTracker {
 		if (waitingFor === "dialog") return dialog?.title ? clip(dialog.title) : `waiting in a ${dialog?.kind} dialog`;
 		if (waitingFor === "first-prompt") return "waiting for a first prompt";
 		if (this.settled === "failed" && this.error) return clip(this.error);
+		if (this.modelSummary) return this.modelSummary;
 		if (this.running && this.tool) return `running ${this.tool}`;
 		if (this.settled === "blocked" && this.question) return clip(this.question);
 		const line = lastLine(this.text);

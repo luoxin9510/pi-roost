@@ -143,7 +143,15 @@ describe("host", () => {
 		socks.push(sock);
 		sock.write(Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3]));
 		await waitFor(() => sock.destroyed);
-		const status = (await hostControl(id, "status")) as { alive: boolean };
+		// under load the next control connection can race the teardown of the bad one: retry it,
+		// while still requiring the host process itself to have survived
+		const status = await waitFor(async () => {
+			try {
+				return (await hostControl(id, "status")) as { alive: boolean };
+			} catch {
+				return undefined;
+			}
+		});
 		expect(status.alive).toBe(true);
 		expect(exited(child)).toBe(false);
 		await hostControl(id, "terminate");

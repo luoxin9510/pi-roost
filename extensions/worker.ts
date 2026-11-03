@@ -4,6 +4,7 @@ import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { DaemonClient } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import type { WorkerReport } from "../lib/protocol.ts";
+import { registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
 	CUSTOM_DIALOG_MS,
 	FIRST_PROMPT_MS,
@@ -308,7 +309,10 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		dialogOpen: () => dialogOpen > 0,
 		ack: (seq) => reporter?.ack(seq),
 	});
-	const send = () => reporter?.update(tracker.report());
+	// attachSignal: this worker handles the host's SIGUSR2 on attach and detach (AT-5)
+	const send = () => reporter?.update({ ...tracker.report(), attachSignal: true });
+	registerSummaries(pi, { tracker, send, ctx: () => current });
+	registerRecap(pi, { tracker, send, ctx: () => current });
 
 	pi.on("session_start", (event, ctx: ExtensionContext) => {
 		current = ctx;
