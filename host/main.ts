@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import xterm from "@xterm/headless";
 import pty from "node-pty";
-import { writeFileAtomic } from "../lib/atomic.ts";
+import { writeFileAtomic, writeJsonAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, updateState, writeExit } from "../lib/store.ts";
@@ -128,6 +128,25 @@ interface Attach {
 	decoder: StringDecoder;
 }
 let attached: Attach | undefined;
+// nobody watches a new worker yet (a previous host may have died attached)
+try {
+	writeJsonAtomic(join(jobDir(id), "attached.json"), { attached: false, at: Date.now() });
+} catch {}
+
+/** Record who is watching; a worker that asked for it hears about changes (AT-5). */
+function setAttached(a: Attach | undefined): void {
+	const was = attached !== undefined;
+	attached = a;
+	const now = a !== undefined;
+	if (was === now) return;
+	try {
+		// a file of its own: the daemon rewrites state.json on every report
+		writeJsonAtomic(join(jobDir(id), "attached.json"), { attached: now, at: Date.now() });
+		if (readState(id)?.attachSignal === true && workerAlive) proc.kill("SIGUSR2");
+	} catch (err) {
+		log("attach signal failed", { error: String(err) });
+	}
+}
 
 proc.onData((data) => {
 	term.write(data, () => {
@@ -138,7 +157,7 @@ proc.onData((data) => {
 });
 
 function kick(a: Attach, reason: "takeover" | "exit" | "request"): void {
-	if (attached === a) attached = undefined;
+	if (attached === a) setAttached(undefined);
 	if (a.sock.destroyed) return;
 	a.sock.end(encodeJsonFrame(FrameType.DETACHED, { reason }));
 }
@@ -190,7 +209,7 @@ const server = createServer((sock) => {
 	sock.on("error", (err) => log("socket error", { error: String(err) }));
 	sock.on("close", () => {
 		sockets.delete(sock);
-		if (attached?.sock === sock) attached = undefined;
+		if (attached?.sock === sock) setAttached(undefined);
 	});
 	const decoder = new FrameDecoder();
 	let role: "attach" | "control" | undefined;
@@ -207,7 +226,7 @@ const server = createServer((sock) => {
 						role = "attach";
 						if (attached) kick(attached, "takeover");
 						me = { sock, decoder: new StringDecoder("utf8") };
-						attached = me;
+						setAttached(me);
 						if (hello.cols && hello.rows) resizeAll(hello.cols, hello.rows);
 						if (workerAlive && rows > 1) {
 							const r = rows;

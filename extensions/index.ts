@@ -1,3 +1,4 @@
+import { setJobEventBus } from "../lib/job-events.ts";
 import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { DaemonClient } from "../lib/client.ts";
@@ -13,6 +14,7 @@ import { jobIdentity, registerWorker } from "./worker.ts";
 // the agent view (`pi --agents`, `/agents`).
 
 export default function (pi: ExtensionAPI) {
+	setJobEventBus(pi.events); // NT-2
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
 	pi.registerFlag("bg-name", { description: "Name for the --bg session", type: "string" });
 	pi.registerFlag("agents", { description: "Open the agent view of background sessions", type: "boolean" });

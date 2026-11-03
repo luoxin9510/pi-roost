@@ -1,6 +1,7 @@
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
+import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
 
 // Process-wide, not per module copy: a session switch may load this module again.
@@ -56,6 +57,11 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					});
 				},
 				setTitle: (title) => ctx.ui.setTitle(title),
+				notify: (row, kind) => {
+					const { title, body } = notifyText(row, kind);
+					const seq = notifySequence(resolveNotify(config.notify), title, body);
+					if (seq) process.stdout.write(seq);
+				},
 				done: () => done(),
 			});
 			void view.start();

@@ -7,6 +7,7 @@ import { DaemonClient } from "../lib/client.ts";
 import { loadConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { messageText } from "../lib/heuristics.ts";
+import { observeJob } from "../lib/job-events.ts";
 import { daemonSocketPath, isScratchSession, scratchDir } from "../lib/paths.ts";
 import { agentViewOpen, agentViewOpens, openAgentView } from "./open-view.ts";
 
@@ -329,6 +330,8 @@ function startFooter(ctx: ExtensionContext, leftArrow: boolean, busy: () => bool
 		try {
 			client = await DaemonClient.connect();
 			const { jobs } = await client.request("list", {});
+			// NT-2 for this process's listeners; an open agent view announces its own
+			if (!agentViewOpen()) for (const j of jobs) observeJob(j);
 			const live = jobs.filter((j) => j.pid !== null);
 			const counts = { waiting: live.filter((j) => j.state === "blocked").length, done: live.filter((j) => j.state === "done").length };
 			seenDone = Math.min(seenDone ?? counts.done, counts.done);
