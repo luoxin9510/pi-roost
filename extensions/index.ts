@@ -9,6 +9,7 @@ import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isScratchSession } from "../lib/paths.ts";
 import { registerForeground } from "./foreground.ts";
 import { registerForegroundPeer } from "./peer-link.ts";
+import { registerSubagentPanel } from "./subagent-panel.ts";
 import { openAgentView, setCommandSource } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
 import { registerMobileStarter } from "./mobile.ts";
@@ -72,6 +73,9 @@ export default function (pi: ExtensionAPI) {
 
 	// M11: pi-mobile's "New session" can start background sessions, from any pi
 	registerMobileStarter(pi);
+
+	// M12: before the role's own keys, so a focused panel gets ← and Esc first
+	registerSubagentPanel(pi);
 
 	const job = jobIdentity();
 	if (job) {

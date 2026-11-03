@@ -115,9 +115,9 @@ From the shell: `pi --bg "run the tests and summarise failures"`.
 - **←** on an empty prompt, `/bg` or `/background`: this conversation continues in the
   background and the agent view opens with it highlighted.<br>
   空提示符下按 **←**，或输入 `/bg`、`/background`：当前对话转到后台继续，agent 视图打开并高亮它。
-- `/fork <prompt>`: a copy of this conversation runs `<prompt>` in the background while
+- `/bg-fork <prompt>`: a copy of this conversation runs `<prompt>` in the background while
   you keep going here.<br>
-  `/fork <prompt>`：复制一份当前对话，在后台执行 `<prompt>`，你在这里继续聊。
+  `/bg-fork <prompt>`：复制一份当前对话，在后台执行 `<prompt>`，你在这里继续聊。
 - Quitting (Ctrl+D, `/quit`) while a turn is running offers to move it to the background
   instead of stopping it.<br>
   正在执行时退出（Ctrl+D、`/quit`），会提示你把它转到后台，而不是直接停掉。
@@ -164,6 +164,16 @@ workflows do, except that every child is a full pi session you can watch, peek a
 or attach to in the agent view (children show as `↳ name`).
 
 这样一个会话就能像 subagent 工作流那样，把任务分派给多个子会话，再收集它们的结果。区别在于每个子会话都是完整的 pi 会话：你可以在 agent 视图里看它、偷看它、回答它的问题，或者直接进入它（子会话显示为 `↳ 名字`）。
+
+**Your subagents below the prompt.** While a session has children, a panel under its
+prompt lists them, one row each: state, name, time, what it is doing or its result, its
+branch. On an empty prompt **↓** selects a row (↑↓ move), **Enter** or **→** opens that
+child's full pi screen (an ended one asks for Enter again, then starts), and the child's own detach keys
+(← on its empty prompt, Ctrl+Z, `/exit`) bring you back. **x** twice stops a running child, and on
+a stopped one hides its row; **Esc**, **←** or typing returns to the prompt. `/subagents`
+selects the panel too. This works in a background session you attached to as well.
+
+**提示符下方的子 agent 面板。** 会话有子会话时，提示符下方会出现一个面板，每个子会话一行：状态、名字、耗时、正在做什么或最终结果、所在分支。在空提示符上按 **↓** 选中一行（↑↓ 移动），按 **回车** 或 **→** 进入那个子会话的完整 pi 界面（已结束的要再按一次回车，确认后重启），在子会话里用它自己的退出键（空提示符按 ←、Ctrl+Z、`/exit`）就回到原会话。连按两次 **x** 停止运行中的子会话；对已停止的按 **x** 会把它从面板隐藏；按 **Esc**、**←** 或直接打字就回到提示符。也可以用 `/subagents` 选中面板。进入一个后台会话后，它的面板同样可用。
 
 How it behaves · 运行方式：
 
@@ -311,6 +321,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `leftArrowOpensAgents` | `true` | ← on an empty prompt moves the conversation to the background | 空提示符下按 ← 把对话转到后台 |
 | `defaultToAgentsView` | `false` | plain `pi` opens the agent view | 直接运行 `pi` 时打开 agent 视图 |
 | `envAllowList` | `[]` | extra environment variables for background sessions | 额外传给后台会话的环境变量 |
+| `subagentPanel`, `subagentPanelRows` | `true`, `5` | the panel of this session's subagents below the prompt, and how many rows it shows (1–10) | 提示符下方的子 agent 面板，以及最多显示几行（1–10） |
 | `worktreeIsolation` | `"off"` | `"children"`: `roost_spawn` children get their own worktree; `"all"`: every new session; outside a git repository they run without one | `"children"`：`roost_spawn` 派出的子会话各用独立 worktree；`"all"`：所有新会话都用；不在 git 仓库里时照常运行、不建 worktree |
 | `agentTools` | `true` | the `roost_*` tools in every session | 在每个会话里提供 `roost_*` 工具 |
 | `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
@@ -396,8 +407,8 @@ await attach(id); // hands this terminal to the session until it detaches · 把
   有些终端（Terminal.app、没开 `extended-keys` 的 tmux）把 Ctrl+Enter 当作回车发送：任务会启动，但不会自动进入，在它那一行按回车即可。
 - Pi's own double Ctrl+C quits without the offer to move the turn to the background.<br>
   pi 自带的连按两次 Ctrl+C 会直接退出，不会提示转到后台。
-- Pi's bare `/fork` is pi's; pi-roost's needs a prompt: `/fork <prompt>`.<br>
-  不带参数的 `/fork` 是 pi 自己的命令；pi-roost 的需要带上提示词：`/fork <prompt>`。
+- `/fork` is pi's own command (branch from an earlier message); pi-roost's copy-to-background is `/bg-fork <prompt>`.<br>
+  `/fork` 是 pi 自己的命令（从之前的消息分支）；pi-roost 的“复制到后台”是 `/bg-fork <prompt>`。
 
 ## Development · 开发
 
