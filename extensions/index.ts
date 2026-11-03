@@ -6,6 +6,7 @@ import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isScratchSession } from "../lib/paths.ts";
 import { registerForeground } from "./foreground.ts";
+import { registerForegroundPeer } from "./peer-link.ts";
 import { openAgentView, setCommandSource } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
 
@@ -66,8 +67,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => unlock());
 
 	const job = jobIdentity();
-	if (job) registerWorker(pi, job);
-	else registerForeground(pi);
+	if (job) {
+		// M9: commands the agent runs do not inherit the token (same-user processes can still
+		// read it from the job's files: a guard against accidents, not a boundary)
+		delete process.env.PI_JOB_TOKEN;
+		registerWorker(pi, job);
+	} else {
+		registerForeground(pi);
+		registerForegroundPeer(pi);
+	}
 }
 
 function agentsCwd(pi: ExtensionAPI, ctx: ExtensionContext): string | undefined {

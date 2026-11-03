@@ -46,6 +46,40 @@ export interface JobRow {
 	order: number | null;
 	/** The section the order belongs to (a state group or `dir:<cwd>`); stale elsewhere. */
 	orderKey: string | null;
+	/** M9: the session that spawned this one (roost_spawn), and its tree's root. */
+	parentSession?: string | null;
+	rootSession?: string | null;
+}
+
+/** M9: a session an agent may message (roost_agents). */
+export interface PeerRow {
+	id: string;
+	name: string;
+	relation: "parent" | "child" | "sibling" | "tree" | "external";
+	role: "job" | "foreground";
+	state: JobStateName | "live";
+	status: JobStatus;
+	waitingFor: WaitingFor;
+	summary: string | null;
+	question: string | null;
+	cwd: string;
+}
+
+export interface SendResult {
+	/** delivered: handed to the running session; queued: it is busy starting; started: it was ended and starts again */
+	outcome: "delivered" | "queued" | "started" | "stopped" | "not running";
+	id: string;
+	name: string;
+	relation: PeerRow["relation"];
+	/** The target is waiting on a dialog; the message waits until it is answered. */
+	dialog?: boolean;
+}
+
+export interface HandbackArgs {
+	state: "done" | "blocked" | "failed";
+	result: string | null;
+	question: string | null;
+	error: string | null;
 }
 
 /** What a worker reports about itself (full snapshot every time). */
@@ -65,6 +99,8 @@ export interface WorkerReport {
 	context?: ContextInfo | null;
 	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
 	attachSignal?: boolean;
+	/** M9: the worker takes agent messages and reports (custom messages, per-item acks). */
+	agentItems?: boolean;
 }
 
 export interface DispatchArgs {
@@ -103,14 +139,24 @@ export interface OpArgs {
 	subscribe: {};
 	report: { id: string; token: string; report: WorkerReport };
 	reply: { id: string; text: string };
-	/** Worker → daemon: the reply with this seq was handed to pi. */
-	ack: { id: string; token: string; seq: number };
+	/** Worker → daemon: the reply with this seq was handed to pi (exact: only that agent item). */
+	ack: { id: string; token: string; seq: number; exact?: boolean };
 	/** Start an ended job again from its session file; `restart` also restarts a live one. */
 	respawn: { id?: string; all?: boolean; restart?: boolean; prompt?: string };
 	pin: { id: string; pinned: boolean };
 	rename: { id: string; name: string };
 	/** AV-K13: these jobs, in this order (the rest of their group keeps its place). */
 	reorder: { ids: string[]; key: string };
+	/** M9: a foreground pi joins as a peer on this connection (pid owns the session's writer lock). */
+	peer_register: { session?: string; name: string; cwd: string; pid: number };
+	/** M9, on a peer connection: the sessions this peer may message. */
+	peers: {};
+	send: { to: string; message: string };
+	spawn: { launch: DispatchArgs };
+	/** M9, on a worker connection: the run it was spawned for (or a user turn) ended. */
+	handback: HandbackArgs;
+	/** M9, on a foreground peer connection: the report with this ref reached pi. */
+	peer_ack: { ref: string };
 }
 
 export interface OpResults {
@@ -131,6 +177,12 @@ export interface OpResults {
 	pin: { id: string; pinned: boolean };
 	rename: { id: string; name: string };
 	reorder: {};
+	peer_register: { id: string };
+	peers: { peers: PeerRow[] };
+	send: SendResult;
+	spawn: { id: string; name: string };
+	handback: { routed: boolean };
+	peer_ack: {};
 }
 
 export type Op = keyof OpArgs;
@@ -148,7 +200,18 @@ export type Event =
 	| { event: "job"; job: JobRow }
 	| { event: "removed"; id: string }
 	/** Daemon → worker, on the connection the worker reports on. */
-	| { event: "deliver"; id: string; seq: number; text: string };
+	| {
+			event: "deliver";
+			id: string;
+			seq: number;
+			text: string;
+			/** M9: absent for user replies; agent items carry an envelope as text. */
+			kind?: "reply" | "message" | "report";
+			from?: string;
+			relation?: string;
+			/** M9: a report to a foreground peer, acknowledged with peer_ack. */
+			ref?: string;
+	  };
 
 /** A ContextInfo from untrusted JSON (a report, state.json), or null. */
 export function contextFrom(v: unknown): ContextInfo | null {

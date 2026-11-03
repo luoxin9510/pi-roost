@@ -1,10 +1,26 @@
 import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import { readJson, writeJsonAtomic } from "../lib/atomic.ts";
 import { hostEntry } from "../lib/client.ts";
+import {
+	type AgentKind,
+	envelope,
+	foregroundPeerId,
+	MAX_PENDING_AGENT,
+	MESSAGE_MAX,
+	MESSAGES_PER_MINUTE,
+	RateLimiter,
+	type Relation,
+	relationOf,
+	reportBody,
+	sanitizeName,
+	SPAWNS_PER_MINUTE,
+	type TreeNode,
+} from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
@@ -15,8 +31,11 @@ import {
 	type DaemonStatus,
 	type DispatchArgs,
 	type Event,
+	type HandbackArgs,
 	type JobRow,
 	LineReader,
+	type PeerRow,
+	type SendResult,
 	type WorkerReport,
 	contextFrom,
 	encodeLine,
@@ -96,10 +115,25 @@ const conns = new Set<Conn>();
 /** The connection each live worker reports on; replies are pushed down it. */
 const workerConns = new Map<string, Conn>();
 
+/** M9: who is on the other end of a connection, once it has proved it. */
+type PeerIdentity =
+	| { kind: "job"; id: string }
+	| { kind: "fg"; id: string; session?: string; name: string; cwd: string; pid: number };
+
 interface Conn {
 	sock: Socket;
 	subscribed: boolean;
+	peer?: PeerIdentity;
+	/** M9: the worker on this connection takes agent items (older workers would inject them as user input). */
+	agentItems?: boolean;
 }
+
+/** M9: connected foreground pi sessions, by peer id. */
+const fgPeers = new Map<string, Conn>();
+/** M9: jobs being removed (their end is reported as a removal, once). */
+const removing = new Set<string>();
+const messageLimiter = new RateLimiter(MESSAGES_PER_MINUTE);
+const spawnLimiter = new RateLimiter(SPAWNS_PER_MINUTE);
 
 function persistRoster(): void {
 	const obj: Record<string, HostRef> = {};
@@ -151,6 +185,8 @@ function rowOf(id: string): JobRow | undefined {
 		pinned: st.pinned === true,
 		order: typeof st.order === "number" ? st.order : null,
 		orderKey: typeof st.orderKey === "string" ? st.orderKey : null,
+		parentSession: rec.parentSession ?? null,
+		rootSession: rec.rootSession ?? null,
 	};
 }
 
@@ -185,6 +221,8 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	const patch: Partial<JobState> = { endedAt: now, status: null, waitingFor: null, tool: null };
 	patch.stateSince = now;
 	let restart = false;
+	// M9: the daemon, not the worker, decided how this run ended
+	let daemonEnded = false;
 	if (recs.get(id)?.kind === "shell") {
 		// DI-6: stopped, or the command's exit status; the row goes away a while later
 		if (stopReq) patch.state = "stopped";
@@ -201,8 +239,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		patch.state = st.state === "working" ? "done" : st.state;
 		patch.reaped = true;
 		patch.stateSince = typeof st.stateSince === "number" ? st.stateSince : now;
-	} else if (stopReq) patch.state = "stopped";
-	else if (!ex && opts.startup) {
+	} else if (stopReq) {
+		patch.state = "stopped";
+		daemonEnded = true;
+	} else if (!ex && opts.startup) {
 		// DM-7: the machine or the background service went away under a live worker
 		if (st.state !== "working") patch.state = st.state === "blocked" && st.waitingFor !== "question" ? "done" : st.state;
 		else {
@@ -218,10 +258,12 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	} else if (!ex) {
 		patch.state = "failed";
 		patch.error = "host vanished";
+		daemonEnded = true;
 	} else if (ex.code !== 0) {
 		// DM-5: one automatic restart for a worker that crashed mid-run
 		const restarts = typeof st.crashRestarts === "number" ? st.crashRestarts : 0;
 		restart = st.state === "working" && restarts < 1;
+		daemonEnded = !restart;
 		patch.state = "failed";
 		if (!st.error) patch.error = `worker exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}`;
 	} else if (st.state === "failed" || (st.state === "blocked" && st.waitingFor === "question")) {
@@ -246,6 +288,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		void respawn(id, { prompt: CONTINUE, crash: true }).catch((err: unknown) =>
 			log("error", "crash restart failed", { id, error: String(err) }),
 		);
+	}
+	if (daemonEnded && !shuttingDown && recs.get(id)?.parentSession) {
+		const why = removing.has(id) ? "removed by the user" : patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
+		void routeReport(id, reportBody({ state: "ended", error: why }));
 	}
 }
 
@@ -329,7 +375,7 @@ function isDir(p: string): boolean {
 	}
 }
 
-async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> {
+async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promise<{ id: string; name: string }> {
 	if (!a || typeof a !== "object") throw new OpError("bad_request", "missing args");
 	if (!str(a.cwd) || !isAbsolute(a.cwd) || !isDir(a.cwd)) throw new OpError("bad_request", `cwd is not a directory: ${a.cwd}`);
 	if (!Array.isArray(a.command) || a.command.length === 0 || !a.command.every(str)) {
@@ -374,6 +420,7 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 		createdAt: now,
 		...(str(a.piVersion) ? { piVersion: a.piVersion } : {}),
 		roostVersion: ROOST_VERSION,
+		...extra,
 	};
 	createJob(rec, { state: "working", startedAt: now, updatedAt: now, jobToken: newToken(), ...(shell ? { status: "busy" } : {}) });
 	recs.set(id, rec);
@@ -582,7 +629,13 @@ const REPORT_WAITING = new Set([null, "dialog", "question", "first-prompt"]);
 interface PendingReply {
 	seq: number;
 	text: string;
+	/** M9: absent for user replies. */
+	kind?: "reply" | AgentKind;
+	from?: string;
+	relation?: Relation;
 }
+
+const isAgentItem = (r: PendingReply) => r.kind === "message" || r.kind === "report";
 
 const MAX_PENDING = 50;
 
@@ -594,7 +647,7 @@ function pendingReplies(id: string): PendingReply[] {
 /** (Re)send every reply the worker has not acknowledged; the worker drops seqs it has seen. */
 function flushPending(id: string, conn: Conn): void {
 	const pending = pendingReplies(id);
-	for (const r of pending) send(conn, { event: "deliver", id, seq: r.seq, text: r.text });
+	for (const r of pending) if (!isAgentItem(r) || conn.agentItems) send(conn, deliverEvent(id, r));
 	if (pending.length > 0) log("info", "delivered pending replies", { id, count: pending.length });
 }
 
@@ -604,7 +657,24 @@ function acknowledge(args: { id?: unknown; token?: unknown; seq?: unknown } | un
 	const st = readState(id);
 	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
 	if (typeof args.seq !== "number") throw new OpError("bad_request", "seq required");
-	updateState(id, { pendingReplies: pendingReplies(id).filter((r) => r.seq > (args.seq as number)) });
+	const acked = args.seq;
+	// user replies are acknowledged up to a seq; an agent item only by its own seq, once pi has it
+	const exact = (args as { exact?: unknown }).exact === true;
+	updateState(id, {
+		pendingReplies: pendingReplies(id).filter((r) => (exact ? r.seq !== acked : r.seq > acked || isAgentItem(r))),
+	});
+}
+
+function deliverEvent(id: string, r: PendingReply): Event {
+	return {
+		event: "deliver",
+		id,
+		seq: r.seq,
+		text: r.text,
+		...(r.kind ? { kind: r.kind } : {}),
+		...(r.from ? { from: r.from } : {}),
+		...(r.relation ? { relation: r.relation } : {}),
+	};
 }
 
 async function reply(
@@ -625,7 +695,9 @@ async function reply(
 	// PK-5: commands only make sense live; plain replies wait for the worker.
 	if (live && !connected && text.startsWith("/")) return { delivered: false, saved: false };
 	const pending = pendingReplies(id);
-	if (pending.length >= MAX_PENDING) throw new OpError("full", `${MAX_PENDING} replies are already waiting for this session`);
+	if (pending.filter((r) => !isAgentItem(r)).length >= MAX_PENDING) {
+		throw new OpError("full", `${MAX_PENDING} replies are already waiting for this session`);
+	}
 	// Every reply stays pending until the worker acknowledges it, so a dying connection loses nothing.
 	const st = readState(id);
 	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
@@ -653,9 +725,16 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	const st = readState(id);
 	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
 	if (!roster.has(id) || stopping.has(id)) return; // ended or being stopped: the daemon owns the state now
+	const takesAgentItems = (args.report as { agentItems?: unknown } | undefined)?.agentItems === true;
+	const gained = takesAgentItems && !conn.agentItems && workerConns.get(id) === conn;
+	conn.agentItems = takesAgentItems;
+	if (gained) flushPending(id, conn);
 	if (workerConns.get(id) !== conn) {
 		workerConns.set(id, conn);
+		conn.peer = { kind: "job", id };
 		flushPending(id, conn);
+		const session = recs.get(id)?.sessionFile;
+		if (session) setImmediate(() => void retryReports(session));
 	}
 	const r = args.report;
 	if (!r || !REPORT_STATES.has(r.state as string) || !REPORT_STATUS.has(r.status as string)) {
@@ -735,6 +814,322 @@ function list(args: { cwd?: string } | undefined): JobRow[] {
 	return rows.sort((x, y) => y.startedAt - x.startedAt);
 }
 
+// ---------------------------------------------------------------- M9: agent messaging
+
+function requirePeer(conn: Conn): PeerIdentity {
+	if (!conn.peer) throw new OpError("unauthorized", "this connection is not a peer (report as a worker, or peer_register)");
+	if (conn.peer.kind === "job" && !recs.has(conn.peer.id)) throw new OpError("not_found", "this job was removed");
+	return conn.peer;
+}
+
+const fgKey = (p: { id: string; session?: string }) => p.session ?? `peer:${p.id}`;
+
+function sessionKeyOf(peer: PeerIdentity): string {
+	if (peer.kind === "fg") return fgKey(peer);
+	const rec = recs.get(peer.id);
+	if (!rec || rec.kind === "shell") throw new OpError("unsupported", "a shell job has no session");
+	return rec.sessionFile;
+}
+
+/** Spawn links live on the job records of a session (any of them: ←, respawns keep the file). */
+function treeNode(key: string): TreeNode {
+	for (const r of recs.values()) {
+		if (r.sessionFile === key && r.parentSession) return { key, parent: r.parentSession, root: r.rootSession ?? r.parentSession };
+	}
+	return { key, parent: null, root: key };
+}
+
+type Holder = { kind: "fg"; id: string; conn: Conn; name: string; cwd: string } | { kind: "job"; id: string };
+
+/** Who answers for a session now: a connected foreground pi, else its live job, else its latest job. */
+function holderOf(key: string): Holder | undefined {
+	for (const [id, c] of fgPeers) {
+		const p = c.peer;
+		if (p?.kind === "fg" && fgKey(p) === key && !c.sock.destroyed) return { kind: "fg", id, conn: c, name: p.name, cwd: p.cwd };
+	}
+	let best: JobRecord | undefined;
+	for (const r of recs.values()) {
+		if (r.kind === "shell" || r.sessionFile !== key) continue;
+		if (roster.has(r.id)) return { kind: "job", id: r.id };
+		if (!best || r.createdAt > best.createdAt) best = r;
+	}
+	return best ? { kind: "job", id: best.id } : undefined;
+}
+
+function holderName(h: Holder): string {
+	return h.kind === "fg" ? h.name : (rowOf(h.id)?.name ?? h.id);
+}
+
+function peerName(peer: PeerIdentity): string {
+	return peer.kind === "fg" ? peer.name : (rowOf(peer.id)?.name ?? peer.id);
+}
+
+const EXTERNAL_RECENT_MS = 48 * 60 * 60 * 1000;
+
+/** Text from another session, for a model or a terminal: no control characters. */
+const plain = (v: string | null) => (v === null ? null : v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " "));
+
+/** The sessions `peer` may reach, one row per session (its current holder). */
+function peerRows(peer: PeerIdentity): (PeerRow & { key: string })[] {
+	const me = sessionKeyOf(peer);
+	const meNode = treeNode(me);
+	const external = loadUserConfig().agentExternalMessages;
+	const keys = new Set<string>();
+	for (const c of fgPeers.values()) if (c.peer?.kind === "fg") keys.add(fgKey(c.peer));
+	for (const r of recs.values()) if (r.kind !== "shell" && r.sessionFile) keys.add(r.sessionFile);
+	const rows: (PeerRow & { key: string })[] = [];
+	const now = Date.now();
+	for (const key of keys) {
+		if (key === me) continue;
+		const relation = relationOf(meNode, treeNode(key));
+		if (relation === "external" && !external) continue;
+		const h = holderOf(key);
+		if (!h) continue;
+		if (h.kind === "fg") {
+			rows.push({ key, id: h.id, name: h.name, relation, role: "foreground", state: "live", status: null, waitingFor: null, summary: null, question: null, cwd: h.cwd });
+			continue;
+		}
+		const row = rowOf(h.id);
+		if (!row) continue;
+		// outside the tree, only sessions that are running or recent
+		if (relation === "external" && row.pid === null && now - (row.endedAt ?? row.startedAt) > EXTERNAL_RECENT_MS) continue;
+		rows.push({
+			key,
+			id: row.id,
+			name: row.name,
+			relation,
+			role: "job",
+			state: row.state,
+			status: row.status,
+			waitingFor: row.waitingFor,
+			summary: plain(row.summary),
+			question: plain(row.question),
+			cwd: row.cwd,
+		});
+	}
+	const order: Record<string, number> = { parent: 0, child: 1, sibling: 2, tree: 3, external: 4 };
+	return rows.sort((a, b) => order[a.relation]! - order[b.relation]! || a.name.localeCompare(b.name));
+}
+
+function findTarget(peer: PeerIdentity, to: string): PeerRow & { key: string } {
+	const rows = peerRows(peer);
+	const byId = rows.find((r) => r.id === to);
+	if (byId) return byId;
+	const byName = rows.filter((r) => r.name === to && r.relation !== "external");
+	if (byName.length === 1) return byName[0]!;
+	if (byName.length > 1) {
+		throw new OpError("ambiguous", `"${to}" names ${byName.length} sessions: ${byName.map((r) => `${r.id} (${r.relation})`).join(", ")}; use the id`);
+	}
+	throw new OpError("not_found", `no reachable session "${to}" (roost_agents lists them; sessions outside your tree need their exact id and agentExternalMessages)`);
+}
+
+/**
+ * Hand an agent item to whoever holds `key`: a connected foreground pi directly (nothing
+ * is stored for it), a job through its reply queue (kept until acknowledged; an ended job
+ * is started again, a stopped one is not).
+ */
+async function deliverAgent(
+	key: string,
+	kind: AgentKind,
+	text: string,
+	meta: { from: string; relation: Relation; ref?: string },
+): Promise<Omit<SendResult, "relation">> {
+	const h = holderOf(key);
+	if (!h) return { outcome: "not running", id: "", name: "" };
+	const name = holderName(h);
+	if (h.kind === "fg") {
+		send(h.conn, { event: "deliver", id: h.id, seq: 0, text, kind, from: sanitizeName(meta.from), relation: meta.relation, ...(meta.ref ? { ref: meta.ref } : {}) });
+		return { outcome: "delivered", id: h.id, name };
+	}
+	const id = h.id;
+	const live = roster.has(id);
+	const st = readState(id);
+	if (!live && st?.state === "stopped") return { outcome: "stopped", id, name };
+	const pending = pendingReplies(id);
+	if (pending.filter(isAgentItem).length >= MAX_PENDING_AGENT) {
+		throw new OpError("full", `${MAX_PENDING_AGENT} agent messages are already waiting for ${name}`);
+	}
+	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
+	const item: PendingReply = { seq, text, kind, from: sanitizeName(meta.from), relation: meta.relation };
+	updateState(id, { replySeq: seq, pendingReplies: [...pending, item] });
+	const dialog = st?.waitingFor === "dialog" ? { dialog: true } : {};
+	const conn = workerConns.get(id);
+	if (live && conn && !conn.sock.destroyed) {
+		// a worker from before M9 gets it after a respawn --all, not as user input now
+		if (!conn.agentItems) return { outcome: "queued", id, name, ...dialog };
+		send(conn, deliverEvent(id, item));
+		return { outcome: "delivered", id, name, ...dialog };
+	}
+	if (live) return { outcome: "queued", id, name, ...dialog };
+	try {
+		await respawn(id);
+		return { outcome: "started", id, name };
+	} catch (err) {
+		// the item stays queued for the session's next start
+		log("warn", "respawn for agent message failed", { id, error: String(err) });
+		return { outcome: "not running", id, name };
+	}
+}
+
+async function sendMessage(conn: Conn, args: { to?: unknown; message?: unknown } | undefined): Promise<SendResult> {
+	const peer = requirePeer(conn);
+	const to = typeof args?.to === "string" ? args.to.trim() : "";
+	const message = typeof args?.message === "string" ? args.message.trim() : "";
+	if (!to) throw new OpError("bad_request", "to required");
+	if (!message) throw new OpError("bad_request", "empty message");
+	if (message.length > MESSAGE_MAX) throw new OpError("too_long", `a message is at most ${MESSAGE_MAX} characters`);
+	const me = sessionKeyOf(peer);
+	const target = findTarget(peer, to);
+	if (target.key === me) throw new OpError("bad_request", "a session cannot message itself");
+	if (!messageLimiter.take(me)) throw new OpError("rate_limited", `at most ${MESSAGES_PER_MINUTE} messages a minute`);
+	// the receiver sees the sender from its own side of the tree
+	const relation = relationOf(treeNode(target.key), treeNode(me));
+	const from = peerName(peer);
+	const text = envelope({ from, id: peer.id, relation, kind: "message", body: message });
+	const r = await deliverAgent(target.key, "message", text, { from, relation });
+	log("info", "agent message", { from: peer.id, to: r.id || target.id, outcome: r.outcome });
+	return { ...r, id: r.id || target.id, name: r.name || target.name, relation: target.relation };
+}
+
+interface HeldReport {
+	ref: string;
+	body: string;
+}
+
+function heldReports(id: string): HeldReport[] {
+	const h = readState(id)?.undeliveredReports;
+	if (!Array.isArray(h)) return [];
+	return h
+		.map((x, i) => (typeof x === "string" ? { ref: `${id}:old${i}`, body: x } : x))
+		.filter((x): x is HeldReport => !!x && typeof x.ref === "string" && typeof x.body === "string");
+}
+
+function setHeld(id: string, held: HeldReport[]): void {
+	if (recs.has(id)) updateState(id, { undeliveredReports: held.slice(-5) });
+}
+
+let reportRefs = 0;
+
+/**
+ * A report for the parent of `childId`. A job parent keeps it in its queue; a foreground
+ * parent has it until it acknowledges (peer_ack), so until then, or when nobody holds the
+ * parent's session, it stays on the child and is sent again when the session is held.
+ */
+async function routeReport(childId: string, body: string, ref = `${childId}:${Date.now().toString(36)}${(reportRefs++).toString(36)}`): Promise<boolean> {
+	const rec = recs.get(childId);
+	const parentKey = rec?.parentSession;
+	if (!rec || !parentKey) return false;
+	const from = rowOf(childId)?.name ?? rec.name;
+	const text = envelope({ from, id: childId, relation: "child", kind: "report", body });
+	const hold = () => {
+		const held = heldReports(childId).filter((x) => x.ref !== ref);
+		setHeld(childId, [...held, { ref, body }]);
+	};
+	const h = holderOf(parentKey);
+	if (h?.kind === "fg") hold(); // until the foreground pi has it
+	try {
+		const r = await deliverAgent(parentKey, "report", text, { from, relation: "child", ref });
+		if (r.outcome !== "not running" && r.outcome !== "stopped") {
+			log("info", "report", { from: childId, to: r.id, outcome: r.outcome });
+			return true;
+		}
+	} catch (err) {
+		log("warn", "report delivery failed", { id: childId, error: String(err) });
+	}
+	hold();
+	log("info", "report held", { id: childId });
+	return false;
+}
+
+/** Someone holds `parentKey` again: hand over the reports its children kept. */
+async function retryReports(parentKey: string): Promise<void> {
+	for (const rec of [...recs.values()]) {
+		if (rec.parentSession !== parentKey) continue;
+		for (const r of heldReports(rec.id)) await routeReport(rec.id, r.body, r.ref);
+	}
+}
+
+/** A foreground pi has a report: forget the copy kept on the child. */
+function peerAck(conn: Conn, args: { ref?: unknown } | undefined): {} {
+	const peer = requirePeer(conn);
+	if (peer.kind !== "fg") throw new OpError("unsupported", "only foreground peers acknowledge reports");
+	const ref = typeof args?.ref === "string" ? args.ref : "";
+	const childId = ref.split(":")[0] ?? "";
+	if (recs.has(childId)) setHeld(childId, heldReports(childId).filter((x) => x.ref !== ref));
+	return {};
+}
+
+async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Promise<{ routed: boolean }> {
+	const peer = requirePeer(conn);
+	if (peer.kind !== "job") throw new OpError("unsupported", "only a background session reports back");
+	if (!recs.get(peer.id)?.parentSession || stopping.has(peer.id)) return { routed: false };
+	const state = args?.state;
+	if (state !== "done" && state !== "blocked" && state !== "failed") throw new OpError("bad_request", "invalid state");
+	const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.slice(0, max) : null);
+	const body = reportBody({ state, result: text(args?.result, 6000), question: text(args?.question, 2000), error: text(args?.error, 1000) });
+	return { routed: await routeReport(peer.id, body) };
+}
+
+function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd?: unknown; pid?: unknown } | undefined): { id: string } {
+	if (conn.peer?.kind === "job") throw new OpError("bad_request", "a worker connection is already a peer");
+	const name = typeof args?.name === "string" && args.name.trim() ? args.name.trim().slice(0, 200) : "pi";
+	const cwd = typeof args?.cwd === "string" ? args.cwd : "";
+	const pid = args?.pid;
+	if (typeof pid !== "number" || !isAlive(pid)) throw new OpError("bad_request", "pid must be a live process");
+	const session = typeof args?.session === "string" && args.session ? args.session : undefined;
+	if (session) {
+		if (!isAbsolute(session)) throw new OpError("bad_request", "session must be an absolute path");
+		// only the pi that holds the session may receive its messages
+		if (readWriterLock(session)?.pid !== pid) throw new OpError("unauthorized", "the session's writer lock is not held by that pid");
+	}
+	const previous = conn.peer;
+	if (previous?.kind === "fg" && fgPeers.get(previous.id) === conn) fgPeers.delete(previous.id);
+	const id =
+		previous?.kind === "fg" && !previous.session && !session
+			? previous.id
+			: foregroundPeerId(session, (s) => createHash("sha1").update(s).digest("hex"), () => randomBytes(4).toString("hex"));
+	conn.peer = { kind: "fg", id, session, name, cwd, pid };
+	// the newest registration for a session wins (a pi re-opened on it)
+	fgPeers.set(id, conn);
+	// after the response: the client only takes deliveries for the id it is told
+	if (session) setImmediate(() => void retryReports(session));
+	return { id };
+}
+
+async function spawnChild(conn: Conn, args: { launch?: DispatchArgs } | undefined): Promise<{ id: string; name: string }> {
+	const peer = requirePeer(conn);
+	const launch = args?.launch;
+	if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch required");
+	if (launch.kind === "shell") throw new OpError("unsupported", "roost_spawn starts pi sessions");
+	// a fresh session for the child, never one that exists or another job uses
+	if (!str(launch.sessionFile) || existsSync(launch.sessionFile) || [...recs.values()].some((r) => r.sessionFile === launch.sessionFile)) {
+		throw new OpError("bad_request", "a spawn needs a new session file");
+	}
+	const me = sessionKeyOf(peer);
+	const node = treeNode(me);
+	const cfg = loadUserConfig();
+	let depth = 0;
+	const seen = new Set<string>();
+	for (let k: string | null = me; k && !seen.has(k); k = treeNode(k).parent) {
+		seen.add(k);
+		if (treeNode(k).parent) depth++;
+	}
+	if (depth + 1 > cfg.agentMaxDepth) throw new OpError("limit", `sessions may nest ${cfg.agentMaxDepth} deep (agentMaxDepth)`);
+	const live = [...recs.values()].filter((r) => r.parentSession && roster.has(r.id));
+	if (live.filter((r) => r.parentSession === me).length >= cfg.agentMaxChildren) {
+		throw new OpError("limit", `at most ${cfg.agentMaxChildren} running children per session (agentMaxChildren)`);
+	}
+	if (live.filter((r) => (r.rootSession ?? r.parentSession) === node.root).length >= cfg.agentMaxTree) {
+		throw new OpError("limit", `at most ${cfg.agentMaxTree} running sessions per tree (agentMaxTree)`);
+	}
+	if (live.length >= cfg.agentMaxTotal) throw new OpError("limit", `at most ${cfg.agentMaxTotal} running spawned sessions (agentMaxTotal)`);
+	if (!spawnLimiter.take(node.root)) throw new OpError("rate_limited", `at most ${SPAWNS_PER_MINUTE} spawns a minute per tree`);
+	const env = { ...(launch.env && typeof launch.env === "object" ? launch.env : {}), PI_ROOST_CHILD: "1" };
+	const r = await dispatch({ ...launch, env, origin: "dispatch" }, { parentSession: me, rootSession: node.root });
+	log("info", "spawn", { from: peer.id, id: r.id, depth: depth + 1 });
+	return r;
+}
+
 let server: Server;
 let shuttingDown = false;
 
@@ -795,6 +1190,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		}
 		case "rm": {
 			const id = requireJob(args);
+			// a live child's end is reported by finalize, as a removal
+			if (roster.has(id)) removing.add(id);
 			if (roster.has(id)) {
 				await terminateHost(id);
 				if (!(await waitGone([id], WAIT_MS))) {
@@ -814,6 +1211,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			recs.delete(id);
 			shellPids.delete(id);
 			stopping.delete(id);
+			removing.delete(id);
 			removeJob(id);
 			log("info", "rm", { id });
 			push({ event: "removed", id });
@@ -866,6 +1264,18 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "shutdown":
 			setTimeout(() => void shutdown(!!args?.keepWorkers), 20);
 			return {};
+		case "peer_register":
+			return peerRegister(conn, args);
+		case "peers":
+			return { peers: peerRows(requirePeer(conn)).map(({ key: _key, ...row }) => row) };
+		case "send":
+			return sendMessage(conn, args);
+		case "spawn":
+			return spawnChild(conn, args);
+		case "handback":
+			return handback(conn, args);
+		case "peer_ack":
+			return peerAck(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
 	}
@@ -909,7 +1319,10 @@ server = createServer((sock) => {
 		for (const line of reader.push(chunk)) void onLine(conn, line);
 	});
 	sock.on("error", () => {});
-	sock.on("close", () => conns.delete(conn));
+	sock.on("close", () => {
+		conns.delete(conn);
+		if (conn.peer?.kind === "fg" && fgPeers.get(conn.peer.id) === conn) fgPeers.delete(conn.peer.id);
+	});
 });
 server.on("error", (err) => {
 	log("error", "server error", { error: String(err) });

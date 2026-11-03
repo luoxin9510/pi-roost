@@ -1,7 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-11-03
 
+- Agents talk to each other: `roost_spawn` starts a background child whose report comes back
+  by itself, `roost_send` messages another session, `roost_agents` lists the reachable ones.
+  Foreground sessions take part too; children show as `↳ name` in the agent view.
+- Reach is limited to the spawn tree unless `agentExternalMessages` is set; spawn limits
+  `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal`; `agentTools: false`
+  turns the tools off.
+- Background workers no longer keep their job token in the environment of the commands
+  they run (a convenience, not a boundary: your own processes can still read the job's files).
 - Rows show each session's model and context window use (`claude-opus-5-5 · 43%`;
   warning from 80%, error from 95%); the peek adds the thinking level and token counts.
   `rowDetails: false` hides the column.
