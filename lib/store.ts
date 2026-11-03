@@ -52,6 +52,25 @@ export const readJob = (id: string): JobRecord | undefined => readJson<JobRecord
 export const readState = (id: string): JobState | undefined => readJson<JobState>(stateFile(id));
 export const readExit = (id: string): ExitRecord | undefined => readJson<ExitRecord>(exitPath(id));
 export const writeExit = (id: string, rec: ExitRecord): void => writeJsonAtomic(exitPath(id), rec);
+export const clearExit = (id: string): void => rmSync(exitPath(id), { force: true });
+
+/** The argv a host starts: a respawn replaces the dispatch command (no first prompt again). */
+export function launchCommand(rec: JobRecord, st: JobState | undefined): string[] {
+	const c = st?.command;
+	return Array.isArray(c) && c.length > 0 && c.every((v) => typeof v === "string") ? (c as string[]) : rec.command;
+}
+
+/**
+ * Command for restarting a job from its session file: the dispatch command without
+ * its first prompt (already in the session), optionally with a new one. A session
+ * pi never wrote never saw the first prompt, so it keeps it.
+ */
+export function respawnCommand(rec: JobRecord, sessionWritten: boolean, prompt?: string): string[] {
+	if (!sessionWritten) return rec.command;
+	const at = rec.command.indexOf("--", 2);
+	const base = at === -1 ? rec.command : rec.command.slice(0, at);
+	return prompt ? [...base, "--", prompt] : base;
+}
 
 export function updateState(id: string, patch: Partial<JobState>): JobState {
 	const cur = readState(id);

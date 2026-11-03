@@ -44,3 +44,13 @@ describe("buildLaunch", () => {
 		expect(launch).toMatchObject({ model: "c/d", thinking: "high", origin: "dispatch" });
 	});
 });
+
+describe("respawnCommand", () => {
+	const rec = { command: ["node", "pi.js", "--session", "/s.jsonl", "--model", "m", "--", "the task"] } as never;
+	it("drops the first prompt once the session exists, optionally adding a new one", async () => {
+		const { respawnCommand } = await import("../lib/store.ts");
+		expect(respawnCommand(rec, true)).toEqual(["node", "pi.js", "--session", "/s.jsonl", "--model", "m"]);
+		expect(respawnCommand(rec, true, "go on")).toEqual(["node", "pi.js", "--session", "/s.jsonl", "--model", "m", "--", "go on"]);
+		expect(respawnCommand(rec, false, "go on")).toEqual((rec as { command: string[] }).command);
+	});
+});

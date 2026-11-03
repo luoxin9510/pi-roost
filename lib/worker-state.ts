@@ -38,6 +38,14 @@ export class WorkerTracker {
 		this.resetRun();
 	}
 
+	/** A restarted worker with no new prompt: the session's last reply says where it stands. */
+	restore(lastAssistant: { content?: unknown; stopReason?: string; errorMessage?: string } | undefined): void {
+		if (!lastAssistant || this.running || this.sawTurn) return;
+		this.sawTurn = true;
+		this.assistantMessage(lastAssistant);
+		this.agentSettled(lastAssistant.stopReason === "aborted");
+	}
+
 	agentStart(): void {
 		this.running = true;
 		this.sawTurn = true;

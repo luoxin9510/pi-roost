@@ -9,7 +9,7 @@ import pty from "node-pty";
 import { writeFileAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
-import { readJob, readState, screenPath, updateState, writeExit } from "../lib/store.ts";
+import { launchCommand, readJob, readState, screenPath, updateState, writeExit } from "../lib/store.ts";
 
 const { Terminal } = xterm;
 
@@ -67,7 +67,8 @@ const env: Record<string, string> = {
 	PI_JOB_DIR: jobDir(id),
 };
 
-const [file, ...args] = job.command;
+const command = launchCommand(job, readState(id));
+const [file, ...args] = command;
 let proc: pty.IPty;
 try {
 	proc = pty.spawn(file!, args, { name: "xterm-256color", cols, rows, cwd: job.cwd, env });
@@ -76,7 +77,7 @@ try {
 	writeExit(id, { code: 1, signal: null, at: Date.now() });
 	process.exit(1);
 }
-log("spawned", { pid: proc.pid, command: job.command });
+log("spawned", { pid: proc.pid, command });
 try {
 	updateState(id, { workerPid: proc.pid });
 } catch {}

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -42,6 +42,7 @@ beforeEach(() => {
 	process.env.PI_ROOST_HOME = home;
 	process.env.PI_ROOST_RUNTIME_DIR = rt;
 	process.env.PI_ROOST_HOST_ENTRY = HOST;
+	process.env.PI_ROOST_CONFIG_DIR = home; // never the user's real settings
 });
 
 afterEach(() => {
@@ -65,6 +66,9 @@ afterEach(() => {
 		["PI_ROOST_HOME", saved.home],
 		["PI_ROOST_RUNTIME_DIR", saved.rt],
 		["PI_ROOST_HOST_ENTRY", saved.host],
+		["PI_ROOST_CONFIG_DIR", undefined],
+		["PI_ROOST_REAP_MINUTES", undefined],
+		["PI_ROOST_REAP_CHECK_MS", undefined],
 	] as const) {
 		if (v === undefined) delete process.env[k];
 		else process.env[k] = v;
@@ -229,8 +233,26 @@ describe("daemon", () => {
 		process.kill(hostPid, "SIGKILL");
 		const second = await startDaemon();
 		const row = await find(second.client, id);
+		// DM-7: recent progress → failed, resumable
 		expect(row?.state).toBe("failed");
-		expect(readState(id)?.error).toBe("host vanished");
+		expect(readState(id)?.error).toMatch(/machine restart/);
+	});
+
+	it("DM-7: a run whose last progress is older than 48 h shows as stopped", async () => {
+		const first = await startDaemon();
+		const { id } = await first.client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(first.client, id))?.pid);
+		const hostPid = readState(id)!.hostPid!;
+		await first.client.request("shutdown", { keepWorkers: true });
+		await waitFor(() => exited(first.proc));
+		process.kill(hostPid, "SIGKILL");
+		const old = Date.now() - 49 * 3600_000;
+		const statePath = join(jobDir(id), "state.json");
+		const st = JSON.parse(readFileSync(statePath, "utf8"));
+		writeFileSync(statePath, JSON.stringify({ ...st, reportedAt: old, updatedAt: old }));
+		const second = await startDaemon();
+		expect((await find(second.client, id))?.state).toBe("stopped");
+		expect(readState(id)?.error).toBe("ended while the background service was off");
 	});
 
 	it("shutdown without keepWorkers terminates hosts", async () => {
@@ -417,9 +439,111 @@ describe("replies", () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", args("sleep 0.2"));
 		await waitFor(async () => (await find(client, id))?.endedAt);
-		expect(await client.request("reply", { id, text: "continue" })).toEqual({ delivered: false, saved: true });
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		// flow 5.7: the reply is kept and the session starts again to receive it
+		expect(await client.request("reply", { id, text: "continue" })).toEqual({ delivered: false, saved: true, respawned: true });
 		expect(readState(id)?.pendingReplies).toEqual([{ seq: 1, text: "continue" }]);
+		await waitFor(async () => (await find(client, id))?.endedAt);
 		expect(await client.request("reply", { id, text: "/stop" })).toMatchObject({ stopped: false, delivered: false });
 		await expect(client.request("reply", { id, text: "   " })).rejects.toMatchObject({ code: "bad_request" });
+	});
+});
+
+describe("lifecycle", () => {
+	const idle = {
+		state: "done" as const,
+		status: "idle" as const,
+		waitingFor: null,
+		summary: "all done",
+		question: null,
+		choices: [],
+		tool: null,
+		error: null,
+		name: null,
+		model: null,
+	};
+
+	it("respawn starts an ended job again without its first prompt once the session exists", async () => {
+		const { client } = await startDaemon();
+		const a = args("sleep 0.2", { sessionFile: join(work, "written.jsonl") });
+		a.command = ["/bin/sh", "-c", "sleep 0.2", "--", "first prompt"];
+		writeFileSync(a.sessionFile, "{}\n");
+		const { id } = await client.request("dispatch", a);
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		expect(existsSync(join(jobDir(id), "exit.json"))).toBe(true);
+		const { results } = await client.request("respawn", { id, prompt: "go on" });
+		expect(results).toEqual([{ id, started: true }]);
+		const row = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.pid ? r : undefined;
+		});
+		expect(row.state).toBe("working");
+		expect(row.endedAt).toBeNull();
+		expect(readState(id)?.command).toEqual(["/bin/sh", "-c", "sleep 0.2", "--", "go on"]);
+		// already live: nothing to do unless asked to restart
+		expect((await client.request("respawn", { id })).results).toEqual([{ id, started: false }]);
+		await waitFor(async () => (await find(client, id))?.state === "done");
+	});
+
+	it("DM-5: a worker that crashes mid-run restarts once, then fails", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.3; exit 3"));
+		const row = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.endedAt && readState(id)?.crashRestarts === 1 ? r : undefined;
+		}, 15000);
+		expect(row.state).toBe("failed");
+		expect(row.error).toMatch(/code 3/);
+	});
+
+	it("DM-4: reaps an idle unattached worker, keeps the row, and wakes it on reply", async () => {
+		process.env.PI_ROOST_REAP_MINUTES = "0.005"; // 300 ms
+		process.env.PI_ROOST_REAP_CHECK_MS = "100";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		await client.request("report", { id, token, report: idle });
+		const row = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.reaped ? r : undefined;
+		});
+		expect(row).toMatchObject({ state: "done", pid: null, summary: "all done" });
+		expect(readState(id)?.stopRequested).not.toBe(true);
+		expect(await client.request("reply", { id, text: "one more thing" })).toMatchObject({ respawned: true });
+		const back = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.pid ? r : undefined;
+		});
+		expect(back.reaped).toBe(false);
+	});
+
+	it("never reaps a pinned or working job", async () => {
+		process.env.PI_ROOST_REAP_MINUTES = "0.002";
+		process.env.PI_ROOST_REAP_CHECK_MS = "50";
+		const { client } = await startDaemon();
+		const busy = await client.request("dispatch", args("sleep 30"));
+		const pinned = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, busy.id))?.pid && (await find(client, pinned.id))?.pid);
+		const statePath = join(jobDir(pinned.id), "state.json");
+		writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, "utf8")), pinned: true }));
+		await client.request("report", { id: pinned.id, token: readState(pinned.id)?.jobToken as string, report: idle });
+		await new Promise((r) => setTimeout(r, 800));
+		expect((await find(client, busy.id))?.pid).toBeTruthy();
+		expect((await find(client, pinned.id))?.pid).toBeTruthy();
+	});
+
+	it("respawn --all restarts live and reaped jobs but leaves finished ones", async () => {
+		const { client } = await startDaemon();
+		const live = await client.request("dispatch", args("sleep 30"));
+		const ended = await client.request("dispatch", args("true"));
+		await waitFor(async () => (await find(client, live.id))?.pid && (await find(client, ended.id))?.endedAt);
+		const before = readState(live.id)?.hostPid;
+		const { results } = await client.request("respawn", { all: true });
+		expect(results).toEqual([{ id: live.id, started: true }]);
+		await waitFor(async () => {
+			const r = await find(client, live.id);
+			return r?.pid && readState(live.id)?.hostPid !== before;
+		});
 	});
 });

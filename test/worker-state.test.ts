@@ -173,3 +173,20 @@ describe("WorkerTracker", () => {
 		expect(stateChanged(b, t.report())).toBe(true);
 	});
 });
+
+describe("restore after a respawn", () => {
+	it("takes the state from the session's last reply", () => {
+		const t = new WorkerTracker();
+		t.start({ fresh: true });
+		t.restore({ content: [{ type: "text", text: "Should I use tabs or spaces?" }], stopReason: "stop" });
+		expect(t.report()).toMatchObject({ state: "blocked", waitingFor: "question" });
+		const d = new WorkerTracker();
+		d.start({ fresh: true });
+		d.restore({ content: [{ type: "text", text: "Done." }], stopReason: "stop" });
+		expect(d.report()).toMatchObject({ state: "done", status: "idle" });
+		const none = new WorkerTracker();
+		none.start({ fresh: true });
+		none.restore(undefined);
+		expect(none.report()).toMatchObject({ state: "working", status: "idle" });
+	});
+});
