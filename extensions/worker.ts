@@ -323,7 +323,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 			fresh: event.reason !== "reload",
 		});
 		// respawned without a prompt (reaped, restarted, replied to): no turn will start
-		if (event.reason === "startup" && !process.argv.includes("--")) tracker.restore(lastAssistant(ctx));
+		if (event.reason === "startup" && process.env.PI_ROOST_RESTORE === "1") tracker.restore(lastAssistant(ctx));
 		send();
 		clearTimeout(firstPromptTimer);
 		firstPromptTimer = setTimeout(() => {

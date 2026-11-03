@@ -57,7 +57,8 @@ fixSpawnHelper();
 
 let cols = 120;
 let rows = 30;
-const token = readState(id)?.jobToken;
+const launchState = readState(id);
+const token = launchState?.jobToken;
 const env: Record<string, string> = {
 	...job.env,
 	TERM: "xterm-256color",
@@ -65,9 +66,11 @@ const env: Record<string, string> = {
 	...(typeof token === "string" ? { PI_JOB_TOKEN: token } : {}),
 	PI_DAEMON_SOCK: daemonSocketPath(),
 	PI_JOB_DIR: jobDir(id),
+	// respawned with nothing new to do: the worker shows where the session left off
+	...(launchState?.restore === true ? { PI_ROOST_RESTORE: "1" } : {}),
 };
 
-const command = launchCommand(job, readState(id));
+const command = launchCommand(job, launchState);
 const [file, ...args] = command;
 let proc: pty.IPty;
 try {

@@ -22,7 +22,8 @@ SM-4, DI-9, AT-5, NT-1, NT-2) follow in M5b.
 - **AT-1**: attaching (view or CLI) to a job without a worker respawns it,
   draws the last `screen.txt` dimmed with a `Session is starting…` bar and
   attaches as soon as the host socket answers. Reaped rows wake on the
-  first Enter; failed or stopped rows ask for a second Enter (DM-7).
+  first Enter; other ended rows (done, failed, stopped) ask for a second
+  Enter (DM-7).
   Restarting a failed row adds "Continue where you left off.".
 - **Replies** to an ended job are saved and respawn it; the worker picks
   the saved reply up on its first report (flow 5.7).
@@ -33,6 +34,11 @@ SM-4, DI-9, AT-5, NT-1, NT-2) follow in M5b.
   record is *failed* ("ended while it was working (machine restart?)")
   when its last progress is under 48 h old, else *stopped* ("ended while
   the background service was off"); open questions stay Needs input.
+- `pi-roost respawn <id>` restarts a live job (a working turn continues
+  with "Continue where you left off."); `respawn --all` does that for every
+  live job — reaped ones pick up the new version when they wake.
+- A worker found crashed (non-zero exit record) when the daemon starts is
+  restarted once too (DM-5).
 - **DM-9**: every CLI command pings the daemon and warns on another
   pi-roost version, suggesting `daemon stop --keep-workers && respawn --all`.
 
@@ -50,5 +56,22 @@ Automated: 12 files, 103 tests — daemon lifecycle (respawn without the
 first prompt, crash restart once, reap and wake on reply, never reap
 pinned/working, `respawn --all`, DM-7 failed vs stopped), tracker restore,
 `respawnCommand`.
+
+## Review fixes (PR #5)
+
+- Restarting a working job (`respawn <id>`, `respawn --all`) continues its
+  turn instead of showing it as finished.
+- Reaping re-checks the job after asking the host, never reaps one with
+  replies waiting, wakes a reaped job if a reply raced the reap, and loses
+  to a user's stop.
+- The crash budget resets only once a restarted worker has stayed up a
+  minute.
+- A respawn without new work keeps the row as it was (no working flash;
+  checked live) and is signalled to the worker by `PI_ROOST_RESTORE=1`
+  instead of guessing from argv; other respawns clear the old summary,
+  question, worker pid and progress time.
+- `respawn --all` restarts live jobs only.
+
+Automated: 12 files, 104 tests.
 
 Test knobs: `PI_ROOST_REAP_MINUTES`, `PI_ROOST_REAP_CHECK_MS` (daemon env).

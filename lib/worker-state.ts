@@ -40,7 +40,8 @@ export class WorkerTracker {
 
 	/** A restarted worker with no new prompt: the session's last reply says where it stands. */
 	restore(lastAssistant: { content?: unknown; stopReason?: string; errorMessage?: string } | undefined): void {
-		if (!lastAssistant || this.running || this.sawTurn) return;
+		// a turn cut off between tool calls did not finish: leave it to the first-prompt rule
+		if (!lastAssistant || lastAssistant.stopReason === "toolUse" || this.running || this.sawTurn) return;
 		this.sawTurn = true;
 		this.assistantMessage(lastAssistant);
 		this.agentSettled(lastAssistant.stopReason === "aborted");

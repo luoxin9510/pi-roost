@@ -518,6 +518,30 @@ describe("lifecycle", () => {
 		expect(back.reaped).toBe(false);
 	});
 
+	it("does not reap a job with replies waiting; restarting a working job continues its turn", async () => {
+		process.env.PI_ROOST_REAP_MINUTES = "0.002";
+		process.env.PI_ROOST_REAP_CHECK_MS = "50";
+		const { client } = await startDaemon();
+		const a = args("sleep 30", { sessionFile: join(work, "w.jsonl") });
+		writeFileSync(a.sessionFile, "{}\n");
+		const { id } = await client.request("dispatch", a);
+		await waitFor(async () => (await find(client, id))?.pid);
+		// never connected as a worker: the reply stays pending
+		expect(await client.request("reply", { id, text: "later" })).toMatchObject({ saved: true });
+		await client.request("report", { id, token: readState(id)?.jobToken as string, report: idle });
+		await new Promise((r) => setTimeout(r, 600));
+		expect((await find(client, id))?.reaped).toBe(false);
+		expect((await find(client, id))?.pid).toBeTruthy();
+
+		const b = args("sleep 30", { sessionFile: join(work, "w2.jsonl") });
+		writeFileSync(b.sessionFile, "{}\n");
+		const busy = await client.request("dispatch", b);
+		await waitFor(async () => (await find(client, busy.id))?.pid);
+		await client.request("respawn", { id: busy.id, restart: true });
+		expect(readState(busy.id)?.command).toEqual(["/bin/sh", "-c", "sleep 30", "--", "Continue where you left off."]);
+		expect(readState(busy.id)?.restore).toBe(false);
+	});
+
 	it("never reaps a pinned or working job", async () => {
 		process.env.PI_ROOST_REAP_MINUTES = "0.002";
 		process.env.PI_ROOST_REAP_CHECK_MS = "50";

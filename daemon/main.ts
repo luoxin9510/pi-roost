@@ -40,6 +40,7 @@ const CONTINUE = "Continue where you left off.";
 /** DM-7: a run that last made progress within this long ago ended by surprise. */
 const RECENT_MS = 48 * 60 * 60 * 1000;
 const REAP_CHECK_MS = 30_000;
+const CRASH_RESET_MS = 60_000;
 
 class OpError extends Error {
 	code: string;
@@ -211,6 +212,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	persistRoster();
 	log("info", "finalize", { id, why, state: patch.state, exit: ex ?? null, restart });
 	pushJob(id);
+	if (reaped && pendingReplies(id).length > 0 && !shuttingDown) {
+		// a reply arrived while the idle worker was going away: start it again for it
+		void respawn(id).catch((err: unknown) => log("error", "wake after reap failed", { id, error: String(err) }));
+	}
 	if (restart && !shuttingDown) {
 		void respawn(id, { prompt: CONTINUE, crash: true }).catch((err: unknown) =>
 			log("error", "crash restart failed", { id, error: String(err) }),
@@ -248,6 +253,7 @@ function loadJobs(): void {
 async function terminateHost(id: string): Promise<void> {
 	const ref = roster.get(id);
 	if (!ref) return;
+	reaping.delete(id); // a user's stop wins over an idle reap
 	stopping.add(id);
 	try {
 		updateState(id, { stopRequested: true });
@@ -390,8 +396,11 @@ async function respawn(
 	if (starting.has(id) || respawning.has(id)) return { id, started: false };
 	respawning.add(id);
 	try {
+		let prompt = opts.prompt;
 		if (roster.has(id)) {
 			if (!opts.restart) return { id, started: false };
+			// a turn cut short by the restart carries on in the new worker
+			if (!prompt && readState(id)?.state === "working") prompt = CONTINUE;
 			await terminateHost(id);
 			if (!(await waitGone([id], WAIT_MS))) throw new OpError("busy", `job ${id} did not stop`);
 		}
@@ -399,28 +408,48 @@ async function respawn(
 		const holder = readWriterLock(rec.sessionFile);
 		if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
 		if (!isDir(rec.cwd)) throw new OpError("bad_request", `cwd is gone: ${rec.cwd}`);
+		if (!recs.has(id)) throw new OpError("not_found", `job ${id} was removed`);
 		const st = readState(id);
-		const command = respawnCommand(rec, existsSync(rec.sessionFile), opts.prompt);
+		const written = existsSync(rec.sessionFile);
+		const command = respawnCommand(rec, written, prompt);
+		const now = Date.now();
+		// nothing new to do: the worker shows where the session left off, so keep the row as is
+		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
 		clearExit(id);
 		updateState(id, {
-			state: "working",
+			...(restore
+				? { stateSince: st?.stateSince }
+				: { state: "working" as const, stateSince: now, summary: null, question: null, choices: [] }),
 			status: null,
 			waitingFor: null,
 			tool: null,
 			error: null,
+			workerPid: undefined,
+			reportedAt: undefined,
 			endedAt: undefined,
 			stopRequested: false,
 			reaped: false,
-			stateSince: Date.now(),
+			restartedAt: now,
 			command,
+			restore,
 			crashRestarts: opts.crash ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + 1 : 0,
 		});
 		await startHost(rec);
-		log("info", "respawn", { id, crash: !!opts.crash, restart: !!opts.restart, prompt: !!opts.prompt });
+		log("info", "respawn", { id, crash: !!opts.crash, restart: !!opts.restart, prompt: !!prompt });
 		return { id, started: true };
 	} finally {
 		respawning.delete(id);
 	}
+}
+
+/** When an idle job became idle, if it may be reaped now. */
+function reapable(id: string, now: number, minutes: number): number | undefined {
+	const st = readState(id);
+	if (!st || st.pinned === true || st.state === "working") return undefined;
+	if (st.waitingFor === "dialog" || (st.status !== "idle" && st.status !== "waiting")) return undefined;
+	if (pendingReplies(id).length > 0) return undefined;
+	const since = typeof st.stateSince === "number" ? st.stateSince : st.updatedAt;
+	return now - since < minutes * 60_000 ? undefined : since;
 }
 
 /** DM-4: stop workers that have been idle, unattached and unpinned for reapIdleMinutes. */
@@ -430,19 +459,20 @@ async function reapIdle(): Promise<void> {
 	const now = Date.now();
 	for (const id of [...roster.keys()]) {
 		if (starting.has(id) || stopping.has(id) || reaping.has(id) || respawning.has(id)) continue;
-		const st = readState(id);
-		if (!st || st.pinned === true || st.state === "working") continue;
-		if (st.waitingFor === "dialog" || (st.status !== "idle" && st.status !== "waiting")) continue;
-		const since = typeof st.stateSince === "number" ? st.stateSince : st.updatedAt;
-		if (now - since < minutes * 60_000) continue;
+		const since = reapable(id, now, minutes);
+		if (since === undefined) continue;
+		reaping.add(id); // replies and stops see this while we ask the host
+		let attached = true;
 		try {
-			const status = (await hostControl(id, "status")) as { attached?: boolean };
-			if (status.attached) continue;
+			attached = !!((await hostControl(id, "status")) as { attached?: boolean }).attached;
 		} catch {
+			// unknown: leave it
+		}
+		// anything may have happened during the await: decide again
+		if (attached || !reaping.has(id) || !roster.has(id) || stopping.has(id) || reapable(id, Date.now(), minutes) === undefined) {
+			reaping.delete(id);
 			continue;
 		}
-		if (!roster.has(id) || stopping.has(id)) continue;
-		reaping.add(id);
 		log("info", "reap", { id, idleMinutes: Math.round((now - since) / 60_000) });
 		try {
 			await hostControl(id, "terminate");
@@ -527,8 +557,9 @@ async function reply(
 	if (live) return { delivered: false, saved: true };
 	// flow 5.7: a reply to an ended session starts it again; the worker picks the reply up
 	try {
-		await respawn(id);
-		return { delivered: false, saved: true, respawned: true };
+		const { started } = await respawn(id);
+		// started: false means it is already coming up; the saved reply reaches it either way
+		return { delivered: false, saved: true, respawned: started || starting.has(id) || roster.has(id) };
 	} catch (err) {
 		log("warn", "respawn for reply failed", { id, error: String(err) });
 		return { delivered: false, saved: true, error: (err as Error).message };
@@ -567,7 +598,10 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		model: opt(r.model, 200),
 		reportedAt: Date.now(),
 		// a turn that ends normally clears the crash budget (DM-5)
-		...(r.state !== "working" ? { crashRestarts: 0 } : {}),
+		// (only once the worker has stayed up a while, so a crash loop stays bounded)
+		...(r.state !== "working" && Date.now() - (typeof st.restartedAt === "number" ? st.restartedAt : 0) > CRASH_RESET_MS
+			? { crashRestarts: 0 }
+			: {}),
 	});
 	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
 	pushJob(id);
@@ -678,8 +712,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			if (args?.all === true) {
 				const results: { id: string; started: boolean; error?: string }[] = [];
 				for (const id of [...recs.keys()]) {
-					// --all moves live jobs to the installed version and wakes reaped ones
-					if (!roster.has(id) && readState(id)?.reaped !== true) continue;
+					// --all moves live jobs to the installed version; reaped ones pick it up when woken
+					if (!roster.has(id)) continue;
 					try {
 						results.push(await respawn(id, { restart: true }));
 					} catch (err) {
