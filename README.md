@@ -29,6 +29,20 @@ Status: M0 spikes ([report](spikes/REPORT.md)), M1 daemon + hosting
 - `bin/pi-roost.ts` — shell CLI
 - `spikes/` — M0 API spikes, runnable with `pi -ne --offline -e spikes/<file>.ts`
 
+## Install (local package, not on npm)
+
+```sh
+npm install
+npm run install:local        # build, pack, install to ~/.pi/agent/local-packages/pi-roost, pi install it
+pi --agents                  # the agent view (or /agents in any session)
+pi --bg "run the tests and summarise failures"
+ln -s ~/.pi/agent/local-packages/pi-roost/dist/bin/pi-roost.js ~/.local/bin/pi-roost   # optional CLI
+```
+
+The installed copy is separate from the checkout: run `npm run install:local` again to
+update it (it stops the daemon first). Don't also pass `-e ./extensions/index.ts` while it
+is installed. Uninstall with `pi remove ~/.pi/agent/local-packages/pi-roost`.
+
 ## Try it (development)
 
 ```sh
