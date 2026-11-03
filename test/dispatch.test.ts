@@ -38,7 +38,7 @@ describe("buildLaunch", () => {
 			thinking: "high",
 		});
 		expect(launch.command).toEqual([
-			"/bin/node", "/pi/cli.js", "--session", "/s/a.jsonl", "-e", "/x/roost.ts", "--model", "c/d", "--thinking", "high", "fix the flaky test",
+			"/bin/node", "/pi/cli.js", "--session", "/s/a.jsonl", "-e", "/x/roost.ts", "--model", "c/d", "--thinking", "high", "--", "fix the flaky test",
 		]);
 		expect(launch.env).toEqual({ PATH: "/bin" });
 		expect(launch).toMatchObject({ model: "c/d", thinking: "high", origin: "dispatch" });

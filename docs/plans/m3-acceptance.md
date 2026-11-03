@@ -39,6 +39,23 @@ long `sleep`, a one-word answer.
 Automated: 9 files, 79 tests (adds `test/view-model.test.ts`,
 `test/reply-queue.test.ts`).
 
+## Review fixes (PR #3)
+
+Independent review found a crash: the header line was not truncated, and
+pi-tui stops the whole session on a line wider than the terminal (any pane
+under ~52 columns). Also fixed: a reply could go to another row after the
+peeked one vanished; a double Enter dispatched twice; the spinner and
+daemon connections could outlive the view; `--agents` errors were
+unhandled; multi-line errors and control characters reached row lines;
+the title was not restored; daemon events repainted during attach; tasks
+starting with `-` became flags in the worker (`--` before the task).
+`test/agent-view.test.ts` drives the component with a fake TUI and daemon,
+including every width from 1 to 120 columns with CJK and stack traces.
+Checked live at 40 columns. Automated total: 10 files, 85 tests.
+
+A `pi --bg` value that starts with `-` is read by pi itself as another
+flag; write `--bg="-x …"` for such tasks.
+
 ## Not in M3
 
 - Ctrl+Enter needs a terminal that reports modified Enter (kitty

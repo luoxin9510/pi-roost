@@ -79,7 +79,8 @@ export function buildLaunch(input: LaunchInput) {
 	return {
 		cwd: input.cwd,
 		sessionFile: input.sessionFile,
-		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, input.task],
+		// "--" so a task that starts with "-" is not read as a flag
+		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, "--", input.task],
 		env: allowListedEnv(input.env),
 		name: input.name,
 		origin: input.origin,

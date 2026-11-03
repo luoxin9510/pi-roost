@@ -35,6 +35,8 @@ export interface AgentViewOptions {
 	/** Builds the dispatch request for a task typed into the view. */
 	launch: (task: string) => DispatchArgs;
 	setTitle: (title: string) => void;
+	/** Daemon connection; tests pass a fake. */
+	connect?: () => Promise<DaemonClient>;
 	/** AV-9: a row to keep bold (the conversation just moved to the background). */
 	highlightId?: string;
 	/** Screen-reader mode: no animation (PRD accessibility). */
@@ -68,6 +70,9 @@ export class AgentView implements Component {
 	private closed = false;
 	private connectError: string | undefined;
 	private nameWidth = 16;
+	private dispatching = false;
+	/** The job a reply is typed for; replies never retarget to another row. */
+	private peekId: string | undefined;
 
 	constructor(o: AgentViewOptions) {
 		this.o = o;
@@ -77,15 +82,16 @@ export class AgentView implements Component {
 	// ---- lifecycle -------------------------------------------------------
 
 	async start(): Promise<void> {
-		await this.connect();
 		this.spinner = setInterval(() => {
-			if (this.attached || this.o.reducedMotion) return;
+			if (this.closed || this.attached || this.o.reducedMotion) return;
 			const busy = [...this.rows.values()].some((r) => r.pid !== null && r.status === "busy");
 			if (busy || this.notice) {
 				this.frame++;
 				this.o.tui.requestRender();
 			}
 		}, SPIN_MS);
+		this.spinner.unref?.();
+		await this.connect();
 	}
 
 	dispose(): void {
@@ -93,37 +99,38 @@ export class AgentView implements Component {
 		clearInterval(this.spinner);
 		this.client?.close();
 		this.client = undefined;
+		this.o.setTitle("pi");
 	}
 
 	private async connect(): Promise<void> {
+		if (this.closed) return;
+		let client: DaemonClient | undefined;
 		try {
-			const client = await DaemonClient.connectOrStart();
+			client = await (this.o.connect ?? (() => DaemonClient.connectOrStart()))();
 			if (this.closed) return client.close();
 			client.onEvent((e) => this.onEvent(e));
 			await client.request("subscribe", {});
 			const { jobs } = await client.request("list", this.o.cwdFilter ? { cwd: this.o.cwdFilter } : {});
+			if (this.closed) return client.close();
 			this.rows = new Map(jobs.map((j) => [j.id, j]));
 			this.client = client;
 			this.connectError = undefined;
-			// AV-8: pushed events only; reconnect if the daemon goes away.
-			this.watchConnection(client);
+			// AV-8: pushed events only; reconnect when the daemon goes away.
+			const live = client;
+			client.onClose(() => {
+				if (this.client !== live) return;
+				this.client = undefined;
+				this.connectError = "reconnecting…";
+				this.render0();
+				setTimeout(() => void this.connect(), 500).unref?.();
+			});
 		} catch (err) {
+			client?.close();
+			if (this.closed) return;
 			this.connectError = (err as Error).message;
-			setTimeout(() => !this.closed && void this.connect(), 2000).unref?.();
+			setTimeout(() => void this.connect(), 2000).unref?.();
 		}
 		this.render0();
-	}
-
-	private watchConnection(client: DaemonClient): void {
-		const timer = setInterval(() => {
-			if (this.closed) return clearInterval(timer);
-			client.request("ping", {}).catch(() => {
-				clearInterval(timer);
-				if (this.client === client) this.client = undefined;
-				if (!this.closed) void this.connect();
-			});
-		}, 5000);
-		timer.unref?.();
 	}
 
 	private onEvent(e: Event): void {
@@ -135,6 +142,8 @@ export class AgentView implements Component {
 	}
 
 	private render0(): void {
+		// while attached the terminal belongs to the worker: no title or repaint
+		if (this.closed || this.attached) return;
 		this.o.setTitle(titleText(counts([...this.rows.values()])));
 		this.o.tui.requestRender();
 	}
@@ -184,6 +193,11 @@ export class AgentView implements Component {
 		const it = list[next]!;
 		this.cursor = it.kind === "row" ? { kind: "row", id: it.row.id } : { kind: "header", key: it.section.key };
 		this.reply.setValue("");
+		if (this.peek) {
+			// the panel follows the selection (PK: ↑↓ with the panel open)
+			this.peekId = it.kind === "row" ? it.row.id : undefined;
+			if (!this.peekId) this.closePeek();
+		}
 	}
 
 	private say(text: string, tone: Tone = "muted"): void {
@@ -265,12 +279,21 @@ export class AgentView implements Component {
 	private togglePeek(): void {
 		const row = this.selectedRow();
 		this.peek = !this.peek && row !== undefined;
+		this.peekId = this.peek ? row?.id : undefined;
 		// pin the selection to this row so it follows it into another group
 		if (row) this.cursor = { kind: "row", id: row.id };
 		this.reply.focused = this.peek;
 		this.input.focused = !this.peek;
 		this.reply.setValue("");
 		this.o.tui.requestRender();
+	}
+
+	private closePeek(): void {
+		this.peek = false;
+		this.peekId = undefined;
+		this.reply.setValue("");
+		this.reply.focused = false;
+		this.input.focused = true;
 	}
 
 	/** AV-K15: close peek → clear input → exit. */
@@ -315,12 +338,15 @@ export class AgentView implements Component {
 	// ---- actions ---------------------------------------------------------
 
 	private async dispatch(attach: boolean): Promise<void> {
-		const task = this.input.getValue().trim();
+		if (this.dispatching) return;
+		const typed = this.input.getValue();
+		const task = typed.trim();
 		if (task.length < MIN_TASK) return this.say("Too short", "warning");
 		if (!this.client) return this.say("background service unavailable", "error");
+		this.dispatching = true;
+		this.input.setValue("");
 		try {
 			const { id, name } = await this.client.request("dispatch", this.o.launch(task));
-			this.input.setValue("");
 			this.cursor = { kind: "row", id };
 			this.say(`started · ${name}`, "success");
 			if (attach) {
@@ -329,14 +355,21 @@ export class AgentView implements Component {
 				await this.attachTo(id);
 			}
 		} catch (err) {
+			if (!this.input.getValue()) this.input.setValue(typed);
 			this.say((err as Error).message, "error");
+		} finally {
+			this.dispatching = false;
 		}
 	}
 
 	private async sendReply(): Promise<void> {
-		const row = this.selectedRow();
+		const row = this.peekId ? this.rows.get(this.peekId) : undefined;
 		const text = this.reply.getValue().trim();
-		if (!row || !text || !this.client) return;
+		if (!row) {
+			this.closePeek();
+			return this.say("that session no longer exists", "warning");
+		}
+		if (!text || !this.client) return;
 		try {
 			const r = await this.client.request("reply", { id: row.id, text });
 			this.reply.setValue("");
@@ -378,7 +411,12 @@ export class AgentView implements Component {
 
 	private async attachSelected(): Promise<void> {
 		const row = this.selectedRow();
-		if (row) await this.attachTo(row.id);
+		if (!row) return;
+		try {
+			await this.attachTo(row.id);
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
 	}
 
 	/** AT-1/AT-2: hand the terminal to the job's PTY host, then repaint. */
@@ -387,15 +425,16 @@ export class AgentView implements Component {
 		if (!row) return;
 		if (row.pid === null) return this.say(`${row.name} is not running (restarting ended sessions comes later)`, "warning");
 		const { tui } = this.o;
-		this.attached = true;
 		let reason: DetachReason;
-		tui.stop();
 		try {
+			this.attached = true;
+			tui.stop();
 			reason = await attachToHost(hostSocketPath(id), { stdin: process.stdin, stdout: process.stdout });
 		} finally {
 			this.attached = false;
 			tui.start();
 			tui.requestRender(true);
+			this.render0();
 		}
 		this.cursor = { kind: "row", id };
 		if (reason === "takeover") this.say("Attached elsewhere", "warning");
@@ -409,23 +448,25 @@ export class AgentView implements Component {
 
 	render(width: number): string[] {
 		const t = this.o.theme;
-		const w = Math.max(20, width);
+		const w = Math.max(1, width);
 		const now = Date.now();
+		// the peeked row vanished (deleted, folded, collapsed): never reply to another one
+		if (this.peek && !this.itemList().some((it) => it.kind === "row" && it.row.id === this.peekId)) this.closePeek();
 		if (this.notice && now > this.notice.until) this.notice = undefined;
 		const all = [...this.rows.values()];
 		const c = counts(all);
 		const out: string[] = [];
 		const short = (this.o.tui.terminal.rows || 30) < 18;
 
-		out.push(t.bold("pi agents") + t.fg("dim", `  ${headerText(c)}`));
+		out.push(truncateToWidth(t.bold("pi agents") + t.fg("dim", `  ${headerText(c)}`), w));
 		if (!short) out.push(t.fg("border", "─".repeat(w)));
-		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${this.connectError}`, w)));
+		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${oneLine(this.connectError)}`, w)));
 
 		if (this.help) return [...out, ...this.helpLines(w)];
 
 		const sections = this.sections();
 		const list = items(sections);
-		this.nameWidth = Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(r.name))));
+		this.nameWidth = Math.max(1, Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(oneLine(r.name))))));
 		const sel = this.selectedIndex(list);
 		const empty = all.length === 0;
 		list.forEach((it, i) => {
@@ -434,20 +475,21 @@ export class AgentView implements Component {
 				const s = it.section;
 				const label = `${s.collapsed ? "▸" : "▾"} ${s.title}${s.rows.length || s.hidden ? ` (${s.rows.length + s.hidden})` : ""}`;
 				const hint = empty ? t.fg("dim", `  ${s.hint}`) : "";
-				out.push(this.mark(isSel, truncateToWidth(t.bold(label) + hint, w - 2)));
+				out.push(this.mark(isSel, truncateToWidth(t.bold(label) + hint, Math.max(1, w - 2))));
 				return;
 			}
-			out.push(this.mark(isSel, this.rowLine(it.row, w - 2, now)));
+			out.push(truncateToWidth(this.mark(isSel, this.rowLine(it.row, Math.max(1, w - 2), now)), w));
 			const lastOfSection = list[i + 1]?.kind !== "row" || list[i + 1]?.section !== it.section;
-			if (lastOfSection && it.section.hidden > 0) out.push(`  ${t.fg("dim", `… ${it.section.hidden} more`)}`);
+			if (lastOfSection && it.section.hidden > 0) out.push(truncateToWidth(`  ${t.fg("dim", `… ${it.section.hidden} more`)}`, w));
 			if (isSel && this.peek) out.push(...this.peekLines(it.row, w, now));
 		});
 
 		out.push("");
 		if (!this.peek) out.push(...this.input.render(w));
-		if (this.notice) out.push(t.fg(this.notice.tone, truncateToWidth(this.notice.text, w)));
+		if (this.notice) out.push(t.fg(this.notice.tone, truncateToWidth(oneLine(this.notice.text), w)));
 		out.push(t.fg("dim", truncateToWidth(this.footer(), w)));
-		return out;
+		// pi-tui refuses (and crashes on) lines wider than the terminal
+		return out.map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
 	}
 
 	private mark(selected: boolean, line: string): string {
@@ -458,12 +500,12 @@ export class AgentView implements Component {
 		const t = this.o.theme;
 		const icon = iconOf(row, this.frame, !this.o.reducedMotion);
 		const age = ageOf(row, now);
-		const name = truncateToWidth(row.name, this.nameWidth);
+		const name = truncateToWidth(oneLine(row.name), this.nameWidth);
 		const pad = " ".repeat(Math.max(0, this.nameWidth - visibleWidth(name)));
 		const styled = row.id === this.o.highlightId ? t.bold(t.fg(nameToneOf(row.id), name)) : t.fg(nameToneOf(row.id), name);
 		const head = `${t.fg(icon.tone, icon.glyph)} ${styled}${pad}  `;
 		const room = width - visibleWidth(head) - age.length - 2;
-		const summary = room > 4 ? t.fg(row.pid === null ? "dim" : "muted", truncateToWidth(sentenceOf(row), room)) : "";
+		const summary = room > 4 ? t.fg(row.pid === null ? "dim" : "muted", truncateToWidth(oneLine(sentenceOf(row)), room)) : "";
 		const gap = Math.max(1, width - visibleWidth(head) - visibleWidth(summary) - age.length);
 		return `${head}${summary}${" ".repeat(gap)}${t.fg("dim", age)}`;
 	}
@@ -471,11 +513,11 @@ export class AgentView implements Component {
 	/** PK-1: the full sentence, choices, waiting time, and the reply input. */
 	private peekLines(row: JobRow, width: number, now: number): string[] {
 		const t = this.o.theme;
-		const inner = width - 4;
+		const inner = Math.max(1, width - 4);
 		const lines: string[] = [];
-		const sentence = sentenceOf(row);
+		const sentence = sentenceOf(row).replace(CONTROL, " ");
 		for (const chunk of wrap(sentence, inner)) lines.push(`    ${chunk}`);
-		row.choices.forEach((c, i) => lines.push(`    ${t.fg("accent", `${i + 1}.`)} ${truncateToWidth(c, inner - 4)}`));
+		row.choices.forEach((c, i) => lines.push(`    ${t.fg("accent", `${i + 1}.`)} ${truncateToWidth(oneLine(c), Math.max(1, inner - 4))}`));
 		const facts: string[] = [row.state + (row.status ? ` · ${row.status}` : "")];
 		if (row.state === "blocked") facts.push(`waiting ${formatDuration(now - row.stateSince)}`);
 		if (row.model) facts.push(row.model);
@@ -511,6 +553,13 @@ export class AgentView implements Component {
 			t.fg("dim", "any key to close"),
 		];
 	}
+}
+
+// Control characters other than newlines would corrupt the line-based renderer.
+const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
+
+function oneLine(text: string): string {
+	return text.replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 }
 
 function within(dir: string, root: string): boolean {

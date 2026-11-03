@@ -46,7 +46,15 @@ export default function (pi: ExtensionAPI) {
 		lock(ctx);
 		if (pi.getFlag("agents") === true && ctx.hasUI) {
 			// not awaited: session_start must return for pi to finish starting up
-			void openAgentView(pi, ctx).then(() => ctx.shutdown());
+			void openAgentView(pi, ctx)
+				.catch((err: unknown) => process.stderr.write(`pi-roost: agent view failed: ${String(err)}\n`))
+				.finally(() => {
+					try {
+						ctx.shutdown();
+					} catch {
+						// the session is already gone
+					}
+				});
 		}
 	});
 
