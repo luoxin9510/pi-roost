@@ -1,6 +1,7 @@
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveUserConfig } from "../lib/config.ts";
 import { allowListedEnv, buildLaunch, fallbackName } from "../lib/dispatch.ts";
+import { readWriterLock } from "../lib/locks.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
 
@@ -61,8 +62,9 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						env: process.env,
 						extraEnv: config.envAllowList,
 						piVersion: VERSION,
-						model: o.model ?? config.dispatchModel,
-						thinking: o.thinking ?? config.dispatchThinking,
+						// a resumed session keeps its own model unless the view chose one
+						model: o.model ?? (o.origin === "adopt" ? undefined : config.dispatchModel),
+						thinking: o.thinking ?? (o.origin === "adopt" ? undefined : config.dispatchThinking),
 					});
 				},
 				launchShell: (command, cwd) => ({
@@ -83,7 +85,8 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					}
 				},
 				resumable: async (cwd) =>
-					(await SessionManager.list(cwd)).map((s) => ({
+					// a session another pi is writing cannot be run here (writer lock)
+					(await SessionManager.list(cwd)).filter((s) => !readWriterLock(s.path)).map((s) => ({
 						path: s.path,
 						name: s.name || fallbackName(s.firstMessage || "session"),
 						cwd: s.cwd,

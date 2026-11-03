@@ -9,7 +9,8 @@ export const CONTINUE = "Continue where you left off.";
 const START_TIMEOUT_MS = 15_000;
 
 /** A failed run was cut off: restarting it should carry on; anything else just reopens. */
-export const resumePrompt = (row: JobRow): string | undefined => (row.state === "failed" ? CONTINUE : undefined);
+export const resumePrompt = (row: JobRow): string | undefined =>
+	row.kind !== "shell" && row.state === "failed" ? CONTINUE : undefined;
 
 function hostReady(socketPath: string): Promise<boolean> {
 	return new Promise((resolve) => {

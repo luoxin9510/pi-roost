@@ -30,7 +30,7 @@ confirmation switches into the copy" (the copy is one ← away in /agents).
   anything else failed with the code. There are no crash restarts and no
   replies (attach to type into it). The row is removed 5 minutes after
   exit.
-- `/fork [prompt]` (BG-8) in a foreground session: `SessionManager.forkFrom`
+- `/fork <prompt>` (BG-8) in a foreground session: `SessionManager.forkFrom`
   copies the session next to it, and the daemon runs the copy
   (`origin: fork`, named "<name> (fork)", optional first prompt). The
   current session continues. Confirmation: `session running · <name> · <id>`.
@@ -52,3 +52,24 @@ confirmation switches into the copy" (the copy is one ← away in /agents).
 Automated: 15 files, 126 tests (input parsing and @ completion, view
 commands with pickers and refusals, shell jobs in the daemon, the @ task
 argument).
+
+## Review fixes (PR #8)
+
+- `respawn --all` (and `respawn <id>`) never kill and re-run a running
+  shell job; Enter twice on an ended shell row says it runs the command
+  again.
+- Every shell ending (stopped, failed, vanished at daemon start) sets the
+  removal time; shell jobs skip the writer-lock and DM-7 paths, and get no
+  job identity in their environment (a `pi` started inside cannot report as
+  the job).
+- `@` completion matches names, not the base path every child shares.
+- `/resume` lists only sessions no other pi is writing, says it is loading,
+  and keeps the resumed session's own model unless `/model` chose one.
+- `/model <id>` is checked against the registry's models; suggestions are
+  cached for 2 s; the `@`-file guard also covers respawn prompts.
+- pi's own bare `/fork` (branch from an earlier message) takes precedence;
+  this extension's `/fork` needs a prompt (`/fork <prompt>`).
+- `/model` and `/thinking` defaults last while the view is open; settings
+  `dispatchModel`/`dispatchThinking` are the persistent defaults.
+
+Automated: 15 files, 127 tests.

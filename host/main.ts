@@ -59,13 +59,20 @@ let cols = 120;
 let rows = 30;
 const launchState = readState(id);
 const token = launchState?.jobToken;
+// A shell job has no worker: a pi started inside it must not report as this job.
+const identity: Record<string, string> =
+	job.kind === "shell"
+		? {}
+		: {
+				PI_JOB_ID: id,
+				...(typeof token === "string" ? { PI_JOB_TOKEN: token } : {}),
+				PI_DAEMON_SOCK: daemonSocketPath(),
+				PI_JOB_DIR: jobDir(id),
+			};
 const env: Record<string, string> = {
 	...job.env,
 	TERM: "xterm-256color",
-	PI_JOB_ID: id,
-	...(typeof token === "string" ? { PI_JOB_TOKEN: token } : {}),
-	PI_DAEMON_SOCK: daemonSocketPath(),
-	PI_JOB_DIR: jobDir(id),
+	...identity,
 	// respawned with nothing new to do: the worker shows where the session left off
 	...(launchState?.restore === true ? { PI_ROOST_RESTORE: "1" } : {}),
 };

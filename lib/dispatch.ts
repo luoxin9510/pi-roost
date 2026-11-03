@@ -1,5 +1,6 @@
 // Building a background job's launch request from a foreground pi process.
 import { isAbsolute, resolve } from "node:path";
+import { taskArg } from "./store.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
 const BOOL_FLAGS = new Set(["-ne", "--no-extensions", "--offline"]);
@@ -90,7 +91,7 @@ export function buildLaunch(input: LaunchInput) {
 			"--session",
 			input.sessionFile,
 			...args,
-			...(input.task ? ["--", input.task.startsWith("@") ? ` ${input.task}` : input.task] : []),
+			...(input.task ? ["--", taskArg(input.task)] : []),
 		],
 		env: allowListedEnv(input.env, input.extraEnv),
 		name: input.name,

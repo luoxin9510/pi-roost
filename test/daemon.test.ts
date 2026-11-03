@@ -636,3 +636,22 @@ describe("shell jobs (DI-6)", () => {
 		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
 	});
 });
+
+describe("shell jobs and lifecycle", () => {
+	it("respawn --all leaves a running shell job alone; a stopped one is still removed later", async () => {
+		process.env.PI_ROOST_SHELL_KEEP_MS = "800";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", { ...args("sleep 30"), kind: "shell", sessionFile: "" });
+		await waitFor(async () => (await find(client, id))?.pid);
+		const host = readState(id)?.hostPid;
+		expect((await client.request("respawn", { all: true })).results).toEqual([]);
+		expect(readState(id)?.hostPid).toBe(host);
+		await client.request("stop", { id });
+		const r = await waitFor(async () => {
+			const x = await find(client, id);
+			return x?.endedAt ? x : undefined;
+		});
+		expect(r.state).toBe("stopped");
+		await waitFor(async () => !(await find(client, id)), 8000);
+	});
+});

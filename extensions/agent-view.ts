@@ -484,6 +484,11 @@ export class AgentView implements Component {
 				return true;
 			case "model": {
 				if (arg) {
+					const known = this.o.models?.() ?? [];
+					if (arg !== "default" && known.length > 0 && !known.includes(arg)) {
+						this.say(`unknown model ${arg} (bare /model lists them)`, "warning");
+						return true;
+					}
 					this.model = arg === "default" ? undefined : arg;
 					this.say(this.model ? `new sessions use ${this.model}` : "new sessions use the default model");
 					return done();
@@ -547,8 +552,9 @@ export class AgentView implements Component {
 	private async resumePicker(): Promise<void> {
 		if (!this.o.resumable) return this.say("/resume is not available here", "warning");
 		const cwd = this.dispatchCwd();
-		const known = new Set([...this.rows.values()].map((r) => r.sessionFile));
+		const known = new Set([...this.rows.values()].map((r) => r.sessionFile).filter(Boolean));
 		let sessions: Resumable[];
+		this.say("loading sessions…");
 		try {
 			sessions = (await this.o.resumable(cwd)).filter((s) => !known.has(s.path));
 		} catch (err) {
@@ -584,8 +590,16 @@ export class AgentView implements Component {
 		return true;
 	}
 
+	private atCache: { key: string; at: number; list: string[] } | undefined;
+
+	/** Cached briefly: render runs on every key and tick, and this reads directories. */
 	private atSuggestions(prefix: string): string[] {
-		return atCandidates(this.dispatchCwd(), [...new Set([...this.rows.values()].map((r) => r.cwd))], prefix);
+		const base = this.dispatchCwd();
+		const key = `${base}\0${prefix}`;
+		if (this.atCache && this.atCache.key === key && Date.now() - this.atCache.at < 2000) return this.atCache.list;
+		const list = atCandidates(base, [...new Set([...this.rows.values()].map((r) => r.cwd))], prefix);
+		this.atCache = { key, at: Date.now(), list };
+		return list;
 	}
 
 	// ---- organise (AV-K6…K14) --------------------------------------------
@@ -822,7 +836,12 @@ export class AgentView implements Component {
 			const now = Date.now();
 			if (!row.reaped && (this.restartAsk?.id !== id || now - this.restartAsk.at > RESTART_ASK_MS)) {
 				this.restartAsk = { id, at: now };
-				return this.say(`${row.name} is ${row.state} · Enter again to start it`, "warning");
+				return this.say(
+					row.kind === "shell"
+						? `${row.name} has ended · Enter again to run the command again`
+						: `${row.name} is ${row.state} · Enter again to start it`,
+					"warning",
+				);
 			}
 			this.restartAsk = undefined;
 		}

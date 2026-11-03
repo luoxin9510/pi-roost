@@ -178,7 +178,18 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	const patch: Partial<JobState> = { endedAt: now, status: null, waitingFor: null, tool: null };
 	patch.stateSince = now;
 	let restart = false;
-	if (reaped) {
+	if (recs.get(id)?.kind === "shell") {
+		// DI-6: stopped, or the command's exit status; the row goes away a while later
+		if (stopReq) patch.state = "stopped";
+		else {
+			patch.state = ex && ex.code === 0 ? "done" : "failed";
+			if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
+		}
+		patch.removeAt = now + SHELL_KEEP_MS;
+		// the host flushed its screen on exit: the last output line is the result
+		const line = lastScreenLine(id);
+		if (line) patch.summary = line;
+	} else if (reaped) {
 		// DM-4: an idle worker stopped to save resources; the row stays as it was
 		patch.state = st.state === "working" ? "done" : st.state;
 		patch.reaped = true;
@@ -197,14 +208,6 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 				patch.error = "ended while the background service was off";
 			}
 		}
-	} else if (recs.get(id)?.kind === "shell") {
-		// DI-6: the command's exit status is the outcome; the row goes away a while later
-		patch.state = ex && ex.code === 0 ? "done" : "failed";
-		if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
-		patch.removeAt = now + SHELL_KEEP_MS;
-		// the host flushed its screen on exit: the last output line is the result
-		const line = lastScreenLine(id);
-		if (line) patch.summary = line;
 	} else if (!ex) {
 		patch.state = "failed";
 		patch.error = "host vanished";
@@ -416,21 +419,25 @@ async function respawn(
 	if (starting.has(id) || respawning.has(id)) return { id, started: false };
 	respawning.add(id);
 	try {
-		let prompt = opts.prompt;
+		const shell = rec.kind === "shell";
+		let prompt = shell ? undefined : opts.prompt;
 		if (roster.has(id)) {
-			if (!opts.restart) return { id, started: false };
+			// a running command is never killed to be run again (respawn --all after an upgrade)
+			if (!opts.restart || shell) return { id, started: false };
 			// a turn cut short by the restart carries on in the new worker
 			if (!prompt && readState(id)?.state === "working") prompt = CONTINUE;
 			await terminateHost(id);
 			if (!(await waitGone([id], WAIT_MS))) throw new OpError("busy", `job ${id} did not stop`);
 		}
 		if (ptyError) throw new OpError("no_pty", `node-pty is unavailable: ${ptyError}`);
-		const holder = readWriterLock(rec.sessionFile);
-		if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
+		if (!shell) {
+			const holder = readWriterLock(rec.sessionFile);
+			if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
+		}
 		if (!isDir(rec.cwd)) throw new OpError("bad_request", `cwd is gone: ${rec.cwd}`);
 		if (!recs.has(id)) throw new OpError("not_found", `job ${id} was removed`);
 		const st = readState(id);
-		const written = existsSync(rec.sessionFile);
+		const written = !shell && existsSync(rec.sessionFile);
 		const command = respawnCommand(rec, written, prompt);
 		const now = Date.now();
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
@@ -801,7 +808,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 				const results: { id: string; started: boolean; error?: string }[] = [];
 				for (const id of [...recs.keys()]) {
 					// --all moves live jobs to the installed version; reaped ones pick it up when woken
-					if (!roster.has(id)) continue;
+					if (!roster.has(id) || recs.get(id)?.kind === "shell") continue;
 					try {
 						results.push(await respawn(id, { restart: true }));
 					} catch (err) {

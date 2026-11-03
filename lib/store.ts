@@ -70,6 +70,9 @@ export function launchCommand(rec: JobRecord, st: JobState | undefined): string[
 	return Array.isArray(c) && c.length > 0 && c.every((v) => typeof v === "string") ? (c as string[]) : rec.command;
 }
 
+/** A first prompt as pi's argv: pi reads an argument starting with @ as a file, even after --. */
+export const taskArg = (task: string): string => (task.startsWith("@") ? ` ${task}` : task);
+
 /**
  * Command for restarting a job from its session file: the dispatch command without
  * its first prompt (already in the session), optionally with a new one. A session
@@ -79,7 +82,7 @@ export function respawnCommand(rec: JobRecord, sessionWritten: boolean, prompt?:
 	if (!sessionWritten) return rec.command;
 	const at = rec.command.indexOf("--", 2);
 	const base = at === -1 ? rec.command : rec.command.slice(0, at);
-	return prompt ? [...base, "--", prompt] : base;
+	return prompt ? [...base, "--", taskArg(prompt)] : base;
 }
 
 export function updateState(id: string, patch: Partial<JobState>): JobState {

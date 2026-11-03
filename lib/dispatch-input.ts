@@ -2,7 +2,7 @@
 // in-view command; plus @<dir> targets (DI-3).
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 
 export type Parsed =
 	| { kind: "task"; task: string; cwd?: string }
@@ -63,9 +63,13 @@ export function atPrefix(input: string): string | undefined {
  */
 export function atCandidates(base: string, jobDirs: string[], prefix = ""): string[] {
 	const out = new Set<string>();
+	const p = prefix.toLowerCase();
 	const add = (abs: string) => {
-		const rel = abs === base ? "." : abs.startsWith(`${base}/`) ? abs.slice(base.length + 1) : abs;
-		if (rel.toLowerCase().startsWith(prefix.toLowerCase()) || abs.toLowerCase().includes(prefix.toLowerCase())) out.add(rel);
+		const inside = abs.startsWith(`${base}/`);
+		const rel = abs === base ? "." : inside ? abs.slice(base.length + 1) : abs;
+		// what is typed is matched against the shown name (or a directory's last segment),
+		// never against the base path every child shares
+		if (rel.toLowerCase().startsWith(p) || (!inside && basename(abs).toLowerCase().startsWith(p))) out.add(rel);
 	};
 	const list = (dir: string) => {
 		try {

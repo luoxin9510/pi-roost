@@ -33,5 +33,8 @@ describe("parseInput", () => {
 		expect(all).toContain(".pi/worktrees/feature-x");
 		expect(all.indexOf("notes")).toBeGreaterThan(all.indexOf("app")); // plain folders come after repos
 		expect(atCandidates(base, [join(base, "notes")], "no")).toEqual(["notes"]);
+		// the base path itself ("di-…") must not make every child match
+		expect(atCandidates(base, [], "di")).toEqual([]);
+		expect(atCandidates(base, ["/elsewhere/x/notes-old"], "notes")).toEqual(["notes"]);
 	});
 });
