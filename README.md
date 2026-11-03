@@ -47,7 +47,7 @@ pi install npm:pi-roost
 pi --agents
 ```
 
-建议在 `~/.pi/agent/roost.json` 里配置一个便宜的摘要模型，例如 `{"summaryModel": "anthropic/claude-haiku-5-5"}`，这样会话会自动命名、显示进度摘要。完整的按键、配置和 CLI 说明见下面的英文文档。
+建议在 `~/.pi/agent/roost.json` 里配置一个便宜的摘要模型，例如 `{"summaryModel": "anthropic/claude-haiku-5-5"}`，这样会话会自动命名、显示进度摘要。想用公司内部的 LLM 节点，见 [docs/summary-model.md](docs/summary-model.md)。完整的按键、配置和 CLI 说明见下面的英文文档。
 
 ## Install
 
@@ -159,7 +159,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 |---|---|---|
 | `fullscreen` | `true` | the view covers the terminal; `false` shows it below the conversation |
 | `groupBy` | `"state"` | or `"directory"` (Ctrl+S toggles and remembers) |
-| `summaryModel` | none | a cheap model for row summaries, session names and "while you were away" recaps; without it rows show the latest output |
+| `summaryModel` | none | a cheap model for row summaries, session names and "while you were away" recaps; without it rows show the latest output; any model pi can reach works, including a company endpoint ([guide](docs/summary-model.md), in Chinese) |
 | `dispatchModel`, `dispatchThinking` | pi's defaults | for sessions started from the view |
 | `reapIdleMinutes` | `60` | stop the process of a session idle this long (it restarts on demand) |
 | `notify` | `"auto"` | `"osc9"`, `"osc777"`, `"bell"` or `"off"` |
