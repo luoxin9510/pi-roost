@@ -3,7 +3,9 @@ import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } fro
 import { DaemonClient } from "../lib/client.ts";
 import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
-import { AgentView } from "./agent-view.ts";
+import { isScratchSession } from "../lib/paths.ts";
+import { registerForeground } from "./foreground.ts";
+import { openAgentView } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
 
 // pi-roost entry: one extension, three roles (agent view, foreground, worker).
@@ -19,7 +21,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("agents", {
 		description: "Background sessions: dispatch, peek, reply, attach",
 		handler: async (_args, ctx) => {
-			await openAgentView(pi, ctx);
+			await openAgentView(ctx, { cwdFilter: agentsCwd(pi, ctx) });
 		},
 	});
 
@@ -27,7 +29,7 @@ export default function (pi: ExtensionAPI) {
 
 	const lock = (ctx: ExtensionContext) => {
 		const file = ctx.sessionManager.getSessionFile();
-		if (!file || process.env.PI_ROOST_SCRATCH) return;
+		if (!file || isScratchSession(file)) return;
 		const result = acquireWriterLock(file);
 		if (result.ok) {
 			lockedFile = file;
@@ -46,7 +48,7 @@ export default function (pi: ExtensionAPI) {
 		lock(ctx);
 		if (pi.getFlag("agents") === true && ctx.hasUI) {
 			// not awaited: session_start must return for pi to finish starting up
-			void openAgentView(pi, ctx)
+			void openAgentView(ctx, { cwdFilter: agentsCwd(pi, ctx) })
 				.catch((err: unknown) => process.stderr.write(`pi-roost: agent view failed: ${String(err)}\n`))
 				.finally(() => {
 					try {
@@ -62,6 +64,12 @@ export default function (pi: ExtensionAPI) {
 
 	const job = jobIdentity();
 	if (job) registerWorker(pi, job);
+	else registerForeground(pi);
+}
+
+function agentsCwd(pi: ExtensionAPI, ctx: ExtensionContext): string | undefined {
+	const flag = pi.getFlag("agents-cwd");
+	return typeof flag === "string" && flag ? resolvePath(ctx.cwd, flag) : undefined;
 }
 
 async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: string): Promise<void> {
@@ -121,36 +129,3 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 	}
 }
 
-async function openAgentView(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	if (!ctx.hasUI) return;
-	const cwdFlag = pi.getFlag("agents-cwd");
-	const cwdFilter = typeof cwdFlag === "string" && cwdFlag ? resolvePath(ctx.cwd, cwdFlag) : undefined;
-	const dispatchCwd = cwdFilter ?? ctx.cwd;
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-		const view = new AgentView({
-			tui,
-			theme,
-			cwd: dispatchCwd,
-			cwdFilter,
-			launch: (task) => {
-				const sessionFile = SessionManager.create(dispatchCwd).getSessionFile();
-				if (!sessionFile) throw new Error("could not allocate a session file");
-				return buildLaunch({
-					task,
-					cwd: dispatchCwd,
-					sessionFile,
-					name: fallbackName(task),
-					origin: "dispatch",
-					argv: process.argv,
-					execPath: process.execPath,
-					env: process.env,
-					piVersion: VERSION,
-				});
-			},
-			setTitle: (title) => ctx.ui.setTitle(title),
-			done: () => done(),
-		});
-		void view.start();
-		return view;
-	});
-}

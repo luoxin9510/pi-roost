@@ -10,8 +10,9 @@ pi; targets stock pi ≥ 1.5.0 on Linux and macOS.
 
 Status: M0 spikes ([report](spikes/REPORT.md)), M1 daemon + hosting
 ([acceptance](docs/plans/m1-acceptance.md)) M2 worker state
-([acceptance](docs/plans/m2-acceptance.md)) and M3 agent view
-([acceptance](docs/plans/m3-acceptance.md)) done.
+([acceptance](docs/plans/m2-acceptance.md)) M3 agent view
+([acceptance](docs/plans/m3-acceptance.md)) and M4 backgrounding
+([acceptance](docs/plans/m4-acceptance.md)) done.
 
 ## Layout
 
@@ -29,6 +30,7 @@ Status: M0 spikes ([report](spikes/REPORT.md)), M1 daemon + hosting
 npm install && npm run build
 pi -e ./extensions/index.ts --bg "run the tests and summarise failures"
 pi -e ./extensions/index.ts --agents --no-session   # the agent view (or /agents in any session)
+# in any pi session: ← on an empty prompt (or /bg) moves the conversation to the background
 node dist/bin/pi-roost.js --json
 node dist/bin/pi-roost.js attach <id|name>   # Ctrl+Z detaches
 node dist/bin/pi-roost.js stop <id|name>
