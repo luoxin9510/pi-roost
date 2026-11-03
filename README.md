@@ -10,7 +10,7 @@ running when you close the terminal.
 
 [![npm version](https://img.shields.io/npm/v/pi-roost?style=for-the-badge)](https://www.npmjs.com/package/pi-roost)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-blue?style=for-the-badge)]()
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-blue?style=for-the-badge)](#install)
 
 pi-roost is a plain pi package: one extension, a small per-user daemon and a PTY host per
 session. Pi itself is not changed.
@@ -21,7 +21,9 @@ session. Pi itself is not changed.
 pi install npm:pi-roost
 ```
 
-Requires pi 1.5.0 or newer and Node.js 20 or newer, on macOS or Linux.
+Requires pi 1.5.0 or newer, on macOS or Linux. On Linux, installing builds
+[node-pty](https://github.com/microsoft/node-pty) from source, so it needs `make`, a C++
+compiler and Python (`build-essential` and `python3` on Debian and Ubuntu).
 
 ## Try this first
 
@@ -53,10 +55,10 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `fix the flaky test` | a new background session in this directory |
 | `@api fix the flaky test` | the same, in `./api` (Tab completes repos and worktrees) |
 | `! npm test` | a shell command as a job; the row shows its last output line |
-| `/model`, `/thinking` | defaults for new sessions (bare: pick from a list) |
+| `/model`, `/thinking` | model and thinking level for sessions started from this view (bare: pick from a list) |
 | `/resume` | bring back an earlier session of this directory |
 | Ctrl+G | write a long task in `$VISUAL` / `$EDITOR` |
-| Ctrl+Enter | start the task and open it straight away |
+| Ctrl+Enter | start the task and open it straight away (needs a terminal that reports Ctrl+Enter) |
 
 From the shell: `pi --bg "run the tests and summarise failures"`.
 
@@ -83,8 +85,9 @@ to delete). Press `?` in the view for every key.
 
 | Key | In the agent view |
 |---|---|
-| ↑ ↓ PgUp PgDn Home End | move |
-| Enter, → | open the session · start the typed task · fold a group |
+| ↑ ↓ PgUp PgDn | move (Home and End too, when the input is empty) |
+| Enter | open the session · start the typed task · fold a group |
+| → | open the session |
 | Space | peek and reply |
 | Ctrl+Enter | start the typed task and open it |
 | Ctrl+X | stop; again within 2 s to delete |
@@ -157,13 +160,15 @@ run it as `node ~/.pi/agent/npm/node_modules/pi-roost/dist/bin/pi-roost.js`.
 pi-roost emits `agents:job_needs_input` and `agents:job_completed` on `pi.events` with
 `{ id, name, cwd, state, summary, question, error }`.
 
-Scripts and other extensions can drive it through `pi-roost/api`:
+Other extensions and scripts can drive it through `pi-roost/api`:
 
 ```ts
 import { spawn, list, attach } from "pi-roost/api";
 
+// inside a pi extension; from a plain script, also pass piCli: the path of pi's cli.js
 const { id } = await spawn({ task: "run the regression suite", cwd: process.cwd() });
 const jobs = await list({ cwd: process.cwd() });
+await attach(id); // hands this terminal to the session until it detaches
 ```
 
 ## How it works
@@ -186,6 +191,8 @@ const jobs = await list({ cwd: process.cwd() });
 ## Limitations
 
 - macOS and Linux only (it needs Unix sockets and a PTY).
+- Some terminals (Terminal.app, tmux without `extended-keys`) send Ctrl+Enter as Enter:
+  the task starts but does not open; press Enter on its row.
 - Pi's own double Ctrl+C quits without the offer to move the turn to the background.
 - Pi's bare `/fork` is pi's; pi-roost's needs a prompt: `/fork <prompt>`.
 

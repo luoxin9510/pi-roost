@@ -24,7 +24,7 @@
   "author": "nuckcole",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "os": [
     "darwin",
@@ -55,7 +55,7 @@
     "image": "https://raw.githubusercontent.com/luoxin9510/pi-roost/main/assets/agent-view.png"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/fix-dts.mjs",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "prepare": "npm run build",
