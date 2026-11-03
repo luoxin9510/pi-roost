@@ -2,7 +2,7 @@
 // as in Claude Code: ↓ on an empty prompt selects a row, Enter opens (attaches to) it,
 // its own detach keys come back here. PRD: "PRD: pi-roost 会话内子 agent 面板（M12）".
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, decodeKittyPrintable, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient } from "../lib/client.ts";
 import { loadConfig } from "../lib/config.ts";
@@ -141,9 +141,11 @@ export function keyOf(data: string): PanelKey | undefined {
 	if (matchesKey(data, Key.down)) return "down";
 	if (matchesKey(data, Key.up)) return "up";
 	if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) return "open";
-	if (data === "x") return "stop";
-	if (data === "K") return "stopAll";
-	if (data === "m") return "message";
+	// plain text, or a terminal that encodes printable keys as CSI-u
+	const ch = data.length === 1 ? data : decodeKittyPrintable(data);
+	if (ch === "x") return "stop";
+	if (ch === "K") return "stopAll";
+	if (ch === "m") return "message";
 	if (matchesKey(data, Key.escape) || matchesKey(data, Key.left)) return "back";
 	return "other";
 }
@@ -159,7 +161,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	let watching = false;
 	let backoff = 2000;
 	/** A key that needs pressing again (Enter on an ended child, x on a running one). */
-	let armed: { id: string; key: ArmKey; at: number } | undefined;
+	let armed: { id: string; key: ArmKey; at: number; count?: number } | undefined;
 	/** SP-16: a message being written to one child. */
 	let composer: { id: string; input: Input } | undefined;
 	const ARM_MS = 2500;
@@ -194,7 +196,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 
 	function recompute(): void {
 		rows = childrenOf([...all.values()], session(), hidden);
-		if (rows.length === 0) focused = false;
+		if (rows.length === 0) unfocus();
 		const at = selId ? rows.findIndex((r) => r.id === selId) : -1;
 		select(at >= 0 ? at : sel);
 		// a spinner while a child is busy, else a tick a second for the ages of live ones
@@ -213,6 +215,12 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				spin.unref?.();
 			}
 		}
+	}
+
+	/** Leaving the panel drops a half-written message with it. */
+	function unfocus(): void {
+		focused = false;
+		composer = undefined;
 	}
 
 	function select(i: number): void {
@@ -260,7 +268,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	function armedNotice(): string | undefined {
 		if (!armed || Date.now() - armed.at > ARM_MS) return undefined;
 		if (armed.key === "stopAll") {
-			const n = rows.filter((r) => r.pid !== null).length;
+			const n = armed.count ?? 0;
 			return `K again stops ${n} running subagent${n === 1 ? "" : "s"}`;
 		}
 		const row = rows.find((r) => r.id === armed!.id);
@@ -275,7 +283,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			armed = undefined;
 			return true;
 		}
-		armed = { id: row.id, key, at: now };
+		armed = { id: row.id, key, at: now, ...(key === "stopAll" ? { count: rows.filter((r) => r.pid !== null).length } : {}) };
 		const t = setTimeout(() => {
 			flashTimers.delete(t);
 			requestRender();
@@ -370,7 +378,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		c?.close();
 		all = new Map();
 		rows = [];
-		focused = false;
+		unfocus();
 	}
 
 	async function enter(row: JobRow): Promise<void> {
@@ -379,6 +387,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		if (!t || !c) return;
 		let reason: DetachReason = "error";
 		let failure: string | undefined;
+		composer = undefined;
 		attached = true;
 		try {
 			t.stop();
@@ -429,28 +438,41 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		}
 	}
 
-	async function stopAll(): Promise<number> {
+	/** Stop every running child; one that fails does not keep the others running. */
+	async function stopAll(): Promise<string> {
 		const live = rows.filter((r) => r.pid !== null);
-		if (live.length === 0) return 0;
+		if (live.length === 0) return "no subagent is running";
 		const c = client ?? (await DaemonClient.connect());
+		let results: PromiseSettledResult<unknown>[];
 		try {
-			for (const r of live) await c.request("stop", { id: r.id });
+			results = await Promise.allSettled(live.map((r) => c.request("stop", { id: r.id })));
 		} finally {
 			if (c !== client) c.close();
 		}
-		return live.length;
+		const ok = results.filter((x) => x.status === "fulfilled").length;
+		const plural = (n: number) => `${n} subagent${n === 1 ? "" : "s"}`;
+		return ok === live.length ? `stopping ${plural(ok)}` : `stopping ${ok} of ${plural(live.length)} (the others could not be stopped)`;
 	}
 
-	function openComposer(row: JobRow): void {
-		const input = new Input({ prompt: `message ${oneLine(row.name)} › ` });
+	function openComposer(row: JobRow, draft = ""): void {
+		const short = truncateToWidth(oneLine(row.name), 12, "…");
+		const input = new Input({ prompt: `message ${short} › ` });
 		input.focused = true;
+		if (draft) input.setValue(draft);
 		const id = row.id;
 		input.onSubmit = (value) => {
 			const text = value.trim();
 			if (!text) return;
 			composer = undefined;
 			tui?.requestRender();
-			void sendMessage(id, text);
+			void sendMessage(id, text).then((sent) => {
+				// not sent: the text comes back to be sent later or copied
+				const row = rows.find((r) => r.id === id);
+				if (!sent && row && focused && !composer && rows[sel]?.id === id) {
+					openComposer(row, text);
+					tui?.requestRender();
+				}
+			});
 		};
 		input.onEscape = () => {
 			composer = undefined;
@@ -460,7 +482,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	}
 
 	/** SP-16: as a reply from the user (it starts a run that reports back, M9). */
-	async function sendMessage(id: string, text: string): Promise<void> {
+	async function sendMessage(id: string, text: string): Promise<boolean> {
 		const name = oneLine(rows.find((r) => r.id === id)?.name ?? id);
 		const say = (m: string, tone: "info" | "warning" | "error") => {
 			try {
@@ -471,16 +493,18 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			const c = client ?? (await DaemonClient.connectOrStart());
 			try {
 				const r = await c.request("reply", { id, text });
-				if (r.stopped) say(`${name} is stopped: open it (↵ twice) to start it, then write`, "warning");
+				if (r.stopped) say(`${name} is stopped: open it (↵ twice) to start it, then send again`, "warning");
 				else if (r.delivered) say(`sent · ${name}`, "info");
 				else if (r.respawned) say(`sent · starting ${name} again`, "info");
 				else if (r.saved) say(`saved for ${name}; it is sent when it starts${r.error ? ` (${r.error})` : ""}`, "warning");
 				else say(`not delivered: ${name} is not running`, "error");
+				return !!(r.delivered || r.respawned || r.saved);
 			} finally {
 				if (c !== client) c.close();
 			}
 		} catch (err) {
 			say(`could not send to ${name}: ${(err as Error).message}`, "error");
+			return false;
 		}
 	}
 
@@ -512,11 +536,11 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				select(sel + 1);
 				break;
 			case "up":
-				if (sel === 0) focused = false;
+				if (sel === 0) unfocus();
 				else select(sel - 1);
 				break;
 			case "back":
-				focused = false;
+				unfocus();
 				break;
 			case "open": {
 				const row = rows[sel];
@@ -537,7 +561,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				}
 				if (confirmed({ id: ALL }, "stopAll")) {
 					void stopAll()
-						.then((n) => ctx?.ui.notify(`pi-roost: stopping ${n} subagent${n === 1 ? "" : "s"}`, "info"))
+						.then((m) => ctx?.ui.notify(`pi-roost: ${m}`, "info"))
 						.catch((err: unknown) => ctx?.ui.notify(`pi-roost: ${(err as Error).message}`, "error"));
 				}
 				break;
@@ -549,7 +573,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			}
 			default:
 				// typing goes back to the prompt, with the key
-				focused = false;
+				unfocus();
 				tui?.requestRender();
 				return undefined;
 		}
@@ -559,7 +583,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 
 	pi.on("ui_prompt_start", () => {
 		dialogs++;
-		focused = false;
+		unfocus();
 		composer = undefined;
 	});
 	pi.on("ui_prompt_end", () => {
@@ -613,9 +637,13 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				const n = rows.filter((r) => r.pid !== null).length;
 				if (n === 0) return c.ui.notify("pi-roost: no subagent is running", "info");
 				if (!(await c.ui.confirm("Stop subagents", `Stop ${n} running subagent${n === 1 ? "" : "s"} of this session?`))) return;
-				const stopped = await stopAll();
-				return c.ui.notify(`pi-roost: stopping ${stopped} subagent${stopped === 1 ? "" : "s"}`, "info");
+				try {
+					return c.ui.notify(`pi-roost: ${await stopAll()}`, "info");
+				} catch (err) {
+					return c.ui.notify(`pi-roost: could not stop the subagents: ${(err as Error).message}`, "error");
+				}
 			}
+			composer = undefined;
 			focused = true;
 			select(0);
 			tui?.requestRender();
