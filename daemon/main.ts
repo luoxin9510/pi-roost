@@ -76,6 +76,8 @@ const roster = new Map<string, HostRef>();
 const starting = new Set<string>();
 const stopping = new Set<string>();
 const conns = new Set<Conn>();
+/** The connection each live worker reports on; replies are pushed down it. */
+const workerConns = new Map<string, Conn>();
 
 interface Conn {
 	sock: Socket;
@@ -139,6 +141,7 @@ function pushJob(id: string): void {
 
 function finalize(id: string, why: string): void {
 	roster.delete(id);
+	workerConns.delete(id);
 	starting.delete(id);
 	const st = readState(id);
 	if (!st) {
@@ -338,12 +341,50 @@ const REPORT_STATES = new Set(["working", "blocked", "done", "failed"]);
 const REPORT_STATUS = new Set(["busy", "waiting", "idle"]);
 const REPORT_WAITING = new Set([null, "dialog", "question", "first-prompt"]);
 
-function acceptReport(args: { id?: unknown; token?: unknown; report?: Partial<WorkerReport> } | undefined): void {
+function pendingReplies(id: string): string[] {
+	const p = readState(id)?.pendingReplies;
+	return Array.isArray(p) ? p.filter(str) : [];
+}
+
+function flushPending(id: string, conn: Conn): void {
+	const pending = pendingReplies(id);
+	if (pending.length === 0) return;
+	updateState(id, { pendingReplies: [] });
+	for (const text of pending) send(conn, { event: "deliver", id, text });
+	log("info", "delivered saved replies", { id, count: pending.length });
+}
+
+async function reply(args: { id?: unknown; text?: unknown } | undefined): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean }> {
+	const id = requireJob(args);
+	const text = typeof args?.text === "string" ? args.text.trim() : "";
+	if (!text) throw new OpError("bad_request", "empty reply");
+	if (text === "/stop") {
+		if (roster.has(id)) await terminateHost(id);
+		return { delivered: true, saved: false, stopped: true };
+	}
+	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
+	const conn = workerConns.get(id);
+	if (roster.has(id) && conn && !conn.sock.destroyed) {
+		send(conn, { event: "deliver", id, text });
+		return { delivered: true, saved: false };
+	}
+	// PK-5: commands only make sense live; plain replies wait for the worker.
+	if (text.startsWith("/")) return { delivered: false, saved: false };
+	updateState(id, { pendingReplies: [...pendingReplies(id), text].slice(-20) });
+	log("info", "reply saved", { id, live: roster.has(id) });
+	return { delivered: false, saved: true };
+}
+
+function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?: Partial<WorkerReport> } | undefined): void {
 	const id = args?.id;
 	if (!str(id) || !recs.has(id)) throw new OpError("not_found", `no such job: ${String(id)}`);
 	const st = readState(id);
 	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
 	if (!roster.has(id) || stopping.has(id)) return; // ended or being stopped: the daemon owns the state now
+	if (workerConns.get(id) !== conn) {
+		workerConns.set(id, conn);
+		flushPending(id, conn);
+	}
 	const r = args.report;
 	if (!r || !REPORT_STATES.has(r.state as string) || !REPORT_STATUS.has(r.status as string)) {
 		throw new OpError("bad_request", "invalid report");
@@ -468,8 +509,10 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { id };
 		}
 		case "report":
-			acceptReport(args);
+			acceptReport(conn, args);
 			return {};
+		case "reply":
+			return reply(args);
 		case "shutdown":
 			setTimeout(() => void shutdown(!!args?.keepWorkers), 20);
 			return {};

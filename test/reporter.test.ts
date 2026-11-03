@@ -23,6 +23,7 @@ let sock: string;
 let server: Server | undefined;
 let received: WorkerReport[] = [];
 let delayMs = 0;
+let pushOnReply: { id: string; text: string } | undefined;
 
 function listen(): Promise<void> {
 	return new Promise((resolve) => {
@@ -32,7 +33,10 @@ function listen(): Promise<void> {
 				for (const line of reader.push(chunk)) {
 					const msg = JSON.parse(line);
 					received.push(msg.args.report);
-					setTimeout(() => s.write(encodeLine({ id: msg.id, ok: true, result: {} })), delayMs);
+					setTimeout(() => {
+						s.write(encodeLine({ id: msg.id, ok: true, result: {} }));
+						if (pushOnReply) s.write(encodeLine({ event: "deliver", id: pushOnReply.id, text: pushOnReply.text }));
+					}, delayMs);
 				}
 			});
 			s.on("error", () => {});
@@ -48,6 +52,7 @@ beforeEach(() => {
 	sock = join(dir, "d.sock");
 	received = [];
 	delayMs = 0;
+	pushOnReply = undefined;
 });
 
 afterEach(async () => {
@@ -91,6 +96,20 @@ describe("Reporter", () => {
 		await listen();
 		await sleep(1500);
 		expect(received.map((x) => x.state)).toEqual(["done"]);
+		await r.close();
+	});
+
+	it("hands replies for its own job to the callback, ignores others", async () => {
+		await listen();
+		const got: string[] = [];
+		pushOnReply = { id: "j", text: "hello" };
+		const r = new Reporter({ id: "j", token: "t", socket: sock }, (t) => got.push(t));
+		r.update(base);
+		await sleep(100);
+		pushOnReply = { id: "other", text: "nope" };
+		r.update({ ...base, state: "done", status: "idle", tool: null });
+		await sleep(100);
+		expect(got).toEqual(["hello"]);
 		await r.close();
 	});
 

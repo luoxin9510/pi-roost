@@ -350,3 +350,61 @@ describe("worker reports", () => {
 		expect(stopped.state).toBe("stopped");
 	});
 });
+
+describe("replies", () => {
+	const working = {
+		state: "working" as const,
+		status: "busy" as const,
+		waitingFor: null,
+		summary: null,
+		question: null,
+		choices: [],
+		tool: null,
+		error: null,
+		name: null,
+		model: null,
+	};
+
+	it("pushes replies to the worker's connection; saves them when it is not connected", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+
+		// no worker connection yet: saved for later (PK-5); commands are not saved
+		expect(await client.request("reply", { id, text: "first" })).toEqual({ delivered: false, saved: true });
+		expect(await client.request("reply", { id, text: "/name x" })).toEqual({ delivered: false, saved: false });
+		await expect(client.request("reply", { id, text: "!ls" })).rejects.toMatchObject({ code: "unsupported" });
+
+		const worker = await DaemonClient.connect();
+		clients.push(worker);
+		const got: string[] = [];
+		worker.onEvent((e) => {
+			if (e.event === "deliver") got.push(e.text);
+		});
+		await worker.request("report", { id, token, report: working });
+		await waitFor(() => got.length === 1);
+		expect(got).toEqual(["first"]);
+		expect(readState(id)?.pendingReplies).toEqual([]);
+
+		expect(await client.request("reply", { id, text: "  second  " })).toEqual({ delivered: true, saved: false });
+		await waitFor(() => got.length === 2);
+		expect(got[1]).toBe("second");
+
+		expect(await client.request("reply", { id, text: "/stop" })).toMatchObject({ stopped: true });
+		const row = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.state === "stopped" ? r : undefined;
+		});
+		expect(row.endedAt).toBeTypeOf("number");
+	});
+
+	it("saves replies to an ended job", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.2"));
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		expect(await client.request("reply", { id, text: "continue" })).toEqual({ delivered: false, saved: true });
+		expect(readState(id)?.pendingReplies).toEqual(["continue"]);
+		await expect(client.request("reply", { id, text: "   " })).rejects.toMatchObject({ code: "bad_request" });
+	});
+});
