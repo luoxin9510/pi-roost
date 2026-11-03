@@ -170,10 +170,11 @@ prompt lists them, one row each: state, name, time, what it is doing or its resu
 branch. On an empty prompt **↓** selects a row (↑↓ move), **Enter** or **→** opens that
 child's full pi screen (an ended one asks for Enter again, then starts), and the child's own detach keys
 (← on its empty prompt, Ctrl+Z, `/exit`) bring you back. **x** twice stops a running child, and on
-a stopped one hides its row; **Esc**, **←** or typing returns to the prompt. `/subagents`
-selects the panel too. This works in a background session you attached to as well.
+a stopped one hides its row; **m** writes a message to the selected child (Enter sends it, as if you had typed it in
+that session; Esc cancels), **K** twice stops every running child. **Esc**, **←** or typing
+returns to the prompt. `/subagents` selects the panel; `/subagents stop` stops them all. This works in a background session you attached to as well.
 
-**提示符下方的子 agent 面板。** 会话有子会话时，提示符下方会出现一个面板，每个子会话一行：状态、名字、耗时、正在做什么或最终结果、所在分支。在空提示符上按 **↓** 选中一行（↑↓ 移动），按 **回车** 或 **→** 进入那个子会话的完整 pi 界面（已结束的要再按一次回车，确认后重启），在子会话里用它自己的退出键（空提示符按 ←、Ctrl+Z、`/exit`）就回到原会话。连按两次 **x** 停止运行中的子会话；对已停止的按 **x** 会把它从面板隐藏；按 **Esc**、**←** 或直接打字就回到提示符。也可以用 `/subagents` 选中面板。进入一个后台会话后，它的面板同样可用。
+**提示符下方的子 agent 面板。** 会话有子会话时，提示符下方会出现一个面板，每个子会话一行：状态、名字、耗时、正在做什么或最终结果、所在分支。在空提示符上按 **↓** 选中一行（↑↓ 移动），按 **回车** 或 **→** 进入那个子会话的完整 pi 界面（已结束的要再按一次回车，确认后重启），在子会话里用它自己的退出键（空提示符按 ←、Ctrl+Z、`/exit`）就回到原会话。连按两次 **x** 停止运行中的子会话；对已停止的按 **x** 会把它从面板隐藏；按 **m** 给选中的子会话写一条消息（回车发送，相当于你在那个会话里打字；Esc 取消）；连按两次 **K** 停止全部运行中的子会话。按 **Esc**、**←** 或直接打字就回到提示符。也可以用 `/subagents` 选中面板，`/subagents stop` 停止全部子会话。进入一个后台会话后，它的面板同样可用。
 
 How it behaves · 运行方式：
 
