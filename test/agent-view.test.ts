@@ -329,3 +329,22 @@ describe("AgentView dispatch (M6b)", () => {
 		view.dispose();
 	});
 });
+
+describe("Ctrl+G", () => {
+	it("writes the task in $EDITOR and dispatches all of its lines", async () => {
+		launches.length = 0;
+		const saved = { v: process.env.VISUAL, e: process.env.EDITOR };
+		process.env.VISUAL = `sh -c 'printf "first line\\nsecond line\\n" > "$0"'`;
+		const { view } = setup([row()]);
+		await view.start();
+		view.handleInput("\x07"); // Ctrl+G
+		await sleep(300);
+		expect(view.render(80).join("\n")).toContain("first line [+1 lines]");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(launches.at(-1)?.task).toBe("first line\nsecond line");
+		view.dispose();
+		if (saved.v === undefined) delete process.env.VISUAL;
+		else process.env.VISUAL = saved.v;
+	});
+});

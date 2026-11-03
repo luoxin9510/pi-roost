@@ -60,8 +60,19 @@ export function registerForeground(pi: ExtensionAPI): void {
 	const settledWaiters = new Set<(aborted: boolean) => void>();
 	const toolWaiters = new Set<() => void>();
 	let stopKeys: (() => void) | undefined;
+	let stopQuitKeys: (() => void) | undefined;
 	let footer: Footer | undefined;
+	/** BG-9: hand the session to the daemon once pi has let go of it on quit. */
+	let handoff: { file: string; cwd: string; name: string; config: ReturnType<typeof loadConfig> } | undefined;
 
+	// a first message given on the command line arrives as input right after startup
+	let sawInput = false;
+	pi.on("input", () => {
+		sawInput = true;
+	});
+	pi.on("before_agent_start", () => {
+		sawInput = true;
+	});
 	pi.on("agent_start", () => {
 		running = true;
 		compacting = false;
@@ -98,11 +109,44 @@ export function registerForeground(pi: ExtensionAPI): void {
 
 	const stopAll = () => {
 		stopKeys?.();
+		stopQuitKeys?.();
 		footer?.stop();
-		stopKeys = footer = undefined;
+		stopKeys = stopQuitKeys = footer = undefined;
+	};
+
+	/** BG-9: quitting while a turn runs offers to keep it going in the background. */
+	const offerQuit = async (ctx: ExtensionContext): Promise<void> => {
+		const file = ctx.sessionManager.getSessionFile();
+		const choice = await ctx.ui.select("A turn is still running", [
+			"Move to background and exit",
+			"Exit (stops the turn)",
+			"Cancel",
+		]);
+		if (!choice || choice === "Cancel") return;
+		if (choice.startsWith("Move") && file && existsSync(file)) {
+			handoff = {
+				file,
+				cwd: ctx.cwd,
+				name: ctx.sessionManager.getSessionName() ?? conversationName(ctx) ?? "conversation",
+				config: loadConfig(ctx.cwd),
+			};
+			if (running) {
+				const settled = new Promise<void>((resolve) => {
+					const w = () => {
+						settledWaiters.delete(w);
+						resolve();
+					};
+					settledWaiters.add(w);
+				});
+				ctx.abort();
+				await Promise.race([settled, new Promise((r) => setTimeout(r, 5000))]);
+			}
+		}
+		ctx.shutdown();
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		handoff = undefined;
 		dialogs = 0;
 		compacting = false;
 		pendingUntil = 0;
@@ -137,10 +181,59 @@ export function registerForeground(pi: ExtensionAPI): void {
 				return { data: "\r" };
 			});
 		}
+		// BG-9: Ctrl+D on an empty prompt, or /quit and /exit, while a turn runs
+		stopQuitKeys = ctx.ui.onTerminalInput((data) => {
+			if (!running || moving || dialogs > 0 || isKeyRelease(data)) return undefined;
+			const text = ctx.ui.getEditorText().trim();
+			const quitKey =
+				(matchesKey(data, Key.ctrl("d")) && text === "") || (matchesKey(data, Key.enter) && (text === "/quit" || text === "/exit"));
+			if (!quitKey) return undefined;
+			if (text) ctx.ui.setEditorText("");
+			void offerQuit(ctx).catch(() => {});
+			return { consume: true };
+		});
 		footer = startFooter(ctx, config.leftArrowOpensAgents, () => moving !== undefined);
+		// P2: plain `pi` can start in the agent view
+		// (a plain launch: no first message started a turn and the conversation is empty)
+		if (config.defaultToAgentsView && _event.reason === "startup") {
+			sawInput = false;
+			setTimeout(() => {
+				if (sawInput || running || agentViewOpen() || ctx.ui.getEditorText() || ctx.sessionManager.getBranch().some((e) => e.type === "message")) return;
+				void openAgentView(ctx).catch(() => {});
+			}, 800).unref?.();
+		}
 	});
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async (event) => {
 		stopAll();
+		const h = handoff;
+		handoff = undefined;
+		if (!h || event.reason !== "quit") return;
+		// the writer lock went with the extension's earlier shutdown handler: one writer again
+		let client: DaemonClient | undefined;
+		try {
+			client = await DaemonClient.connectOrStart();
+			const { id, name } = await client.request(
+				"dispatch",
+				buildLaunch({
+					task: CONTINUE,
+					cwd: h.cwd,
+					sessionFile: h.file,
+					name: h.name,
+					origin: "adopt",
+					argv: process.argv,
+					execPath: process.execPath,
+					env: process.env,
+					extraEnv: h.config.envAllowList,
+					piVersion: VERSION,
+				}),
+			);
+			process.once("exit", () => process.stdout.write(`\nbackgrounded · ${id} · ${name}\n  pi --agents to see it\n`));
+		} catch (err) {
+			const msg = (err as Error).message;
+			process.once("exit", () => process.stderr.write(`\npi-roost: could not move the session to the background: ${msg}\n`));
+		} finally {
+			client?.close();
+		}
 	});
 
 	const handler = async (args: string, ctx: ExtensionCommandContext) => {
