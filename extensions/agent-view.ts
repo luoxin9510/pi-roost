@@ -3,6 +3,7 @@ import { type Component, Input, parseKey, type TUI, truncateToWidth, visibleWidt
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
+import { ensureLive } from "../lib/resume.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
 import {
 	ageOf,
@@ -22,6 +23,7 @@ import {
 
 const MIN_TASK = 4; // DI-1
 const DOUBLE_PRESS_MS = 2000; // Ctrl+X delete, Ctrl+C exit
+const RESTART_ASK_MS = 3000;
 const NOTICE_MS = 4000;
 const SPIN_MS = 150;
 
@@ -58,6 +60,8 @@ interface Notice {
 export class AgentView implements Component {
 	private o: AgentViewOptions;
 	private client: DaemonClient | undefined;
+	/** DM-7: a failed or stopped session restarts on a second Enter. */
+	private restartAsk: { id: string; at: number } | undefined;
 	private rows = new Map<string, JobRow>();
 	private collapsed = new Set<Section["key"]>();
 	private cursor: { kind: "row"; id: string } | { kind: "header"; key: Section["key"] } | undefined;
@@ -409,7 +413,8 @@ export class AgentView implements Component {
 			if (r.stopped) this.say(`stopped · ${row.name}`);
 			else if (r.delivered) {
 				this.say(row.waitingFor === "dialog" ? "queued; attach (→) to answer the dialog" : `sent · ${row.name}`, "success");
-			} else if (r.saved) this.say("saved; it is sent when the session starts again", "warning");
+			} else if (r.respawned) this.say(`sent · starting ${row.name} again`, "success");
+			else if (r.saved) this.say(`saved; it is sent when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
 			else this.say("not delivered: the session is not running", "error");
 		} catch (err) {
 			this.say((err as Error).message, "error");
@@ -456,13 +461,27 @@ export class AgentView implements Component {
 	private async attachTo(id: string): Promise<void> {
 		const row = this.rows.get(id);
 		if (!row) return;
-		if (row.pid === null) return this.say(`${row.name} is not running (restarting ended sessions comes later)`, "warning");
+		if (row.pid === null) {
+			if (!this.client) return this.say("background service unavailable", "error");
+			// a reaped session just wakes up (AT-1); one that ended asks first (DM-7)
+			const now = Date.now();
+			if (!row.reaped && (this.restartAsk?.id !== id || now - this.restartAsk.at > RESTART_ASK_MS)) {
+				this.restartAsk = { id, at: now };
+				return this.say(`${row.name} is ${row.state} · Enter again to start it`, "warning");
+			}
+			this.restartAsk = undefined;
+		}
 		const { tui } = this.o;
 		let reason: DetachReason;
+		let failure: string | undefined;
 		try {
 			this.attached = true;
 			tui.stop();
+			if (row.pid === null) await ensureLive(this.client!, row, process.stdout);
 			reason = await attachToHost(hostSocketPath(id), { stdin: process.stdin, stdout: process.stdout });
+		} catch (err) {
+			reason = "error";
+			failure = (err as Error).message;
 		} finally {
 			this.attached = false;
 			tui.start();
@@ -470,7 +489,8 @@ export class AgentView implements Component {
 			this.render0();
 		}
 		this.cursor = { kind: "row", id };
-		if (reason === "takeover") this.say("Attached elsewhere", "warning");
+		if (failure) this.say(`could not start ${row.name}: ${oneLine(failure)}`, "error");
+		else if (reason === "takeover") this.say("Attached elsewhere", "warning");
 		else if (reason === "exit") this.say(`${row.name} ended`);
 		else if (reason === "error" || reason === "closed") this.say(`lost the connection to ${row.name}`, "error");
 	}

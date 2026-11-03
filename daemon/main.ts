@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import { readJson, writeJsonAtomic } from "../lib/atomic.ts";
 import { hostEntry } from "../lib/client.ts";
+import { loadUserConfig } from "../lib/config.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -22,17 +23,24 @@ import {
 import {
 	type JobRecord,
 	type JobState,
+	clearExit,
 	createJob,
 	listJobIds,
 	readExit,
 	readJob,
 	readState,
 	removeJob,
+	respawnCommand,
 	updateState,
 } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 
 const WAIT_MS = 6000;
+const CONTINUE = "Continue where you left off.";
+/** DM-7: a run that last made progress within this long ago ended by surprise. */
+const RECENT_MS = 48 * 60 * 60 * 1000;
+const REAP_CHECK_MS = 30_000;
+const CRASH_RESET_MS = 60_000;
 
 class OpError extends Error {
 	code: string;
@@ -75,6 +83,9 @@ const recs = new Map<string, JobRecord>();
 const roster = new Map<string, HostRef>();
 const starting = new Set<string>();
 const stopping = new Set<string>();
+/** DM-4: being stopped for idleness; the row keeps its state. */
+const reaping = new Set<string>();
+const respawning = new Set<string>();
 const conns = new Set<Conn>();
 /** The connection each live worker reports on; replies are pushed down it. */
 const workerConns = new Map<string, Conn>();
@@ -124,6 +135,7 @@ function rowOf(id: string): JobRow | undefined {
 		model: text(st.model) ?? rec.model ?? null,
 		error: text(st.error),
 		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
+		reaped: !live && st.reaped === true,
 	};
 }
 
@@ -140,24 +152,50 @@ function pushJob(id: string): void {
 	if (job) push({ event: "job", job });
 }
 
-function finalize(id: string, why: string): void {
+function finalize(id: string, why: string, opts: { startup?: boolean } = {}): void {
 	roster.delete(id);
 	workerConns.delete(id);
 	starting.delete(id);
 	const st = readState(id);
 	if (!st) {
+		reaping.delete(id);
 		persistRoster();
 		return;
 	}
 	const ex = readExit(id);
-	const stopReq = stopping.has(id) || st.stopRequested === true;
-	const patch: Partial<JobState> = { endedAt: Date.now(), status: null, waitingFor: null, tool: null };
-	patch.stateSince = patch.endedAt;
-	if (stopReq) patch.state = "stopped";
-	else if (!ex) {
+	const reaped = reaping.has(id);
+	reaping.delete(id);
+	const stopReq = !reaped && (stopping.has(id) || st.stopRequested === true);
+	const now = Date.now();
+	const patch: Partial<JobState> = { endedAt: now, status: null, waitingFor: null, tool: null };
+	patch.stateSince = now;
+	let restart = false;
+	if (reaped) {
+		// DM-4: an idle worker stopped to save resources; the row stays as it was
+		patch.state = st.state === "working" ? "done" : st.state;
+		patch.reaped = true;
+		patch.stateSince = typeof st.stateSince === "number" ? st.stateSince : now;
+	} else if (stopReq) patch.state = "stopped";
+	else if (!ex && opts.startup) {
+		// DM-7: the machine or the background service went away under a live worker
+		if (st.state !== "working") patch.state = st.state === "blocked" && st.waitingFor !== "question" ? "done" : st.state;
+		else {
+			const progress = typeof st.reportedAt === "number" ? st.reportedAt : st.updatedAt;
+			if (now - progress < RECENT_MS) {
+				patch.state = "failed";
+				patch.error = "the session ended while it was working (machine restart?); reply or press Enter twice to resume";
+			} else {
+				patch.state = "stopped";
+				patch.error = "ended while the background service was off";
+			}
+		}
+	} else if (!ex) {
 		patch.state = "failed";
 		patch.error = "host vanished";
 	} else if (ex.code !== 0) {
+		// DM-5: one automatic restart for a worker that crashed mid-run
+		const restarts = typeof st.crashRestarts === "number" ? st.crashRestarts : 0;
+		restart = st.state === "working" && restarts < 1;
 		patch.state = "failed";
 		if (!st.error) patch.error = `worker exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}`;
 	} else if (st.state === "failed" || (st.state === "blocked" && st.waitingFor === "question")) {
@@ -172,8 +210,17 @@ function finalize(id: string, why: string): void {
 	}
 	stopping.delete(id);
 	persistRoster();
-	log("info", "finalize", { id, why, state: patch.state, exit: ex ?? null });
+	log("info", "finalize", { id, why, state: patch.state, exit: ex ?? null, restart });
 	pushJob(id);
+	if (reaped && pendingReplies(id).length > 0 && !shuttingDown) {
+		// a reply arrived while the idle worker was going away: start it again for it
+		void respawn(id).catch((err: unknown) => log("error", "wake after reap failed", { id, error: String(err) }));
+	}
+	if (restart && !shuttingDown) {
+		void respawn(id, { prompt: CONTINUE, crash: true }).catch((err: unknown) =>
+			log("error", "crash restart failed", { id, error: String(err) }),
+		);
+	}
 }
 
 function checkHosts(): void {
@@ -194,11 +241,11 @@ function loadJobs(): void {
 		if (ref.hostToken && sameProcess(ref.hostPid, ref.hostToken)) {
 			roster.set(id, { hostPid: ref.hostPid, hostToken: ref.hostToken });
 			log("info", "re-adopted", { id, hostPid: ref.hostPid });
-		} else finalize(id, "host gone at startup");
+		} else finalize(id, "host gone at startup", { startup: true });
 	}
 	for (const id of recs.keys()) {
 		const st = readState(id);
-		if (st && (st.state === "working" || st.state === "blocked") && !roster.has(id)) finalize(id, "orphaned");
+		if (st && st.endedAt === undefined && !roster.has(id)) finalize(id, "orphaned", { startup: true });
 	}
 	persistRoster();
 }
@@ -206,6 +253,7 @@ function loadJobs(): void {
 async function terminateHost(id: string): Promise<void> {
 	const ref = roster.get(id);
 	if (!ref) return;
+	reaping.delete(id); // a user's stop wins over an idle reap
 	stopping.add(id);
 	try {
 		updateState(id, { stopRequested: true });
@@ -299,14 +347,25 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 	};
 	createJob(rec, { state: "working", startedAt: now, updatedAt: now, jobToken: newToken() });
 	recs.set(id, rec);
+	try {
+		await startHost(rec);
+	} catch (err) {
+		recs.delete(id);
+		removeJob(id);
+		throw err;
+	}
+	log("info", "dispatch", { id, name, cwd: rec.cwd, origin });
+	return { id, name };
+}
+
+async function startHost(rec: JobRecord): Promise<void> {
+	const id = rec.id;
 	starting.add(id);
 	let hostPid: number;
 	try {
 		hostPid = spawnHost(rec);
 	} catch (err) {
 		starting.delete(id);
-		recs.delete(id);
-		removeJob(id);
 		throw err;
 	}
 	const ref: HostRef = { hostPid, hostToken: "" };
@@ -320,10 +379,107 @@ async function dispatch(a: DispatchArgs): Promise<{ id: string; name: string }> 
 	} catch {}
 	persistRoster();
 	starting.delete(id);
-	log("info", "dispatch", { id, name, cwd: rec.cwd, hostPid, origin });
 	pushJob(id);
 	checkHosts();
-	return { id, name };
+}
+
+/**
+ * AT-1, DM-5, flow 5.7: start an ended job again from its session file. `restart`
+ * stops a live one first (respawn --all after an upgrade).
+ */
+async function respawn(
+	id: string,
+	opts: { prompt?: string; crash?: boolean; restart?: boolean } = {},
+): Promise<{ id: string; started: boolean }> {
+	const rec = recs.get(id);
+	if (!rec) throw new OpError("not_found", `no such job: ${id}`);
+	if (starting.has(id) || respawning.has(id)) return { id, started: false };
+	respawning.add(id);
+	try {
+		let prompt = opts.prompt;
+		if (roster.has(id)) {
+			if (!opts.restart) return { id, started: false };
+			// a turn cut short by the restart carries on in the new worker
+			if (!prompt && readState(id)?.state === "working") prompt = CONTINUE;
+			await terminateHost(id);
+			if (!(await waitGone([id], WAIT_MS))) throw new OpError("busy", `job ${id} did not stop`);
+		}
+		if (ptyError) throw new OpError("no_pty", `node-pty is unavailable: ${ptyError}`);
+		const holder = readWriterLock(rec.sessionFile);
+		if (holder) throw new OpError("locked", `session is in use by pid ${holder.pid}`);
+		if (!isDir(rec.cwd)) throw new OpError("bad_request", `cwd is gone: ${rec.cwd}`);
+		if (!recs.has(id)) throw new OpError("not_found", `job ${id} was removed`);
+		const st = readState(id);
+		const written = existsSync(rec.sessionFile);
+		const command = respawnCommand(rec, written, prompt);
+		const now = Date.now();
+		// nothing new to do: the worker shows where the session left off, so keep the row as is
+		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
+		clearExit(id);
+		updateState(id, {
+			...(restore
+				? { stateSince: st?.stateSince }
+				: { state: "working" as const, stateSince: now, summary: null, question: null, choices: [] }),
+			status: null,
+			waitingFor: null,
+			tool: null,
+			error: null,
+			workerPid: undefined,
+			reportedAt: undefined,
+			endedAt: undefined,
+			stopRequested: false,
+			reaped: false,
+			restartedAt: now,
+			command,
+			restore,
+			crashRestarts: opts.crash ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + 1 : 0,
+		});
+		await startHost(rec);
+		log("info", "respawn", { id, crash: !!opts.crash, restart: !!opts.restart, prompt: !!prompt });
+		return { id, started: true };
+	} finally {
+		respawning.delete(id);
+	}
+}
+
+/** When an idle job became idle, if it may be reaped now. */
+function reapable(id: string, now: number, minutes: number): number | undefined {
+	const st = readState(id);
+	if (!st || st.pinned === true || st.state === "working") return undefined;
+	if (st.waitingFor === "dialog" || (st.status !== "idle" && st.status !== "waiting")) return undefined;
+	if (pendingReplies(id).length > 0) return undefined;
+	const since = typeof st.stateSince === "number" ? st.stateSince : st.updatedAt;
+	return now - since < minutes * 60_000 ? undefined : since;
+}
+
+/** DM-4: stop workers that have been idle, unattached and unpinned for reapIdleMinutes. */
+async function reapIdle(): Promise<void> {
+	const minutes = Number(process.env.PI_ROOST_REAP_MINUTES) || loadUserConfig().reapIdleMinutes;
+	if (!(minutes > 0)) return;
+	const now = Date.now();
+	for (const id of [...roster.keys()]) {
+		if (starting.has(id) || stopping.has(id) || reaping.has(id) || respawning.has(id)) continue;
+		const since = reapable(id, now, minutes);
+		if (since === undefined) continue;
+		reaping.add(id); // replies and stops see this while we ask the host
+		let attached = true;
+		try {
+			attached = !!((await hostControl(id, "status")) as { attached?: boolean }).attached;
+		} catch {
+			// unknown: leave it
+		}
+		// anything may have happened during the await: decide again
+		if (attached || !reaping.has(id) || !roster.has(id) || stopping.has(id) || reapable(id, Date.now(), minutes) === undefined) {
+			reaping.delete(id);
+			continue;
+		}
+		log("info", "reap", { id, idleMinutes: Math.round((now - since) / 60_000) });
+		try {
+			await hostControl(id, "terminate");
+		} catch {
+			reaping.delete(id);
+		}
+	}
 }
 
 function resolve(query: unknown): string {
@@ -371,7 +527,9 @@ function acknowledge(args: { id?: unknown; token?: unknown; seq?: unknown } | un
 	updateState(id, { pendingReplies: pendingReplies(id).filter((r) => r.seq > (args.seq as number)) });
 }
 
-async function reply(args: { id?: unknown; text?: unknown } | undefined): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean }> {
+async function reply(
+	args: { id?: unknown; text?: unknown } | undefined,
+): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string }> {
 	const id = requireJob(args);
 	const text = typeof args?.text === "string" ? args.text.trim() : "";
 	if (!text) throw new OpError("bad_request", "empty reply");
@@ -384,7 +542,7 @@ async function reply(args: { id?: unknown; text?: unknown } | undefined): Promis
 	const conn = workerConns.get(id);
 	const connected = live && !!conn && !conn.sock.destroyed;
 	// PK-5: commands only make sense live; plain replies wait for the worker.
-	if (!connected && text.startsWith("/")) return { delivered: false, saved: false };
+	if (live && !connected && text.startsWith("/")) return { delivered: false, saved: false };
 	const pending = pendingReplies(id);
 	if (pending.length >= MAX_PENDING) throw new OpError("full", `${MAX_PENDING} replies are already waiting for this session`);
 	// Every reply stays pending until the worker acknowledges it, so a dying connection loses nothing.
@@ -396,7 +554,16 @@ async function reply(args: { id?: unknown; text?: unknown } | undefined): Promis
 		return { delivered: true, saved: false };
 	}
 	log("info", "reply saved", { id, live });
-	return { delivered: false, saved: true };
+	if (live) return { delivered: false, saved: true };
+	// flow 5.7: a reply to an ended session starts it again; the worker picks the reply up
+	try {
+		const { started } = await respawn(id);
+		// started: false means it is already coming up; the saved reply reaches it either way
+		return { delivered: false, saved: true, respawned: started || starting.has(id) || roster.has(id) };
+	} catch (err) {
+		log("warn", "respawn for reply failed", { id, error: String(err) });
+		return { delivered: false, saved: true, error: (err as Error).message };
+	}
 }
 
 function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?: Partial<WorkerReport> } | undefined): void {
@@ -430,6 +597,11 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		displayName: opt(r.name, 200),
 		model: opt(r.model, 200),
 		reportedAt: Date.now(),
+		// a turn that ends normally clears the crash budget (DM-5)
+		// (only once the worker has stayed up a while, so a crash loop stays bounded)
+		...(r.state !== "working" && Date.now() - (typeof st.restartedAt === "number" ? st.restartedAt : 0) > CRASH_RESET_MS
+			? { crashRestarts: 0 }
+			: {}),
 	});
 	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
 	pushJob(id);
@@ -462,6 +634,7 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 	shuttingDown = true;
 	log("info", "shutdown", { keepWorkers });
 	clearInterval(watcher);
+	clearInterval(reaper);
 	if (!keepWorkers) {
 		const ids = [...roster.keys()];
 		await Promise.all(ids.map((id) => terminateHost(id)));
@@ -535,6 +708,24 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			push({ event: "removed", id });
 			return { id };
 		}
+		case "respawn": {
+			if (args?.all === true) {
+				const results: { id: string; started: boolean; error?: string }[] = [];
+				for (const id of [...recs.keys()]) {
+					// --all moves live jobs to the installed version; reaped ones pick it up when woken
+					if (!roster.has(id)) continue;
+					try {
+						results.push(await respawn(id, { restart: true }));
+					} catch (err) {
+						results.push({ id, started: false, error: (err as Error).message });
+					}
+				}
+				return { results };
+			}
+			const id = requireJob(args);
+			const prompt = typeof args?.prompt === "string" && args.prompt.trim() ? args.prompt.trim() : undefined;
+			return { results: [await respawn(id, { restart: args?.restart === true, prompt })] };
+		}
 		case "report":
 			acceptReport(conn, args);
 			return {};
@@ -607,6 +798,10 @@ try {
 } catch {}
 
 const watcher = setInterval(checkHosts, 1000);
+const reaper = setInterval(
+	() => void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) })),
+	Number(process.env.PI_ROOST_REAP_CHECK_MS) || REAP_CHECK_MS,
+);
 process.on("SIGTERM", () => void shutdown(true));
 process.on("SIGINT", () => void shutdown(true));
 log("info", "started", { pid: process.pid, version: ROOST_VERSION, socket: daemonSocketPath(), ptyError, jobs: recs.size, live: roster.size });

@@ -4,6 +4,7 @@ import { resolve as resolvePath } from "node:path";
 import { attachToHost } from "../lib/attach.ts";
 import { DaemonClient, DaemonError } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
+import { ensureLive } from "../lib/resume.ts";
 import { daemonLogPath, hostSocketPath, runtimeDir } from "../lib/paths.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
@@ -12,11 +13,14 @@ import { ROOST_VERSION } from "../lib/version.ts";
 const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
 
 usage:
-  pi-roost attach <id|name>        open a background session (Ctrl+Z detaches)
+  pi-roost attach <id|name>        open a background session (Ctrl+Z detaches);
+                                   an ended one is started again first
   pi-roost logs <id|name>          print its current or last screen
   pi-roost reply <id|name> <text>  send a reply (queued as a follow-up while it works)
   pi-roost stop <id|name>          stop it
   pi-roost rm <id|name>            stop it and delete its record
+  pi-roost respawn <id|name>       start an ended session again (or restart a live one)
+  pi-roost respawn --all           restart live and reaped sessions (after an upgrade)
   pi-roost --json [--all] [--cwd <dir>]
                                    list jobs as JSON (--all includes ended > 48 h ago)
   pi-roost daemon status|logs|stop [--keep-workers]
@@ -30,9 +34,24 @@ class UsageError extends Error {}
 // A finished turn still has a live worker to attach to; only the process matters.
 const isLive = (row: JobRow) => row.pid !== null;
 
+let skewWarned = false;
+
+/** DM-9: a daemon from another pi-roost version keeps running old code. */
+async function warnSkew(client: DaemonClient): Promise<void> {
+	if (skewWarned) return;
+	skewWarned = true;
+	const { version } = await client.request("ping", {});
+	if (version !== ROOST_VERSION) {
+		process.stderr.write(
+			`warning: the background service is pi-roost ${version}, this is ${ROOST_VERSION}; run: pi-roost daemon stop --keep-workers && pi-roost respawn --all\n`,
+		);
+	}
+}
+
 async function withDaemon<T>(fn: (client: DaemonClient) => Promise<T>): Promise<T> {
 	const client = await DaemonClient.connectOrStart();
 	try {
+		await warnSkew(client);
 		return await fn(client);
 	} finally {
 		client.close();
@@ -57,9 +76,13 @@ function readScreen(id: string): string | undefined {
 }
 
 async function cmdAttach(query: string | undefined): Promise<void> {
-	const row = await withDaemon((c) => findRow(c, query));
-	if (!isLive(row)) throw new DaemonError(`${row.id} · ${row.name} is ${row.state}; nothing to attach to`, "not_live");
 	if (!process.stdin.isTTY || !process.stdout.isTTY) throw new DaemonError("attach needs a terminal", "no_tty");
+	const row = await withDaemon(async (c) => {
+		const r = await findRow(c, query);
+		// AT-1: a reaped or ended session starts again; its last screen shows meanwhile
+		await ensureLive(c, r, process.stdout);
+		return r;
+	});
 	const reason = await attachToHost(hostSocketPath(row.id), { stdin: process.stdin, stdout: process.stdout });
 	const note =
 		reason === "exit" ? "session ended" : reason === "takeover" ? "attached elsewhere" : reason === "error" ? "connection lost" : "detached";
@@ -96,9 +119,32 @@ async function cmdReply(query: string | undefined, words: string[]): Promise<voi
 	await withDaemon(async (c) => {
 		const row = await findRow(c, query);
 		const r = await c.request("reply", { id: row.id, text });
-		const what = r.stopped ? "stopped" : r.delivered ? "sent" : r.saved ? "saved for its next start" : "not delivered (the session is not running)";
+		const what = r.stopped
+			? "stopped"
+			: r.delivered
+				? "sent"
+				: r.respawned
+					? "sent · restarting the session"
+					: r.saved
+						? `saved for its next start${r.error ? ` (could not restart it: ${r.error})` : ""}`
+						: "not delivered (the session is not running)";
 		process.stdout.write(`${what} · ${row.id} · ${row.name}\n`);
-		if (!r.delivered && !r.saved) process.exitCode = 1;
+		if ((!r.delivered && !r.saved) || r.error) process.exitCode = 1;
+	});
+}
+
+async function cmdRespawn(args: string[]): Promise<void> {
+	await withDaemon(async (c) => {
+		const all = args.includes("--all");
+		const query = args.find((a) => a !== "--all");
+		if (!all && !query) throw new UsageError("respawn needs <id|name> or --all");
+		const id = all ? undefined : (await findRow(c, query)).id;
+		const { results } = await c.request("respawn", all ? { all: true } : { id, restart: true });
+		for (const r of results) {
+			process.stdout.write(`${r.error ? `failed: ${r.error}` : r.started ? "started" : "already running"} · ${r.id}\n`);
+			if (r.error) process.exitCode = 1;
+		}
+		if (all && results.length === 0) process.stdout.write("nothing to respawn\n");
 	});
 }
 
@@ -174,6 +220,9 @@ async function main(argv: string[]): Promise<number> {
 			case "stop":
 			case "rm":
 				await cmdStopOrRm(cmd, rest[0]);
+				break;
+			case "respawn":
+				await cmdRespawn(rest);
 				break;
 			case "--json":
 				await cmdJson(rest);

@@ -322,6 +322,8 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 			// a reload keeps the run going; any other start is a different conversation
 			fresh: event.reason !== "reload",
 		});
+		// respawned without a prompt (reaped, restarted, replied to): no turn will start
+		if (event.reason === "startup" && process.env.PI_ROOST_RESTORE === "1") tracker.restore(lastAssistant(ctx));
 		send();
 		clearTimeout(firstPromptTimer);
 		firstPromptTimer = setTimeout(() => {
@@ -401,4 +403,13 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		reporter = undefined;
 		await closing?.close();
 	});
+}
+
+function lastAssistant(ctx: ExtensionContext): { content?: unknown; stopReason?: string; errorMessage?: string } | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const e = branch[i]!;
+		if (e.type === "message" && e.message.role === "assistant") return e.message as never;
+	}
+	return undefined;
 }

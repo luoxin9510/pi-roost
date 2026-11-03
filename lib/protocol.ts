@@ -25,6 +25,8 @@ export interface JobRow {
 	error: string | null;
 	/** When the job entered its current state (for "waiting 3m"). */
 	stateSince: number;
+	/** DM-4: stopped for idleness; attaching or replying starts it again. */
+	reaped: boolean;
 }
 
 /** What a worker reports about itself (full snapshot every time). */
@@ -77,6 +79,8 @@ export interface OpArgs {
 	reply: { id: string; text: string };
 	/** Worker → daemon: the reply with this seq was handed to pi. */
 	ack: { id: string; token: string; seq: number };
+	/** Start an ended job again from its session file; `restart` also restarts a live one. */
+	respawn: { id?: string; all?: boolean; restart?: boolean; prompt?: string };
 }
 
 export interface OpResults {
@@ -91,8 +95,9 @@ export interface OpResults {
 	subscribe: {};
 	report: {};
 	/** delivered: handed to the live worker; saved: kept for its next start (PK-5). */
-	reply: { delivered: boolean; saved: boolean; stopped?: boolean };
+	reply: { delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string };
 	ack: {};
+	respawn: { results: { id: string; started: boolean; error?: string }[] };
 }
 
 export type Op = keyof OpArgs;

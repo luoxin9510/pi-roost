@@ -49,3 +49,8 @@ export function loadConfig(cwd: string): RoostConfig {
 	delete project.envAllowList;
 	return { ...DEFAULTS, ...user, ...project };
 }
+
+/** Settings that belong to the user, not a project (the daemon has no project). */
+export function loadUserConfig(): RoostConfig {
+	return { ...DEFAULTS, ...pick(readJson(userConfigPath())) };
+}

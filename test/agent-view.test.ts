@@ -26,6 +26,7 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		model: "p/m",
 		error: null,
 		stateSince: now - 30_000,
+		reaped: false,
 		...over,
 	};
 }
