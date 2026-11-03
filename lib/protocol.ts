@@ -23,6 +23,8 @@ export interface JobRow {
 	choices: string[];
 	model: string | null;
 	error: string | null;
+	/** When the job entered its current state (for "waiting 3m"). */
+	stateSince: number;
 }
 
 /** What a worker reports about itself (full snapshot every time). */

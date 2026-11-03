@@ -1,15 +1,27 @@
+import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { DaemonClient } from "../lib/client.ts";
-import { allowListedEnv, fallbackName, passthroughArgs } from "../lib/dispatch.ts";
+import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
+import { AgentView } from "./agent-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
 
 // pi-roost entry: one extension, three roles (agent view, foreground, worker).
-// So far: `--bg` dispatch, the session writer lock (DM-8) and the worker role.
+// So far: `--bg` dispatch, the session writer lock (DM-8), the worker role and
+// the agent view (`pi --agents`, `/agents`).
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
 	pi.registerFlag("bg-name", { description: "Name for the --bg session", type: "string" });
+	pi.registerFlag("agents", { description: "Open the agent view of background sessions", type: "boolean" });
+	pi.registerFlag("agents-cwd", { description: "Limit the agent view to sessions under <dir>", type: "string" });
+
+	pi.registerCommand("agents", {
+		description: "Background sessions: dispatch, peek, reply, attach",
+		handler: async (_args, ctx) => {
+			await openAgentView(pi, ctx);
+		},
+	});
 
 	let lockedFile: string | undefined;
 
@@ -32,6 +44,18 @@ export default function (pi: ExtensionAPI) {
 		const task = pi.getFlag("bg");
 		if (typeof task === "string") return backgroundAndExit(pi, ctx, task);
 		lock(ctx);
+		if (pi.getFlag("agents") === true && ctx.hasUI) {
+			// not awaited: session_start must return for pi to finish starting up
+			void openAgentView(pi, ctx)
+				.catch((err: unknown) => process.stderr.write(`pi-roost: agent view failed: ${String(err)}\n`))
+				.finally(() => {
+					try {
+						ctx.shutdown();
+					} catch {
+						// the session is already gone
+					}
+				});
+		}
 	});
 
 	pi.on("session_shutdown", () => unlock());
@@ -62,15 +86,20 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 	let client: DaemonClient | undefined;
 	try {
 		client = await DaemonClient.connectOrStart();
-		const { id, name: finalName } = await client.request("dispatch", {
-			cwd: ctx.cwd,
-			sessionFile,
-			command: [process.execPath, process.argv[1]!, "--session", sessionFile, ...passthroughArgs(process.argv.slice(2), process.cwd()), task],
-			env: allowListedEnv(process.env),
-			name,
-			origin: "bg",
-			piVersion: VERSION,
-		});
+		const { id, name: finalName } = await client.request(
+			"dispatch",
+			buildLaunch({
+				task,
+				cwd: ctx.cwd,
+				sessionFile,
+				name,
+				origin: "bg",
+				argv: process.argv,
+				execPath: process.execPath,
+				env: process.env,
+				piVersion: VERSION,
+			}),
+		);
 		// Printed on exit: anything written while the TUI is up is repainted away (M0 R1).
 		process.once("exit", () => {
 			process.stdout.write(
@@ -90,4 +119,38 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 	} finally {
 		client?.close();
 	}
+}
+
+async function openAgentView(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (!ctx.hasUI) return;
+	const cwdFlag = pi.getFlag("agents-cwd");
+	const cwdFilter = typeof cwdFlag === "string" && cwdFlag ? resolvePath(ctx.cwd, cwdFlag) : undefined;
+	const dispatchCwd = cwdFilter ?? ctx.cwd;
+	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		const view = new AgentView({
+			tui,
+			theme,
+			cwd: dispatchCwd,
+			cwdFilter,
+			launch: (task) => {
+				const sessionFile = SessionManager.create(dispatchCwd).getSessionFile();
+				if (!sessionFile) throw new Error("could not allocate a session file");
+				return buildLaunch({
+					task,
+					cwd: dispatchCwd,
+					sessionFile,
+					name: fallbackName(task),
+					origin: "dispatch",
+					argv: process.argv,
+					execPath: process.execPath,
+					env: process.env,
+					piVersion: VERSION,
+				});
+			},
+			setTitle: (title) => ctx.ui.setTitle(title),
+			done: () => done(),
+		});
+		void view.start();
+		return view;
+	});
 }
