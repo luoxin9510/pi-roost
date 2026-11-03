@@ -43,5 +43,9 @@ export function userConfigPath(): string {
 }
 
 export function loadConfig(cwd: string): RoostConfig {
-	return { ...DEFAULTS, ...pick(readJson(userConfigPath())), ...pick(readJson(join(cwd, ".pi", "roost.json"))) };
+	const user = pick(readJson(userConfigPath()));
+	const project = pick(readJson(join(cwd, ".pi", "roost.json")));
+	// A cloned repository must not choose which of your environment reaches its workers.
+	delete project.envAllowList;
+	return { ...DEFAULTS, ...user, ...project };
 }

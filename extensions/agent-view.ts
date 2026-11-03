@@ -79,6 +79,8 @@ export class AgentView implements Component {
 	private peekId: string | undefined;
 
 	private origin: string | undefined;
+	/** Esc/Enter came before the moved conversation's worker was up: attach once it is. */
+	private attachWhenLive: string | undefined;
 
 	constructor(o: AgentViewOptions) {
 		this.o = o;
@@ -145,6 +147,12 @@ export class AgentView implements Component {
 		if (e.event === "job") {
 			if (this.o.cwdFilter && !within(e.job.cwd, this.o.cwdFilter)) return;
 			this.rows.set(e.job.id, e.job);
+			if (this.attachWhenLive === e.job.id && !this.attached) {
+				if (e.job.pid) {
+					this.attachWhenLive = undefined;
+					void this.attachTo(e.job.id).catch((err: unknown) => this.say(String(err), "error"));
+				} else if (e.job.endedAt !== null) this.attachWhenLive = undefined;
+			}
 		} else if (e.event === "removed") this.rows.delete(e.id);
 		this.render0();
 	}
@@ -313,11 +321,22 @@ export class AgentView implements Component {
 			return;
 		}
 		const origin = this.origin;
-		if (origin && this.rows.get(origin)?.pid) {
-			this.origin = undefined; // back here after detaching, Esc leaves
-			void this.attachTo(origin).catch((err: unknown) => this.say(String(err), "error"));
-			return;
+		if (origin) {
+			const row = this.rows.get(origin);
+			if (row?.pid) {
+				this.origin = undefined; // back here after detaching, Esc leaves
+				void this.attachTo(origin).catch((err: unknown) => this.say(String(err), "error"));
+				return;
+			}
+			if (!row || row.endedAt === null) {
+				// dispatch answered before the worker's first report reached the view
+				this.origin = undefined;
+				this.attachWhenLive = origin;
+				this.say("Your conversation is starting…", "accent");
+				return;
+			}
 		}
+		this.attachWhenLive = undefined;
 		this.o.done();
 	}
 

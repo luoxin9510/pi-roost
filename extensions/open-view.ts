@@ -3,10 +3,16 @@ import { loadConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { AgentView } from "./agent-view.ts";
 
-let openViews = 0;
+// Process-wide, not per module copy: a session switch may load this module again.
+const VIEWS = Symbol.for("pi-roost.openViews");
+const OPENS = Symbol.for("pi-roost.viewOpens");
+const g = globalThis as { [VIEWS]?: number; [OPENS]?: number };
+
+/** How many times an agent view has been opened in this process. */
+export const agentViewOpens = () => g[OPENS] ?? 0;
 
 /** Whether an agent view is on screen in this process (the ← shortcut stays out of its way). */
-export const agentViewOpen = () => openViews > 0;
+export const agentViewOpen = () => (g[VIEWS] ?? 0) > 0;
 
 export interface OpenViewOptions {
 	cwdFilter?: string;
@@ -19,7 +25,8 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 	if (!ctx.hasUI) return;
 	const dispatchCwd = opts.cwdFilter ?? ctx.cwd;
 	const config = loadConfig(dispatchCwd);
-	openViews++;
+	g[VIEWS] = (g[VIEWS] ?? 0) + 1;
+	g[OPENS] = agentViewOpens() + 1;
 	try {
 		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 			const view = new AgentView({
@@ -55,6 +62,6 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 			return view;
 		});
 	} finally {
-		openViews--;
+		g[VIEWS] = (g[VIEWS] ?? 1) - 1;
 	}
 }

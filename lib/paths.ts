@@ -1,6 +1,6 @@
 import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export function roostHome(): string {
 	return process.env.PI_ROOST_HOME || join(homedir(), ".pi", "agent", "roost");
@@ -22,7 +22,7 @@ export const daemonLogPath = () => join(roostHome(), "daemon.log");
 export const rosterPath = () => join(roostHome(), "roster.json");
 /** Throwaway sessions a foreground pi switches to after handing its own off (C4). */
 export const scratchDir = () => join(roostHome(), "scratch");
-export const isScratchSession = (file: string | undefined) => !!file && file.startsWith(`${scratchDir()}/`);
+export const isScratchSession = (file: string | undefined) => !!file && resolve(file).startsWith(`${resolve(scratchDir())}/`);
 
 export function ensureDirs(): void {
 	mkdirSync(jobsDir(), { recursive: true, mode: 0o700 });
