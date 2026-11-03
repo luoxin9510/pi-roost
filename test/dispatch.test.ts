@@ -63,6 +63,21 @@ describe("respawnCommand", () => {
 	});
 });
 
+describe("M8: moving a conversation keeps its own model", () => {
+	const argv = ["node", "/pi.js", "-e", "/x.ts", "--model", "a/x", "--thinking=high", "--provider", "a", "--offline"];
+	const launch = (origin: "adopt" | "fork" | "dispatch" | "bg", extra: { model?: string; thinking?: string } = {}) =>
+		buildLaunch({ task: "", cwd: "/w", sessionFile: "/s.jsonl", name: "x", origin, argv, execPath: "node", env: {}, ...extra }).command.slice(2);
+	it("adopt and fork drop the foreground pi's model flags; dispatch and bg keep them", () => {
+		expect(launch("adopt")).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--offline"]);
+		expect(launch("fork")).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--offline"]);
+		expect(launch("dispatch")).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--model", "a/x", "--thinking=high", "--provider", "a", "--offline"]);
+		expect(launch("bg")).toContain("--model");
+	});
+	it("an explicit choice still wins", () => {
+		expect(launch("adopt", { model: "b/y" })).toEqual(["--session", "/s.jsonl", "-e", "/x.ts", "--offline", "--model", "b/y"]);
+	});
+});
+
 describe("@ at the start of a task", () => {
 	it("is not read by pi as a file argument", () => {
 		const l = buildLaunch({ task: "@someone please look", cwd: "/w", sessionFile: "/s.jsonl", name: "x", origin: "dispatch", argv: ["node", "/pi.js"], execPath: "node", env: {} });

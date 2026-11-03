@@ -1,6 +1,6 @@
 // Building a background job's launch request from a foreground pi process.
 import { isAbsolute, resolve } from "node:path";
-import { taskArg } from "./store.ts";
+import { SESSION_RESTORED_FLAGS, taskArg, withoutFlags } from "./store.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
 const BOOL_FLAGS = new Set(["-ne", "--no-extensions", "--offline"]);
@@ -77,7 +77,10 @@ export function buildLaunch(input: LaunchInput) {
 		}
 		return out;
 	};
-	let args = pass;
+	// M8: moving or forking a conversation hands over a session that already records its
+	// model and thinking level (maybe switched since this pi started): its own flags would
+	// override them. Explicit choices below still win.
+	let args = input.origin === "adopt" || input.origin === "fork" ? withoutFlags(pass, SESSION_RESTORED_FLAGS, 0) : pass;
 	if (input.model) args = [...withoutFlag(args, "--model"), "--model", input.model];
 	if (input.thinking) args = [...withoutFlag(args, "--thinking"), "--thinking", input.thinking];
 	return {

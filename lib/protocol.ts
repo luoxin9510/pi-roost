@@ -218,11 +218,12 @@ export function contextFrom(v: unknown): ContextInfo | null {
 	if (!v || typeof v !== "object") return null;
 	const o = v as Record<string, unknown>;
 	const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : null);
-	const window = num(o.window);
-	if (!window) return null;
+	const raw = num(o.window);
+	const window = raw === null ? 0 : Math.round(raw);
+	if (window <= 0) return null;
 	const tokens = num(o.tokens);
 	const percent = num(o.percent);
-	return { tokens: tokens === null ? null : Math.round(tokens), window: Math.round(window), percent: percent === null ? null : Math.min(percent, 999) };
+	return { tokens: tokens === null ? null : Math.round(tokens), window, percent: percent === null ? null : Math.min(percent, 999) };
 }
 
 export class LineReader {

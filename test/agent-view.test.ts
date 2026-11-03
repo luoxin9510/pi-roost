@@ -76,7 +76,7 @@ class FakeClient {
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
 const launches: { task: string; opts: unknown }[] = [];
-function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void } = {}) {
+function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void; switchCheckMs?: number } = {}) {
 	const client = new FakeClient(rows);
 	let renders = 0;
 	let doneCalls = 0;
@@ -105,6 +105,7 @@ function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string
 		done: () => doneCalls++,
 		reducedMotion: true,
 		onGroupBy: opts.onGroupBy,
+		switchCheckMs: opts.switchCheckMs,
 	});
 	return { view, client, renders: () => renders, done: () => doneCalls };
 }
@@ -376,19 +377,71 @@ describe("AgentView model and context (M8)", () => {
 		const screen = view.render(80).join("\n");
 		expect(screen).toContain("unknown model nope/x");
 		expect(screen).not.toContain("new sessions:");
+		view.handleInput("\x03"); // a refused command stays in the input to be fixed: clear it
+		type(view, "/model default");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).toContain("a running session has no default model");
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(2);
+		view.dispose();
+	});
+
+	it("a switch is reported as asked, then confirmed by the session's report or flagged when it does not show", async () => {
+		const a = row({ name: "fix login", model: "a/one", thinking: "high" });
+		const { view, client } = setup([a], { switchCheckMs: 60 });
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("asked fix login to use model b/two");
+		client.emit({ event: "job", job: { ...a, model: "b/two" } });
+		expect(view.render(80).join("\n")).toContain("fix login now uses model b/two (from its next request)");
+		// pi lowers a level the model does not support
+		type(view, "/thinking max");
+		view.handleInput("\r");
+		await sleep(10);
+		client.emit({ event: "job", job: { ...a, model: "b/two", thinking: "xhigh" } });
+		expect(view.render(80).join("\n")).toContain("fix login thinks xhigh: the closest its model supports to max");
+		// no credentials in the worker: the row never changes
+		type(view, "/model a/one");
+		view.handleInput("\r");
+		await sleep(100);
+		expect(view.render(120).join("\n")).toContain("fix login is still on b/two: it could not switch to a/one");
+		view.dispose();
+	});
+
+	it("a shell row has no model to switch", async () => {
+		const s = row({ name: "tests", kind: "shell", model: null });
+		const { view, client } = setup([s]);
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model a/one");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(80).join("\n")).toContain("a shell job has no model");
+		expect(client.requests.some((r) => r.op === "reply")).toBe(false);
 		view.dispose();
 	});
 
 	it("the column lines up across rows, whatever the model name or age", async () => {
 		const now = Date.now();
-		const a = row({ name: "one", model: "anthropic/claude-haiku-5-5", context: { tokens: 1, window: 100, percent: 91 }, stateSince: now - 600_000 });
-		const b = row({ name: "two", model: "x/short", context: { tokens: 1, window: 100, percent: 4 }, stateSince: now - 5_000 });
-		const c = row({ name: "three", kind: "shell", model: null, stateSince: now - 5_000 });
+		// working rows age from startedAt: "10m" and "5s" differ in width
+		const a = row({ name: "one", model: "anthropic/claude-haiku-5-5", context: { tokens: 1, window: 100, percent: 91 }, startedAt: now - 600_000 });
+		const b = row({ name: "two", model: "x/模型很长的名字也要对齐", context: { tokens: 1, window: 100, percent: 4 }, startedAt: now - 5_000 });
+		const c = row({ name: "three", kind: "shell", model: null, startedAt: now - 5_000 });
 		const { view } = setup([a, b, c]);
 		await view.start();
 		const lines = view.render(100);
 		const at = (name: string, s: string) => lines.find((l) => l.includes(name))!.indexOf(s);
-		expect(at("one", "91%")).toBe(at("two", " 4%"));
+		const ages = lines.filter((l) => /one|two/.test(l)).map((l) => l.trimEnd().split(" ").at(-1));
+		expect(new Set(ages.map((x) => x?.length)).size).toBe(2); // the ages really differ in width
+		// CJK is two columns wide: compare columns, not string indices
+		const col = (name: string, s: string) => {
+			const l = lines.find((x) => x.includes(name))!;
+			return visibleWidth(l.slice(0, l.indexOf(s)));
+		};
+		expect(col("one", "91%")).toBe(col("two", " 4%"));
+		void at;
 		expect(lines.find((l) => l.includes("three"))).not.toContain("%");
 		for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(100);
 		view.dispose();

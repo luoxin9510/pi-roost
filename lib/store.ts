@@ -93,12 +93,18 @@ export function respawnCommand(rec: JobRecord, sessionWritten: boolean, prompt?:
 	return prompt ? [...base, "--", taskArg(prompt)] : base;
 }
 
-const SESSION_RESTORED_FLAGS = ["--model", "--provider", "--thinking"];
+/** Flags pi restores from a written session by itself (and would override it if given). */
+export const SESSION_RESTORED_FLAGS = ["--model", "--provider", "--thinking"];
 
-/** argv without these value flags, in both `--flag value` and `--flag=value` form (argv[0..1] kept). */
-function withoutFlags(argv: string[], flags: string[]): string[] {
-	const out = argv.slice(0, 2);
-	for (let i = 2; i < argv.length; i++) {
+/**
+ * argv without these value flags, in both `--flag value` and `--flag=value` form; the
+ * first `keep` entries (execPath, cli) are kept as they are. The value after a flag goes
+ * with it, whatever it looks like: argv here comes from passthroughArgs, which only
+ * copies known flags with their values.
+ */
+export function withoutFlags(argv: string[], flags: string[], keep = 2): string[] {
+	const out = argv.slice(0, keep);
+	for (let i = keep; i < argv.length; i++) {
 		const arg = argv[i]!;
 		if (flags.includes(arg)) i++;
 		else if (!flags.some((f) => arg.startsWith(`${f}=`))) out.push(arg);

@@ -30,7 +30,37 @@ Thresholds are fixed (80 / 95 %), not settings.
 Both are older than what pi-roost already needs (`parentToolCallId`, 0.99.0), so the
 minimum pi version does not change.
 
+## Review fixes (PR #15)
+
+Two independent reviews (data path; agent view). Fixed:
+
+- A switch is no longer reported as done when it is only sent. The peek says "asked … to
+  use …", then "now uses …" once a report shows it. If no report shows it within 8 s, it
+  says "still on …" (for a model, most likely no credentials in the background session's
+  environment). A thinking level that pi lowered is shown as the closest one supported. The
+  worker also checks `pi.setModel`'s `false` result.
+- Context use after an assistant message is read once pi has saved the message (pi runs
+  `message_end` handlers first), so the share is no longer one request behind. `/tree`
+  refreshes it too.
+- `/bg`, quitting into the background, `/fork` and `/resume` (origins `adopt`/`fork`)
+  no longer pass the foreground pi's `--model`/`--provider`/`--thinking`: the session's own
+  model wins, as on respawn. An explicit `/model` from the view still wins.
+- The peek footer fits 80 columns again (`/model` is under `?`).
+- The tone follows the rounded share (79.6 % shows as 80 % and is a warning).
+- `formatTokens(999_500)` is `1M`, not `1000k`. `contextFrom` rejects a window that
+  rounds to 0.
+- The row is re-read when a picker choice is sent. A session that is starting gets
+  "try again in a moment". `/model default` in a peek explains that a running session has
+  no default.
+- Tests: the alignment test really has ages of different widths and a CJK model name.
+  The reporter test waits for the throttled send instead of flushing with `close()`. New
+  tests cover the switch confirmation, adjustment and timeout; shell rows; and
+  adopt/fork flags.
+
+Left as is: column widths are measured over all rows, as `nameWidth` is, so they do not
+jump while you filter.
+
 ## Tests
 
-Automated: 16 files, 151 tests. Live runs against pi 1.5.0 with an isolated
+Automated: 17 files, 170 tests (with M9 merged in). Live runs against pi 1.5.0 with an isolated
 `PI_ROOST_HOME` and claude-haiku-5-5 / claude-haiku-4-5.
