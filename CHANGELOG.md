@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.6] - 2026-11-03
 
 - Subagent panel: a session's `roost_spawn` children are listed below its prompt; ↓ on an
   empty prompt selects one, Enter opens it, its detach keys come back; `x` stops (then
