@@ -481,22 +481,30 @@ export class AgentView implements Component {
 	private async editExternally(): Promise<void> {
 		const editor = process.env.VISUAL || process.env.EDITOR;
 		if (!editor) return this.say("set $VISUAL or $EDITOR to edit the task in an editor", "warning");
-		const dir = mkdtempSync(join(tmpdir(), "pi-roost-task-"));
-		const file = join(dir, "task.md");
 		const current = this.longTask && this.longTask.shown === this.input.getValue() ? this.longTask.text : this.input.getValue();
-		writeFileSync(file, current);
 		const { tui } = this.o;
 		let text: string | undefined;
+		let dir: string | undefined;
+		let stopped = false;
 		try {
+			dir = mkdtempSync(join(tmpdir(), "pi-roost-task-"));
+			const file = join(dir, "task.md");
+			writeFileSync(file, current);
 			this.attached = true; // the terminal belongs to the editor
 			tui.stop();
-			const r = spawnSync(editor, [file], { stdio: "inherit", shell: true });
+			stopped = true;
+			// $VISUAL may carry arguments ("code -w"): a shell line, with the file quoted
+			const r = spawnSync(`${editor} '${file.replace(/'/g, "'\\''")}'`, { stdio: "inherit", shell: true });
 			if (r.status === 0) text = readFileSync(file, "utf8").replace(/\s+$/, "");
+		} catch (err) {
+			this.say(`could not open the editor: ${(err as Error).message}`, "error");
 		} finally {
 			this.attached = false;
-			tui.start();
-			tui.requestRender(true);
-			rmSync(dir, { recursive: true, force: true });
+			if (stopped) {
+				tui.start();
+				tui.requestRender(true);
+			}
+			if (dir) rmSync(dir, { recursive: true, force: true });
 		}
 		if (text === undefined) return this.say("editor exited with an error; task unchanged", "warning");
 		const lines = text.split("\n");

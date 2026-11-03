@@ -39,5 +39,24 @@ package (a checkout): workers need the extension to report their state.
 
 ## Tests
 
-Automated: 15 files, 130 tests (BG-9 offer and adopt-on-quit, idle and
-Cancel paths, Ctrl+G).
+Automated: 15 files, 131 tests (BG-9 offer and adopt-on-quit, Exit,
+first-turn refusal, idle and Cancel paths, Ctrl+G).
+
+## Review fixes (PR #9)
+
+- "Exit (stops the turn)" aborts the turn first: pi only quits when idle,
+  so it used to wait for the turn to finish.
+- Move before the session's first reply (no file yet) is refused with a
+  notice instead of silently becoming a plain exit; a turn that ended
+  while the dialog was open is handed over without "Continue…".
+- The defaultToAgentsView timer is guarded and cleared on shutdown.
+- Ctrl+G quotes the file path for the shell and cleans up on errors.
+- `spawn()` refuses to guess the pi cli from a plain script's argv (it
+  would run the script again); pass `piCli`.
+- Package exports point the API types at emitted `.d.ts` files.
+- Limits: pi's double Ctrl+C still quits without the offer (it is pi's own
+  shortcut), and Enter on `/quit` while the autocomplete menu shows
+  another entry counts as quitting.
+
+Re-checked live: Move during `sleep 12` → `backgrounded · f58feef9 · …`,
+the worker wrote `quit.txt` = QUIT2.

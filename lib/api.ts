@@ -49,9 +49,14 @@ export function spawn(opts: SpawnOptions): Promise<{ id: string; name: string }>
 	if (!task) return Promise.reject(new Error("task is empty"));
 	const sessionFile = SessionManager.create(opts.cwd).getSessionFile();
 	if (!sessionFile) return Promise.reject(new Error("could not allocate a session file"));
+	const cli = opts.piCli ?? process.argv[1];
+	// called from a plain script, argv[1] is that script: running it again as the worker would recurse
+	if (!cli || (!opts.piCli && !/(^|[/\\])(pi|cli\.js|pi\.js)$/.test(cli) && !cli.includes("pi-coding-agent"))) {
+		return Promise.reject(new Error("pass piCli (the path of pi's cli) when spawn is not called from inside pi"));
+	}
 	const argv = [
 		process.argv[0] ?? process.execPath,
-		opts.piCli ?? process.argv[1] ?? "pi",
+		cli,
 		...(opts.loadExtension ? ["-e", join(packageRoot(), "extensions", "index.ts")] : []),
 	];
 	return withClient((c) =>

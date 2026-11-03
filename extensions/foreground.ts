@@ -63,7 +63,8 @@ export function registerForeground(pi: ExtensionAPI): void {
 	let stopQuitKeys: (() => void) | undefined;
 	let footer: Footer | undefined;
 	/** BG-9: hand the session to the daemon once pi has let go of it on quit. */
-	let handoff: { file: string; cwd: string; name: string; config: ReturnType<typeof loadConfig> } | undefined;
+	let handoff: { file: string; cwd: string; name: string; prompt: string; config: ReturnType<typeof loadConfig> } | undefined;
+	let startupTimer: NodeJS.Timeout | undefined;
 
 	// a first message given on the command line arrives as input right after startup
 	let sawInput = false;
@@ -123,24 +124,34 @@ export function registerForeground(pi: ExtensionAPI): void {
 			"Cancel",
 		]);
 		if (!choice || choice === "Cancel") return;
-		if (choice.startsWith("Move") && file && existsSync(file)) {
+		const move = choice.startsWith("Move");
+		if (move && (!file || !existsSync(file))) {
+			// pi writes the session with its first reply: there is nothing to hand over yet
+			ctx.ui.notify("pi-roost: this conversation is not saved until its first reply; wait for it or quit again and choose Exit", "warning");
+			return;
+		}
+		// the turn may have ended while the dialog was open
+		const wasRunning = running;
+		if (move) {
 			handoff = {
-				file,
+				file: file!,
 				cwd: ctx.cwd,
 				name: ctx.sessionManager.getSessionName() ?? conversationName(ctx) ?? "conversation",
+				prompt: wasRunning ? CONTINUE : "",
 				config: loadConfig(ctx.cwd),
 			};
-			if (running) {
-				const settled = new Promise<void>((resolve) => {
-					const w = () => {
-						settledWaiters.delete(w);
-						resolve();
-					};
-					settledWaiters.add(w);
-				});
-				ctx.abort();
-				await Promise.race([settled, new Promise((r) => setTimeout(r, 5000))]);
-			}
+		}
+		if (running) {
+			// pi only quits once idle: stop the turn either way (Exit says so)
+			const settled = new Promise<void>((resolve) => {
+				const w = () => {
+					settledWaiters.delete(w);
+					resolve();
+				};
+				settledWaiters.add(w);
+			});
+			ctx.abort();
+			await Promise.race([settled, new Promise((r) => setTimeout(r, 5000))]);
 		}
 		ctx.shutdown();
 	};
@@ -197,14 +208,20 @@ export function registerForeground(pi: ExtensionAPI): void {
 		// (a plain launch: no first message started a turn and the conversation is empty)
 		if (config.defaultToAgentsView && _event.reason === "startup") {
 			sawInput = false;
-			setTimeout(() => {
-				if (sawInput || running || agentViewOpen() || ctx.ui.getEditorText() || ctx.sessionManager.getBranch().some((e) => e.type === "message")) return;
-				void openAgentView(ctx).catch(() => {});
-			}, 800).unref?.();
+			clearTimeout(startupTimer);
+			startupTimer = setTimeout(() => {
+				safely(() => {
+					if (sawInput || running || agentViewOpen() || ctx.ui.getEditorText()) return;
+					if (ctx.sessionManager.getBranch().some((e) => e.type === "message")) return;
+					void openAgentView(ctx).catch(() => {});
+				});
+			}, 800);
+			startupTimer.unref?.();
 		}
 	});
 	pi.on("session_shutdown", async (event) => {
 		stopAll();
+		clearTimeout(startupTimer);
 		const h = handoff;
 		handoff = undefined;
 		if (!h || event.reason !== "quit") return;
@@ -215,7 +232,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 			const { id, name } = await client.request(
 				"dispatch",
 				buildLaunch({
-					task: CONTINUE,
+					task: h.prompt,
 					cwd: h.cwd,
 					sessionFile: h.file,
 					name: h.name,

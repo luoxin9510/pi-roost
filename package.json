@@ -56,7 +56,7 @@
   ],
   "exports": {
     "./api": {
-      "types": "./lib/api.ts",
+      "types": "./dist/lib/api.d.ts",
       "default": "./dist/lib/api.js"
     },
     "./package.json": "./package.json"

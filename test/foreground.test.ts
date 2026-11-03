@@ -277,6 +277,34 @@ describe("BG-9 quit while busy", () => {
 		expect((dispatched.at(-1) as { command: string[] }).command.at(-1)).toBe("Continue where you left off.");
 	});
 
+	it("Exit stops the turn before quitting; Move before the first reply is refused", async () => {
+		const { pi, emit } = fakePi();
+		registerForeground(pi);
+		const f = fakeCtx();
+		emit("session_start", { reason: "resume" }, f.ctx);
+		emit("agent_start");
+		selectAnswer = (o) => o[1]; // Exit (stops the turn)
+		f.ctx.abort = () => {
+			f.calls.abort++;
+			emit("agent_settled", { aborted: true });
+		};
+		f.press("\x04");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(f.calls.abort).toBe(1);
+		expect(f.calls.shutdown).toBe(1);
+
+		const g = fakeCtx(join(home, "never-written.jsonl"));
+		const second = fakePi();
+		registerForeground(second.pi);
+		second.emit("session_start", { reason: "startup" }, g.ctx);
+		second.emit("agent_start");
+		selectAnswer = (o) => o[0]; // Move
+		g.press("\x04");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(g.calls.shutdown).toBe(0);
+		expect(g.notes.join()).toMatch(/not saved until its first reply/);
+	});
+
 	it("does nothing special when idle or on Cancel", async () => {
 		const { pi, emit } = fakePi();
 		registerForeground(pi);
