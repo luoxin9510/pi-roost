@@ -54,7 +54,7 @@ describe("pi-mobile starter (M11)", () => {
 			close() {},
 		};
 		const r = await startForMobile(
-			{ cwd: dir, prompt: "  fix the flaky test ", env: { PI_MOBILE_SPAWN: "s1", PATH: "/evil", NOT_OURS: "x" } },
+			{ cwd: dir, prompt: "  fix the flaky test ", env: { PI_MOBILE_SPAWN: "s1", PI_MOBILE_V2: "y", PATH: "/evil", NOT_OURS: "x" } },
 			async () => client as never,
 		);
 		expect(r).toEqual({ id: "j1", name: "fix the flaky test" });
@@ -63,6 +63,7 @@ describe("pi-mobile starter (M11)", () => {
 		expect(d).toMatchObject({ cwd: dir, name: "fix the flaky test", origin: "dispatch" });
 		expect(d.command.at(-1)).toBe("fix the flaky test");
 		expect(d.env.PI_MOBILE_SPAWN).toBe("s1");
+		expect(d.env.PI_MOBILE_V2).toBe("y");
 		expect(d.env.NOT_OURS).toBeUndefined();
 		expect(d.env.PATH).not.toBe("/evil"); // only PI_MOBILE_* come from the phone side
 		expect(d.sessionFile.startsWith(join(dir, "agent"))).toBe(true);

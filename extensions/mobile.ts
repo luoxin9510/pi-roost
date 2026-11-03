@@ -26,7 +26,7 @@ export interface MobileStartRequest {
 export async function startForMobile(req: MobileStartRequest, connect = () => DaemonClient.connectOrStart()): Promise<{ name: string; id: string }> {
 	const task = req.prompt?.trim() ?? "";
 	// pi-mobile checks the folder; the env is what it needs back (PI_MOBILE_SPAWN)
-	const env = Object.fromEntries(Object.entries(req.env ?? {}).filter(([k, v]) => /^PI_MOBILE_[A-Z_]+$/.test(k) && typeof v === "string"));
+	const env = Object.fromEntries(Object.entries(req.env ?? {}).filter(([k, v]) => /^PI_MOBILE_[A-Z0-9_]+$/.test(k) && typeof v === "string"));
 	const config = loadConfig(req.cwd);
 	const name = task ? fallbackName(task) : basename(req.cwd) || req.cwd;
 	const iso = prepareIsolation(req.cwd, name, isolationDefault(config.worktreeIsolation, false), false);
@@ -79,8 +79,8 @@ export function registerMobileStarter(pi: ExtensionAPI, start = startForMobile):
 
 /** Calls `onActivity` for a phone's actions on this session, at most once per `everyMs`. */
 export function onMobileActivity(pi: ExtensionAPI, onActivity: () => void, everyMs = 60_000, now = Date.now): () => void {
-	let last = 0;
 	if (!pi.events) return () => {};
+	let last = 0;
 	return pi.events.on(ACTIVITY_CHANNEL, () => {
 		const t = now();
 		if (t - last < everyMs) return;

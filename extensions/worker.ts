@@ -514,7 +514,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	/** M11: when a phone (pi-mobile) last acted on this session: it counts as in use. */
 	let remoteAt: number | undefined;
 	const send = (urgent = false) =>
-		reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true, ...(remoteAt ? { remoteAt } : {}) }, urgent);
+		reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true, ...(remoteAt !== undefined ? { remoteAt } : {}) }, urgent);
 	onMobileActivity(pi, () => {
 		remoteAt = Date.now();
 		send(true);
