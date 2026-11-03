@@ -341,37 +341,59 @@ const REPORT_STATES = new Set(["working", "blocked", "done", "failed"]);
 const REPORT_STATUS = new Set(["busy", "waiting", "idle"]);
 const REPORT_WAITING = new Set([null, "dialog", "question", "first-prompt"]);
 
-function pendingReplies(id: string): string[] {
-	const p = readState(id)?.pendingReplies;
-	return Array.isArray(p) ? p.filter(str) : [];
+interface PendingReply {
+	seq: number;
+	text: string;
 }
 
+const MAX_PENDING = 50;
+
+function pendingReplies(id: string): PendingReply[] {
+	const p = readState(id)?.pendingReplies;
+	return Array.isArray(p) ? p.filter((r): r is PendingReply => typeof r?.seq === "number" && str(r?.text)) : [];
+}
+
+/** (Re)send every reply the worker has not acknowledged; the worker drops seqs it has seen. */
 function flushPending(id: string, conn: Conn): void {
 	const pending = pendingReplies(id);
-	if (pending.length === 0) return;
-	updateState(id, { pendingReplies: [] });
-	for (const text of pending) send(conn, { event: "deliver", id, text });
-	log("info", "delivered saved replies", { id, count: pending.length });
+	for (const r of pending) send(conn, { event: "deliver", id, seq: r.seq, text: r.text });
+	if (pending.length > 0) log("info", "delivered pending replies", { id, count: pending.length });
+}
+
+function acknowledge(args: { id?: unknown; token?: unknown; seq?: unknown } | undefined): void {
+	const id = args?.id;
+	if (!str(id) || !recs.has(id)) throw new OpError("not_found", `no such job: ${String(id)}`);
+	const st = readState(id);
+	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
+	if (typeof args.seq !== "number") throw new OpError("bad_request", "seq required");
+	updateState(id, { pendingReplies: pendingReplies(id).filter((r) => r.seq > (args.seq as number)) });
 }
 
 async function reply(args: { id?: unknown; text?: unknown } | undefined): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean }> {
 	const id = requireJob(args);
 	const text = typeof args?.text === "string" ? args.text.trim() : "";
 	if (!text) throw new OpError("bad_request", "empty reply");
+	const live = roster.has(id);
 	if (text === "/stop") {
-		if (roster.has(id)) await terminateHost(id);
-		return { delivered: true, saved: false, stopped: true };
+		if (live) await terminateHost(id);
+		return { delivered: live, saved: false, stopped: live };
 	}
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
 	const conn = workerConns.get(id);
-	if (roster.has(id) && conn && !conn.sock.destroyed) {
-		send(conn, { event: "deliver", id, text });
+	const connected = live && !!conn && !conn.sock.destroyed;
+	// PK-5: commands only make sense live; plain replies wait for the worker.
+	if (!connected && text.startsWith("/")) return { delivered: false, saved: false };
+	const pending = pendingReplies(id);
+	if (pending.length >= MAX_PENDING) throw new OpError("full", `${MAX_PENDING} replies are already waiting for this session`);
+	// Every reply stays pending until the worker acknowledges it, so a dying connection loses nothing.
+	const st = readState(id);
+	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
+	updateState(id, { replySeq: seq, pendingReplies: [...pending, { seq, text }] });
+	if (connected) {
+		send(conn!, { event: "deliver", id, seq, text });
 		return { delivered: true, saved: false };
 	}
-	// PK-5: commands only make sense live; plain replies wait for the worker.
-	if (text.startsWith("/")) return { delivered: false, saved: false };
-	updateState(id, { pendingReplies: [...pendingReplies(id), text].slice(-20) });
-	log("info", "reply saved", { id, live: roster.has(id) });
+	log("info", "reply saved", { id, live });
 	return { delivered: false, saved: true };
 }
 
@@ -513,6 +535,9 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return {};
 		case "reply":
 			return reply(args);
+		case "ack":
+			acknowledge(args);
+			return {};
 		case "shutdown":
 			setTimeout(() => void shutdown(!!args?.keepWorkers), 20);
 			return {};

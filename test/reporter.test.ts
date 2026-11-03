@@ -23,19 +23,23 @@ let sock: string;
 let server: Server | undefined;
 let received: WorkerReport[] = [];
 let delayMs = 0;
+const conns = new Set<Socket>();
 let pushOnReply: { id: string; text: string } | undefined;
 
 function listen(): Promise<void> {
 	return new Promise((resolve) => {
 		server = createServer((s: Socket) => {
+			conns.add(s);
+			s.on("close", () => conns.delete(s));
 			const reader = new LineReader();
 			s.on("data", (chunk) => {
 				for (const line of reader.push(chunk)) {
 					const msg = JSON.parse(line);
+					if (msg.op !== "report") continue;
 					received.push(msg.args.report);
 					setTimeout(() => {
 						s.write(encodeLine({ id: msg.id, ok: true, result: {} }));
-						if (pushOnReply) s.write(encodeLine({ event: "deliver", id: pushOnReply.id, text: pushOnReply.text }));
+						if (pushOnReply) s.write(encodeLine({ event: "deliver", id: pushOnReply.id, seq: 1, text: pushOnReply.text }));
 					}, delayMs);
 				}
 			});
@@ -103,13 +107,31 @@ describe("Reporter", () => {
 		await listen();
 		const got: string[] = [];
 		pushOnReply = { id: "j", text: "hello" };
-		const r = new Reporter({ id: "j", token: "t", socket: sock }, (t) => got.push(t));
+		const r = new Reporter({ id: "j", token: "t", socket: sock }, (_seq, t) => got.push(t));
 		r.update(base);
 		await sleep(100);
 		pushOnReply = { id: "other", text: "nope" };
 		r.update({ ...base, state: "done", status: "idle", tool: null });
 		await sleep(100);
 		expect(got).toEqual(["hello"]);
+		await r.close();
+	});
+
+	it("reports again when the daemon connection drops", async () => {
+		await listen();
+		const r = new Reporter({ id: "j", token: "t", socket: sock });
+		r.update(base);
+		await sleep(100);
+		expect(received).toHaveLength(1);
+		// a daemon restart: drop every connection, keep listening
+		await new Promise<void>((res) => {
+			server!.close(() => res());
+			for (const c of conns) c.destroy();
+		});
+		await listen();
+		await sleep(1500);
+		expect(received.length).toBeGreaterThanOrEqual(2);
+		expect(received.at(-1)?.state).toBe("working");
 		await r.close();
 	});
 

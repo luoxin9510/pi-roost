@@ -53,6 +53,10 @@ export class WorkerTracker {
 		this.choices = [];
 	}
 
+	isRunning(): boolean {
+		return this.running;
+	}
+
 	toolStart(name: string): void {
 		this.tool = name;
 	}

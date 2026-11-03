@@ -365,7 +365,7 @@ describe("replies", () => {
 		model: null,
 	};
 
-	it("pushes replies to the worker's connection; saves them when it is not connected", async () => {
+	it("pushes replies to the worker's connection, keeps them until acked; saves when not connected", async () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", args("sleep 30"));
 		await waitFor(async () => (await find(client, id))?.pid);
@@ -378,18 +378,32 @@ describe("replies", () => {
 
 		const worker = await DaemonClient.connect();
 		clients.push(worker);
-		const got: string[] = [];
+		const got: { seq: number; text: string }[] = [];
 		worker.onEvent((e) => {
-			if (e.event === "deliver") got.push(e.text);
+			if (e.event === "deliver") got.push({ seq: e.seq, text: e.text });
 		});
 		await worker.request("report", { id, token, report: working });
 		await waitFor(() => got.length === 1);
-		expect(got).toEqual(["first"]);
-		expect(readState(id)?.pendingReplies).toEqual([]);
+		expect(got[0]).toEqual({ seq: 1, text: "first" });
 
 		expect(await client.request("reply", { id, text: "  second  " })).toEqual({ delivered: true, saved: false });
 		await waitFor(() => got.length === 2);
-		expect(got[1]).toBe("second");
+		expect(got[1]).toEqual({ seq: 2, text: "second" });
+		// unacked replies stay pending and are resent on the next worker connection
+		expect((readState(id)?.pendingReplies as unknown[]).length).toBe(2);
+		await expect(worker.request("ack", { id, token: "bad", seq: 1 })).rejects.toMatchObject({ code: "unauthorized" });
+		await worker.request("ack", { id, token, seq: 1 });
+		expect(readState(id)?.pendingReplies).toEqual([{ seq: 2, text: "second" }]);
+
+		const again = await DaemonClient.connect();
+		clients.push(again);
+		const resent: number[] = [];
+		again.onEvent((e) => {
+			if (e.event === "deliver") resent.push(e.seq);
+		});
+		await again.request("report", { id, token, report: working });
+		await waitFor(() => resent.length === 1);
+		expect(resent).toEqual([2]);
 
 		expect(await client.request("reply", { id, text: "/stop" })).toMatchObject({ stopped: true });
 		const row = await waitFor(async () => {
@@ -404,7 +418,8 @@ describe("replies", () => {
 		const { id } = await client.request("dispatch", args("sleep 0.2"));
 		await waitFor(async () => (await find(client, id))?.endedAt);
 		expect(await client.request("reply", { id, text: "continue" })).toEqual({ delivered: false, saved: true });
-		expect(readState(id)?.pendingReplies).toEqual(["continue"]);
+		expect(readState(id)?.pendingReplies).toEqual([{ seq: 1, text: "continue" }]);
+		expect(await client.request("reply", { id, text: "/stop" })).toMatchObject({ stopped: false, delivered: false });
 		await expect(client.request("reply", { id, text: "   " })).rejects.toMatchObject({ code: "bad_request" });
 	});
 });

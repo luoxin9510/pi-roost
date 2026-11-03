@@ -34,6 +34,7 @@ export class DaemonClient {
 	private nextId = 1;
 	private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 	private listeners = new Set<(event: Event) => void>();
+	private closeListeners = new Set<() => void>();
 	private closed = false;
 
 	private constructor(sock: Socket) {
@@ -42,9 +43,11 @@ export class DaemonClient {
 			for (const line of this.reader.push(chunk)) this.onLine(line);
 		});
 		const fail = (err: Error) => {
+			const first = !this.closed;
 			this.closed = true;
 			for (const p of this.pending.values()) p.reject(err);
 			this.pending.clear();
+			if (first) for (const l of this.closeListeners) l();
 		};
 		sock.on("error", fail);
 		sock.on("close", () => fail(new DaemonError("daemon connection closed", "closed")));
@@ -107,7 +110,14 @@ export class DaemonClient {
 		return () => this.listeners.delete(listener);
 	}
 
+	/** Called once when the connection drops (not after close()). */
+	onClose(listener: () => void): () => void {
+		this.closeListeners.add(listener);
+		return () => this.closeListeners.delete(listener);
+	}
+
 	close(): void {
+		this.closeListeners.clear();
 		this.closed = true;
 		this.sock.end();
 		this.sock.destroy();
