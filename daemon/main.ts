@@ -123,6 +123,7 @@ function rowOf(id: string): JobRow | undefined {
 		choices: Array.isArray(st.choices) ? st.choices.filter((c): c is string => typeof c === "string") : [],
 		model: text(st.model) ?? rec.model ?? null,
 		error: text(st.error),
+		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
 	};
 }
 
@@ -151,6 +152,7 @@ function finalize(id: string, why: string): void {
 	const ex = readExit(id);
 	const stopReq = stopping.has(id) || st.stopRequested === true;
 	const patch: Partial<JobState> = { endedAt: Date.now(), status: null, waitingFor: null, tool: null };
+	patch.stateSince = patch.endedAt;
 	if (stopReq) patch.state = "stopped";
 	else if (!ex) {
 		patch.state = "failed";
@@ -413,7 +415,10 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	}
 	const opt = (v: unknown, max = 500) => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
 	const before = st.state;
+	const waitingBefore = st.waitingFor ?? null;
+	const waitingNow = REPORT_WAITING.has(r.waitingFor ?? null) ? (r.waitingFor ?? null) : null;
 	updateState(id, {
+		...(before !== r.state || waitingBefore !== waitingNow ? { stateSince: Date.now() } : {}),
 		state: r.state,
 		status: r.status,
 		waitingFor: REPORT_WAITING.has(r.waitingFor ?? null) ? (r.waitingFor ?? null) : null,

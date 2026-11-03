@@ -45,3 +45,46 @@ export function fallbackName(task: string): string {
 	const words = task.trim().split(/\s+/).slice(0, 6).join(" ");
 	return words.length > 60 ? `${words.slice(0, 59)}…` : words;
 }
+
+export interface LaunchInput {
+	task: string;
+	cwd: string;
+	sessionFile: string;
+	name: string;
+	origin: "bg" | "dispatch";
+	/** The dispatching pi's own argv (process.argv), for extensions and model flags. */
+	argv: string[];
+	execPath: string;
+	env: NodeJS.ProcessEnv;
+	piVersion?: string;
+	/** Overrides from the agent view's /model and /thinking (DI-4). */
+	model?: string;
+	thinking?: string;
+}
+
+/** The daemon dispatch request for a new background pi running `task`. */
+export function buildLaunch(input: LaunchInput) {
+	const pass = passthroughArgs(input.argv.slice(2), process.cwd());
+	const withoutFlag = (args: string[], flag: string) => {
+		const out: string[] = [];
+		for (let i = 0; i < args.length; i++) {
+			if (args[i] === flag) i++;
+			else if (!args[i]!.startsWith(`${flag}=`)) out.push(args[i]!);
+		}
+		return out;
+	};
+	let args = pass;
+	if (input.model) args = [...withoutFlag(args, "--model"), "--model", input.model];
+	if (input.thinking) args = [...withoutFlag(args, "--thinking"), "--thinking", input.thinking];
+	return {
+		cwd: input.cwd,
+		sessionFile: input.sessionFile,
+		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, input.task],
+		env: allowListedEnv(input.env),
+		name: input.name,
+		origin: input.origin,
+		...(input.model ? { model: input.model } : {}),
+		...(input.thinking ? { thinking: input.thinking } : {}),
+		...(input.piVersion ? { piVersion: input.piVersion } : {}),
+	};
+}
