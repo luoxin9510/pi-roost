@@ -1,0 +1,95 @@
+import { StringDecoder } from "node:string_decoder";
+
+export type JobStateName = "working" | "blocked" | "done" | "failed" | "stopped";
+export type JobStatus = null | "busy" | "waiting" | "idle";
+export type WaitingFor = null | "dialog" | "question" | "first-prompt";
+export type DispatchOrigin = "bg" | "dispatch" | "adopt" | "fork";
+
+export interface JobRow {
+	id: string;
+	cwd: string;
+	kind: "pi";
+	startedAt: number;
+	state: JobStateName;
+	pid: number | null;
+	status: JobStatus;
+	waitingFor: WaitingFor;
+	sessionFile: string;
+	name: string;
+	endedAt: number | null;
+}
+
+export interface DispatchArgs {
+	cwd: string;
+	sessionFile: string;
+	command: string[];
+	env: Record<string, string>;
+	name: string;
+	model?: string;
+	thinking?: string;
+	origin: DispatchOrigin;
+	piVersion?: string;
+}
+
+export interface DaemonStatus {
+	pid: number;
+	version: string;
+	socketDir: string;
+	liveJobs: number;
+	totalJobs: number;
+	ptyError: string | null;
+	startedAt: number;
+}
+
+export interface OpArgs {
+	ping: {};
+	list: { all?: boolean; cwd?: string };
+	dispatch: DispatchArgs;
+	stop: { id: string };
+	rm: { id: string };
+	resolve: { query: string };
+	status: {};
+	shutdown: { keepWorkers?: boolean };
+	subscribe: {};
+}
+
+export interface OpResults {
+	ping: { pid: number; version: string };
+	list: { jobs: JobRow[] };
+	dispatch: { id: string; name: string };
+	stop: { id: string };
+	rm: { id: string };
+	resolve: { id: string };
+	status: DaemonStatus;
+	shutdown: {};
+	subscribe: {};
+}
+
+export type Op = keyof OpArgs;
+
+export type RequestOf<O extends Op> = { id: number; op: O; args?: OpArgs[O] };
+export type Request = { [O in Op]: RequestOf<O> }[Op];
+export type ArgsOf<O extends Op> = OpArgs[O];
+export type ResultOf<O extends Op> = OpResults[O];
+
+export type OkResponse<O extends Op = Op> = { id: number; ok: true; result: OpResults[O] };
+export type ErrResponse = { id: number; ok: false; error: string; code?: string };
+export type Response<O extends Op = Op> = OkResponse<O> | ErrResponse;
+
+export type Event = { event: "job"; job: JobRow } | { event: "removed"; id: string };
+
+export class LineReader {
+	private decoder = new StringDecoder("utf8");
+	private partial = "";
+
+	push(chunk: Buffer | string): string[] {
+		this.partial += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
+		const parts = this.partial.split("\n");
+		this.partial = parts.pop() ?? "";
+		return parts;
+	}
+}
+
+export function encodeLine(value: unknown): string {
+	return `${JSON.stringify(value)}\n`;
+}
