@@ -11,6 +11,7 @@ import { registerForeground } from "./foreground.ts";
 import { registerForegroundPeer } from "./peer-link.ts";
 import { openAgentView, setCommandSource } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
+import { registerMobileStarter } from "./mobile.ts";
 
 // pi-roost entry: one extension, three roles (agent view, foreground, worker).
 // So far: `--bg` dispatch, the session writer lock (DM-8), the worker role and
@@ -68,6 +69,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => unlock());
+
+	// M11: pi-mobile's "New session" can start background sessions, from any pi
+	registerMobileStarter(pi);
 
 	const job = jobIdentity();
 	if (job) {

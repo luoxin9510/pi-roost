@@ -229,6 +229,31 @@ Design notes: [`docs/plans/m10-worktree-isolation.md`](docs/plans/m10-worktree-i
 
 设计说明：[`docs/plans/m10-worktree-isolation.md`](docs/plans/m10-worktree-isolation.md)。
 
+## On your phone (pi-mobile) · 在手机上用
+
+With [pi-mobile](https://github.com/luoxin9510/pi-mobile) installed, every background session
+is on your phone too: each one runs pi with your packages, so it joins pi-mobile by itself. It
+also keeps pi-mobile's hub up after you close the terminal.
+
+装了 [pi-mobile](https://github.com/luoxin9510/pi-mobile) 之后，每个后台会话也会出现在手机上：后台会话用的是你装好的那些包，会自己接入 pi-mobile；关掉终端后，pi-mobile 的 hub 也会由后台会话继续撑着。
+
+- **Start one from the phone:** Sessions → **New session** → **Background session**: a
+  folder and an optional first prompt. It starts like a task typed into the agent view
+  (`dispatchModel`, `worktreeIsolation`), and the phone opens it.<br>
+  **在手机上新开：** Sessions → **New session** → **Background session**，填文件夹和可选的第一句话。它和在 agent 视图里派发任务一样（同样用 `dispatchModel`、`worktreeIsolation`），手机会自动打开它。
+- **In use stays running:** a session you open or act on from the phone is not reaped; its
+  idle hour starts from the last time the phone used it.<br>
+  **用着的不会被回收：** 在手机上打开或操作过的会话不会被回收，空闲一小时从手机最后一次使用时算起。
+- Answering its questions and switching its model on the phone show in the agent view as
+  usual. For pi-mobile's voice features in background sessions, add `OPENAI_API_KEY` to
+  `envAllowList` (or sign in with `/login`).<br>
+  在手机上回答问题、切换模型，agent 视图里照常同步。想在后台会话里用 pi-mobile 的语音功能，把 `OPENAI_API_KEY` 加进 `envAllowList`（或用 `/login` 登录）。
+
+The two packages talk over pi's event bus only (`pi-mobile:starters`, `pi-mobile:activity`);
+neither imports the other.
+
+两个包只通过 pi 的事件总线通信（`pi-mobile:starters`、`pi-mobile:activity`），互不 import。
+
 ## Keys · 按键
 
 | Key · 按键 | In the agent view | 在 agent 视图里 |
