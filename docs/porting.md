@@ -74,7 +74,7 @@
 | `pi.sendUserMessage(text)` | 空闲时开始新一轮 | ★ |
 | `pi.sendMessage({customType, content, display, details}, { triggerTurn, deliverAs: "steer" })` | M9：agent 消息，在下一个工具边界插入 | M9 必需 |
 | `pi.registerTool` / `pi.registerMessageRenderer` | M9：`roost_agents/send/spawn` 三个工具 | M9 必需 |
-| `pi.registerCommand` | `/agents` `/bg` `/background` `/fork` | 必需 |
+| `pi.registerCommand` | `/agents` `/bg` `/background` `/bg-fork` | 必需 |
 | `pi.registerFlag` / `pi.getFlag` | `--bg` `--bg-name` `--agents` `--agents-cwd` | 可降级 |
 | `pi.events.emit` | 发 `agents:job_needs_input` / `agents:job_completed` | 可选 |
 | `pi.setSessionName` / `pi.setModel` / `pi.getThinkingLevel` / `pi.appendEntry` / `pi.getCommands` | 自动命名、/model、/thinking、DI-5 | 可选 |
@@ -290,7 +290,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 2. 若在跑：提示"当前工具结束后转后台"，最多等 10 秒（再按 ← 跳过）→ `abort()` → `waitForIdle()` → 首条提示设为 "Continue where you left off."。
 3. **关键交接（C4）**：`ctx.switchSession(scratch)` —— 当前进程切到 `scratch/` 下的一次性会话，原会话的 `session_shutdown` 释放写锁 → 在 `withSession` 回调里 `dispatch(origin:"adopt", sessionFile: 原文件)` → 打开 agent view 并高亮它 → 再切到一个**新的空会话**（不能留在 scratch 目录）。
 4. 失败就切回原会话。会话从未写过盘（还没有第一条回复）时拒绝转移。
-5. `/fork <prompt>`：复制当前会话文件，`origin:"fork"` 在后台执行 prompt，前台不动。
+5. `/bg-fork <prompt>`：复制当前会话文件，`origin:"fork"` 在后台执行 prompt，前台不动。
 
 > 宿主没有 `switchSession` 时的降级：让用户退出前台进程（释放写锁）后再由 CLI 派发 `adopt`，体验差但可用。
 

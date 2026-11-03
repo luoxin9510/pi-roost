@@ -287,9 +287,9 @@ export function registerForeground(pi: ExtensionAPI): void {
 	};
 	pi.registerCommand("bg", { description: "Move this conversation to the background [prompt]", handler });
 	// BG-8: a copy of this conversation works in the background; this one carries on
-	pi.registerCommand("fork", {
-		// pi's own bare /fork (branch from an earlier message) wins; with text this one runs
-		description: "/fork <prompt>: copy this conversation into a background session",
+	// named bg-fork: "fork" collides with pi's built-in /fork (branch from an earlier message)
+	pi.registerCommand("bg-fork", {
+		description: "/bg-fork <prompt>: copy this conversation into a background session",
 		handler: async (args, ctx) => {
 			const file = ctx.sessionManager.getSessionFile();
 			if (!file || !existsSync(file)) return ctx.ui.notify("pi-roost: nothing to fork yet (the session has no saved messages)", "warning");
