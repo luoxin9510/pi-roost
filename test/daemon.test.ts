@@ -580,6 +580,30 @@ describe("lifecycle", () => {
 		expect(readState(busy.id)?.restore).toBe(false);
 	});
 
+	it("M11: a session a phone used recently is not reaped; its idle time starts then", async () => {
+		process.env.PI_ROOST_REAP_MINUTES = "0.01"; // 600 ms
+		process.env.PI_ROOST_REAP_CHECK_MS = "50";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		await client.request("report", { id, token, report: idle });
+		const statePath = join(jobDir(id), "state.json");
+		// idle for long, but the phone looked at it just now (a remoteAt in the future is clamped)
+		const st = JSON.parse(readFileSync(statePath, "utf8"));
+		writeFileSync(statePath, JSON.stringify({ ...st, stateSince: Date.now() - 60_000 }));
+		await client.request("report", { id, token, report: { ...idle, remoteAt: Date.now() + 3_600_000 } });
+		expect(readState(id)?.remoteAt as number).toBeLessThanOrEqual(Date.now());
+		await new Promise((res) => setTimeout(res, 300));
+		expect((await find(client, id))?.reaped).toBe(false);
+		// then nobody uses it: reaped once the idle time has passed since the phone
+		const row = await waitFor(async () => {
+			const x = await find(client, id);
+			return x?.reaped ? x : undefined;
+		});
+		expect(row.pid).toBeNull();
+	});
+
 	it("never reaps a pinned or working job", async () => {
 		process.env.PI_ROOST_REAP_MINUTES = "0.002";
 		process.env.PI_ROOST_REAP_CHECK_MS = "50";

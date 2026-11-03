@@ -9,6 +9,7 @@ import type { ArgsOf, ContextInfo, Event, Op, ResultOf, WorkerReport } from "../
 import { readJob } from "../lib/store.ts";
 import { worktreeNote } from "../lib/worktree.ts";
 import { registerAgentTools } from "./agent-tools.ts";
+import { onMobileActivity } from "./mobile.ts";
 import { registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
 	CUSTOM_DIALOG_MS,
@@ -510,7 +511,14 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	let starter: DeliverItem | undefined;
 	let messageReports = 0;
 	// attachSignal: this worker handles the host's SIGUSR2 on attach and detach (AT-5)
-	const send = (urgent = false) => reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true }, urgent);
+	/** M11: when a phone (pi-mobile) last acted on this session: it counts as in use. */
+	let remoteAt: number | undefined;
+	const send = (urgent = false) =>
+		reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true, ...(remoteAt ? { remoteAt } : {}) }, urgent);
+	onMobileActivity(pi, () => {
+		remoteAt = Date.now();
+		send(true);
+	});
 
 	pi.on("session_start", (event, ctx: ExtensionContext) => {
 		current = ctx;

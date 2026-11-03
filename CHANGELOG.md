@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+- pi-mobile: the phone's **New session** can start a background session (a starter on
+  `pi-mobile:starters`; needs pi-mobile with starters). A session the phone uses
+  (`pi-mobile:activity`) is not reaped while in use.
+
 ## [0.1.5] - 2026-11-03
 
 - Agents talk to each other: `roost_spawn` starts a background child whose report comes back

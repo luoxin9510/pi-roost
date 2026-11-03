@@ -620,7 +620,9 @@ function reapable(id: string, now: number, minutes: number): number | undefined 
 	if (!st || st.pinned === true || st.state === "working") return undefined;
 	if (st.waitingFor === "dialog" || (st.status !== "idle" && st.status !== "waiting")) return undefined;
 	if (pendingReplies(id).length > 0) return undefined;
-	const since = typeof st.stateSince === "number" ? st.stateSince : st.updatedAt;
+	const idleSince = typeof st.stateSince === "number" ? st.stateSince : st.updatedAt;
+	// M11: idle counts from the last time a phone used it, if that is later
+	const since = typeof st.remoteAt === "number" ? Math.max(idleSince, st.remoteAt) : idleSince;
 	return now - since < minutes * 60_000 ? undefined : since;
 }
 
@@ -806,6 +808,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		// M8: workers before 0.1.5 send neither; keep what is known then
 		...(r.thinking !== undefined ? { thinking: opt(r.thinking, 20) } : {}),
 		...(r.context !== undefined ? { context: contextFrom(r.context) } : {}),
+		// M11: a phone using the session keeps it from being reaped (never in the future)
+		...(typeof r.remoteAt === "number" && Number.isFinite(r.remoteAt) ? { remoteAt: Math.min(r.remoteAt, Date.now()) } : {}),
 		reportedAt: Date.now(),
 		attachSignal: r.attachSignal === true,
 		// a turn that ends normally clears the crash budget (DM-5)
