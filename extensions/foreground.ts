@@ -157,6 +157,43 @@ export function registerForeground(pi: ExtensionAPI): void {
 		}
 	};
 	pi.registerCommand("bg", { description: "Move this conversation to the background [prompt]", handler });
+	// BG-8: a copy of this conversation works in the background; this one carries on
+	pi.registerCommand("fork", {
+		// pi's own bare /fork (branch from an earlier message) wins; with text this one runs
+		description: "/fork <prompt>: copy this conversation into a background session",
+		handler: async (args, ctx) => {
+			const file = ctx.sessionManager.getSessionFile();
+			if (!file || !existsSync(file)) return ctx.ui.notify("pi-roost: nothing to fork yet (the session has no saved messages)", "warning");
+			let client: DaemonClient | undefined;
+			try {
+				const copy = SessionManager.forkFrom(file, ctx.cwd, dirname(file)).getSessionFile();
+				if (!copy) throw new Error("could not create the copy");
+				const base = ctx.sessionManager.getSessionName() ?? conversationName(ctx) ?? "conversation";
+				const config = loadConfig(ctx.cwd);
+				client = await DaemonClient.connectOrStart();
+				const { id, name } = await client.request(
+					"dispatch",
+					buildLaunch({
+						task: args.trim(),
+						cwd: ctx.cwd,
+						sessionFile: copy,
+						name: `${base} (fork)`,
+						origin: "fork",
+						argv: process.argv,
+						execPath: process.execPath,
+						env: process.env,
+						extraEnv: config.envAllowList,
+						piVersion: VERSION,
+					}),
+				);
+				ctx.ui.notify(`session running · ${name} · ${id} — open it from /agents`, "info");
+			} catch (err) {
+				ctx.ui.notify(`pi-roost: could not fork: ${(err as Error).message}`, "error");
+			} finally {
+				client?.close();
+			}
+		},
+	});
 	pi.registerCommand("background", { description: "Move this conversation to the background [prompt]", handler });
 
 	/** Returns whether the session was switched (ctx is stale from then on). */

@@ -1,5 +1,6 @@
 // Building a background job's launch request from a foreground pi process.
 import { isAbsolute, resolve } from "node:path";
+import { taskArg } from "./store.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
 const BOOL_FLAGS = new Set(["-ne", "--no-extensions", "--offline"]);
@@ -83,7 +84,15 @@ export function buildLaunch(input: LaunchInput) {
 		cwd: input.cwd,
 		sessionFile: input.sessionFile,
 		// "--" so a task that starts with "-" is not read as a flag
-		command: [input.execPath, input.argv[1]!, "--session", input.sessionFile, ...args, ...(input.task ? ["--", input.task] : [])],
+		// pi reads a message argument starting with @ as a file to attach, even after --
+		command: [
+			input.execPath,
+			input.argv[1]!,
+			"--session",
+			input.sessionFile,
+			...args,
+			...(input.task ? ["--", taskArg(input.task)] : []),
+		],
 		env: allowListedEnv(input.env, input.extraEnv),
 		name: input.name,
 		origin: input.origin,

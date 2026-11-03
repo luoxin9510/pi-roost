@@ -69,6 +69,7 @@ afterEach(() => {
 		["PI_ROOST_CONFIG_DIR", undefined],
 		["PI_ROOST_REAP_MINUTES", undefined],
 		["PI_ROOST_REAP_CHECK_MS", undefined],
+		["PI_ROOST_SHELL_KEEP_MS", undefined],
 	] as const) {
 		if (v === undefined) delete process.env[k];
 		else process.env[k] = v;
@@ -601,5 +602,56 @@ describe("organise ops", () => {
 		expect((await find(client, id))?.name).toBe("new name");
 		await client.request("report", { id, token, report: report("new name") });
 		expect(readState(id)?.pendingName).toBeNull();
+	});
+});
+
+describe("shell jobs (DI-6)", () => {
+	it("runs without a session, shows its last output line, and goes away after a while", async () => {
+		process.env.PI_ROOST_SHELL_KEEP_MS = "1500";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", { ...args("echo first; echo LAST-LINE; sleep 5"), kind: "shell", sessionFile: "" });
+		const live = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.summary === "LAST-LINE" ? r : undefined;
+		}, 8000);
+		expect(live).toMatchObject({ kind: "shell", status: "busy", sessionFile: "" });
+		await expect(client.request("reply", { id, text: "hello" })).rejects.toMatchObject({ code: "unsupported" });
+		const done = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.endedAt ? r : undefined;
+		}, 8000);
+		expect(done).toMatchObject({ state: "done", summary: "LAST-LINE" });
+		await waitFor(async () => !(await find(client, id)), 8000);
+		delete process.env.PI_ROOST_SHELL_KEEP_MS;
+	});
+
+	it("a failing command ends failed with its exit code", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", { ...args("exit 4"), kind: "shell", sessionFile: "" });
+		const r = await waitFor(async () => {
+			const x = await find(client, id);
+			return x?.endedAt ? x : undefined;
+		});
+		expect(r).toMatchObject({ state: "failed", error: "exited with code 4" });
+		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
+	});
+});
+
+describe("shell jobs and lifecycle", () => {
+	it("respawn --all leaves a running shell job alone; a stopped one is still removed later", async () => {
+		process.env.PI_ROOST_SHELL_KEEP_MS = "800";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", { ...args("sleep 30"), kind: "shell", sessionFile: "" });
+		await waitFor(async () => (await find(client, id))?.pid);
+		const host = readState(id)?.hostPid;
+		expect((await client.request("respawn", { all: true })).results).toEqual([]);
+		expect(readState(id)?.hostPid).toBe(host);
+		await client.request("stop", { id });
+		const r = await waitFor(async () => {
+			const x = await find(client, id);
+			return x?.endedAt ? x : undefined;
+		});
+		expect(r.state).toBe("stopped");
+		await waitFor(async () => !(await find(client, id)), 8000);
 	});
 });

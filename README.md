@@ -14,8 +14,9 @@ Status: M0 spikes ([report](spikes/REPORT.md)), M1 daemon + hosting
 ([acceptance](docs/plans/m3-acceptance.md)) and M4 backgrounding
 ([acceptance](docs/plans/m4-acceptance.md)) M5a lifecycle
 ([acceptance](docs/plans/m5a-acceptance.md)) M5b summaries and notifications
-([acceptance](docs/plans/m5b-acceptance.md)) and M6a organising
-([acceptance](docs/plans/m6a-acceptance.md)) done.
+([acceptance](docs/plans/m5b-acceptance.md)) M6a organising
+([acceptance](docs/plans/m6a-acceptance.md)) and M6b dispatch extras and /fork
+([acceptance](docs/plans/m6b-acceptance.md)) done.
 
 ## Layout
 
