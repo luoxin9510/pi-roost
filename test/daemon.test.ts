@@ -571,3 +571,21 @@ describe("lifecycle", () => {
 		});
 	});
 });
+
+describe("organise ops", () => {
+	it("pin, rename and reorder are stored and listed", async () => {
+		const { client } = await startDaemon();
+		const a = await client.request("dispatch", args("sleep 30", { name: "alpha" }));
+		const b = await client.request("dispatch", args("sleep 30", { name: "beta" }));
+		expect(await client.request("pin", { id: a.id, pinned: true })).toEqual({ id: a.id, pinned: true });
+		await client.request("rename", { id: b.id, name: "  gamma   ray " });
+		await client.request("reorder", { ids: [b.id, a.id] });
+		const ra = await find(client, a.id);
+		const rb = await find(client, b.id);
+		expect(ra).toMatchObject({ pinned: true, order: 1 });
+		expect(rb).toMatchObject({ name: "gamma ray", order: 0 });
+		expect((await client.request("resolve", { query: "gamma" })).id).toBe(b.id);
+		await expect(client.request("rename", { id: b.id, name: " " })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(client.request("reorder", { ids: ["nope"] })).rejects.toMatchObject({ code: "bad_request" });
+	});
+});

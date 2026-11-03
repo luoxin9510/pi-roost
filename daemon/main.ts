@@ -9,7 +9,7 @@ import { loadUserConfig } from "../lib/config.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
-import { daemonLogPath, daemonSocketPath, ensureDirs, rosterPath, runtimeDir } from "../lib/paths.ts";
+import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, rosterPath, runtimeDir } from "../lib/paths.ts";
 import { isAlive, processStartToken, sameProcess } from "../lib/proc.ts";
 import {
 	type DaemonStatus,
@@ -24,11 +24,13 @@ import {
 	type JobRecord,
 	type JobState,
 	clearExit,
+	clearWorker,
 	createJob,
 	listJobIds,
 	readExit,
 	readJob,
 	readState,
+	readWorkerPid,
 	removeJob,
 	respawnCommand,
 	updateState,
@@ -122,7 +124,7 @@ function rowOf(id: string): JobRow | undefined {
 		kind: "pi",
 		startedAt: st.startedAt,
 		state: st.state,
-		pid: live ? (st.workerPid ?? null) : null,
+		pid: live ? (readWorkerPid(id) ?? null) : null,
 		// status and waitingFor describe a live worker only (PRD §6.8)
 		status: live ? ((st.status as JobRow["status"]) ?? null) : null,
 		waitingFor: live ? ((st.waitingFor as JobRow["waitingFor"]) ?? null) : null,
@@ -136,6 +138,8 @@ function rowOf(id: string): JobRow | undefined {
 		error: text(st.error),
 		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
 		reaped: !live && st.reaped === true,
+		pinned: st.pinned === true,
+		order: typeof st.order === "number" ? st.order : null,
 	};
 }
 
@@ -416,6 +420,7 @@ async function respawn(
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
 		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
 		clearExit(id);
+		clearWorker(id);
 		updateState(id, {
 			...(restore
 				? { stateSince: st?.stateSince }
@@ -424,7 +429,7 @@ async function respawn(
 			waitingFor: null,
 			tool: null,
 			error: null,
-			workerPid: undefined,
+
 			reportedAt: undefined,
 			endedAt: undefined,
 			stopRequested: false,
@@ -609,6 +614,24 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	pushJob(id);
 }
 
+/** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
+async function rename(args: { id?: unknown; name?: unknown } | undefined): Promise<{ id: string; name: string }> {
+	const id = requireJob(args);
+	const name = typeof args?.name === "string" ? args.name.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+	if (!name) throw new OpError("bad_request", "empty name");
+	const rec = recs.get(id)!;
+	const next = { ...rec, name };
+	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
+	recs.set(id, next);
+	updateState(id, { displayName: name });
+	// the worker's session takes the name too, so its next report does not undo it
+	const conn = workerConns.get(id);
+	if (roster.has(id) && conn && !conn.sock.destroyed) await reply({ id, text: `/name ${name}` });
+	pushJob(id);
+	log("info", "rename", { id, name });
+	return { id, name };
+}
+
 function requireJob(args: unknown): string {
 	const id = (args as { id?: unknown } | undefined)?.id;
 	if (!str(id)) throw new OpError("bad_request", "id required");
@@ -693,7 +716,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 					const ref = roster.get(id);
 					log("warn", "host did not stop, killing", { id });
 					const st = readState(id);
-					for (const pid of [st?.workerPid, ref?.hostPid]) {
+					for (const pid of [readWorkerPid(id), ref?.hostPid]) {
 						if (typeof pid !== "number") continue;
 						try {
 							process.kill(pid, "SIGKILL");
@@ -727,6 +750,22 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			const id = requireJob(args);
 			const prompt = typeof args?.prompt === "string" && args.prompt.trim() ? args.prompt.trim() : undefined;
 			return { results: [await respawn(id, { restart: args?.restart === true, prompt })] };
+		}
+		case "pin": {
+			const id = requireJob(args);
+			const pinned = args?.pinned === true;
+			updateState(id, { pinned });
+			pushJob(id);
+			return { id, pinned };
+		}
+		case "rename":
+			return rename(args);
+		case "reorder": {
+			const ids: unknown = args?.ids;
+			if (!Array.isArray(ids) || !ids.every((v) => str(v) && recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
+			ids.forEach((id: string, i: number) => updateState(id, { order: i }));
+			for (const id of ids) pushJob(id);
+			return {};
 		}
 		case "report":
 			acceptReport(conn, args);

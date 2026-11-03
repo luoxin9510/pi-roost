@@ -27,6 +27,8 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		error: null,
 		stateSince: now - 30_000,
 		reaped: false,
+		pinned: false,
+		order: null,
 		...over,
 	};
 }
@@ -63,13 +65,14 @@ class FakeClient {
 			return { id: "new1", name: "new task" };
 		}
 		if (op === "reply") return { delivered: true, saved: false };
+		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		return {};
 	}
 }
 
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
-function setup(rows: JobRow[], opts: { rowsHigh?: number } = {}) {
+function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void } = {}) {
 	const client = new FakeClient(rows);
 	let renders = 0;
 	let doneCalls = 0;
@@ -88,6 +91,7 @@ function setup(rows: JobRow[], opts: { rowsHigh?: number } = {}) {
 		connect: async () => client as unknown as DaemonClient,
 		done: () => doneCalls++,
 		reducedMotion: true,
+		onGroupBy: opts.onGroupBy,
 	});
 	return { view, client, renders: () => renders, done: () => doneCalls };
 }
@@ -205,5 +209,63 @@ describe("AgentView keys", () => {
 		release();
 		await started;
 		expect(client.closed).toBe(true);
+	});
+});
+
+describe("AgentView organise (M6a)", () => {
+	it("filters with s: n: o:, selects the first match, and Enter attaches rather than dispatching", async () => {
+		const rows = [
+			row({ id: "a", name: "fix login", state: "done", summary: "fixed the cookie bug" }),
+			row({ id: "b", name: "docs pass", state: "working" }),
+			row({ id: "c", name: "fix build", state: "blocked", question: "which node version?" }),
+		];
+		const { view, client } = setup(rows);
+		await view.start();
+		type(view, "n:fix s:done");
+		let out = view.render(80).join("\n");
+		expect(out).toContain("fix login");
+		expect(out).not.toContain("fix build");
+		expect(out).not.toContain("docs pass");
+		expect(out).toContain("filtering");
+		view.handleInput("\u0003");
+		type(view, "o:node");
+		out = view.render(80).join("\n");
+		expect(out).toContain("fix build");
+		expect(out).not.toContain("fix login");
+		view.handleInput("\u0003");
+		type(view, "n:zzz");
+		expect(view.render(80).join("\n")).toContain("no sessions match");
+		view.handleInput("\u0003");
+		type(view, "o:node");
+		view.handleInput("\r"); // attaches to the match (no host here), never dispatches
+		await sleep(10);
+		expect(client.requests.some((r) => r.op === "dispatch")).toBe(false);
+		view.dispose();
+	});
+
+	it("Ctrl+S groups by directory and reports the choice; Ctrl+T pins; Ctrl+R renames; Shift+↓ reorders", async () => {
+		const chosen: string[] = [];
+		const rows = [row({ id: "a", name: "one", cwd: "/w/app" }), row({ id: "b", name: "two", cwd: "/w/lib" })];
+		const { view, client } = setup(rows, { onGroupBy: (g) => chosen.push(g) });
+		await view.start();
+		view.handleInput("\x13"); // Ctrl+S
+		expect(chosen).toEqual(["directory"]);
+		const out = view.render(80).join("\n");
+		expect(out).toContain("/w/app");
+		expect(out).toContain("/w/lib");
+		view.handleInput("\x14"); // Ctrl+T on the selected row
+		await sleep(10);
+		expect(client.requests.find((r) => r.op === "pin")?.args).toMatchObject({ pinned: true });
+		view.handleInput("\x12"); // Ctrl+R
+		for (let i = 0; i < 10; i++) view.handleInput("\x7f");
+		type(view, "renamed");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.find((r) => r.op === "rename")?.args).toMatchObject({ name: "renamed" });
+		view.handleInput("\x13"); // back to state groups: both in Working
+		view.handleInput("\x1b[1;2B"); // Shift+↓
+		await sleep(10);
+		expect((client.requests.find((r) => r.op === "reorder")?.args as { ids: string[] }).ids).toHaveLength(2);
+		view.dispose();
 	});
 });

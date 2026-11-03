@@ -54,6 +54,15 @@ export const readExit = (id: string): ExitRecord | undefined => readJson<ExitRec
 export const writeExit = (id: string, rec: ExitRecord): void => writeJsonAtomic(exitPath(id), rec);
 export const clearExit = (id: string): void => rmSync(exitPath(id), { force: true });
 
+// The host's own record of its worker: state.json has a single writer, the daemon.
+const workerFile = (id: string) => join(jobDir(id), "worker.json");
+export const writeWorker = (id: string, pid: number): void => writeJsonAtomic(workerFile(id), { pid, at: Date.now() });
+export const clearWorker = (id: string): void => rmSync(workerFile(id), { force: true });
+export function readWorkerPid(id: string): number | undefined {
+	const pid = readJson<{ pid?: unknown }>(workerFile(id))?.pid;
+	return typeof pid === "number" ? pid : undefined;
+}
+
 /** The argv a host starts: a respawn replaces the dispatch command (no first prompt again). */
 export function launchCommand(rec: JobRecord, st: JobState | undefined): string[] {
 	const c = st?.command;

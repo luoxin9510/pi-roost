@@ -3,6 +3,7 @@ import { type Component, Input, parseKey, type TUI, truncateToWidth, visibleWidt
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
+import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
@@ -40,6 +41,9 @@ export interface AgentViewOptions {
 	setTitle: (title: string) => void;
 	/** Daemon connection; tests pass a fake. */
 	connect?: () => Promise<DaemonClient>;
+	/** AV-K6: initial grouping and where a change is persisted. */
+	groupBy?: "state" | "directory";
+	onGroupBy?: (groupBy: "state" | "directory") => void;
 	/** NT-1: a job needs input or finished while the view is on screen. */
 	notify?: (row: JobRow, kind: "needs_input" | "completed") => void;
 	/** AV-9: a row to keep bold (the conversation just moved to the background). */
@@ -72,6 +76,10 @@ export class AgentView implements Component {
 	private help = false;
 	private input = new Input({ prompt: "› ", placeholder: "describe a task and press Enter to start it in the background" });
 	private reply = new Input({ prompt: "reply › " });
+	/** AV-K10: the row being renamed, edited in its own input. */
+	private renaming: string | undefined;
+	private renameInput = new Input({ prompt: "rename › " });
+	private groupBy: "state" | "directory" = "state";
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
 	private ctrlCAt = 0;
@@ -92,6 +100,7 @@ export class AgentView implements Component {
 	constructor(o: AgentViewOptions) {
 		this.o = o;
 		this.origin = o.origin;
+		this.groupBy = o.groupBy ?? "state";
 		if (o.origin) this.cursor = { kind: "row", id: o.origin };
 		this.input.focused = true;
 	}
@@ -183,9 +192,16 @@ export class AgentView implements Component {
 		const height = this.o.tui.terminal.rows || 30;
 		return layout([...this.rows.values()], {
 			collapsed: this.collapsed,
+			groupBy: this.groupBy,
+			filter: this.filter(),
 			// AV-5: keep live groups visible on short terminals
 			maxCompleted: Math.max(3, height - 14),
 		});
+	}
+
+	/** DI-7: the input holds filters (s: n: o:) rather than a task. */
+	private filter(): Filter | undefined {
+		return this.peek || this.renaming ? undefined : parseFilter(this.input.getValue());
 	}
 
 	private itemList(): Item[] {
@@ -244,10 +260,30 @@ export class AgentView implements Component {
 			this.o.tui.requestRender();
 			return;
 		}
+		if (this.renaming) return this.renameKey(key, data);
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
 
 		switch (key) {
+			case "ctrl+s":
+				return this.toggleGroupBy();
+			case "ctrl+t":
+				return void this.togglePin();
+			case "ctrl+f":
+				if (this.peek) break;
+				fill(this.input, "n:");
+				this.o.tui.requestRender();
+				return;
+			case "ctrl+r":
+				return this.startRename();
+			case "alt+up":
+				return this.jumpHeader(-1);
+			case "alt+down":
+				return this.jumpHeader(1);
+			case "shift+up":
+				return void this.reorder(-1);
+			case "shift+down":
+				return void this.reorder(1);
 			case "up":
 				return this.moveAndRender(-1);
 			case "down":
@@ -291,12 +327,20 @@ export class AgentView implements Component {
 		if (this.peek && !text && key && /^[1-9]$/.test(key)) {
 			const choice = this.selectedRow()?.choices[Number(key) - 1];
 			if (choice) {
-				this.reply.setValue(choice);
+				fill(this.reply, choice);
 				this.o.tui.requestRender();
 				return;
 			}
 		}
+		// AV-K14: Alt+1…9 attach to row N of the selected row's directory
+		const alt = key ? /^alt\+([1-9])$/.exec(key) : null;
+		if (alt) return void this.attachNth(Number(alt[1]));
 		typing.handleInput(data);
+		// DI-7: a filter selects its first match as it is typed
+		if (!this.peek && this.filter()) {
+			const first = this.itemList().find((it) => it.kind === "row");
+			if (first?.kind === "row") this.cursor = { kind: "row", id: first.row.id };
+		}
 		this.o.tui.requestRender();
 	}
 
@@ -370,7 +414,8 @@ export class AgentView implements Component {
 
 	private async enter(): Promise<void> {
 		if (this.peek) return this.sendReply();
-		if (this.input.getValue().trim()) return this.dispatch(false);
+		// AV-K2: filter text is not a task: Enter acts on the selection
+		if (this.input.getValue().trim() && !this.filter()) return this.dispatch(false);
 		const it = this.selected();
 		if (it?.kind === "header") {
 			if (this.collapsed.has(it.section.key)) this.collapsed.delete(it.section.key);
@@ -381,10 +426,117 @@ export class AgentView implements Component {
 		return this.attachSelected();
 	}
 
+	// ---- organise (AV-K6…K14) --------------------------------------------
+
+	private toggleGroupBy(): void {
+		this.groupBy = this.groupBy === "state" ? "directory" : "state";
+		this.collapsed.clear();
+		try {
+			this.o.onGroupBy?.(this.groupBy);
+		} catch (err) {
+			this.say(`could not save the grouping: ${(err as Error).message}`, "warning");
+		}
+		this.say(this.groupBy === "directory" ? "grouped by directory" : "grouped by state");
+	}
+
+	private async togglePin(): Promise<void> {
+		const row = this.selectedRow();
+		if (!row || !this.client) return;
+		try {
+			const { pinned } = await this.client.request("pin", { id: row.id, pinned: !row.pinned });
+			this.cursor = { kind: "row", id: row.id };
+			this.say(pinned ? `pinned · ${row.name} (kept running)` : `unpinned · ${row.name}`);
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	private startRename(): void {
+		const row = this.selectedRow();
+		if (!row) return;
+		this.renaming = row.id;
+		fill(this.renameInput, row.name);
+		this.renameInput.focused = true;
+		this.input.focused = false;
+		this.o.tui.requestRender();
+	}
+
+	private endRename(): void {
+		this.renaming = undefined;
+		this.renameInput.focused = false;
+		this.input.focused = true;
+		this.o.tui.requestRender();
+	}
+
+	private renameKey(key: string | undefined, data: string): void {
+		if (key === "escape" || key === "ctrl+c") return this.endRename();
+		if (key === "enter") {
+			const id = this.renaming!;
+			const name = this.renameInput.getValue().trim();
+			this.endRename();
+			if (!name || !this.client) return;
+			void this.client
+				.request("rename", { id, name })
+				.then(() => this.say(`renamed · ${name}`, "success"))
+				.catch((err: unknown) => this.say((err as Error).message, "error"));
+			return;
+		}
+		this.renameInput.handleInput(data);
+		this.o.tui.requestRender();
+	}
+
+	private jumpHeader(dir: 1 | -1): void {
+		const list = this.itemList();
+		let i = this.selectedIndex(list);
+		for (i += dir; i >= 0 && i < list.length; i += dir) {
+			const it = list[i]!;
+			if (it.kind === "header") {
+				this.cursor = { kind: "header", key: it.section.key };
+				this.o.tui.requestRender();
+				return;
+			}
+		}
+	}
+
+	private async reorder(dir: 1 | -1): Promise<void> {
+		const it = this.selected();
+		if (it?.kind !== "row" || !this.client) return;
+		const rows = it.section.rows;
+		const i = rows.findIndex((r) => r.id === it.row.id);
+		const j = i + dir;
+		if (j < 0 || j >= rows.length) return;
+		const ids = rows.map((r) => r.id);
+		[ids[i], ids[j]] = [ids[j]!, ids[i]!];
+		// apply locally at once; the daemon's events confirm it
+		ids.forEach((id, n) => {
+			const r = this.rows.get(id);
+			if (r) this.rows.set(id, { ...r, order: n });
+		});
+		this.o.tui.requestRender();
+		try {
+			await this.client.request("reorder", { ids });
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	private async attachNth(n: number): Promise<void> {
+		const sel = this.selectedRow();
+		const cwd = sel?.cwd ?? this.o.cwd;
+		const rows = this.itemList()
+			.filter((it): it is Extract<Item, { kind: "row" }> => it.kind === "row" && it.row.cwd === cwd)
+			.map((it) => it.row);
+		const row = rows[n - 1];
+		if (!row) return this.say(`no row ${n} in ${cwd}`, "warning");
+		this.cursor = { kind: "row", id: row.id };
+		return this.attachTo(row.id);
+	}
+
 	// ---- actions ---------------------------------------------------------
 
 	private async dispatch(attach: boolean): Promise<void> {
 		if (this.dispatching) return;
+		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
 		const typed = this.input.getValue();
 		const task = typed.trim();
 		if (task.length < MIN_TASK) return this.say("Too short", "warning");
@@ -548,7 +700,10 @@ export class AgentView implements Component {
 		});
 
 		out.push("");
-		if (!this.peek) out.push(...this.input.render(w));
+		if (this.renaming) out.push(...this.renameInput.render(w));
+		else if (!this.peek) out.push(...this.input.render(w));
+		const f = this.filter();
+		if (f && !list.some((it) => it.kind === "row")) out.push(t.fg("dim", truncateToWidth("no sessions match", w)));
 		if (this.notice) out.push(t.fg(this.notice.tone, truncateToWidth(oneLine(this.notice.text), w)));
 		out.push(t.fg("dim", truncateToWidth(this.footer(), w)));
 		// pi-tui refuses (and crashes on) lines wider than the terminal
@@ -592,7 +747,9 @@ export class AgentView implements Component {
 	}
 
 	private footer(): string {
+		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
+		if (this.filter()) return "filtering (s: n: o:) · Enter/→ attach · Esc clear";
 		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close";
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
@@ -606,6 +763,14 @@ export class AgentView implements Component {
 			["Space", "peek and reply"],
 			["Ctrl+Enter", "start the typed task and attach"],
 			["Ctrl+X", "stop; again within 2 s to delete (on a header: the group)"],
+			["Ctrl+S", "group by state / directory"],
+			["Ctrl+T", "pin / unpin (pinned sessions keep running)"],
+			["Ctrl+R", "rename"],
+			["Shift+↑ Shift+↓", "move the row within its group"],
+			["Alt+↑ Alt+↓", "previous / next group"],
+			["Alt+1…9", "attach to row N of this directory"],
+			["Ctrl+F", "find by name (n:)"],
+			["s: n: o:", "filter by state, name, result; combine with spaces"],
 			["Esc", "close peek · clear input · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],
@@ -621,6 +786,12 @@ export class AgentView implements Component {
 
 // Control characters other than newlines would corrupt the line-based renderer.
 const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
+
+/** Put text in an input with the cursor after it (setValue leaves the cursor where it was). */
+function fill(input: Input, value: string): void {
+	input.setValue(value);
+	input.handleInput("\x05"); // line end
+}
 
 function oneLine(text: string): string {
 	return text.replace(CONTROL, " ").replace(/\s+/g, " ").trim();

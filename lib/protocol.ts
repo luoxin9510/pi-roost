@@ -27,6 +27,10 @@ export interface JobRow {
 	stateSince: number;
 	/** DM-4: stopped for idleness; attaching or replying starts it again. */
 	reaped: boolean;
+	/** AV-K7: listed first and never reaped. */
+	pinned: boolean;
+	/** AV-K13: the user's position within its group, or null when never moved. */
+	order: number | null;
 }
 
 /** What a worker reports about itself (full snapshot every time). */
@@ -83,6 +87,10 @@ export interface OpArgs {
 	ack: { id: string; token: string; seq: number };
 	/** Start an ended job again from its session file; `restart` also restarts a live one. */
 	respawn: { id?: string; all?: boolean; restart?: boolean; prompt?: string };
+	pin: { id: string; pinned: boolean };
+	rename: { id: string; name: string };
+	/** AV-K13: these jobs, in this order (the rest of their group keeps its place). */
+	reorder: { ids: string[] };
 }
 
 export interface OpResults {
@@ -100,6 +108,9 @@ export interface OpResults {
 	reply: { delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string };
 	ack: {};
 	respawn: { results: { id: string; started: boolean; error?: string }[] };
+	pin: { id: string; pinned: boolean };
+	rename: { id: string; name: string };
+	reorder: {};
 }
 
 export type Op = keyof OpArgs;

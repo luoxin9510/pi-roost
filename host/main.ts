@@ -9,7 +9,7 @@ import pty from "node-pty";
 import { writeFileAtomic, writeJsonAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
-import { launchCommand, readJob, readState, screenPath, updateState, writeExit } from "../lib/store.ts";
+import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
 
 const { Terminal } = xterm;
 
@@ -82,7 +82,7 @@ try {
 }
 log("spawned", { pid: proc.pid, command });
 try {
-	updateState(id, { workerPid: proc.pid });
+	writeWorker(id, proc.pid);
 } catch {}
 
 const term = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
