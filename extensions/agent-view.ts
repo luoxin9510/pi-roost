@@ -120,8 +120,8 @@ interface Switch {
 	which: "model" | "thinking";
 	value: string;
 	before: string | null;
-	/** The pending switch this one replaced: a report showing it is not the outcome. */
-	superseded?: string;
+	/** Pending switches this one replaced: a report showing one of them is not the outcome. */
+	superseded: string[];
 	timer: NodeJS.Timeout;
 }
 
@@ -920,7 +920,7 @@ export class AgentView implements Component {
 			if (r.delivered) {
 				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
 				if (!pending && before === value) return this.say(`${row.name} already uses ${which} ${value}`);
-				this.watchSwitch(row, which, value, before, pending?.value);
+				this.watchSwitch(row, which, value, before, pending ? [...pending.superseded, pending.value] : []);
 				this.say(`asked ${row.name} to use ${which} ${value}…`);
 			} else if (r.respawned) this.say(`${which} ${value} · starting ${row.name} again`, "success");
 			else if (r.saved) this.say(`saved; ${which} changes when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
@@ -932,7 +932,9 @@ export class AgentView implements Component {
 	}
 
 	/** One watch per session and setting: a /thinking does not cancel the check of a /model. */
-	private watchSwitch(row: JobRow, which: "model" | "thinking", value: string, before: string | null, superseded?: string): void {
+	private watchSwitch(row: JobRow, which: "model" | "thinking", value: string, before: string | null, replaced: string[]): void {
+		// the value asked for now is the outcome, even if an earlier switch asked for it too
+		const superseded = [...new Set(replaced)].filter((v) => v !== value);
 		const key = switchKey(row.id, which);
 		const old = this.switches.get(key);
 		if (old) clearTimeout(old.timer);
@@ -945,9 +947,10 @@ export class AgentView implements Component {
 			// a report the view missed (a reconnect) may already show it
 			if (actual === value) return this.say(`${now.name} now uses ${which} ${value}`, "success");
 			this.say(
+				// the hint first: a long model id may be cut at 80 columns (the peek names the session)
 				which === "model"
-					? `${now.name}: still ${actual ? shortModel(actual) : "?"}, switch to ${shortModel(value)} failed (credentials? envAllowList)`
-					: `${now.name}: still thinks ${actual ?? "?"}; ${value} not supported?`,
+					? `model switch failed (credentials? envAllowList): still ${actual ? shortModel(actual) : "?"}, not ${shortModel(value)}`
+					: `thinking ${value} not taken (unsupported?): still ${actual ?? "?"}`,
 				"warning",
 			);
 		}, this.o.switchCheckMs ?? SWITCH_CHECK_MS);
@@ -962,10 +965,10 @@ export class AgentView implements Component {
 			const s = this.switches.get(key);
 			if (!s) continue;
 			const actual = (which === "model" ? row.model : row.thinking) ?? null;
-			// only the switch this one replaced: from now on that is the value to move away from
-			if (s.superseded !== undefined && actual === s.superseded) {
-				s.before = s.superseded;
-				s.superseded = undefined;
+			// only a switch this one replaced: from now on that is the value to move away from
+			if (actual !== null && s.superseded.includes(actual)) {
+				s.before = actual;
+				s.superseded = s.superseded.filter((v) => v !== actual);
 				continue;
 			}
 			if (actual === s.before) continue; // not applied yet (the timer decides)

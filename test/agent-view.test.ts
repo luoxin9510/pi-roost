@@ -414,7 +414,7 @@ describe("AgentView model and context (M8)", () => {
 		expect(view.render(80).join("\n")).toContain("fix login now uses thinking low");
 		await sleep(100);
 		// short enough for 80 columns
-		expect(view.render(80).join("\n")).toContain("fix login: still two, switch to one failed (credentials? envAllowList)");
+		expect(view.render(80).join("\n")).toContain("model switch failed (credentials? envAllowList): still two, not one");
 		view.dispose();
 	});
 
@@ -434,6 +434,35 @@ describe("AgentView model and context (M8)", () => {
 		expect(view.render(80).join("\n")).not.toContain("now uses");
 		client.emit({ event: "job", job: { ...a, model: "a/one" } });
 		expect(view.render(80).join("\n")).toContain("fix login now uses model a/one");
+		view.dispose();
+	});
+
+	it("three switches in a row: only the last one's value is the outcome; the same switch twice confirms at once", async () => {
+		const a = row({ name: "fix login", model: "p/a" });
+		const { view, client } = setup([a], { switchCheckMs: 5000 });
+		const models = ["p/a", "p/b", "p/c"];
+		(view as any).o.models = () => models;
+		await view.start();
+		view.handleInput(" ");
+		for (const m of ["p/b", "p/a", "p/c"]) {
+			type(view, `/model ${m}`);
+			view.handleInput("\r");
+			await sleep(10);
+		}
+		for (const m of ["p/b", "p/a"]) {
+			client.emit({ event: "job", job: { ...a, model: m } });
+			expect(view.render(100).join("\n")).not.toContain("now uses");
+		}
+		client.emit({ event: "job", job: { ...a, model: "p/c" } });
+		expect(view.render(100).join("\n")).toContain("fix login now uses model p/c");
+		// the same switch twice: its report confirms it, no timer needed
+		for (let i = 0; i < 2; i++) {
+			type(view, "/model p/b");
+			view.handleInput("\r");
+			await sleep(10);
+		}
+		client.emit({ event: "job", job: { ...a, model: "p/b" } });
+		expect(view.render(100).join("\n")).toContain("fix login now uses model p/b");
 		view.dispose();
 	});
 

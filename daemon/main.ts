@@ -493,8 +493,9 @@ async function respawn(
 		if (!recs.has(id)) throw new OpError("not_found", `job ${id} was removed`);
 		const st = readState(id);
 		const written = !shell && existsSync(rec.sessionFile);
-		// M8: the model and thinking level it last reported running win over the dispatch's
-		const command = respawnCommand(rec, written, prompt, { model: st?.model, thinking: st?.thinking });
+		// M8: the model and thinking level it last reported running win over the dispatch's;
+		// before any report, the ones it was dispatched with (a hand-off's live values)
+		const command = respawnCommand(rec, written, prompt, { model: st?.model ?? rec.model, thinking: st?.thinking ?? rec.thinking });
 		const now = Date.now();
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
 		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";

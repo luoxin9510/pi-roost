@@ -482,6 +482,25 @@ describe("lifecycle", () => {
 		model: null,
 	};
 
+	it("M8: a respawn runs the model it last reported, or before any report the one it was dispatched with", async () => {
+		const { client } = await startDaemon();
+		const a = args("sleep 0.2", { sessionFile: join(work, "m8.jsonl"), model: "a/m", thinking: "low" });
+		a.command = ["/bin/sh", "-c", "sleep 0.2", "--model", "a/m", "--thinking", "low", "--", "first"];
+		writeFileSync(a.sessionFile, "{}\n");
+		const { id } = await client.request("dispatch", a);
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		await client.request("respawn", { id });
+		expect(readState(id)?.command).toEqual(["/bin/sh", "-c", "sleep 0.2", "--model", "a/m", "--thinking", "low"]);
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		const report = { state: "working" as const, status: "busy" as const, waitingFor: null, summary: null, question: null, choices: [], tool: null, error: null, name: null, model: "b/n", thinking: "off" };
+		await client.request("report", { id, token, report });
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		await client.request("respawn", { id });
+		expect(readState(id)?.command).toEqual(["/bin/sh", "-c", "sleep 0.2", "--model", "b/n", "--thinking", "off"]);
+		await waitFor(async () => (await find(client, id))?.endedAt);
+	});
+
 	it("respawn starts an ended job again without its first prompt once the session exists", async () => {
 		const { client } = await startDaemon();
 		const a = args("sleep 0.2", { sessionFile: join(work, "written.jsonl") });

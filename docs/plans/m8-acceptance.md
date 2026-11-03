@@ -74,10 +74,27 @@ Second review, fixed:
   switch, a superseded switch, the 80-column footer, the "starting" and "gone" messages,
   and the last-reported respawn flags.
 
+Third review, fixed:
+
+- If a hand-off's worker ends before its first report, the respawn falls back to the
+  model and thinking level it was dispatched with (`rec.model` / `rec.thinking`).
+- A test checks that `/bg` and quit to background pass the live model and thinking
+  level, and not this pi's original `--model` / `--provider`. The respawn wiring has a
+  daemon test.
+- The timeout notice puts its hint first (`model switch failed (credentials?
+  envAllowList): still …, not …`), so a long model id is what gets cut.
+- Superseded switches are a list. With three switches in a row, only the last value
+  counts as the outcome, and the same switch sent twice confirms at once.
+
+Known limit: if a model's provider disappears (removed from `models.json`, or its
+extension is uninstalled), a respawn's `--model` makes pi exit with "not found". The
+crash restart is bounded to one try. Dispatch flags have always behaved this way. Start
+the session again with another model, or remove the job.
+
 Left as is: column widths are measured over all rows, as `nameWidth` is, so they do not
 jump while you filter.
 
 ## Tests
 
-Automated: 17 files, 174 tests (with M9 merged in). Live runs against pi 1.5.0 with an isolated
+Automated: 17 files, 177 tests (with M9 merged in). Live runs against pi 1.5.0 with an isolated
 `PI_ROOST_HOME` and claude-haiku-5-5 / claude-haiku-4-5.
