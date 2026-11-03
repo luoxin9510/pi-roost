@@ -155,8 +155,9 @@ function finalize(id: string, why: string): void {
 	} else if (ex.code !== 0) {
 		patch.state = "failed";
 		if (!st.error) patch.error = `worker exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}`;
-	} else if (typeof st.reportedAt === "number" && st.state !== "working") {
-		// The worker's last word stands: a finished, failed or waiting session stays so.
+	} else if (st.state === "failed" || (st.state === "blocked" && st.waitingFor === "question")) {
+		// The worker's last word stands for a failed turn or an open question (answered
+		// by restarting the session); a dialog or a missing first prompt dies with it.
 		patch.state = st.state;
 	} else patch.state = "done";
 	try {

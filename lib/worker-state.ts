@@ -15,7 +15,8 @@ type Settled = "done" | "blocked" | "failed";
 export class WorkerTracker {
 	private running = false;
 	private settled: Settled | undefined;
-	private dialog: { kind: string; title: string | null } | undefined;
+	// Open prompts, outermost first; nested or overlapping ones stack (pi coalesces most).
+	private dialogs: { kind: string; title: string | null }[] = [];
 	private tool: string | null = null;
 	private text = "";
 	private error: string | null = null;
@@ -25,16 +26,28 @@ export class WorkerTracker {
 	private name: string | null = null;
 	private model: string | null = null;
 
-	start(info: { name?: string | null; model?: string | null }): void {
+	/** A session (re)starts in this worker: /new, /resume and /fork begin from scratch. */
+	start(info: { name?: string | null; model?: string | null; fresh: boolean }): void {
 		this.name = info.name ?? null;
 		this.model = info.model ?? null;
+		if (!info.fresh) return;
+		this.running = false;
+		this.settled = undefined;
+		this.dialogs = [];
+		this.sawTurn = false;
+		this.resetRun();
 	}
 
 	agentStart(): void {
 		this.running = true;
 		this.sawTurn = true;
 		this.settled = undefined;
+		this.resetRun();
+	}
+
+	private resetRun(): void {
 		this.tool = null;
+		this.text = "";
 		this.error = null;
 		this.question = null;
 		this.choices = [];
@@ -49,9 +62,9 @@ export class WorkerTracker {
 	}
 
 	assistantMessage(message: { content?: unknown; stopReason?: string; errorMessage?: string }): void {
-		const text = messageText(message);
-		if (text.trim()) this.text = text;
-		if (message.stopReason === "error") this.error = message.errorMessage ?? "the model request failed";
+		// Only the run's latest message counts: an earlier question or a retried error does not.
+		this.text = messageText(message);
+		this.error = message.stopReason === "error" ? (message.errorMessage ?? "the model request failed") : null;
 	}
 
 	/** The run is over and pi will not continue on its own. */
@@ -67,11 +80,12 @@ export class WorkerTracker {
 	}
 
 	dialogStart(kind: string, title: string | undefined): void {
-		this.dialog = { kind, title: title ?? null };
+		this.dialogs.push({ kind, title: title ?? null });
 	}
 
 	dialogEnd(): void {
-		this.dialog = undefined;
+		this.dialogs.pop();
+		if (this.dialogs.length > 0) return;
 		// A dialog from a command (no model run) still ends a piece of work.
 		if (!this.running && this.settled === undefined) {
 			this.sawTurn = true;
@@ -89,7 +103,7 @@ export class WorkerTracker {
 
 	/** No turn started yet; called once FIRST_PROMPT_MS after session start. */
 	firstPromptTimeout(messageCount: number): void {
-		if (this.sawTurn || this.running || this.dialog) return;
+		if (this.sawTurn || this.running || this.dialogs.length > 0) return;
 		this.settled = messageCount === 0 ? "blocked" : "done";
 		this.sawTurn = messageCount > 0;
 	}
@@ -102,7 +116,8 @@ export class WorkerTracker {
 		let state: WorkerReport["state"];
 		let status: JobStatus;
 		let waitingFor: WaitingFor = null;
-		if (this.dialog) {
+		const dialog = this.dialogs[0];
+		if (dialog) {
 			state = "blocked";
 			status = "waiting";
 			waitingFor = "dialog";
@@ -124,8 +139,8 @@ export class WorkerTracker {
 			state,
 			status,
 			waitingFor,
-			summary: this.summary(waitingFor),
-			question: waitingFor === "dialog" ? this.dialog!.title : waitingFor === "question" ? this.question : null,
+			summary: this.summary(waitingFor, dialog),
+			question: waitingFor === "dialog" ? dialog!.title : waitingFor === "question" ? this.question : null,
 			choices: waitingFor === "question" ? this.choices : [],
 			tool: this.running ? this.tool : null,
 			error: this.settled === "failed" ? this.error : null,
@@ -134,8 +149,8 @@ export class WorkerTracker {
 		};
 	}
 
-	private summary(waitingFor: WaitingFor): string | null {
-		if (waitingFor === "dialog") return this.dialog?.title ? clip(this.dialog.title) : `waiting in a ${this.dialog?.kind} dialog`;
+	private summary(waitingFor: WaitingFor, dialog: { kind: string; title: string | null } | undefined): string | null {
+		if (waitingFor === "dialog") return dialog?.title ? clip(dialog.title) : `waiting in a ${dialog?.kind} dialog`;
 		if (waitingFor === "first-prompt") return "waiting for a first prompt";
 		if (this.settled === "failed" && this.error) return clip(this.error);
 		if (this.running && this.tool) return `running ${this.tool}`;
@@ -156,6 +171,7 @@ export function stateChanged(a: WorkerReport | undefined, b: WorkerReport): bool
 		a.name !== b.name ||
 		a.model !== b.model ||
 		a.error !== b.error ||
+		a.tool !== b.tool ||
 		a.choices.join("\n") !== b.choices.join("\n")
 	);
 }

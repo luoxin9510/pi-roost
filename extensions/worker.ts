@@ -21,14 +21,22 @@ export function jobIdentity(env: NodeJS.ProcessEnv = process.env): JobIdentity |
 	return id && token && socket ? { id, token, socket } : undefined;
 }
 
-/** Sends the latest report, reconnecting after daemon restarts; never throws. */
-class Reporter {
+const REQUEST_TIMEOUT_MS = 4000;
+const FINAL_FLUSH_MS = 500;
+
+/**
+ * Sends the latest report, one request at a time, reconnecting after daemon
+ * restarts; never throws. State changes go out at once, row text at most
+ * every SUMMARY_INTERVAL_MS.
+ */
+export class Reporter {
 	private client: DaemonClient | undefined;
-	private connecting: Promise<void> | undefined;
 	private latest: WorkerReport | undefined;
 	private sent: WorkerReport | undefined;
 	private sentAt = 0;
 	private timer: NodeJS.Timeout | undefined;
+	private dueAt = Number.POSITIVE_INFINITY;
+	private inflight: Promise<void> | undefined;
 	private retryMs = 500;
 	private closed = false;
 	private job: JobIdentity;
@@ -39,54 +47,76 @@ class Reporter {
 
 	update(report: WorkerReport): void {
 		this.latest = report;
-		const urgent = stateChanged(this.sent, report);
-		if (!urgent && report.summary === this.sent?.summary) return;
-		const wait = urgent ? 0 : Math.max(0, this.sentAt + SUMMARY_INTERVAL_MS - Date.now());
-		if (this.timer && !urgent) return; // a send is already scheduled
-		clearTimeout(this.timer);
-		this.timer = setTimeout(() => void this.flush(), wait);
-		this.timer.unref?.();
+		this.schedule();
 	}
 
-	close(): void {
+	/** Send what is pending (bounded wait), then disconnect. */
+	async close(): Promise<void> {
+		if (this.closed) return;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		if (this.latest && this.latest !== this.sent) {
+			await Promise.race([this.drain(), new Promise((r) => setTimeout(r, FINAL_FLUSH_MS))]);
+		}
 		this.closed = true;
 		clearTimeout(this.timer);
 		this.client?.close();
 		this.client = undefined;
 	}
 
-	private async flush(): Promise<void> {
+	private async drain(): Promise<void> {
+		while (!this.closed && this.latest && this.latest !== this.sent) {
+			await (this.inflight ?? this.send());
+			if (this.latest !== this.sent) await new Promise((r) => setTimeout(r, 50));
+		}
+	}
+
+	private schedule(): void {
+		if (this.closed || this.inflight || !this.latest || this.latest === this.sent) return;
+		const urgent = stateChanged(this.sent, this.latest);
+		if (!urgent && this.latest.summary === this.sent?.summary) return;
+		const due = urgent ? Date.now() : Math.max(Date.now(), this.sentAt + SUMMARY_INTERVAL_MS);
+		if (this.timer && due >= this.dueAt) return;
+		clearTimeout(this.timer);
+		this.dueAt = due;
+		this.timer = setTimeout(() => void this.send(), due - Date.now());
+		this.timer.unref?.();
+	}
+
+	private send(): Promise<void> {
+		clearTimeout(this.timer);
 		this.timer = undefined;
+		this.dueAt = Number.POSITIVE_INFINITY;
 		const report = this.latest;
-		if (!report || this.closed) return;
+		if (!report || this.closed) return Promise.resolve();
+		this.inflight = this.request(report).finally(() => {
+			this.inflight = undefined;
+		});
+		return this.inflight.then(() => this.schedule());
+	}
+
+	private async request(report: WorkerReport): Promise<void> {
 		try {
-			await this.connect();
-			await this.client!.request("report", { id: this.job.id, token: this.job.token, report });
+			this.client ??= await DaemonClient.connect(this.job.socket);
+			const client = this.client;
+			await Promise.race([
+				client.request("report", { id: this.job.id, token: this.job.token, report }),
+				new Promise((_, reject) => setTimeout(() => reject(new Error("report timed out")), REQUEST_TIMEOUT_MS).unref?.()),
+			]);
 			this.sent = report;
 			this.sentAt = Date.now();
 			this.retryMs = 500;
-			if (this.latest !== report) this.update(this.latest!);
 		} catch {
 			this.client?.close();
 			this.client = undefined;
 			if (this.closed) return;
-			// The daemon may be restarting; resend the newest report later.
-			this.timer = setTimeout(() => void this.flush(), this.retryMs);
+			// The daemon may be restarting: try again with the newest report later.
+			clearTimeout(this.timer);
+			this.dueAt = Date.now() + this.retryMs;
+			this.timer = setTimeout(() => void this.send(), this.retryMs);
 			this.timer.unref?.();
 			this.retryMs = Math.min(this.retryMs * 2, 5000);
 		}
-	}
-
-	private connect(): Promise<void> {
-		if (this.client) return Promise.resolve();
-		this.connecting ??= DaemonClient.connect(this.job.socket)
-			.then((c) => {
-				this.client = c;
-			})
-			.finally(() => {
-				this.connecting = undefined;
-			});
-		return this.connecting;
 	}
 }
 
@@ -98,12 +128,13 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	let customTimer: NodeJS.Timeout | undefined;
 	const send = () => reporter?.update(tracker.report());
 
-	pi.on("session_start", (_event, ctx: ExtensionContext) => {
-		reporter?.close();
+	pi.on("session_start", (event, ctx: ExtensionContext) => {
 		reporter = new Reporter(job);
 		tracker.start({
 			name: ctx.sessionManager.getSessionName() ?? null,
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
+			// a reload keeps the run going; any other start is a different conversation
+			fresh: event.reason !== "reload",
 		});
 		send();
 		clearTimeout(firstPromptTimer);
@@ -164,10 +195,11 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		tracker.setModel(`${event.model.provider}/${event.model.id}`);
 		send();
 	});
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
 		clearTimeout(firstPromptTimer);
 		clearTimeout(customTimer);
-		reporter?.close();
+		const closing = reporter;
 		reporter = undefined;
+		await closing?.close();
 	});
 }

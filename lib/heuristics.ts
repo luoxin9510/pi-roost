@@ -1,23 +1,22 @@
 // Deterministic row text and question detection (PRD SM-1, SM-3), used when no
 // summary model is configured and between model summaries.
 
+// Asking without a question mark. Only the final sentence is tested, and only
+// phrases that are requests rather than sign-offs ("let me know if…" is not).
 const QUESTION_PHRASES = [
-	/\bwould you like\b/i,
-	/\bdo you want\b/i,
-	/\bshould i\b/i,
-	/\bshall i\b/i,
-	/\blet me know\b/i,
-	/\bwhich (?:one|option|approach|of these)\b/i,
+	/^(?:would you like|do you want|should i|shall i)\b/i,
 	/\bplease (?:confirm|choose|pick|select|clarify)\b/i,
-	/\bcan you (?:confirm|clarify)\b/i,
-	/\bwhat would you prefer\b/i,
-	/是否/,
-	/要不要/,
+	/\b(?:which (?:one|option|approach) (?:do|would|should) you)\b/i,
+	/^(?:是否|要不要|需要我)/,
 	/请(?:确认|选择|告诉我)/,
-	/你(?:希望|想要|觉得)/,
-	/需要我/,
-	/吗[？?]?$/,
+	/你(?:希望|想要)(?:我|哪)/,
+	/吗[。.]?$/,
 ];
+
+const finalSentence = (line: string) => {
+	const parts = line.split(/(?<=[.!。！])\s*/).filter((p) => p.trim());
+	return (parts[parts.length - 1] ?? line).trim();
+};
 
 /** Non-empty lines of a text, trimmed. */
 function lines(text: string): string[] {
@@ -44,7 +43,11 @@ const ASKS = /[?？]\s*["'”’)）]*$/;
 function trailingChoices(all: string[]): { choices: string[]; question: string | undefined } {
 	let end = all.length;
 	let after: string | undefined;
-	if (end > 0 && ASKS.test(all[end - 1]!) && !CHOICE.test(all[end - 1]!)) after = all[--end];
+	// One closing line after the list: the question itself, or a sign-off.
+	if (end > 1 && !CHOICE.test(all[end - 1]!) && CHOICE.test(all[end - 2]!)) {
+		const closing = all[--end]!;
+		if (ASKS.test(closing)) after = closing;
+	}
 	const choices: string[] = [];
 	let i = end - 1;
 	for (; i >= 0; i--) {
@@ -64,9 +67,8 @@ export function looksLikeQuestion(text: string): boolean {
 	const last = listed.choices.length > 0 ? listed.question : all[all.length - 1];
 	if (last === undefined) return false;
 	if (ASKS.test(last)) return true;
-	// Phrases only count near the end, so a question quoted mid-answer does not.
-	const tail = listed.choices.length > 0 ? last : all.slice(-2).join(" ");
-	return QUESTION_PHRASES.some((re) => re.test(tail));
+	const sentence = finalSentence(last);
+	return QUESTION_PHRASES.some((re) => re.test(sentence));
 }
 
 /** The line that asks, for the peek panel: the one before a trailing list, else the last. */
