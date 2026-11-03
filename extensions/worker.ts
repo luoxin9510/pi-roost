@@ -293,8 +293,9 @@ export class ReplyQueue {
 		while (ctx && this.queue.length > 0) {
 			const next = this.queue[0]!;
 			if (isAgentKind(next.kind)) {
-				if (!this.pumpAgent(ctx, next)) return;
-				continue;
+				if (this.pumpAgent(ctx, next)) continue;
+				this.applySettingsBehind(ctx);
+				return;
 			}
 			if (this.applySetting(ctx, next.text)) {
 				this.done(next.seq);
@@ -312,6 +313,24 @@ export class ReplyQueue {
 				this.awaitingStart = Date.now();
 			} else return this.retry(); // compacting: prompts are refused until it ends
 			this.done(next.seq);
+		}
+	}
+
+	/**
+	 * While an agent item waits (dialog, start, compaction), /name, /model and /thinking
+	 * right behind it need not: apply them, up to the first user reply, which keeps its turn.
+	 * lastSeq stays put, so a resent agent item is still recognised as not yet handed.
+	 */
+	private applySettingsBehind(ctx: ExtensionContext): void {
+		for (let i = 1; i < this.queue.length; ) {
+			const it = this.queue[i]!;
+			if (isAgentKind(it.kind)) {
+				i++;
+				continue;
+			}
+			if (!this.applySetting(ctx, it.text)) return;
+			this.queue.splice(i, 1);
+			this.env.ack(it.seq);
 		}
 	}
 
