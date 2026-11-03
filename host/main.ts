@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import xterm from "@xterm/headless";
 import pty from "node-pty";
-import { writeFileAtomic } from "../lib/atomic.ts";
+import { writeFileAtomic, writeJsonAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, updateState, writeExit } from "../lib/store.ts";
@@ -128,6 +128,10 @@ interface Attach {
 	decoder: StringDecoder;
 }
 let attached: Attach | undefined;
+// nobody watches a new worker yet (a previous host may have died attached)
+try {
+	writeJsonAtomic(join(jobDir(id), "attached.json"), { attached: false, at: Date.now() });
+} catch {}
 
 /** Record who is watching; a worker that asked for it hears about changes (AT-5). */
 function setAttached(a: Attach | undefined): void {
@@ -136,8 +140,9 @@ function setAttached(a: Attach | undefined): void {
 	const now = a !== undefined;
 	if (was === now) return;
 	try {
-		const st = updateState(id, { attached: now });
-		if (st.attachSignal === true && workerAlive) proc.kill("SIGUSR2");
+		// a file of its own: the daemon rewrites state.json on every report
+		writeJsonAtomic(join(jobDir(id), "attached.json"), { attached: now, at: Date.now() });
+		if (readState(id)?.attachSignal === true && workerAlive) proc.kill("SIGUSR2");
 	} catch (err) {
 		log("attach signal failed", { error: String(err) });
 	}

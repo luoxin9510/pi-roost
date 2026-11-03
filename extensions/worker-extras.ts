@@ -148,11 +148,15 @@ export function registerSummaries(pi: ExtensionAPI, d: Deps): void {
 	});
 }
 
-/** Host-written attach flag: the host sets it, then signals the worker (SIGUSR2). */
+/**
+ * Host-written attach flag (its own file: state.json is the daemon's to rewrite).
+ * The host writes it, then signals the worker with SIGUSR2. The signal goes to the
+ * process the host started: launch pi directly, not through a wrapper without a handler.
+ */
 function attachedNow(): boolean {
 	const dir = process.env.PI_JOB_DIR;
 	if (!dir) return false;
-	return readJson<{ attached?: unknown }>(join(dir, "state.json"))?.attached === true;
+	return readJson<{ attached?: unknown }>(join(dir, "attached.json"))?.attached === true;
 }
 
 const GUARD = Symbol.for("pi-roost.sigusr2-guard");
@@ -201,9 +205,9 @@ export function registerRecap(pi: ExtensionAPI, d: Deps): void {
 		if (r.waitingFor === "question" && r.question) away.questions.push(r.question);
 	});
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		attached = attachedNow();
-		away = emptyAway();
+		if (event.reason !== "reload") away = emptyAway();
 		if (onSignal) process.off("SIGUSR2", onSignal);
 		onSignal = () => {
 			const now = attachedNow();

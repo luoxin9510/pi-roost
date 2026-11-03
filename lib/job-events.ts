@@ -80,7 +80,8 @@ export function resolveNotify(mode: NotifyMode | undefined, env: NodeJS.ProcessE
 	return "bell";
 }
 
-const clean = (s: string) => s.replace(/[\x00-\x1f\x7f;]+/g, " ").trim().slice(0, 200);
+// C0, DEL and C1 controls (U+009C ends an OSC in some terminals), and the OSC 777 separator
+const clean = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f;]+/g, " ").trim().slice(0, 200);
 
 /** NT-1: the bytes that make the terminal notify (empty for "off"). */
 export function notifySequence(mode: Exclude<NotifyMode, "auto">, title: string, body: string): string {

@@ -53,6 +53,8 @@ export function loadConfig(cwd: string): RoostConfig {
 	const project = pick(readJson(join(cwd, ".pi", "roost.json")));
 	// A cloned repository must not choose which of your environment reaches its workers.
 	delete project.envAllowList;
+	// nor which provider receives transcript excerpts (or what they cost)
+	delete project.summaryModel;
 	return { ...DEFAULTS, ...user, ...project };
 }
 

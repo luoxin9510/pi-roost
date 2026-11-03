@@ -38,6 +38,7 @@ export class Reporter {
 	private latest: WorkerReport | undefined;
 	private sent: WorkerReport | undefined;
 	private sentAt = 0;
+	private urgentPending = false;
 	private timer: NodeJS.Timeout | undefined;
 	private dueAt = Number.POSITIVE_INFINITY;
 	private inflight: Promise<void> | undefined;
@@ -51,8 +52,10 @@ export class Reporter {
 		this.onDeliver = onDeliver;
 	}
 
-	update(report: WorkerReport): void {
+	/** `urgent`: send now even when only the row text changed (a model summary). */
+	update(report: WorkerReport, urgent = false): void {
 		this.latest = report;
+		if (urgent) this.urgentPending = true;
 		this.schedule();
 	}
 
@@ -79,7 +82,7 @@ export class Reporter {
 
 	private schedule(): void {
 		if (this.closed || this.inflight || !this.latest || this.latest === this.sent) return;
-		const urgent = stateChanged(this.sent, this.latest);
+		const urgent = this.urgentPending || stateChanged(this.sent, this.latest);
 		if (!urgent && this.latest.summary === this.sent?.summary) return;
 		const due = urgent ? Date.now() : Math.max(Date.now(), this.sentAt + SUMMARY_INTERVAL_MS);
 		if (this.timer && due >= this.dueAt) return;
@@ -95,6 +98,7 @@ export class Reporter {
 		this.dueAt = Number.POSITIVE_INFINITY;
 		const report = this.latest;
 		if (!report || this.closed) return Promise.resolve();
+		this.urgentPending = false;
 		this.inflight = this.request(report).finally(() => {
 			this.inflight = undefined;
 		});
@@ -310,9 +314,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		ack: (seq) => reporter?.ack(seq),
 	});
 	// attachSignal: this worker handles the host's SIGUSR2 on attach and detach (AT-5)
-	const send = () => reporter?.update({ ...tracker.report(), attachSignal: true });
-	registerSummaries(pi, { tracker, send, ctx: () => current });
-	registerRecap(pi, { tracker, send, ctx: () => current });
+	const send = (urgent = false) => reporter?.update({ ...tracker.report(), attachSignal: true }, urgent);
 
 	pi.on("session_start", (event, ctx: ExtensionContext) => {
 		current = ctx;
@@ -397,6 +399,11 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		tracker.setModel(`${event.model.provider}/${event.model.id}`);
 		send();
 	});
+	// After the tracker's handlers: pi runs handlers in registration order, and these
+	// read the tracker's view of the same event (run ids, settled state).
+	registerSummaries(pi, { tracker, send: () => send(true), ctx: () => current });
+	registerRecap(pi, { tracker, send: () => send(), ctx: () => current });
+
 	pi.on("session_shutdown", async () => {
 		current = undefined;
 		stopKeys?.();

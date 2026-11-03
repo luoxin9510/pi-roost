@@ -5,7 +5,9 @@ Scope (PRD §10, second half of M5): SM-2, SM-4, DI-9, AT-5, NT-1, NT-2.
 ## Design
 
 - **Summary model (SM-2, SM-4)**: `summaryModel` ("provider/model-id", user
-  or project settings). The worker calls it through its own
+  settings only: a project must not choose which provider receives
+  transcript excerpts — prompts, replies and short tool output — or what
+  they cost). The worker calls it through its own
   `ctx.modelRegistry.complete()` (custom providers and auth apply; no
   hard-coded ids), 20 s timeout, failures ignored (heuristics stay, SM-3).
   - At turn end: one request with the transcript tail → JSON `{summary ≤ 80,
@@ -16,7 +18,8 @@ Scope (PRD §10, second half of M5): SM-2, SM-4, DI-9, AT-5, NT-1, NT-2.
 - **Auto-name (DI-9)**: an unnamed session is named from its first prompt
   (2–5 words) with `pi.setSessionName`; without a summary model the
   first-six-words fallback stays.
-- **Recap (AT-5)**: the host records `attached` in the job state and, for a
+- **Recap (AT-5)**: the host records `attached` in `attached.json` (its own
+  file; the daemon rewrites `state.json` on every report) and, for a
   worker that reported `attachSignal`, sends it SIGUSR2 on attach and on
   detach. While nobody is attached the worker counts finished turns,
   failures, tools and questions; on attach it appends a TUI-only
@@ -51,3 +54,23 @@ fire once, notification sequences, away list).
 The host test "survives garbage from a client" failed twice under full
 load (status request racing the teardown of the bad connection); it now
 retries the status request and still requires the host to be alive.
+
+## Review fixes (PR #6)
+
+- The summaries and recap handlers ran before the tracker's own handlers
+  for the same event: progress lines were always dropped (stale run id) and
+  the recap never counted failures or questions. They are now registered
+  after it; `test/worker-wiring.test.ts` drives the real event order.
+- A model summary is sent at once instead of waiting for the 15 s row-text
+  throttle.
+- `summaryModel` is user-only; `attached` moved to `attached.json`; `/reload`
+  keeps the away log; notification text also drops C1 controls.
+- Known: when the model corrects the heuristics (done ↔ question), the row
+  changes a second time a few seconds after the turn, so NT-1/NT-2 can fire
+  twice (completed, then needs input). Inside tmux, OSC 9 needs passthrough;
+  `notify: bell` works everywhere.
+
+The live run above used a project `.pi/roost.json` for `summaryModel`;
+after this change the same setting goes in `~/.pi/agent/roost.json`.
+
+Automated: 14 files, 112 tests.

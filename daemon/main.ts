@@ -430,7 +430,6 @@ async function respawn(
 			stopRequested: false,
 			reaped: false,
 			attachSignal: false,
-			attached: false,
 			restartedAt: now,
 			command,
 			restore,
