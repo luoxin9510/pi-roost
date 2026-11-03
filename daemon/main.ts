@@ -16,6 +16,7 @@ import {
 	type Event,
 	type JobRow,
 	LineReader,
+	type WorkerReport,
 	encodeLine,
 } from "../lib/protocol.ts";
 import {
@@ -101,6 +102,7 @@ function rowOf(id: string): JobRow | undefined {
 	const st = readState(id);
 	if (!rec || !st) return undefined;
 	const live = roster.has(id);
+	const text = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
 	return {
 		id,
 		cwd: rec.cwd,
@@ -108,11 +110,17 @@ function rowOf(id: string): JobRow | undefined {
 		startedAt: st.startedAt,
 		state: st.state,
 		pid: live ? (st.workerPid ?? null) : null,
-		status: null,
-		waitingFor: null,
+		// status and waitingFor describe a live worker only (PRD §6.8)
+		status: live ? ((st.status as JobRow["status"]) ?? null) : null,
+		waitingFor: live ? ((st.waitingFor as JobRow["waitingFor"]) ?? null) : null,
 		sessionFile: rec.sessionFile,
-		name: rec.name,
+		name: text(st.displayName) ?? rec.name,
 		endedAt: st.endedAt ?? null,
+		summary: text(st.summary),
+		question: text(st.question),
+		choices: Array.isArray(st.choices) ? st.choices.filter((c): c is string => typeof c === "string") : [],
+		model: text(st.model) ?? rec.model ?? null,
+		error: text(st.error),
 	};
 }
 
@@ -139,13 +147,18 @@ function finalize(id: string, why: string): void {
 	}
 	const ex = readExit(id);
 	const stopReq = stopping.has(id) || st.stopRequested === true;
-	const patch: Partial<JobState> = { endedAt: Date.now() };
+	const patch: Partial<JobState> = { endedAt: Date.now(), status: null, waitingFor: null, tool: null };
 	if (stopReq) patch.state = "stopped";
-	else if (ex) patch.state = ex.code === 0 ? "done" : "failed";
-	else {
+	else if (!ex) {
 		patch.state = "failed";
 		patch.error = "host vanished";
-	}
+	} else if (ex.code !== 0) {
+		patch.state = "failed";
+		if (!st.error) patch.error = `worker exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}`;
+	} else if (typeof st.reportedAt === "number" && st.state !== "working") {
+		// The worker's last word stands: a finished, failed or waiting session stays so.
+		patch.state = st.state;
+	} else patch.state = "done";
 	try {
 		updateState(id, patch);
 	} catch (err) {
@@ -320,6 +333,39 @@ function resolve(query: unknown): string {
 	throw new OpError("ambiguous", `"${query}" is ambiguous: ${list}`);
 }
 
+const REPORT_STATES = new Set(["working", "blocked", "done", "failed"]);
+const REPORT_STATUS = new Set(["busy", "waiting", "idle"]);
+const REPORT_WAITING = new Set([null, "dialog", "question", "first-prompt"]);
+
+function acceptReport(args: { id?: unknown; token?: unknown; report?: Partial<WorkerReport> } | undefined): void {
+	const id = args?.id;
+	if (!str(id) || !recs.has(id)) throw new OpError("not_found", `no such job: ${String(id)}`);
+	const st = readState(id);
+	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
+	if (!roster.has(id) || stopping.has(id)) return; // ended or being stopped: the daemon owns the state now
+	const r = args.report;
+	if (!r || !REPORT_STATES.has(r.state as string) || !REPORT_STATUS.has(r.status as string)) {
+		throw new OpError("bad_request", "invalid report");
+	}
+	const opt = (v: unknown, max = 500) => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
+	const before = st.state;
+	updateState(id, {
+		state: r.state,
+		status: r.status,
+		waitingFor: REPORT_WAITING.has(r.waitingFor ?? null) ? (r.waitingFor ?? null) : null,
+		summary: opt(r.summary),
+		question: opt(r.question, 2000),
+		choices: Array.isArray(r.choices) ? r.choices.filter(str).slice(0, 20).map((c) => c.slice(0, 200)) : [],
+		tool: opt(r.tool, 100),
+		error: opt(r.error, 1000),
+		displayName: opt(r.name, 200),
+		model: opt(r.model, 200),
+		reportedAt: Date.now(),
+	});
+	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
+	pushJob(id);
+}
+
 function requireJob(args: unknown): string {
 	const id = (args as { id?: unknown } | undefined)?.id;
 	if (!str(id)) throw new OpError("bad_request", "id required");
@@ -420,6 +466,9 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			push({ event: "removed", id });
 			return { id };
 		}
+		case "report":
+			acceptReport(args);
+			return {};
 		case "shutdown":
 			setTimeout(() => void shutdown(!!args?.keepWorkers), 20);
 			return {};

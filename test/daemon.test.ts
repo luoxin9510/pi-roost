@@ -274,3 +274,79 @@ describe("daemon", () => {
 		await client.request("ping", {});
 	});
 });
+
+describe("worker reports", () => {
+	const report = (over: Record<string, unknown> = {}) => ({
+		state: "blocked" as const,
+		status: "waiting" as const,
+		waitingFor: "question" as const,
+		summary: "double-ended or single-ended reset?",
+		question: "double-ended or single-ended reset?",
+		choices: ["double", "single"],
+		tool: null,
+		error: null,
+		name: "reset question",
+		model: "x/y",
+		...over,
+	});
+
+	it("accepts a report with the job token and shows it in the row", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		await expect(client.request("report", { id, token: "nope", report: report() })).rejects.toMatchObject({ code: "unauthorized" });
+		await client.request("report", { id, token, report: report() });
+		const row = (await find(client, id))!;
+		expect(row).toMatchObject({
+			state: "blocked",
+			status: "waiting",
+			waitingFor: "question",
+			summary: "double-ended or single-ended reset?",
+			choices: ["double", "single"],
+			name: "reset question",
+			model: "x/y",
+		});
+		await expect(client.request("report", { id, token, report: report({ state: "bogus" }) })).rejects.toMatchObject({
+			code: "bad_request",
+		});
+	});
+
+	it("keeps the last reported state when the worker exits cleanly, clears live fields", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 1.5"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		await client.request("report", { id, token, report: report() });
+		const ended = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.endedAt ? r : undefined;
+		});
+		expect(ended.state).toBe("blocked");
+		expect(ended.status).toBeNull();
+		expect(ended.waitingFor).toBeNull();
+		expect(ended.summary).toBe("double-ended or single-ended reset?");
+	});
+
+	it("a non-zero exit is failed even after a done report; stop wins over reports", async () => {
+		const { client } = await startDaemon();
+		const a = await client.request("dispatch", args("sleep 1; exit 3"));
+		const b = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, a.id))?.pid && (await find(client, b.id))?.pid);
+		const done = report({ state: "done", status: "idle", waitingFor: null, question: null, choices: [] });
+		await client.request("report", { id: a.id, token: readState(a.id)?.jobToken as string, report: done });
+		const failed = await waitFor(async () => {
+			const r = await find(client, a.id);
+			return r?.endedAt ? r : undefined;
+		});
+		expect(failed.state).toBe("failed");
+		expect(failed.error).toMatch(/code 3/);
+		await client.request("stop", { id: b.id });
+		await client.request("report", { id: b.id, token: readState(b.id)?.jobToken as string, report: done });
+		const stopped = await waitFor(async () => {
+			const r = await find(client, b.id);
+			return r?.endedAt ? r : undefined;
+		});
+		expect(stopped.state).toBe("stopped");
+	});
+});

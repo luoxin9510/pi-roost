@@ -8,8 +8,9 @@ terminal. Sessions keep running when the terminal closes.
 A plain pi package (extension + background daemon + PTY host). No changes to
 pi; targets stock pi ≥ 1.5.0 on Linux and macOS.
 
-Status: M0 spikes ([report](spikes/REPORT.md)) and M1 daemon + hosting
-([acceptance](docs/plans/m1-acceptance.md)) done.
+Status: M0 spikes ([report](spikes/REPORT.md)), M1 daemon + hosting
+([acceptance](docs/plans/m1-acceptance.md)) and M2 worker state
+([acceptance](docs/plans/m2-acceptance.md)) done.
 
 ## Layout
 
