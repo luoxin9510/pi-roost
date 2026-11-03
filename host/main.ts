@@ -1,0 +1,291 @@
+import { appendFileSync, chmodSync, existsSync, statSync, unlinkSync } from "node:fs";
+import { createRequire } from "node:module";
+import { createServer } from "node:net";
+import type { Socket } from "node:net";
+import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import xterm from "@xterm/headless";
+import pty from "node-pty";
+import { writeFileAtomic } from "../lib/atomic.ts";
+import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
+import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
+import { readJob, readState, screenPath, updateState, writeExit } from "../lib/store.ts";
+
+const { Terminal } = xterm;
+
+const id = process.argv[2];
+if (!id) {
+	console.error("usage: host <jobId>");
+	process.exit(2);
+}
+
+const logFile = join(jobDir(id), "host.log");
+function log(msg: string, extra: Record<string, unknown> = {}): void {
+	try {
+		appendFileSync(logFile, `${JSON.stringify({ t: Date.now(), msg, ...extra })}\n`);
+	} catch {}
+}
+
+process.on("uncaughtException", (err) => log("uncaughtException", { error: String(err?.stack ?? err) }));
+process.on("unhandledRejection", (err) => log("unhandledRejection", { error: String(err) }));
+process.on("SIGPIPE", () => {});
+
+const job = readJob(id);
+if (!job) {
+	console.error(`no such job: ${id}`);
+	process.exit(1);
+}
+ensureDirs();
+
+function fixSpawnHelper(): void {
+	try {
+		const pkg = createRequire(import.meta.url).resolve("node-pty/package.json");
+		const root = dirname(pkg);
+		const candidates = [
+			join(root, "prebuilds", `${process.platform}-${process.arch}`, "spawn-helper"),
+			join(root, "build", "Release", "spawn-helper"),
+		];
+		for (const file of candidates) {
+			try {
+				if (!existsSync(file)) continue;
+				if ((statSync(file).mode & 0o111) !== 0o111) chmodSync(file, 0o755);
+			} catch {}
+		}
+	} catch {}
+}
+fixSpawnHelper();
+
+let cols = 120;
+let rows = 30;
+const token = readState(id)?.jobToken;
+const env: Record<string, string> = {
+	...job.env,
+	TERM: "xterm-256color",
+	PI_JOB_ID: id,
+	...(typeof token === "string" ? { PI_JOB_TOKEN: token } : {}),
+	PI_DAEMON_SOCK: daemonSocketPath(),
+	PI_JOB_DIR: jobDir(id),
+};
+
+const [file, ...args] = job.command;
+let proc: pty.IPty;
+try {
+	proc = pty.spawn(file!, args, { name: "xterm-256color", cols, rows, cwd: job.cwd, env });
+} catch (err) {
+	log("spawn failed", { error: String(err) });
+	writeExit(id, { code: 1, signal: null, at: Date.now() });
+	process.exit(1);
+}
+log("spawned", { pid: proc.pid, command: job.command });
+try {
+	updateState(id, { workerPid: proc.pid });
+} catch {}
+
+const term = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
+let dirty = false;
+let workerAlive = true;
+
+function screenText(): string {
+	const buf = term.buffer.active;
+	const lines: string[] = [];
+	for (let y = 0; y < term.rows; y++) {
+		lines.push(buf.getLine(buf.viewportY + y)?.translateToString(true) ?? "");
+	}
+	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+	return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+}
+
+function flushScreen(): void {
+	try {
+		writeFileAtomic(screenPath(id!), screenText());
+		dirty = false;
+	} catch (err) {
+		log("screen write failed", { error: String(err) });
+	}
+}
+
+const screenTimer = setInterval(() => {
+	if (dirty) flushScreen();
+}, 2000);
+
+function resizeAll(c: number, r: number): void {
+	if (!Number.isInteger(c) || !Number.isInteger(r) || c < 1 || r < 1 || c > 1000 || r > 1000) return;
+	cols = c;
+	rows = r;
+	try {
+		proc.resize(c, r);
+	} catch {}
+	term.resize(c, r);
+	dirty = true;
+}
+
+interface Attach {
+	sock: Socket;
+	decoder: StringDecoder;
+}
+let attached: Attach | undefined;
+
+proc.onData((data) => {
+	term.write(data, () => {
+		dirty = true;
+	});
+	const a = attached;
+	if (a && !a.sock.destroyed) a.sock.write(encodeFrame(FrameType.DATA, data));
+});
+
+function kick(a: Attach, reason: "takeover" | "exit" | "request"): void {
+	if (attached === a) attached = undefined;
+	if (a.sock.destroyed) return;
+	a.sock.end(encodeJsonFrame(FrameType.DETACHED, { reason }));
+}
+
+let killTimer: NodeJS.Timeout | undefined;
+function terminateWorker(): void {
+	if (!workerAlive) return;
+	try {
+		proc.kill("SIGTERM");
+	} catch {}
+	killTimer ??= setTimeout(() => {
+		if (!workerAlive) return;
+		try {
+			process.kill(proc.pid, "SIGKILL");
+		} catch {}
+	}, 5000);
+}
+
+function control(sock: Socket, op: string): void {
+	let reply: unknown;
+	switch (op) {
+		case "snapshot":
+			reply = { text: screenText() };
+			break;
+		case "status":
+			reply = { workerPid: proc.pid, alive: workerAlive, attached: attached !== undefined, cols, rows };
+			break;
+		case "detach": {
+			const a = attached;
+			if (a) kick(a, "request");
+			reply = { detached: a !== undefined };
+			break;
+		}
+		case "terminate":
+			terminateWorker();
+			reply = { ok: true };
+			break;
+		default:
+			reply = { error: `unknown op: ${op}` };
+	}
+	sock.write(encodeJsonFrame(FrameType.REPLY, reply));
+}
+
+const sockPath = hostSocketPath(id);
+const sockets = new Set<Socket>();
+
+const server = createServer((sock) => {
+	sockets.add(sock);
+	sock.on("error", (err) => log("socket error", { error: String(err) }));
+	sock.on("close", () => {
+		sockets.delete(sock);
+		if (attached?.sock === sock) attached = undefined;
+	});
+	const decoder = new FrameDecoder();
+	let role: "attach" | "control" | undefined;
+	let me: Attach | undefined;
+	sock.on("data", (chunk) => {
+		try {
+			for (const frame of decoder.push(chunk)) {
+				if (!role) {
+					if (frame.type !== FrameType.HELLO) throw new Error("expected HELLO");
+					const hello = parseJsonPayload<{ role?: string; cols?: number; rows?: number }>(frame);
+					if (hello.role === "control") {
+						role = "control";
+					} else if (hello.role === "attach") {
+						role = "attach";
+						if (attached) kick(attached, "takeover");
+						me = { sock, decoder: new StringDecoder("utf8") };
+						attached = me;
+						if (hello.cols && hello.rows) resizeAll(hello.cols, hello.rows);
+						if (workerAlive && rows > 1) {
+							const r = rows;
+							try {
+								proc.resize(cols, r - 1);
+							} catch {}
+							setTimeout(() => {
+								try {
+									if (workerAlive) proc.resize(cols, r);
+								} catch {}
+							}, 30);
+						}
+					} else throw new Error("bad role");
+					continue;
+				}
+				if (role === "attach" && me) {
+					if (frame.type === FrameType.DATA) {
+						if (workerAlive) proc.write(me.decoder.write(frame.payload));
+					} else if (frame.type === FrameType.RESIZE) {
+						const r = parseJsonPayload<{ cols: number; rows: number }>(frame);
+						resizeAll(r.cols, r.rows);
+					} else throw new Error(`unexpected frame ${frame.type}`);
+				} else if (role === "control" && frame.type === FrameType.CONTROL) {
+					control(sock, parseJsonPayload<{ op: string }>(frame).op);
+				} else throw new Error(`unexpected frame ${frame.type}`);
+			}
+		} catch (err) {
+			log("client error", { error: String(err) });
+			sock.destroy();
+		}
+	});
+});
+server.on("error", (err) => log("server error", { error: String(err) }));
+
+try {
+	unlinkSync(sockPath);
+} catch {}
+server.listen(sockPath, () => {
+	try {
+		chmodSync(sockPath, 0o600);
+	} catch {}
+	log("listening", { sockPath });
+});
+
+let finishing = false;
+function finish(): void {
+	if (finishing) return;
+	finishing = true;
+	clearInterval(screenTimer);
+	if (killTimer) clearTimeout(killTimer);
+	flushScreen();
+	if (attached) kick(attached, "exit");
+	server.close();
+	try {
+		unlinkSync(sockPath);
+	} catch {}
+	const done = () => process.exit(0);
+	const safety = setTimeout(done, 1000);
+	safety.unref();
+	// let DETACHED reach the client before exiting
+	setTimeout(() => {
+		for (const s of sockets) s.destroy();
+		done();
+	}, 100);
+}
+
+proc.onExit(({ exitCode, signal }) => {
+	workerAlive = false;
+	log("worker exited", { exitCode, signal });
+	try {
+		writeExit(id, { code: exitCode, signal: signal ? String(signal) : null, at: Date.now() });
+	} catch (err) {
+		log("exit write failed", { error: String(err) });
+	}
+	// let pending terminal writes land before the final snapshot
+	term.write("", () => finish());
+});
+
+function onSignal(): void {
+	log("signal");
+	terminateWorker();
+	setTimeout(() => process.exit(0), 6000).unref();
+}
+process.on("SIGTERM", onSignal);
+process.on("SIGHUP", onSignal);
