@@ -68,6 +68,8 @@ export interface AgentViewOptions {
 	banner?: string;
 	/** Screen-reader mode: no animation (PRD accessibility). */
 	reducedMotion?: boolean;
+	/** Render exactly the terminal's height: list at the top, input and keys at the bottom. */
+	fullscreen?: boolean;
 	done: () => void;
 }
 
@@ -928,8 +930,19 @@ export class AgentView implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		const lines = this.renderLines(width);
+		return this.o.fullscreen ? fitScreen(lines, this.o.tui.terminal.rows || 30, this.selLine, this.bottomFrom) : lines;
+	}
+
+	/** In render: the line of the selected row and the first line of the bottom (input, keys). */
+	private selLine = -1;
+	private bottomFrom = -1;
+
+	private renderLines(width: number): string[] {
 		const t = this.o.theme;
 		const w = Math.max(1, width);
+		this.selLine = -1;
+		this.bottomFrom = -1;
 		const now = Date.now();
 		// the peeked row vanished (deleted, folded, collapsed): never reply to another one
 		if (this.peek && !this.itemList().some((it) => it.kind === "row" && it.row.id === this.peekId)) this.closePeek();
@@ -962,16 +975,22 @@ export class AgentView implements Component {
 				const s = it.section;
 				const label = `${s.collapsed ? "▸" : "▾"} ${s.title}${s.rows.length || s.hidden ? ` (${s.rows.length + s.hidden})` : ""}`;
 				const hint = empty ? t.fg("dim", `  ${s.hint}`) : "";
+				if (isSel) this.selLine = out.length;
 				out.push(this.mark(isSel, truncateToWidth(t.bold(label) + hint, Math.max(1, w - 2))));
 				return;
 			}
+			if (isSel) this.selLine = out.length;
 			out.push(truncateToWidth(this.mark(isSel, this.rowLine(it.row, Math.max(1, w - 2), now)), w));
 			const lastOfSection = list[i + 1]?.kind !== "row" || list[i + 1]?.section !== it.section;
 			if (lastOfSection && it.section.hidden > 0) out.push(truncateToWidth(`  ${t.fg("dim", `… ${it.section.hidden} more`)}`, w));
 			if (isSel && this.peek) out.push(...this.peekLines(it.row, w, now));
 		});
 
+		// a peek's lines belong with its row; the input and keys stay at the bottom
+		const peekEnd = this.peek ? out.length : -1;
 		out.push("");
+		this.bottomFrom = out.length;
+		if (peekEnd !== -1 && this.selLine !== -1) this.selLine = Math.min(this.selLine, peekEnd - 1);
 		if (this.renaming) out.push(...this.renameInput.render(w));
 		else if (!this.peek) {
 			out.push(...this.input.render(w));
@@ -1080,6 +1099,29 @@ export class AgentView implements Component {
 			t.fg("dim", "any key to close"),
 		];
 	}
+}
+
+/**
+ * Full screen: exactly `rows` lines. The bottom block (input, notices, keys) is pinned
+ * to the last lines; the top block keeps its first two lines (title, rule) and scrolls
+ * the rest so the selected line stays visible. Lines from `bottom` on are the bottom
+ * block (-1: none, as in the picker and help, which just fill from the top).
+ */
+export function fitScreen(lines: string[], rows: number, selected: number, bottom: number): string[] {
+	const height = Math.max(1, rows);
+	const top = bottom === -1 ? lines : lines.slice(0, bottom);
+	const foot = bottom === -1 ? [] : lines.slice(bottom).slice(-height);
+	const room = height - foot.length;
+	let body = top;
+	if (top.length > room) {
+		const keep = Math.min(2, room);
+		const rest = room - keep;
+		const sel = Math.max(keep, Math.min(selected, top.length - 1));
+		// show the selection with as much above it as fits, never past the end
+		const start = Math.min(Math.max(keep, sel - rest + 1 + Math.floor(rest / 3)), top.length - rest);
+		body = [...top.slice(0, keep), ...top.slice(Math.max(keep, start), Math.max(keep, start) + rest)];
+	}
+	return [...body, ...Array(Math.max(0, room - body.length)).fill(""), ...foot].slice(0, height);
 }
 
 // Control characters other than newlines would corrupt the line-based renderer.

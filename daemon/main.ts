@@ -474,6 +474,10 @@ async function respawn(
 }
 
 /** DI-6: a shell job's row shows its latest output line; ended ones go after a while. */
+// the worker pid each shell row was last pushed with: a command that prints nothing
+// still has to show (and attach) once its host is up
+const shellPids = new Map<string, number | null>();
+
 function shellTick(): void {
 	const now = Date.now();
 	for (const [id, rec] of recs) {
@@ -487,11 +491,15 @@ function shellTick(): void {
 				log("info", "shell job expired", { id });
 				push({ event: "removed", id });
 			}
+			shellPids.delete(id);
 			continue;
 		}
 		const line = lastScreenLine(id);
-		if (line && line !== st.summary) {
-			updateState(id, { summary: line });
+		const pid = readWorkerPid(id) ?? null;
+		const changed = Boolean(line && line !== st.summary);
+		if (changed) updateState(id, { summary: line });
+		if (changed || shellPids.get(id) !== pid) {
+			shellPids.set(id, pid);
 			pushJob(id);
 		}
 	}

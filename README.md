@@ -43,6 +43,9 @@ The installed copy is separate from the checkout: run `npm run install:local` ag
 update it (it stops the daemon first). Don't also pass `-e ./extensions/index.ts` while it
 is installed. Uninstall with `pi remove ~/.pi/agent/local-packages/pi-roost`.
 
+The agent view covers the whole terminal. Put `{"fullscreen": false}` in
+`~/.pi/agent/roost.json` to show it below the conversation instead.
+
 ## Try it (development)
 
 ```sh

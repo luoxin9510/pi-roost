@@ -54,6 +54,9 @@ export function attachToHost(socketPath: string, io: AttachIO): Promise<DetachRe
 
 		sock = connect(socketPath);
 		sock.on("connect", () => {
+			// the host repaints what its program drew; a blank one (a silent command) must not
+			// leave the previous screen showing
+			stdout.write("\x1b[2J\x1b[H");
 			sock?.write(encodeJsonFrame(FrameType.HELLO, { role: "attach", ...size() }));
 			if (stdin.isTTY) stdin.setRawMode(true);
 			stdin.on("data", onInput);

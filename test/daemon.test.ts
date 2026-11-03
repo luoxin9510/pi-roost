@@ -625,6 +625,19 @@ describe("shell jobs (DI-6)", () => {
 		delete process.env.PI_ROOST_SHELL_KEEP_MS;
 	});
 
+	it("a command that prints nothing is pushed with its pid once it runs", async () => {
+		const { client } = await startDaemon();
+		const events: Event[] = [];
+		await client.request("subscribe", {});
+		client.onEvent((e) => events.push(e));
+		const { id } = await client.request("dispatch", { ...args("sleep 5"), kind: "shell", sessionFile: "" });
+		await waitFor(
+			async () => events.some((e) => e.event === "job" && e.job.id === id && e.job.pid !== null) || undefined,
+			8000,
+		);
+		await client.request("stop", { id });
+	});
+
 	it("a failing command ends failed with its exit code", async () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", { ...args("exit 4"), kind: "shell", sessionFile: "" });
