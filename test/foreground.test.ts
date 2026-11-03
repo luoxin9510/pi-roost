@@ -42,29 +42,34 @@ function fakePi() {
 	const emit = (name: string, event: any = {}, ctx?: any) => {
 		for (const h of handlers.get(name) ?? []) h(event, ctx);
 	};
-	return { pi: pi as any, emit, commands };
+	const emitAsync = async (name: string, event: any = {}, ctx?: any) => {
+		for (const h of handlers.get(name) ?? []) await h(event, ctx);
+	};
+	return { pi: pi as any, emit, emitAsync, commands };
 }
 
 const editor = { getText: () => "", setText() {}, onSubmit: () => {} };
 const selector = { handleInput() {}, render: () => [] };
 
 let sessionFile = "";
+let selectAnswer: (options: string[]) => string | undefined = () => undefined;
 function fakeCtx(file = sessionFile) {
 	let stale = false;
 	let editorText = "";
 	let focused: unknown = editor;
-	let input: ((data: string) => any) | undefined;
+	let inputs: ((data: string) => any)[] = [];
 	const notes: string[] = [];
 	const ui = {
+		select: async (_title: string, options: string[]) => selectAnswer(options),
 		notify: (t: string) => notes.push(t),
 		setStatus() {},
 		setWidget(_k: string, f: (tui: any) => unknown) {
 			f({ getFocusedComponent: () => focused });
 		},
 		onTerminalInput(fn: (d: string) => any) {
-			input = fn;
+			inputs.push(fn);
 			return () => {
-				input = undefined;
+				inputs = inputs.filter((x) => x !== fn);
 			};
 		},
 		getEditorText: () => editorText,
@@ -72,7 +77,7 @@ function fakeCtx(file = sessionFile) {
 			editorText = t;
 		},
 	};
-	const calls = { abort: 0, newSession: 0, switches: [] as string[] };
+	const calls = { abort: 0, newSession: 0, switches: [] as string[], shutdown: 0 };
 	const ctx = {
 		hasUI: true,
 		cwd: "/work",
@@ -85,6 +90,9 @@ function fakeCtx(file = sessionFile) {
 			calls.abort++;
 		},
 		waitForIdle: async () => {},
+		shutdown: () => {
+			calls.shutdown++;
+		},
 		switchSession: async (path: string, opts?: { withSession?: (next: any) => Promise<void> }) => {
 			calls.switches.push(path);
 			stale = true;
@@ -97,7 +105,14 @@ function fakeCtx(file = sessionFile) {
 		ctx,
 		calls,
 		notes,
-		press: (data: string) => input?.(data),
+		// like pi: listeners in order, the first answer wins
+		press: (data: string) => {
+			for (const fn of inputs) {
+				const r = fn(data);
+				if (r !== undefined) return r;
+			}
+			return undefined;
+		},
 		focus: (c: unknown) => {
 			focused = c;
 		},
@@ -238,5 +253,68 @@ describe("footerText", () => {
 		expect(footerText("←", { waiting: 2, done: 1 }, 0)).toBe("← 2 agents");
 		expect(footerText("←", { waiting: 0, done: 3 }, 1)).toBe("← 2 done");
 		expect(footerText("←", { waiting: 0, done: 1 }, 1)).toBeUndefined();
+	});
+});
+
+describe("BG-9 quit while busy", () => {
+	it("Ctrl+D during a turn offers to move it; the daemon adopts the file after pi lets go", async () => {
+		const { pi, emit, emitAsync } = fakePi();
+		registerForeground(pi);
+		const f = fakeCtx();
+		emit("session_start", { reason: "resume" }, f.ctx);
+		emit("agent_start");
+		selectAnswer = (o) => o[0]; // Move to background and exit
+		f.ctx.abort = () => {
+			f.calls.abort++;
+			emit("agent_settled", { aborted: true });
+		};
+		expect(f.press("\x04")).toEqual({ consume: true });
+		await new Promise((r) => setTimeout(r, 20));
+		expect(f.calls.abort).toBe(1);
+		expect(f.calls.shutdown).toBe(1);
+		await emitAsync("session_shutdown", { reason: "quit" });
+		expect(dispatched.at(-1)).toMatchObject({ sessionFile, origin: "adopt", name: "my chat" });
+		expect((dispatched.at(-1) as { command: string[] }).command.at(-1)).toBe("Continue where you left off.");
+	});
+
+	it("Exit stops the turn before quitting; Move before the first reply is refused", async () => {
+		const { pi, emit } = fakePi();
+		registerForeground(pi);
+		const f = fakeCtx();
+		emit("session_start", { reason: "resume" }, f.ctx);
+		emit("agent_start");
+		selectAnswer = (o) => o[1]; // Exit (stops the turn)
+		f.ctx.abort = () => {
+			f.calls.abort++;
+			emit("agent_settled", { aborted: true });
+		};
+		f.press("\x04");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(f.calls.abort).toBe(1);
+		expect(f.calls.shutdown).toBe(1);
+
+		const g = fakeCtx(join(home, "never-written.jsonl"));
+		const second = fakePi();
+		registerForeground(second.pi);
+		second.emit("session_start", { reason: "startup" }, g.ctx);
+		second.emit("agent_start");
+		selectAnswer = (o) => o[0]; // Move
+		g.press("\x04");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(g.calls.shutdown).toBe(0);
+		expect(g.notes.join()).toMatch(/not saved until its first reply/);
+	});
+
+	it("does nothing special when idle or on Cancel", async () => {
+		const { pi, emit } = fakePi();
+		registerForeground(pi);
+		const f = fakeCtx();
+		emit("session_start", { reason: "resume" }, f.ctx);
+		expect(f.press("\x04")).toBeUndefined(); // idle: pi's own Ctrl+D
+		emit("agent_start");
+		selectAnswer = () => "Cancel";
+		expect(f.press("\x04")).toEqual({ consume: true });
+		await new Promise((r) => setTimeout(r, 20));
+		expect(f.calls.shutdown).toBe(0);
 	});
 });

@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Input, parseKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
@@ -114,6 +118,8 @@ export class AgentView implements Component {
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
 	private groupBy: "state" | "directory" = "state";
+	/** Ctrl+G: a multi-line task from $EDITOR, shown in the input as its first line. */
+	private longTask: { text: string; shown: string } | undefined;
 	/** DI-4: defaults for the next dispatches. */
 	private model: string | undefined;
 	private thinking: string | undefined;
@@ -318,6 +324,9 @@ export class AgentView implements Component {
 				return;
 			case "ctrl+r":
 				return this.startRename();
+			case "ctrl+g":
+				if (this.peek) break;
+				return void this.editExternally();
 			case "alt+up":
 				return this.jumpHeader(-1);
 			case "alt+down":
@@ -466,6 +475,48 @@ export class AgentView implements Component {
 			return;
 		}
 		return this.attachSelected();
+	}
+
+	/** Ctrl+G: write the task in $VISUAL / $EDITOR (P2 row "Ctrl+G external editor"). */
+	private async editExternally(): Promise<void> {
+		const editor = process.env.VISUAL || process.env.EDITOR;
+		if (!editor) return this.say("set $VISUAL or $EDITOR to edit the task in an editor", "warning");
+		const current = this.longTask && this.longTask.shown === this.input.getValue() ? this.longTask.text : this.input.getValue();
+		const { tui } = this.o;
+		let text: string | undefined;
+		let dir: string | undefined;
+		let stopped = false;
+		try {
+			dir = mkdtempSync(join(tmpdir(), "pi-roost-task-"));
+			const file = join(dir, "task.md");
+			writeFileSync(file, current);
+			this.attached = true; // the terminal belongs to the editor
+			tui.stop();
+			stopped = true;
+			// $VISUAL may carry arguments ("code -w"): a shell line, with the file quoted
+			const r = spawnSync(`${editor} '${file.replace(/'/g, "'\\''")}'`, { stdio: "inherit", shell: true });
+			if (r.status === 0) text = readFileSync(file, "utf8").replace(/\s+$/, "");
+		} catch (err) {
+			this.say(`could not open the editor: ${(err as Error).message}`, "error");
+		} finally {
+			this.attached = false;
+			if (stopped) {
+				tui.start();
+				tui.requestRender(true);
+			}
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+		if (text === undefined) return this.say("editor exited with an error; task unchanged", "warning");
+		const lines = text.split("\n");
+		if (lines.length > 1) {
+			const shown = `${oneLine(lines[0] ?? "")} [+${lines.length - 1} lines]`;
+			this.longTask = { text, shown };
+			fill(this.input, shown);
+		} else {
+			this.longTask = undefined;
+			fill(this.input, text);
+		}
+		this.o.tui.requestRender();
 	}
 
 	// ---- in-view commands (DI-4) -----------------------------------------
@@ -729,7 +780,10 @@ export class AgentView implements Component {
 	private async dispatch(attach: boolean): Promise<void> {
 		if (this.dispatching) return;
 		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
-		const typed = this.input.getValue();
+		const shown = this.input.getValue();
+		// a task written in $EDITOR keeps its line breaks as long as the input is untouched
+		const typed = this.longTask && this.longTask.shown === shown ? this.longTask.text : shown;
+		this.longTask = undefined;
 		const base = this.dispatchCwd();
 		const parsed = parseInput(typed, base);
 		if (parsed.kind === "command") {
@@ -1009,6 +1063,7 @@ export class AgentView implements Component {
 			["Alt+↑ Alt+↓", "previous / next group"],
 			["Alt+1…9", "attach to row N of this directory"],
 			["Ctrl+F", "find by name (n:)"],
+			["Ctrl+G", "write the task in $VISUAL / $EDITOR"],
 			["s: n: o:", "filter by state, name, result; combine with spaces"],
 			["@dir task", "start the task in that directory (Tab completes)"],
 			["! command", "run a shell command as a job"],

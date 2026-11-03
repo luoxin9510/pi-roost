@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Agent view for pi: one screen for every background pi session \u2014 dispatch, peek, reply, attach, detach",
+  "description": "Agent view for pi: one screen for every background pi session — dispatch, peek, reply, attach, detach",
   "keywords": [
     "pi-package",
     "pi",
@@ -53,5 +53,12 @@
     "lib",
     "dist",
     "README.md"
-  ]
+  ],
+  "exports": {
+    "./api": {
+      "types": "./dist/lib/api.d.ts",
+      "default": "./dist/lib/api.js"
+    },
+    "./package.json": "./package.json"
+  }
 }
