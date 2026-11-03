@@ -192,6 +192,63 @@ export function headerText(c: Counts): string {
 	return `${c.needsInput} needs input · ${c.working} working · ${c.completed} completed`;
 }
 
+// ---- M8: model and context window ---------------------------------------
+
+/** Context use from this share on is shown as a warning, and as an error from the next. */
+export const CONTEXT_WARN_PERCENT = 80;
+export const CONTEXT_ERROR_PERCENT = 95;
+
+/** "anthropic/claude-haiku-4-5-20251001" → "claude-haiku-4-5": the id, without a date suffix. */
+export function shortModel(model: string): string {
+	const at = model.indexOf("/");
+	const id = at > 0 ? model.slice(at + 1) : model;
+	return id.replace(/[-@](?:20\d{6}|\d{4}-\d{2}-\d{2})$/, "") || id;
+}
+
+/** 950 → "950", 86_400 → "86k", 1_000_000 → "1M", 1_250_000 → "1.3M". */
+export function formatTokens(n: number): string {
+	if (n < 1000) return String(Math.round(n));
+	if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+	return `${Math.round(n / 100_000) / 10}M`;
+}
+
+export function contextToneOf(percent: number | null): Tone {
+	if (percent === null) return "dim";
+	if (percent >= CONTEXT_ERROR_PERCENT) return "error";
+	if (percent >= CONTEXT_WARN_PERCENT) return "warning";
+	return "dim";
+}
+
+export interface RowDetails {
+	model: string | null;
+	/** "43%", "?%" after a compaction, or null when the window is unknown. */
+	context: string | null;
+	tone: Tone;
+}
+
+/** The short right-hand column of a row; null when there is nothing to show (shell jobs). */
+export function rowDetailsOf(row: JobRow): RowDetails | null {
+	if (row.kind === "shell") return null;
+	const model = row.model ? shortModel(row.model) : null;
+	const c = row.context;
+	const context = c ? (c.percent === null ? "?%" : `${Math.round(c.percent)}%`) : null;
+	if (!model && !context) return null;
+	return { model, context, tone: contextToneOf(c?.percent ?? null) };
+}
+
+/** The peek's full line: "anthropic/claude-opus-5-5 · thinking high · ctx 86k / 200k (43%)". */
+export function modelFacts(row: JobRow): string[] {
+	const out: string[] = [];
+	if (row.model) out.push(row.model);
+	if (row.thinking) out.push(`thinking ${row.thinking}`);
+	const c = row.context;
+	if (c) {
+		if (c.tokens === null || c.percent === null) out.push(`ctx ? / ${formatTokens(c.window)} (compacted; known after the next reply)`);
+		else out.push(`ctx ${formatTokens(c.tokens)} / ${formatTokens(c.window)} (${Math.round(c.percent)}%)`);
+	}
+	return out;
+}
+
 /** AV-6 terminal title. */
 export function titleText(c: Counts): string {
 	return c.needsInput > 0 ? `${c.needsInput} awaiting input · pi agents` : "pi agents";

@@ -16,6 +16,8 @@ export interface RoostConfig {
 	groupBy: "state" | "directory";
 	/** The agent view covers the whole terminal (false: below the conversation, like the editor). */
 	fullscreen: boolean;
+	/** M8: each row shows its model and context window use. */
+	rowDetails: boolean;
 	/** NT-1: how the agent view makes the terminal notify. */
 	notify: "auto" | "osc9" | "osc777" | "bell" | "off";
 }
@@ -27,6 +29,7 @@ export const DEFAULTS: RoostConfig = {
 	envAllowList: [],
 	groupBy: "state",
 	fullscreen: true,
+	rowDetails: true,
 	notify: "auto",
 };
 
@@ -42,6 +45,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	}
 	if (Array.isArray(r.envAllowList)) out.envAllowList = r.envAllowList.filter((v): v is string => typeof v === "string");
 	if (typeof r.fullscreen === "boolean") out.fullscreen = r.fullscreen;
+	if (typeof r.rowDetails === "boolean") out.rowDetails = r.rowDetails;
 	if (r.groupBy === "state" || r.groupBy === "directory") out.groupBy = r.groupBy;
 	if (r.notify === "auto" || r.notify === "osc9" || r.notify === "osc777" || r.notify === "bell" || r.notify === "off") {
 		out.notify = r.notify;

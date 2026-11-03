@@ -24,6 +24,8 @@ function row(over: Partial<JobRow> = {}): JobRow {
 		question: null,
 		choices: [],
 		model: "p/m",
+		thinking: null,
+		context: null,
 		error: null,
 		stateSince: now - 30_000,
 		reaped: false,
@@ -326,6 +328,88 @@ describe("AgentView dispatch (M6b)", () => {
 		const shell = client.requests.filter((r) => r.op === "dispatch").at(-1)?.args as { kind?: string; command: string[] };
 		expect(shell.kind).toBe("shell");
 		expect(shell.command).toEqual(["sh", "-lc", "npm test"]);
+		view.dispose();
+	});
+});
+
+describe("AgentView model and context (M8)", () => {
+	it("rows show the model and context share while there is room; the peek shows all of it", async () => {
+		const a = row({ name: "fix login", model: "anthropic/claude-opus-5-5", thinking: "high", context: { tokens: 86_000, window: 200_000, percent: 43 } });
+		const { view } = setup([a]);
+		await view.start();
+		const wide = view.render(100).find((l) => l.includes("fix login"))!;
+		expect(wide).toContain("claude-opus-5-5 · 43%");
+		expect(visibleWidth(wide)).toBeLessThanOrEqual(100);
+		// narrow: the share alone, then nothing; the summary keeps its room
+		const mid = view.render(64).find((l) => l.includes("fix login"))!;
+		expect(mid).toContain("43%");
+		expect(mid).not.toContain("claude-opus");
+		const narrow = view.render(44).find((l) => l.includes("fix login"))!;
+		expect(narrow).not.toContain("43%");
+		view.handleInput(" "); // peek
+		expect(view.render(100).join("\n")).toContain("anthropic/claude-opus-5-5 · thinking high · ctx 86k / 200k (43%)");
+		view.dispose();
+	});
+
+	it("/model and /thinking in a peek switch that session (picker when bare) and never touch new-session defaults", async () => {
+		const a = row({ name: "fix login", model: "a/one", thinking: "medium" });
+		const { view, client } = setup([a]);
+		await view.start();
+		view.handleInput(" ");
+		type(view, "/model");
+		view.handleInput("\r");
+		expect(view.render(80).join("\n")).toContain("Model for fix login");
+		view.handleInput("\x1b[B"); // a/one → b/two
+		view.handleInput("\r");
+		await sleep(10);
+		type(view, "/thinking low");
+		view.handleInput("\r");
+		await sleep(10);
+		type(view, "/model nope/x");
+		view.handleInput("\r");
+		await sleep(10);
+		const replies = client.requests.filter((r) => r.op === "reply").map((r) => r.args);
+		expect(replies).toEqual([
+			{ id: a.id, text: "/model b/two" },
+			{ id: a.id, text: "/thinking low" },
+		]);
+		const screen = view.render(80).join("\n");
+		expect(screen).toContain("unknown model nope/x");
+		expect(screen).not.toContain("new sessions:");
+		view.dispose();
+	});
+
+	it("the column lines up across rows, whatever the model name or age", async () => {
+		const now = Date.now();
+		const a = row({ name: "one", model: "anthropic/claude-haiku-5-5", context: { tokens: 1, window: 100, percent: 91 }, stateSince: now - 600_000 });
+		const b = row({ name: "two", model: "x/short", context: { tokens: 1, window: 100, percent: 4 }, stateSince: now - 5_000 });
+		const c = row({ name: "three", kind: "shell", model: null, stateSince: now - 5_000 });
+		const { view } = setup([a, b, c]);
+		await view.start();
+		const lines = view.render(100);
+		const at = (name: string, s: string) => lines.find((l) => l.includes(name))!.indexOf(s);
+		expect(at("one", "91%")).toBe(at("two", " 4%"));
+		expect(lines.find((l) => l.includes("three"))).not.toContain("%");
+		for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(100);
+		view.dispose();
+	});
+
+	it("rowDetails: false hides the column", async () => {
+		const a = row({ name: "fix login", model: "anthropic/claude-opus-5-5", context: { tokens: 1, window: 2, percent: 50 } });
+		const client = new FakeClient([a]);
+		const view = new AgentView({
+			tui: { terminal: { rows: 30, columns: 100 }, requestRender: () => {}, stop: () => {}, start: () => {} } as never,
+			theme: theme as never,
+			cwd: "/w",
+			launch: () => ({ cwd: "/w", sessionFile: "/s", command: [], env: {}, name: "x", origin: "dispatch" }),
+			setTitle: () => {},
+			connect: async () => client as unknown as DaemonClient,
+			done: () => {},
+			reducedMotion: true,
+			rowDetails: false,
+		});
+		await view.start();
+		expect(view.render(100).join("\n")).not.toContain("50%");
 		view.dispose();
 	});
 });

@@ -104,6 +104,7 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					if (seq) process.stdout.write(seq);
 				},
 				fullscreen: config.fullscreen,
+				rowDetails: config.rowDetails,
 				done: () => done(),
 			});
 			void view.start();

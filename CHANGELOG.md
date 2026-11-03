@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- Rows show each session's model and context window use (`claude-opus-5-5 · 43%`;
+  warning from 80%, error from 95%); the peek adds the thinking level and token counts.
+  `rowDetails: false` hides the column.
+- `/model` and `/thinking` in a peek switch that running session (bare: a picker).
+- `pi-roost --json`, `pi-roost/api` and the daemon's rows gain `thinking` and `context`.
+- Fix: a respawned session no longer goes back to the model and thinking level it was
+  dispatched with; it keeps the ones recorded in its session.
+
 ## [0.1.1] - 2026-11-03
 
 - README in English and Chinese, section by section.

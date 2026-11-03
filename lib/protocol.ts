@@ -5,6 +5,15 @@ export type JobStatus = null | "busy" | "waiting" | "idle";
 export type WaitingFor = null | "dialog" | "question" | "first-prompt";
 export type DispatchOrigin = "bg" | "dispatch" | "adopt" | "fork";
 
+/** M8: how full the session's context window is (pi's ctx.getContextUsage()). */
+export interface ContextInfo {
+	/** Estimated tokens in context; null right after a compaction, until the next reply. */
+	tokens: number | null;
+	window: number;
+	/** 0–100; null when tokens is unknown. */
+	percent: number | null;
+}
+
 export interface JobRow {
 	id: string;
 	cwd: string;
@@ -22,6 +31,10 @@ export interface JobRow {
 	question: string | null;
 	choices: string[];
 	model: string | null;
+	/** M8: the worker's thinking level (or the one it was started with). */
+	thinking: string | null;
+	/** M8: context window use as last reported; null for shell jobs and before the first report. */
+	context: ContextInfo | null;
 	error: string | null;
 	/** When the job entered its current state (for "waiting 3m"). */
 	stateSince: number;
@@ -47,6 +60,9 @@ export interface WorkerReport {
 	error: string | null;
 	name: string | null;
 	model: string | null;
+	/** M8; absent from workers before 0.2. */
+	thinking?: string | null;
+	context?: ContextInfo | null;
 	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
 	attachSignal?: boolean;
 }
@@ -133,6 +149,18 @@ export type Event =
 	| { event: "removed"; id: string }
 	/** Daemon → worker, on the connection the worker reports on. */
 	| { event: "deliver"; id: string; seq: number; text: string };
+
+/** A ContextInfo from untrusted JSON (a report, state.json), or null. */
+export function contextFrom(v: unknown): ContextInfo | null {
+	if (!v || typeof v !== "object") return null;
+	const o = v as Record<string, unknown>;
+	const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : null);
+	const window = num(o.window);
+	if (!window) return null;
+	const tokens = num(o.tokens);
+	const percent = num(o.percent);
+	return { tokens: tokens === null ? null : Math.round(tokens), window: Math.round(window), percent: percent === null ? null : Math.min(percent, 999) };
+}
 
 export class LineReader {
 	private decoder = new StringDecoder("utf8");
