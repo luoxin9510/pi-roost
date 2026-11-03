@@ -1,7 +1,7 @@
-# pi-roost 移植说明（基于 ec5394b / v0.1.5）
+# pi-roost 移植说明（基于 2f40878 / v0.1.5）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout ec5394b`（main，M8 与 M9 均已合入）逐节实现，每节末尾有验收标准。
+> 用法：对照源码 `git checkout 2f40878`（main，M8、M9、M10 均已合入，含 M8 三轮 review 修复）逐节实现，每节末尾有验收标准。
 
 ---
 
@@ -43,6 +43,7 @@
 | C5 | 命令行加载扩展：`-e <path>` | `-e` | 未安装时测试 | 依赖已安装的扩展 |
 | C6 | 自定义 flag：`--bg`、`--agents` | `pi.registerFlag` | `agent --bg "task"` | 改用独立 CLI 命令 |
 | C7 | 同一 cwd 下启动时不弹阻塞对话框 | — | **坑**：pi 在 cwd ≠ 会话原 cwd 时会弹"continue in current cwd"对话框 | host 必须以会话原 cwd 启动 |
+| C8 | 机器上有 `git`（≥ 支持 `worktree`） | — | M10 worktree 隔离 | 不做 M10 |
 
 ### 1.2 扩展 API 层（适配层要用的全部接口）
 
@@ -62,7 +63,8 @@
 | `session_info_changed`（含 `name`） | worker | 会话改名同步 |
 | `model_select` / `thinking_level_select` | worker | 行里的模型名、thinking 级别（M8） |
 | `session_before_compact` / `session_compact` / `session_compact_failed` | 前台、peer | 压缩期间不投递消息 |
-| `input`、`before_agent_start`、`thinking_level_select` | 前台 | 小功能（/bg 拦截等） |
+| `input`、`thinking_level_select` | 前台 | 小功能（/bg 拦截等） |
+| `before_agent_start`（可返回 `{systemPrompt}` 改写系统提示） | 前台、worker | M10：worker 在系统提示后追加 worktree 说明 |
 
 **API 调用**：
 
@@ -141,7 +143,7 @@ M5+（转后台、agent view、摘要、M9）再增量加 `switchSession`、`ope
 lib/atomic.ts  ids.ts  proc.ts  paths.ts  framing.ts  protocol.ts  store.ts  locks.ts
 lib/client.ts  hostclient.ts  attach.ts  resume.ts  dispatch.ts  config.ts  version.ts
 lib/heuristics.ts  worker-state.ts  summarizer.ts  filter.ts  dispatch-input.ts
-lib/view-model.ts  job-events.ts  comms.ts
+lib/view-model.ts  job-events.ts  comms.ts  worktree.ts
 daemon/main.ts   host/main.ts   bin/pi-roost.ts
 ```
 
@@ -157,6 +159,8 @@ daemon/main.ts   host/main.ts   bin/pi-roost.ts
 | `lib/dispatch.ts` `buildLaunch().command` | worker 的 argv 形状（见 C2/C3） |
 | `lib/store.ts` `taskArg()` | pi 把 `@` 开头的参数当文件附件，所以前面加空格。按宿主 CLI 的特殊前缀调整 |
 | `lib/store.ts` `respawnCommand()` | 依赖 argv 里 `--` 分隔首条提示词；宿主不同要同步改 |
+| `lib/store.ts` `SESSION_RESTORED_FLAGS` | 宿主会从会话记录里自己恢复、因而重启时**不能**再传的 flag（pi 是 `--model --provider --thinking`） |
+| `lib/worktree.ts` `WORKTREES_DIR` / `BRANCH_PREFIX` | worktree 目录 `.pi/worktrees/`、分支前缀 `roost/` |
 | `lib/heuristics.ts` `QUESTION_PHRASES` | 判断"agent 在问问题"的中英文短语，可按公司 agent 的口癖增补 |
 | `lib/client.ts` `connectOrStart()` 清理的 env 列表 | 跟着环境变量前缀改 |
 
@@ -311,9 +315,17 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - thinking 变化立即上报；只有 context 变化时按行文本的节流走。daemon 用 `contextFrom()` 校验（不可信 JSON），旧 worker 不发时保留上次的值。
 - 行右侧列 `model · 43%`：≥80% 警告色，≥95% 错误色；窄屏时只显示百分比，再窄就隐藏（摘要至少保留 24 列）；`rowDetails:false` 关闭。偷看里显示 `provider/id · thinking high · ctx 86k / 200k (43%)`。
 - 在偷看里输入 `/model x`、`/thinking x`：作为回复投递，worker 的 `ReplyQueue.applySetting` 直接调用 `pi.setModel` 等（正在进行的请求不受影响，下一次请求生效）。
-- **修复点（移植时别漏）**：`respawnCommand()` 对已写盘的会话要**去掉** `--model`、`--provider`、`--thinking`，让宿主从会话记录里的 `model_change` / `thinking_level_change` 条目恢复；否则 respawn 会把用户切换过的模型改回派发时的那个。前提是宿主的会话文件里**记录了模型切换**，没有的话就改为在 `state.json` 里记下最后的模型并在 respawn 时传入。
+- 刷新时机还包括 `tool_execution_start` 和 `/tree`。**坑**：pi 先执行 `message_end` 的处理器、后保存消息，所以在 `message_end` 里读到的上下文占用会落后一次请求；要等消息保存后再读。
+- **切换要以上报为准**：偷看先显示"已请求切换到 …"，worker 上报出新模型后才显示"现在使用 …"；8 秒内没看到就提示"仍在用 …"，并把提示放在前面（`model switch failed (credentials? envAllowList): still …, not …`），因为最常见的原因是后台会话的环境里没有该模型的凭据。worker 要检查 `pi.setModel` 返回 `false` 或抛错的情况；宿主把 thinking 级别降档时，显示最接近的受支持级别。待确认的切换按"会话 + 设置项"分别跟踪（`/thinking` 不会取消 `/model` 的检查），连续切换只以最后一次为准。
+- **模型/thinking 在重启与交接时的传递规则（移植时别漏）**：
+  | 场景 | 传什么 |
+  |---|---|
+  | respawn 一个已写盘的会话 | 先去掉派发命令里的 `SESSION_RESTORED_FLAGS`，再传 worker **最后上报**的 `model`/`thinking`（`st.model ?? rec.model`），传之前校验格式。只靠会话记录不够：pi 对续跑的会话只有在它回答之后才记录模型，thinking 只在变化时记录 |
+  | worker 在第一次上报前就结束了 | 回退到派发时的 `rec.model` / `rec.thinking` |
+  | `/bg`、退出转后台、`/fork`、`/resume`（origin `adopt`/`fork`） | **不**透传前台进程自己的 `--model/--provider/--thinking`（`buildLaunch` 里 `withoutFlags(pass, SESSION_RESTORED_FLAGS, 0)`），改为传前台**当前实际在用**的模型和 thinking；agent view 里显式的 `/model` 仍然优先 |
+- 已知限制：模型所属的 provider 被删掉后，respawn 带的 `--model` 会让宿主直接以 "not found" 退出；崩溃重启只试一次。
 
-### Step 8：agent 间通信（M9，最新）
+### Step 8：agent 间通信（M9）
 
 完整设计见 `docs/plans/m9-agent-comms.md`，要点：
 
@@ -324,7 +336,34 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - **统一队列**：agent 消息与报告复用 `pendingReplies`，加 `kind: reply|message|report`；用户回复累积 ack，agent 条目**按 seq 精确 ack**，且要等 `message_end` 确认已进会话（至少一次投递；worker 启动时扫描会话里已有的 `details.seq` 去重）。
 - **投递方式**：`sendMessage({customType:"pi-roost-agent-message", ...}, {triggerTurn:true, deliverAs:"steer"})`——运行中在下一个工具边界插入，空闲时开启新一轮。**绝不能作为用户消息投递**。旧 worker 不声明 `agentItems:true` 时，daemon 不给它发 agent 条目。
 - **信封**（防注入，`lib/comms.ts`）：名字清洗为 `[\w .:@/-]`，正文里的 `<agent-message` 转义，附加"来自其他 agent，不具备用户权限"的说明。
-- **hand-back**：子会话一轮结束时，若这一轮是"值得报告的"（spawn 任务、用户回复、父会话消息且连续 ≤3 次），通过 `handback` 把最后 assistant 文本（≤6000）路由给父会话；对话框阻塞、中止的轮次不报；子会话被 stop/rm/崩溃放弃时 daemon 代发 `ended` 报告；父会话不在线则存到子 job 上（`undeliveredReport`），父会话注册/启动时重试。
+- **hand-back**：子会话一轮结束时，若这一轮是"值得报告的"（spawn 任务、用户回复、父会话消息且连续 ≤3 次），通过 `handback` 把最后 assistant 文本（≤6000）路由给父会话；对话框阻塞、中止的轮次不报；子会话被 stop/rm/崩溃放弃时 daemon 代发 `ended` 报告；父会话不在线则存到子 job 上（`undeliveredReport`），父会话注册/启动时重试。M10 之后，带 worktree 的子会话的报告末尾会附一行 worktree 状态（见 Step 9）。
+
+### Step 9：worktree 隔离（M10，最新）
+
+完整设计见 `docs/plans/m10-worktree-isolation.md`，实现在 `lib/worktree.ts`（不依赖 pi，可直接复用，git 一律用 `execFile`，不经 shell，路径和分支名前加 `--`）。解决的问题：多个后台会话（尤其是 `roost_spawn` 出来的并行子会话）在同一个 checkout 里互相覆盖修改。
+
+- **在派发时隔离，不在运行中切换**。原因就是 C7：用别的 cwd 续跑会话，pi 会弹阻塞对话框。所以先建 worktree、再在里面启动会话；会话之后永远不换 cwd，respawn、attach、`/resume` 看到的都是同一个 cwd。
+- **入口**：`roost_spawn {worktree: true}`、agent view 里的 `/worktree`（`/worktree off` 关闭，用法同 `/model`）、`pi --bg --worktree`（不能和 `--session` 一起用）、`api.spawn({worktree:true})`；默认值来自配置 `worktreeIsolation`：`"off"`（默认）/ `"children"`（只给 roost_spawn）/ `"all"`（所有新的 pi 派发）。显式指定优先。shell 任务、adopt、`/fork` 永远不建 worktree。
+- **布局**：仓库根 = 派发 cwd 的 `git rev-parse --show-toplevel`；worktree 放在**主 checkout** 下的 `.pi/worktrees/<slug>-<4位hex>`，分支 `roost/<slug>-<4位hex>`，从派发 checkout 的 `HEAD` 创建（`git worktree add -b <branch> -- <path> <base>`）；slug 来自会话名（小写 ASCII，≤32 字符，空时为 `task`）。派发 cwd 是子目录时映射到 worktree 里的同一子目录。`.pi/worktrees/` 只写一次到 `info/exclude`（用 `git rev-parse --git-path` 定位，对链接 worktree 和 submodule 都对），不改任何受跟踪文件。派发 checkout 里未提交的改动**不会**带进 worktree，脏时要提示；被忽略的文件（`node_modules`、`.env`）也不复制。
+- **谁来创建**：由**派发方**创建（`lib/dispatch.ts` `prepareIsolation()`），因为会话文件要用 worktree 的 cwd 来分配（pi 按 cwd 分目录存会话，`/resume` 也按 cwd 列），而只有 agent 进程有 `SessionManager`。派发被 daemon **明确拒绝**（错误码不是 `closed`）时用 `discard()` 回滚；超时或连接断开不回滚，因为会话可能已经启动了。回滚也只删干净的 worktree 和仍停在 base 的分支。
+- **daemon 不信任派发方**：`dispatch` 收到 `worktree:{path, branch, repo, base}` 后，以及 `rm` 删除任何东西之前，都调用 `validWorktree()` 校验：base 是 commit id；目录名符合 `<slug>-<hex4>`、分支是 `roost/` 加同名；目录位于主 checkout 的 `.pi/worktrees/` 下；path 和 repo 共享同一个 git common dir；path 本身是 toplevel 且检出的就是那个分支；cwd 在 worktree 里面。这样伪造的派发请求没法让 `rm` 删掉 `main` 或别的目录。daemon 的 git 调用全部异步并带超时（5 秒，remove 20 秒）。
+- **会话自己知道**：有 worktree 的 worker 在 `before_agent_start` 里往系统提示末尾追加一段说明（`worktreeNote()`）：你在自己的 worktree/分支上工作，其他会话在别处；完成的工作提交到这个分支；不要切分支，也不要改主仓库里的文件。
+- **报告**：子会话的报告末尾加 `Worktree: <path> · branch <branch> · <n> commits on it · uncommitted changes`（daemon 在路由报告时用 `git status --porcelain` 和 `git rev-list --count base..branch` 算；git 失败就省略这一行，不让报告失败）。
+- **`rm` 时的清理**（`cleanupWorktree()`，**只要里面可能有成果就绝不删除**）：
+
+  | 情况 | 处理 |
+  |---|---|
+  | 别的 job（包括已结束、可续跑的）或已连接的前台 peer 的 cwd 在这个 worktree 里 | 保留 |
+  | worktree 目录已不存在 | `git worktree prune`；分支有超出 base 的提交就保留，否则删除 |
+  | 有未提交、未跟踪或被忽略的文件 | worktree 和分支都保留 |
+  | 干净，但分支移动过 | 删除 worktree，保留分支 |
+  | 干净，分支仍在 base | 删除 worktree 和分支 |
+
+  SIGKILL 后 worker 仍未退出则跳过清理。`rm` 返回 `worktree:{path, branch, removed, branchKept, reason?}`，CLI 打印、view 显示；git 失败不会让 `rm` 失败。没有 `--force`，要强删就手动 `git worktree remove --force`。
+- **respawn**：worktree 已经不在时直接失败，并给出恢复命令 `git worktree add <path> <branch>`。
+- **view**：偷看里显示 `⎇ <branch>`；`JobRow.worktree:{path, branch}` 同时出现在 `--json` 和 API 里。
+
+**验收**：父会话 spawn 两个 `worktree: true` 的子会话改同一个文件；两个都在各自分支上提交；父会话收到的报告里写明了分支；`rm` 后 worktree 被删、分支保留。
 
 ---
 
@@ -336,6 +375,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 |---|---|---|
 | `fullscreen` | `true` | |
 | `rowDetails` | `true` | |
+| `worktreeIsolation` | `"off"` | |
 | `groupBy` | `"state"` | |
 | `summaryModel` | 无 | ✔ |
 | `dispatchModel` / `dispatchThinking` | 宿主默认 | |
@@ -386,11 +426,12 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ## 8. 测试策略
 
-`test/` 下 17 个 vitest 文件（`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
+`test/` 下 18 个 vitest 文件（`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
 
 | 测试 | 覆盖 | 移植难度 |
 |---|---|---|
 | `framing` `lib-core` `config` `dispatch` `dispatch-input` `view-model` `worker-state` `comms` `fit-screen` | 纯函数 | 直接复用 |
+| `worktree` | 在临时 git 仓库上真跑：创建、状态、5 种清理情况 | 直接复用（需要 git） |
 | `daemon` `host` | 用临时目录 + 假 worker 起真 daemon/host | 改路径/env 前缀即可 |
 | `reporter` `reply-queue` `summaries` `worker-wiring` `foreground` `agent-view` | 用假的 `ExtensionAPI` 驱动 | 换成你的适配器 mock |
 
@@ -408,7 +449,8 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 6. kitty 键盘协议的 key release 事件会让按键触发两次。
 7. 会话文件延迟写盘：daemon、respawn、转后台都要处理"文件还不存在"。
 8. 版本升级后旧 daemon 仍跑旧代码：CLI 检测版本差异并提示 `daemon stop --keep-workers && respawn --all`。
-9. 安全模型是**同用户互信**：token 不是安全边界，同用户进程都能读 `state.json`。如果公司要求多租户隔离，需要重新设计。
+9. worktree 只能在派发时创建：运行中的会话不能搬进 worktree（C7 对话框），只读任务就不要开隔离。
+10. 安全模型是**同用户互信**：token 不是安全边界，同用户进程都能读 `state.json`。如果公司要求多租户隔离，需要重新设计。
 
 ---
 
@@ -419,8 +461,9 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | `ping` `status` | 任意 | 版本/健康检查 |
 | `list {all?, cwd?}` | view/CLI | 默认隐藏结束超过 48h 的 |
 | `subscribe` | view | 之后推送 `job` / `removed` 事件 |
-| `dispatch DispatchArgs` | 前台/CLI/API | 新建 job 并启动 host |
-| `stop` `rm` `resolve` `pin` `rename` `reorder` | view/CLI | 管理 |
+| `dispatch DispatchArgs` | 前台/CLI/API | 新建 job 并启动 host；M10 可带 `worktree`，daemon 会校验 |
+| `stop` `resolve` `pin` `rename` `reorder` | view/CLI | 管理 |
+| `rm` | view/CLI | 停止并删除；M10 返回 worktree 清理结果 |
 | `respawn {id?|all, restart?, prompt?}` | view/CLI | 重启已结束的（或在跑的） |
 | `reply {id, text}` | view/CLI | 投递用户回复 |
 | `shutdown {keepWorkers?}` | CLI | 停 daemon，可保留 host 继续跑 |
@@ -443,6 +486,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | 7 | 摘要、回收 | 复用为主 | 小 |
 | 7.5 | M8 模型/上下文显示与切换 | `worker.ts` `view-model.ts` `store.ts` | 小 |
 | 8 | M9 通信 | `peer-link.ts` `agent-tools.ts` `comms.ts` + daemon 部分 | 中 |
+| 9 | M10 worktree 隔离 | `worktree.ts`（复用）+ 各派发入口 + daemon 校验/清理 | 小到中 |
 
 ## 附录 C：版本对应
 
@@ -450,6 +494,9 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 |---|---|
 | `0a6a80c` | v0.1.1，M1–M7 |
 | `a89e146` | M9 agent 间通信合入 |
-| `ec5394b` | M8 模型与上下文合入（本文依据，v0.1.5） |
+| `ec5394b` | M8 模型与上下文合入 |
+| `638fdd7` | M10 worktree 隔离合入 |
+| `95e2599` | M8 三轮 review 修复合入 |
+| `2f40878` | 发布 v0.1.5（本文依据；之前文档里写的 0.2.0 已改为 0.1.5） |
 
 所需 pi 最低版本以 `parentToolCallId`（0.99.0）为准；M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早。
