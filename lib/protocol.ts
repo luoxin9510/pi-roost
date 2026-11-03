@@ -17,6 +17,26 @@ export interface JobRow {
 	sessionFile: string;
 	name: string;
 	endedAt: number | null;
+	/** Row text: a status sentence while working, the result or question after. */
+	summary: string | null;
+	question: string | null;
+	choices: string[];
+	model: string | null;
+	error: string | null;
+}
+
+/** What a worker reports about itself (full snapshot every time). */
+export interface WorkerReport {
+	state: "working" | "blocked" | "done" | "failed";
+	status: Exclude<JobStatus, null>;
+	waitingFor: WaitingFor;
+	summary: string | null;
+	question: string | null;
+	choices: string[];
+	tool: string | null;
+	error: string | null;
+	name: string | null;
+	model: string | null;
 }
 
 export interface DispatchArgs {
@@ -51,6 +71,7 @@ export interface OpArgs {
 	status: {};
 	shutdown: { keepWorkers?: boolean };
 	subscribe: {};
+	report: { id: string; token: string; report: WorkerReport };
 }
 
 export interface OpResults {
@@ -63,6 +84,7 @@ export interface OpResults {
 	status: DaemonStatus;
 	shutdown: {};
 	subscribe: {};
+	report: {};
 }
 
 export type Op = keyof OpArgs;

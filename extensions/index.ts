@@ -2,9 +2,10 @@ import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } fro
 import { DaemonClient } from "../lib/client.ts";
 import { allowListedEnv, fallbackName, passthroughArgs } from "../lib/dispatch.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
+import { jobIdentity, registerWorker } from "./worker.ts";
 
 // pi-roost entry: one extension, three roles (agent view, foreground, worker).
-// M1: `--bg` dispatch and the session writer lock (DM-8).
+// So far: `--bg` dispatch, the session writer lock (DM-8) and the worker role.
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
@@ -34,6 +35,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => unlock());
+
+	const job = jobIdentity();
+	if (job) registerWorker(pi, job);
 }
 
 async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: string): Promise<void> {
