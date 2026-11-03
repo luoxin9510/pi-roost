@@ -3,12 +3,27 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Agent view for pi: one screen for every background pi session — dispatch, peek, reply, attach, detach",
-  "keywords": ["pi-package", "pi", "agents", "background", "agent-view"],
+  "description": "Agent view for pi: one screen for every background pi session \u2014 dispatch, peek, reply, attach, detach",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "agents",
+    "background",
+    "agent-view"
+  ],
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/luoxin9510/pi-roost.git" },
-  "engines": { "node": ">=20" },
-  "pi": { "extensions": ["./extensions/index.ts"] },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luoxin9510/pi-roost.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
@@ -17,7 +32,26 @@
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-tui": "1.5.0",
     "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
   },
-  "scripts": { "check": "tsc --noEmit" }
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "bin": {
+    "pi-roost": "dist/bin/pi-roost.js"
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "dist",
+    "README.md"
+  ]
 }
