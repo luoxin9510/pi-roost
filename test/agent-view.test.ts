@@ -1088,6 +1088,47 @@ describe("AgentView batch (M25)", () => {
 		view.dispose();
 	});
 
+	it("M25 review: a peek acts on its row; folded marks are not acted on; ! and @ stay; a failed send gives the text back", async () => {
+		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" }), row({ id: "c", name: "three" })];
+		const { view, client } = setup(rows);
+		await view.start();
+		view.handleInput(ctrlO);
+		view.handleInput(ctrlO); // a, b marked; cursor on c
+		view.handleInput(" "); // peek c
+		view.handleInput("\x18"); // Ctrl+X: stops c, not the marks
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "stop").map((r) => r.args)).toEqual([{ id: "c" }]);
+		view.handleInput("\x14");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "pin").map((r) => r.args)).toEqual([{ id: "c", pinned: true }]);
+		view.handleInput("\x1b"); // close the peek
+		type(view, "! npm test");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.some((r) => r.op === "reply" || r.op === "dispatch")).toBe(false);
+		expect(view.render(100).join("\n")).toContain("! npm test");
+		view.handleInput("\u0003");
+		client.replyResult = { delivered: false, saved: false };
+		type(view, "are you done?");
+		view.handleInput("\r");
+		view.handleInput("\r"); // a second Enter while sending sends nothing more
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(2);
+		const out = view.render(100).join("\n");
+		expect(out).toContain("not delivered: one, two");
+		expect(out).toContain("are you done?");
+		view.handleInput("\u0003");
+		// fold the group: its marks are kept but not acted on
+		view.handleInput("\x1b[1;3A"); // Alt+↑: the header
+		view.handleInput("\r"); // fold
+		expect(view.render(100).join("\n")).not.toContain("marked");
+		view.handleInput("\x18");
+		await sleep(10);
+		// on the folded header Ctrl+X is the group's (shown as a group), not the hidden marks
+		expect(client.requests.filter((r) => r.op === "stop").map((r) => (r.args as { id: string }).id)).toEqual(["c", "a", "b", "c"]);
+		view.dispose();
+	});
+
 	it("a removed row drops out of the marks", async () => {
 		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" })];
 		const { view, client } = setup(rows);

@@ -243,6 +243,7 @@ export class AgentView implements Component {
 	private switches = new Map<string, Switch>();
 	/** M25: rows checked with Ctrl+O; the batch keys act on all of them. */
 	private marked = new Set<string>();
+	private sendingMarked = false;
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -695,6 +696,8 @@ export class AgentView implements Component {
 
 	private async enter(): Promise<void> {
 		if (this.peek) return this.sendReply();
+		// a second Enter while a batch is sent neither sends again nor attaches
+		if (this.sendingMarked) return;
 		// M25: with rows marked, the typed text goes to each of them
 		if (this.input.getValue().trim() && !this.filter() && this.markedRows().length > 0) return this.sendToMarked();
 		// AV-K2: filter text is not a task: Enter acts on the selection
@@ -1105,7 +1108,8 @@ export class AgentView implements Component {
 	}
 
 	private async togglePin(): Promise<void> {
-		const marked = this.markedRows();
+		// a peek acts on its own row, never on the marks
+		const marked = this.peek ? [] : this.markedRows();
 		if (marked.length > 0 && this.client) {
 			// M25: pin them all, unless all are pinned already
 			const pinned = marked.some((r) => !r.pinned);
@@ -1424,16 +1428,14 @@ export class AgentView implements Component {
 		}
 	}
 
-	/** M25: the marked rows that still exist, in list order. */
+	/**
+	 * M25: the marked rows on screen, in list order. A marked row in a folded group or
+	 * filtered out stays marked but is not acted on: a batch never reaches what is not shown.
+	 */
 	private markedRows(): JobRow[] {
 		if (this.marked.size === 0) return [];
 		for (const id of this.marked) if (!this.rows.has(id)) this.marked.delete(id);
-		const order = this.itemList().flatMap((it) => (it.kind === "row" ? [it.row.id] : []));
-		const rank = (id: string) => {
-			const i = order.indexOf(id);
-			return i === -1 ? order.length : i;
-		};
-		return [...this.marked].sort((a, b) => rank(a) - rank(b)).map((id) => this.rows.get(id)!);
+		return this.itemList().flatMap((it) => (it.kind === "row" && this.marked.has(it.row.id) ? [it.row] : []));
 	}
 
 	/** M25: Ctrl+O marks the row, or on a header the whole group (again: unmarks it). */
@@ -1455,9 +1457,13 @@ export class AgentView implements Component {
 
 	/** M25: the typed text to every marked session; /model and /thinking switch them all. */
 	private async sendToMarked(): Promise<void> {
+		if (this.sendingMarked) return;
 		const rows = this.markedRows();
-		const text = this.input.getValue().trim();
+		const typed = this.input.getValue();
+		const text = typed.trim();
 		if (!this.client) return this.say("background service unavailable", "error");
+		// a new task or a shell job is never sent as a reply by mistake: the input stays
+		if (/^[!@]/.test(text)) return this.say("rows are marked: a typed text goes to them as a reply (Esc unmarks to start a task)", "warning");
 		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
 		if (setting) return this.markedSetting(rows, setting[1] as "model" | "thinking", (setting[2] ?? "").trim());
 		if (text.startsWith("/") && this.isViewCommand(text.slice(1).split(/\s/)[0] ?? "")) {
@@ -1468,17 +1474,25 @@ export class AgentView implements Component {
 		let sent = 0;
 		let later = 0;
 		const failed: string[] = [];
-		for (const r of pi) {
-			try {
-				const res = await this.client.request("reply", { id: r.id, text });
-				if (res.delivered || res.respawned) sent++;
-				else if (res.saved) later++;
-				else failed.push(r.name);
-			} catch {
-				failed.push(r.name);
-			}
-		}
+		// cleared first: a second Enter while sending has nothing to send
+		this.sendingMarked = true;
 		this.input.setValue("");
+		try {
+			for (const r of pi) {
+				try {
+					const res = await this.client.request("reply", { id: r.id, text });
+					if (res.delivered || res.respawned) sent++;
+					else if (res.saved) later++;
+					else failed.push(r.name);
+				} catch {
+					failed.push(r.name);
+				}
+			}
+		} finally {
+			this.sendingMarked = false;
+		}
+		// nothing reached anyone: the text comes back
+		if (sent === 0 && later === 0 && !this.input.getValue()) this.input.setValue(typed);
 		const parts = [`sent to ${sent} of ${pi.length} sessions`];
 		if (later) parts.push(`${later} saved for their next start`);
 		if (failed.length) parts.push(`not delivered: ${failed.map(oneLine).join(", ")}`);
@@ -1517,7 +1531,7 @@ export class AgentView implements Component {
 	private async stopSelected(): Promise<void> {
 		if (!this.client) return;
 		const it = this.selected();
-		const marked = this.markedRows();
+		const marked = this.peek ? [] : this.markedRows();
 		if (!it && marked.length === 0) return;
 		// M25: the marked rows, else the row, else the header's group
 		const targets = marked.length > 0 ? marked : it!.kind === "row" ? [it!.row] : it!.section.rows;
