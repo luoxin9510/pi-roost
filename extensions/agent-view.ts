@@ -98,6 +98,8 @@ export interface AgentViewOptions {
 	}) => Overlay;
 	/** M23: what new sessions run when no model is chosen ("provider/id"). */
 	defaultModel?: () => string | undefined;
+	/** M23: this pi's own session file (it cannot be resumed in the background). */
+	currentSession?: () => string | undefined;
 	/** M23: the models pi cycles through (`enabledModels`); none: all of them. */
 	scopedModels?: () => string[];
 	setTitle: (title: string) => void;
@@ -275,6 +277,7 @@ export class AgentView implements Component {
 		this.closed = true;
 		clearInterval(this.spinner);
 		clearInterval(this.resync);
+		this.closeOverlay();
 		for (const s of this.switches.values()) clearTimeout(s.timer);
 		this.switches.clear();
 		this.client?.close();
@@ -890,6 +893,7 @@ export class AgentView implements Component {
 	 * ended), else a new background job on it, attached as soon as it runs.
 	 */
 	private async resumeSession(s: Resumable): Promise<void> {
+		if (s.path === this.o.currentSession?.()) return this.say("that is this pi's own session", "warning");
 		const row = [...this.rows.values()].find((r) => r.sessionFile === s.path);
 		if (row) {
 			this.cursor = { kind: "row", id: row.id };
@@ -909,8 +913,11 @@ export class AgentView implements Component {
 			throw err;
 		}
 		this.cursor = { kind: "row", id: r.id };
-		this.attachWhenLive = r.id;
 		this.say(`resuming ${oneLine(r.name)}…`, "accent");
+		// its first push may have come before this reply
+		if (this.rows.get(r.id)?.pid) {
+			if (!this.attached) void this.attachTo(r.id).catch((err: unknown) => this.say(String(err), "error"));
+		} else this.attachWhenLive = r.id;
 	}
 
 	private pickerKey(key: string | undefined, data = ""): void {
@@ -927,23 +934,27 @@ export class AgentView implements Component {
 		else if (key === "pageUp") p.index = Math.max(0, p.index - 10);
 		else if (key === "pageDown") p.index = Math.min(shown.length - 1, p.index + 10);
 		else if (key === "tab" && p.other) {
-			// M23: the enabled models and all of them
+			// M23: the enabled models and all of them (the one selected stays selected)
 			const items = p.items;
 			const scope = p.scope;
+			const was = shown[p.index]?.value;
 			p.items = p.other.items;
 			p.scope = p.other.label;
 			p.other = { label: scope ?? "", items };
-			p.index = 0;
+			p.index = Math.max(0, pickerShown(p).findIndex((it) => it.value === was));
 		} else if (key === "backspace") {
 			p.query = (p.query ?? "").slice(0, -1);
 			p.index = 0;
 		} else if (key === "enter") {
+			// nothing matches: the search stays to be changed
+			if (shown.length === 0) return this.o.tui.requestRender();
 			this.picker = undefined;
 			const item = shown[p.index];
 			if (item) void Promise.resolve(p.pick(item.value)).catch((err: unknown) => this.say((err as Error).message, "error"));
 		} else {
-			// M23: typing searches (a paste too; a kitty-encoded key is decoded)
-			const text = isKeyRelease(data) ? undefined : (decodeKittyPrintable(data) ?? data);
+			// M23: typing searches (a paste too, its lines joined; a kitty-encoded key is decoded)
+			const pasted = data.startsWith("\x1b[200~") ? data.replace(/\x1b\[20[01]~/g, "").replace(/[\r\n\t]+/g, " ") : undefined;
+			const text = pasted ?? (isKeyRelease(data) ? undefined : (decodeKittyPrintable(data) ?? data));
 			if (text && !text.startsWith("\x1b") && !/[\x00-\x1f\x7f]/.test(text)) {
 				p.query = (p.query ?? "") + text;
 				p.index = 0;
@@ -1456,7 +1467,7 @@ export class AgentView implements Component {
 			try {
 				body = this.overlay.render(w);
 			} catch (err) {
-				this.overlay = undefined;
+				this.closeOverlay();
 				this.say(`the session list failed: ${oneLine((err as Error).message)}`, "error");
 				body = [];
 			}

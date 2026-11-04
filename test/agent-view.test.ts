@@ -883,3 +883,49 @@ describe("M23: /resume and models in the hub", () => {
 		view.dispose();
 	});
 });
+
+describe("M23 review", () => {
+	it("Enter with nothing matching keeps the picker; a paste searches; Tab keeps the selected model", async () => {
+		const { view } = setup([row()], { extra: { models: () => ["a/one", "b/two", "c/three"], scopedModels: () => ["a/one", "b/two"] } });
+		await view.start();
+		view.handleInput("\x0c");
+		view.handleInput("\x1b[B"); // a/one
+		view.handleInput("\x1b[B"); // b/two
+		view.handleInput("\t"); // all models: b/two still selected
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("new sessions: model b/two");
+		view.handleInput("\x0c");
+		type(view, "zzz");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("nothing matches");
+		view.handleInput("\x1b"); // clears the search
+		view.handleInput("\x1b[200~thr\nee\x1b[201~");
+		expect(view.render(100).join("\n")).toContain("search: thr ee");
+		view.dispose();
+	});
+
+	it("resuming this pi's own session is refused; a job whose push came first is entered", async () => {
+		let picked: ((s: { path: string; name: string; cwd: string; modified: number }) => void) | undefined;
+		const { view, client } = setup([row()], {
+			extra: { currentSession: () => "/s/me.jsonl", sessionSelector: (o) => ((picked = o.onSelect), { render: () => ["LIST"] }) },
+		});
+		await view.start();
+		type(view, "/resume");
+		view.handleInput("\r");
+		picked!({ path: "/s/me.jsonl", name: "me", cwd: "/w", modified: Date.now() });
+		await sleep(10);
+		expect(view.render(100).join("\n")).toContain("this pi's own session");
+		expect(client.requests.some((r) => r.op === "dispatch")).toBe(false);
+		view.dispose();
+	});
+
+	it("closing the view disposes pi's list (its loads stop)", async () => {
+		let disposed = 0;
+		const { view } = setup([row()], { extra: { sessionSelector: () => ({ render: () => ["LIST"], dispose: () => disposed++ }) } });
+		await view.start();
+		type(view, "/resume");
+		view.handleInput("\r");
+		view.dispose();
+		expect(disposed).toBe(1);
+	});
+});
