@@ -11,6 +11,10 @@ export interface AttachIO {
 // Ctrl+Z: legacy, a kitty CSI-u press or repeat (any alternate keys, lock bits, text),
 // xterm's modifyOtherKeys; and the bracketed paste markers (a pasted ^Z is text).
 const DETACH_SCAN = /\x1a|\x1b\[122(?::\d*)*;(\d+)(?::(\d+))?(?:;[\d:]*)?u|\x1b\[27;(\d+);122~|\x1b\[20([01])~/g;
+/** The start of an escape sequence a chunk may end in (sent on: only the scan waits for the rest). */
+const PARTIAL_ESC = /\x1b(?:\[[\d;:]*)?$/;
+/** No input for this long while in a paste: its end marker was lost. */
+const PASTE_IDLE_MS = 1000;
 /** Caps Lock and Num Lock (kitty's modifier bits 64 and 128) do not make it another key. */
 const ctrlOnly = (mods: string) => ((Number(mods) - 1) & ~(64 | 128)) === 4;
 
@@ -79,16 +83,27 @@ export function attachToHost(socketPath: string, io: AttachIO): Promise<DetachRe
 
 		const size = () => ({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
 		let pasting = false;
+		let lastInput = 0;
+		// the unfinished escape sequence a chunk ended in: the next chunk may finish it
+		let tail = "";
 		const onInput = (chunk: Buffer | string) => {
 			const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-			const r = localDetachAt(buf.toString("latin1"), pasting);
+			const now = Date.now();
+			// a paste whose end marker was lost does not swallow the detach key for ever
+			if (pasting && now - lastInput > PASTE_IDLE_MS) pasting = false;
+			lastInput = now;
+			const text = buf.toString("latin1");
+			const scan = tail + text;
+			const r = localDetachAt(scan, pasting);
 			pasting = r.pasting;
+			const at = r.at - tail.length;
+			tail = (PARTIAL_ESC.exec(scan)?.[0] ?? "").slice(-32);
 			if (r.at === -1) {
 				sock?.write(encodeFrame(FrameType.DATA, buf));
 				return;
 			}
 			// what was typed before it still goes; what follows it is the view's
-			if (r.at > 0) sock?.write(encodeFrame(FrameType.DATA, buf.subarray(0, r.at)));
+			if (at > 0) sock?.write(encodeFrame(FrameType.DATA, buf.subarray(0, at)));
 			finish("local");
 		};
 		const onResize = () => sock?.write(encodeJsonFrame(FrameType.RESIZE, size()));

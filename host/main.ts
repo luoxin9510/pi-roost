@@ -278,7 +278,8 @@ function kick(a: Attach, reason: "takeover" | "exit" | "request"): void {
  * stops itself on Ctrl+Z, and in the background no shell would ever continue it.
  */
 function continueWorker(): void {
-	if (!workerAlive) return;
+	// a shell job's command may be stopped on purpose
+	if (!workerAlive || job?.kind === "shell") return;
 	try {
 		process.kill(-proc.pid, "SIGCONT");
 	} catch {

@@ -790,6 +790,14 @@ describe("M22: one row per session", () => {
 		expect(rows[0]!.pinned).toBe(true);
 		// its records stay (a worktree, its links), only the row goes
 		expect(readState(a.id)?.supersededBy).toBe(b.id);
+		// the job that took it over goes: the old row is back, and the next one takes it again
+		await client.request("rm", { id: b.id });
+		await waitFor(async () => (await client.request("list", {})).jobs.some((r) => r.id === a.id));
+		const c = await client.request("dispatch", args("sleep 30", { sessionFile, name: "fix-login", origin: "adopt" }));
+		await waitFor(async () => {
+			const ids = (await client.request("list", {})).jobs.map((r) => r.id);
+			return ids.length === 1 && ids[0] === c.id;
+		});
 	});
 
 	it("an ended job waiting for an answer stops asking once another pi window opens its session", async () => {

@@ -316,3 +316,46 @@ describe("M22: review fixes", () => {
 		await waitFor(() => child.exitCode !== null || child.signalCode !== null, 8000, "exit");
 	}, 20_000);
 });
+
+describe("M22: the detach key across chunks", () => {
+	it("a Ctrl+Z split over two reads, and one after a paste whose end was lost, still detach", async () => {
+		const pty = await import("node-pty");
+		const { id } = await startHost();
+		const driver = `
+			import { attachToHost } from "./lib/attach.ts";
+			import { hostSocketPath } from "./lib/paths.ts";
+			for (let i = 0; ; i++) {
+				process.stdout.write("\\r\\n[attach #" + i + "]\\r\\n");
+				const why = await attachToHost(hostSocketPath(${JSON.stringify(id)}), { stdin: process.stdin, stdout: process.stdout });
+				process.stdout.write("\\r\\n[detached " + why + " #" + i + "]\\r\\n");
+			}
+		`;
+		const term = pty.spawn(process.execPath, ["--input-type=module", "-e", driver], { cols: 100, rows: 30, cwd: process.cwd(), env: process.env as Record<string, string> });
+		let out = "";
+		term.onData((d) => {
+			out += d;
+		});
+		try {
+			await waitFor(() => out.includes("[attach #0]"), 5000, "attach 0");
+			await responsiveTerm("a0");
+			// kitty Ctrl+Z (Num Lock on) in two reads
+			term.write("\x1b[122;");
+			await new Promise((r) => setTimeout(r, 80));
+			term.write("133u");
+			await waitFor(() => out.includes("[detached local #0]"), 5000, "split detach");
+			await waitFor(() => out.includes("[attach #1]"), 5000, "attach 1");
+			// a paste start whose end never comes, then (after a pause) Ctrl+Z
+			term.write("\x1b[200~pasted text");
+			await new Promise((r) => setTimeout(r, 1300));
+			term.write("\x1a");
+			await waitFor(() => out.includes("[detached local #1]"), 5000, "detach after lost paste end");
+		} finally {
+			term.kill();
+			await hostControl(id, "terminate").catch(() => {});
+		}
+		async function responsiveTerm(tag: string) {
+			term.write(`${tag}\r`);
+			await waitFor(() => out.includes(`${tag} usr2:`), 5000, `echo ${tag}`);
+		}
+	}, 30_000);
+});
