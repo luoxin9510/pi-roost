@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { attachToHost } from "../lib/attach.ts";
+import { formatList } from "../lib/list-format.ts";
 import { DaemonClient, DaemonError } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { ensureLive } from "../lib/resume.ts";
@@ -14,6 +15,8 @@ import { ROOST_VERSION } from "../lib/version.ts";
 const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
 
 usage:
+  pi-roost list [--all] [--subagents] [--cwd <dir>]
+                                   list background sessions (as the agent view does)
   pi-roost attach <id|name>        open a background session (Ctrl+Z detaches);
                                    an ended one is started again first
   pi-roost logs <id|name>          print its current or last screen
@@ -151,15 +154,23 @@ async function cmdRespawn(args: string[]): Promise<void> {
 	});
 }
 
-async function cmdJson(args: string[]): Promise<void> {
+async function cmdList(args: string[]): Promise<void> {
+	const rows = await listRows(args);
+	process.stdout.write(formatList(rows, { subagents: args.includes("--subagents") || args.includes("--all"), width: process.stdout.columns || 100 }));
+}
+
+async function listRows(args: string[]): Promise<JobRow[]> {
 	const all = args.includes("--all");
 	const cwdAt = args.indexOf("--cwd");
 	const cwd = cwdAt === -1 ? undefined : args[cwdAt + 1];
 	if (cwdAt !== -1 && !cwd) throw new UsageError("--cwd needs a directory");
 	const { jobs } = await withDaemon((c) => c.request("list", { all, cwd: cwd ? resolvePath(cwd) : undefined }));
 	const now = Date.now();
-	const rows = all ? jobs : jobs.filter((j) => j.endedAt === null || now - j.endedAt < ENDED_CUTOFF_MS);
-	process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
+	return all ? jobs : jobs.filter((j) => j.endedAt === null || now - j.endedAt < ENDED_CUTOFF_MS);
+}
+
+async function cmdJson(args: string[]): Promise<void> {
+	process.stdout.write(`${JSON.stringify(await listRows(args), null, 2)}\n`);
 }
 
 async function cmdDaemon(sub: string | undefined, args: string[]): Promise<void> {
@@ -226,6 +237,10 @@ async function main(argv: string[]): Promise<number> {
 				break;
 			case "respawn":
 				await cmdRespawn(rest);
+				break;
+			case "list":
+			case "ls":
+				await cmdList(rest);
 				break;
 			case "--json":
 				await cmdJson(rest);

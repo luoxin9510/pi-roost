@@ -165,6 +165,16 @@ describe("host", () => {
 		expect(altScreenAfter("plain", false)).toBe(false);
 	});
 
+	it("M15: answers terminal queries while nobody is attached", async () => {
+		const { id } = await startHost(`sleep 0.3; stty -icanon -echo; printf '\\033[c'; x=$(dd bs=1 count=3 2>/dev/null | od -An -c | tr -d ' '); echo "got:$x"; sleep 30`);
+		const text = await waitFor(async () => {
+			const r = (await hostControl(id, "snapshot")) as { text: string };
+			return r.text.includes("got:") ? r.text : undefined;
+		}, 6000);
+		expect(text).toContain("got:033[?");
+		await hostControl(id, "terminate");
+	});
+
 	it("control snapshot", async () => {
 		const { id } = await startHost("sleep 0.5; echo ready; sleep 30");
 		const text = await waitFor(async () => {

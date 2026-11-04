@@ -229,8 +229,10 @@ each other.
 
 - The worktree is `<repo>/.pi/worktrees/<name>-<4 hex>` on branch `roost/<name>-<4 hex>`,
   made from the current commit. Uncommitted changes and ignored files (`node_modules`,
-  `.env`) are not in it; you are told when the checkout has uncommitted changes.<br>
-  worktree 建在 `<仓库>/.pi/worktrees/<名字>-<4位十六进制>`，分支叫 `roost/<名字>-<4位十六进制>`，从当前提交创建。未提交的改动和被忽略的文件（`node_modules`、`.env`）不会带过去；如果原目录有未提交改动，会提示你。
+  `.env`) are not in it; you are told when the checkout has uncommitted changes. As in
+  Claude Code, a `.worktreeinclude` file at the repository root (gitignore syntax) names
+  ignored files to copy in: `.env`, `node_modules/`.<br>
+  worktree 建在 `<仓库>/.pi/worktrees/<名字>-<4位十六进制>`，分支叫 `roost/<名字>-<4位十六进制>`，从当前提交创建。未提交的改动和被忽略的文件（`node_modules`、`.env`）不会带过去；如果原目录有未提交改动，会提示你。和 Claude Code 一样，可以在仓库根目录放一个 `.worktreeinclude`（gitignore 语法），列出要复制进来的被忽略文件，例如 `.env`、`node_modules/`。
 - The session is told it works there and should commit on its branch. A child's report
   ends with `Worktree: <path> · branch <name> · 2 commits on it` (and `uncommitted
   changes` when there are), so its parent knows what to review or merge.<br>
@@ -238,8 +240,9 @@ each other.
 - Deleting the session (Ctrl+X twice, `pi-roost rm`) removes what holds no work: a clean
   worktree goes; its branch goes too unless it moved. A worktree with uncommitted changes,
   files git ignores (`.env`, build output, `node_modules`), or another session in it, is
-  kept and you are told where it is.<br>
-  删除会话（连按两次 Ctrl+X，或 `pi-roost rm`）时，只清理没有成果的部分：干净的 worktree 会被删掉，分支没动过的话也一起删；有未提交改动、有被 git 忽略的文件（`.env`、构建产物、`node_modules`）、或者还有别的会话在用的 worktree 会保留，并告诉你它在哪。
+  kept and you are told where it is. What `.worktreeinclude` copied in does not count,
+  unless a copied file was changed.<br>
+  删除会话（连按两次 Ctrl+X，或 `pi-roost rm`）时，只清理没有成果的部分：干净的 worktree 会被删掉，分支没动过的话也一起删；有未提交改动、有被 git 忽略的文件（`.env`、构建产物、`node_modules`）、或者还有别的会话在用的 worktree 会保留，并告诉你它在哪。`.worktreeinclude` 复制进来的文件不算在内，除非被改过。
 - A session is isolated from its first prompt; it never moves into a worktree later (pi
   would ask about the changed directory). The main checkout's `git status` stays clean:
   `.pi/worktrees/` is added to the repository's `info/exclude`.<br>
@@ -327,6 +330,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `summaryModel` | none · 无 | a cheap model for row summaries, session names and "while you were away" recaps; without it rows show the latest output; any model pi can reach works, including a company endpoint ([guide](docs/summary-model.md), in Chinese) | 一个便宜的模型，用来写行摘要、给会话命名、生成“离开期间”回顾；不配置时行里显示最新输出；pi 能调用的模型都可以，包括公司内部节点（见[说明](docs/summary-model.md)） |
 | `dispatchModel`, `dispatchThinking` | pi's defaults · pi 的默认值 | for sessions started from the view | 从视图新开的会话所用的模型和 thinking 级别 |
 | `reapIdleMinutes` | `60` | stop the process of a session idle this long (it restarts on demand) | 会话空闲这么久后停掉进程（需要时自动重启） |
+| `cleanupDays` | `30` | remove the records of sessions that ended this many days ago (`0`: never); session files stay for `/resume`; pinned ones, and ones whose worktree holds uncommitted work, are kept | 结束超过这么多天的会话记录会被移除（`0` 表示从不）；会话文件保留，`/resume` 仍可用；被 pin 的、worktree 里有未提交工作的会保留 |
 | `notify` | `"auto"` | `"osc9"`, `"osc777"`, `"bell"` or `"off"` | 通知方式：`"osc9"`、`"osc777"`、`"bell"` 或 `"off"` |
 | `leftArrowOpensAgents` | `true` | ← on an empty prompt moves the conversation to the background | 空提示符下按 ← 把对话转到后台 |
 | `defaultToAgentsView` | `false` | plain `pi` opens the agent view | 直接运行 `pi` 时打开 agent 视图 |
@@ -352,6 +356,7 @@ The package installs a `pi-roost` command:
 这个包会安装一个 `pi-roost` 命令：
 
 ```text
+pi-roost list [--all] [--subagents]     list sessions as a table           以表格列出会话
 pi-roost --json [--all] [--cwd <dir>]   list sessions as JSON              以 JSON 列出会话
 pi-roost attach <id|name>               open a session (Ctrl+Z detaches)   进入会话（Ctrl+Z 退出）
 pi-roost logs <id|name>                 print its current or last screen   打印它当前或最后的屏幕

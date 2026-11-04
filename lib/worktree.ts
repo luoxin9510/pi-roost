@@ -1,7 +1,7 @@
 // M10 (PRD C7): a new background session in its own git worktree, and its cleanup on rm.
 import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export interface WorktreeInfo {
@@ -19,7 +19,136 @@ export interface CreatedWorktree extends WorktreeInfo {
 	cwd: string;
 	/** The dispatch checkout had uncommitted changes (they are not in the worktree). */
 	sourceDirty: boolean;
+	/** M15: ignored files and folders copied in by .worktreeinclude. */
+	included: string[];
 }
+
+export const INCLUDE_FILE = ".worktreeinclude";
+
+const nulList = (out: string | undefined) => (out ?? "").split("\0").filter(Boolean);
+
+const INCLUDED_ARGS = (file: string) => ["ls-files", "-z", "--others", "--ignored", "--directory", `--exclude-from=${file}`];
+const IGNORED_ARGS = ["ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-standard"];
+
+/**
+ * M15 (Claude Code's .worktreeinclude): of the entries an include file (gitignore syntax)
+ * names, the ones git ignores; tracked files are in a worktree anyway. Folders come as
+ * one entry ending in "/". Never pi-roost's own worktrees.
+ */
+function includedOf(listed: string[], ignored: string[]): string[] {
+	const set = new Set(ignored);
+	const dirs = ignored.filter((e) => e.endsWith("/"));
+	const own = `${WORKTREES_DIR.split(sep).join("/")}/`;
+	return listed.filter((e) => !e.startsWith(own) && !own.startsWith(e) && (set.has(e) || dirs.some((d) => e.startsWith(d))));
+}
+
+/** What `dir`'s .worktreeinclude names, or `includeFile` instead (the source checkout's). */
+export function includedEntries(dir: string, includeFile = join(dir, INCLUDE_FILE)): string[] {
+	if (!existsSync(includeFile)) return [];
+	const listed = nulList(tryGit(dir, INCLUDED_ARGS(includeFile)));
+	return listed.length === 0 ? [] : includedOf(listed, nulList(tryGit(dir, IGNORED_ARGS)));
+}
+
+/** The same, for the daemon: never blocks its event loop. */
+async function includedEntriesAsync(dir: string, includeFile: string): Promise<string[]> {
+	if (!existsSync(includeFile)) return [];
+	const listed = nulList(await gitAsync(dir, INCLUDED_ARGS(includeFile), 20_000));
+	return listed.length === 0 ? [] : includedOf(listed, nulList(await gitAsync(dir, IGNORED_ARGS, 20_000)));
+}
+
+/** Copy the .worktreeinclude entries of `from` into `to` (copy-on-write where the disk can); what fails is skipped. */
+function copyIncluded(from: string, to: string): string[] {
+	const done: string[] = [];
+	for (const e of includedEntries(from)) {
+		const rel = e.replace(/\/$/, "");
+		try {
+			mkdirSync(dirname(join(to, rel)), { recursive: true });
+			cpSync(join(from, rel), join(to, rel), { recursive: true, verbatimSymlinks: true, force: false, errorOnExist: false, mode: constants.COPYFILE_FICLONE });
+			done.push(e);
+		} catch {
+			// a socket, a permission: the session does without it
+		}
+	}
+	return done;
+}
+
+/** Folders of dependencies and caches, rebuilt from the repository: never anyone's work. */
+const REBUILT = new Set(["node_modules", ".venv", "venv", ".tox", "__pycache__", ".pytest_cache", ".mypy_cache", "target", ".gradle", ".next", ".nuxt", ".turbo", ".parcel-cache", ".pnpm-store", "bower_components"]);
+const TREE_MAX = 5000;
+
+/** The same as in the source checkout: a file's bytes, a link's target. */
+function sameEntry(a: string, b: string): boolean {
+	try {
+		const sa = lstatSync(a);
+		const sb = lstatSync(b);
+		if (sa.isSymbolicLink() || sb.isSymbolicLink()) return sa.isSymbolicLink() && sb.isSymbolicLink() && readlinkSync(a) === readlinkSync(b);
+		if (sa.isFile() && sb.isFile()) return sa.size === sb.size && readFileSync(a).equals(readFileSync(b));
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/** Every file below `a` is the same at `b` (a folder too big to check is not). */
+function sameTree(a: string, b: string): boolean {
+	let n = 0;
+	const walk = (rel: string): boolean => {
+		for (const d of readdirSync(join(a, rel), { withFileTypes: true })) {
+			if (++n > TREE_MAX) return false;
+			const r = join(rel, d.name);
+			if (d.isDirectory()) {
+				if (!walk(r)) return false;
+			} else if (!sameEntry(join(a, r), join(b, r))) return false;
+		}
+		return true;
+	};
+	try {
+		return walk("");
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * An ignored entry of the worktree that rm may delete: one the source checkout's
+ * .worktreeinclude covers and that holds nothing new: a dependency folder, or files the
+ * same as where they came from. An edited .env, a new file in an included folder, is work.
+ */
+function replaceable(w: WorktreeInfo, entry: string, included: ReadonlySet<string>, dirs: string[]): boolean {
+	if (!included.has(entry) && !dirs.some((d) => entry.startsWith(d))) return false;
+	const rel = entry.replace(/\/$/, "");
+	if (entry.endsWith("/")) return REBUILT.has(basename(rel)) || sameTree(join(w.path, rel), join(w.repo, rel));
+	return sameEntry(join(w.path, rel), join(w.repo, rel));
+}
+
+/** `git status --porcelain -z --ignored` as entries (no quoting, any file name). */
+function statusEntries(out: string | undefined): { code: string; path: string }[] | undefined {
+	if (out === undefined) return undefined;
+	const parts = out.split("\0");
+	const list: { code: string; path: string }[] = [];
+	for (let i = 0; i < parts.length; i++) {
+		const p = parts[i]!;
+		if (p.length < 4) continue;
+		const code = p.slice(0, 2);
+		list.push({ code, path: p.slice(3) });
+		// a rename or copy names its source next
+		if (code[0] === "R" || code[0] === "C") i++;
+	}
+	return list;
+}
+
+const STATUS_ARGS = ["status", "--porcelain=v1", "-z", "--ignored"];
+
+/** Ignored entries that .worktreeinclude did not bring in, or that changed since. */
+function uncovered(w: WorktreeInfo, entries: { code: string; path: string }[], inc: string[]): boolean {
+	const set = new Set(inc);
+	const dirs = inc.filter((e) => e.endsWith("/"));
+	return entries.some((e) => e.code === "!!" && !replaceable(w, e.path, set, dirs));
+}
+
+/** The source checkout's include list: the worktree's copy is the session's to edit. */
+const sourceInclude = (w: WorktreeInfo) => join(w.repo, INCLUDE_FILE);
+const hasIgnored = (entries: { code: string }[]) => entries.some((e) => e.code === "!!");
 
 export const WORKTREES_DIR = join(".pi", "worktrees");
 export const BRANCH_PREFIX = "roost/";
@@ -33,6 +162,7 @@ function git(cwd: string, args: string[]): string {
 		timeout: GIT_TIMEOUT_MS,
 		stdio: ["ignore", "pipe", "pipe"],
 		env: GIT_ENV(),
+		maxBuffer: 64 * 1024 * 1024,
 	}).trim();
 }
 
@@ -41,7 +171,7 @@ const GIT_ENV = () => ({ ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_
 /** The daemon's git: never blocks its event loop, never throws. */
 function gitAsync(cwd: string, args: string[], timeout = 5_000): Promise<string | undefined> {
 	return new Promise((done) => {
-		execFile("git", ["-C", cwd, ...args], { encoding: "utf8", timeout, env: GIT_ENV() }, (err, stdout) => done(err ? undefined : String(stdout).trim()));
+		execFile("git", ["-C", cwd, ...args], { encoding: "utf8", timeout, env: GIT_ENV(), maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => done(err ? undefined : String(stdout).trim()));
 	});
 }
 
@@ -133,7 +263,8 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
 	const rel = relative(top, real(cwd));
 	const inside = rel && !rel.startsWith("..") && !isAbsolute(rel) ? join(path, rel) : path;
 	const sourceDirty = (tryGit(top, ["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "";
-	return { path, branch, repo: top, base, cwd: existsSync(inside) ? inside : path, sourceDirty };
+	const included = copyIncluded(top, path);
+	return { path, branch, repo: top, base, cwd: existsSync(inside) ? inside : path, sourceDirty, included };
 }
 
 /**
@@ -142,7 +273,9 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
  */
 export function discardWorktree(w: WorktreeInfo): void {
 	if (existsSync(w.path)) {
-		if (tryGit(w.path, ["status", "--porcelain", "--ignored"]) !== "") return;
+		const entries = statusEntries(tryGit(w.path, STATUS_ARGS));
+		if (!entries || entries.some((x) => x.code !== "!!")) return;
+		if (hasIgnored(entries) && uncovered(w, entries, includedEntries(w.path, sourceInclude(w)))) return;
 		if (tryGit(w.repo, ["worktree", "remove", "--", w.path]) === undefined) return;
 	}
 	if (tryGit(w.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]) === w.base) tryGit(w.repo, ["branch", "-D", "--", w.branch]);
@@ -199,16 +332,16 @@ export interface WorktreeStatus {
 export async function worktreeStatus(w: WorktreeInfo): Promise<WorktreeStatus> {
 	const exists = existsSync(w.path);
 	const [porcelain, count, tip] = await Promise.all([
-		exists ? gitAsync(w.path, ["status", "--porcelain", "--ignored"]) : Promise.resolve(""),
+		exists ? gitAsync(w.path, STATUS_ARGS) : Promise.resolve(""),
 		gitAsync(existsSync(w.repo) ? w.repo : w.path, ["rev-list", "--count", `${w.base}..refs/heads/${w.branch}`]),
 		gitAsync(existsSync(w.repo) ? w.repo : w.path, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]),
 	]);
-	const lines = porcelain === undefined ? ["?"] : porcelain.split("\n").filter(Boolean);
+	const entries = statusEntries(porcelain) ?? [{ code: "??", path: "?" }];
 	const ahead = count !== undefined && /^\d+$/.test(count) ? Number(count) : null;
 	return {
 		exists,
-		dirty: exists && lines.some((l) => !l.startsWith("!!")),
-		ignored: exists && lines.some((l) => l.startsWith("!!")),
+		dirty: exists && entries.some((e) => e.code !== "!!"),
+		ignored: exists && hasIgnored(entries) && uncovered(w, entries, await includedEntriesAsync(w.path, sourceInclude(w))),
 		ahead,
 		atBase: tip === w.base,
 	};
@@ -260,6 +393,7 @@ export async function cleanupWorktree(w: WorktreeInfo, inUse: boolean): Promise<
 		if (!(await validWorktree(w))) return out(false, true, "it is no longer on its branch");
 		if (st.dirty) return out(false, true, "it has uncommitted changes");
 		if (st.ignored) return out(false, true, "it has files git ignores (.env, build output, dependencies)");
+		// no --force: git still refuses if a change appeared since the check
 		if ((await gitAsync(w.repo, ["worktree", "remove", "--", w.path], 20_000)) === undefined) return out(false, true, "git worktree remove failed");
 	} else await gitAsync(w.repo, ["worktree", "prune"]);
 	// a branch moved anywhere (even behind base) keeps whatever it points at

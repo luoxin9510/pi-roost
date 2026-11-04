@@ -222,6 +222,102 @@ function pushJob(id: string): void {
 	if (job) push({ event: "job", job });
 }
 
+/** rm: stop the job, drop its records, then its worktree when that holds no work (M10). */
+async function removeRecord(id: string): Promise<{ id: string; worktree?: CleanupResult }> {
+	// a live child's end is reported by finalize, as a removal
+	if (roster.has(id)) removing.add(id);
+	if (roster.has(id)) {
+		await terminateHost(id);
+		if (!(await waitGone([id], WAIT_MS))) {
+			const ref = roster.get(id);
+			log("warn", "host did not stop, killing", { id });
+			const st = readState(id);
+			for (const pid of [readWorkerPid(id), ref?.hostPid]) {
+				if (typeof pid !== "number") continue;
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {}
+			}
+			await waitGone([id], 2000);
+			if (roster.has(id)) {
+				// not gone even after SIGKILL: it may still be writing there, leave the worktree alone
+				if (recs.get(id)?.worktree) workerAlive.add(id);
+				finalize(id, "killed by rm");
+			}
+		}
+	}
+	const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
+	const file = recs.get(id)?.sessionFile;
+	recs.delete(id);
+	shellPids.delete(id);
+	stopping.delete(id);
+	removing.delete(id);
+	removeJob(id);
+	log("info", "rm", { id });
+	push({ event: "removed", id });
+	pushChildrenOf(file); // M13: its children have no parent row now
+	if (!w) return { id };
+	// M10: remove what holds no work; never fail rm over it
+	let worktree: CleanupResult;
+	try {
+		const inUse =
+			[...recs.values()].some((r) => isInside(r.cwd, w.path)) || [...fgPeers.values()].some((c) => c.peer?.kind === "fg" && isInside(c.peer.cwd, w.path));
+		worktree = await cleanupWorktree(w, inUse);
+	} catch (err) {
+		worktree = { path: w.path, branch: w.branch, removed: false, branchKept: true, reason: String(err) };
+	}
+	log("info", "rm worktree", { id, ...worktree });
+	return { id, worktree };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+let lastCleanup = 0;
+
+/*
+ * M15 (Claude Code's cleanupPeriodDays): remove records of sessions that ended more than
+ * cleanupDays ago. The session files stay (pi's /resume lists them). Kept: pinned ones,
+ * ones waiting for an answer, with replies or reports waiting, parents of live children,
+ * and ones whose worktree holds uncommitted work or unmerged commits (rm would leave
+ * them with no record pointing at them).
+ */
+let cleaning = false;
+
+/** Whether a record may go now (asked again after every await: anything may have changed). */
+function cleanable(id: string, days: number, now: number): boolean {
+	const rec = recs.get(id);
+	if (!rec || rec.kind === "shell" || roster.has(id) || starting.has(id) || respawning.has(id) || stopping.has(id) || removing.has(id)) return false;
+	const st = readState(id);
+	if (!st || typeof st.endedAt !== "number" || now - st.endedAt < days * DAY_MS) return false;
+	if (st.pinned === true || st.state === "blocked" || pendingReplies(id).length > 0 || heldReports(id).length > 0) return false;
+	return ![...recs.values()].some((r) => r.parentSession === rec.sessionFile && roster.has(r.id));
+}
+
+async function cleanupOld(): Promise<void> {
+	const days = Number(process.env.PI_ROOST_CLEANUP_DAYS ?? loadUserConfig().cleanupDays);
+	if (!(days > 0) || cleaning) return;
+	const now = Date.now();
+	if (now - lastCleanup < (Number(process.env.PI_ROOST_CLEANUP_CHECK_MS) || 60 * 60 * 1000)) return;
+	cleaning = true;
+	lastCleanup = now;
+	try {
+		for (const id of [...recs.keys()]) {
+			if (!cleanable(id, days, Date.now())) continue;
+			const w = recs.get(id)?.worktree;
+			if (w) {
+				const ws = await worktreeStatus(w).catch(() => undefined);
+				// uncommitted work, or commits only on its branch: the record says where they are
+				if (!ws || (ws.exists && (ws.dirty || ws.ignored)) || (ws.ahead ?? 1) > 0) continue;
+				if (!cleanable(id, days, Date.now())) continue;
+			}
+			const st = readState(id);
+			log("info", "cleanup", { id, endedDaysAgo: Math.floor((Date.now() - Number(st?.endedAt)) / DAY_MS) });
+			await removeRecord(id).catch((err: unknown) => log("warn", "cleanup failed", { id, error: String(err) }));
+		}
+	} finally {
+		cleaning = false;
+	}
+}
+
 /**
  * M13: a running pi holds the session (a foreground pi, or a live job): its subagent panel
  * shows the children and their reports reach it. A parent job that ended or was reaped
@@ -1328,53 +1424,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			}
 			return { id };
 		}
-		case "rm": {
-			const id = requireJob(args);
-			// a live child's end is reported by finalize, as a removal
-			if (roster.has(id)) removing.add(id);
-			if (roster.has(id)) {
-				await terminateHost(id);
-				if (!(await waitGone([id], WAIT_MS))) {
-					const ref = roster.get(id);
-					log("warn", "host did not stop, killing", { id });
-					const st = readState(id);
-					for (const pid of [readWorkerPid(id), ref?.hostPid]) {
-						if (typeof pid !== "number") continue;
-						try {
-							process.kill(pid, "SIGKILL");
-						} catch {}
-					}
-					await waitGone([id], 2000);
-					if (roster.has(id)) {
-						// not gone even after SIGKILL: it may still be writing there, leave the worktree alone
-						if (recs.get(id)?.worktree) workerAlive.add(id);
-						finalize(id, "killed by rm");
-					}
-				}
-			}
-			const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
-			const file = recs.get(id)?.sessionFile;
-			recs.delete(id);
-			shellPids.delete(id);
-			stopping.delete(id);
-			removing.delete(id);
-			removeJob(id);
-			log("info", "rm", { id });
-			push({ event: "removed", id });
-			pushChildrenOf(file); // M13: its children have no parent row now
-			if (!w) return { id };
-			// M10: remove what holds no work; never fail rm over it
-			let worktree: CleanupResult;
-			try {
-				const inUse =
-					[...recs.values()].some((r) => isInside(r.cwd, w.path)) || [...fgPeers.values()].some((c) => c.peer?.kind === "fg" && isInside(c.peer.cwd, w.path));
-				worktree = await cleanupWorktree(w, inUse);
-			} catch (err) {
-				worktree = { path: w.path, branch: w.branch, removed: false, branchKept: true, reason: String(err) };
-			}
-			log("info", "rm worktree", { id, ...worktree });
-			return { id, worktree };
-		}
+		case "rm":
+			return removeRecord(requireJob(args));
 		case "respawn": {
 			if (args?.all === true) {
 				const results: { id: string; started: boolean; error?: string }[] = [];
@@ -1504,7 +1555,10 @@ const watcher = setInterval(checkHosts, 1000);
 const shellWatcher = setInterval(shellTick, 2000);
 shellWatcher.unref();
 const reaper = setInterval(
-	() => void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) })),
+	() => {
+		void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) }));
+		void cleanupOld().catch((err: unknown) => log("error", "cleanup failed", { error: String(err) }));
+	},
 	Number(process.env.PI_ROOST_REAP_CHECK_MS) || REAP_CHECK_MS,
 );
 process.on("SIGTERM", () => void shutdown(true));
