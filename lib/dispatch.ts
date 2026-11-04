@@ -36,7 +36,7 @@ export interface EnvPolicy {
 	workspaceEnv?: WorkspaceEnvMode;
 	/** M20 (default): the launching shell's whole environment, less ENV_NEVER and the deny list. */
 	inheritEnv?: boolean;
-	/** Settings envAllowList: names carried when inheritEnv is off. */
+	/** Settings envAllowList: names carried when inheritEnv is off; when it is on, names carried despite the deny list. */
 	extraEnv?: string[];
 	/** Settings envDenyList: names (`*` at the end matches a prefix) left out when inheriting. */
 	envDenyList?: string[];
@@ -50,8 +50,10 @@ export function workerEnv(env: NodeJS.ProcessEnv, policy: EnvPolicy = {}): Recor
 		return out;
 	}
 	const out: Record<string, string> = {};
+	// envAllowList names are carried even when the deny list matches them
+	const forced = new Set(policy.extraEnv ?? []);
 	for (const [k, v] of Object.entries(env)) {
-		if (v === undefined || v.includes("\0") || !envKept(k, policy.envDenyList)) continue;
+		if (v === undefined || v.includes("\0") || !envKept(k, forced.has(k) ? [] : policy.envDenyList)) continue;
 		out[k] = v;
 	}
 	return out;

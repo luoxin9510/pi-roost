@@ -20,12 +20,16 @@ export const ENV_NEVER = new Set([
 	"KITTY_WINDOW_ID", "KITTY_PID", "KITTY_LISTEN_ON", "KITTY_PUBLIC_KEY", "WEZTERM_PANE", "WEZTERM_UNIX_SOCKET",
 	"ALACRITTY_WINDOW_ID", "ALACRITTY_SOCKET", "GHOSTTY_RESOURCES_DIR", "ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME",
 	"COLUMNS", "LINES", "PWD", "OLDPWD", "SHLVL", "_",
+	// the launching tty (pinentry and ssh would talk to a terminal the session is not on)
+	"GPG_TTY", "SSH_TTY", "VTE_VERSION", "WT_SESSION", "WT_PROFILE_ID", "TERMINAL_EMULATOR",
 ]);
+/** Prefixes of the same kind: an editor's or a terminal's own (VS Code's git askpass socket dies with it). */
+const ENV_NEVER_PREFIX = ["VSCODE_", "KONSOLE_", "ITERM_", "KITTY_", "WEZTERM_", "ZELLIJ_"];
 
 /** A name a worker's environment may hold: not on the never list, not denied. */
 export function envKept(name: string, deny: readonly string[] = []): boolean {
 	// (a name with "=" or NUL cannot be set)
-	if (!name || /[=\0]/.test(name) || ENV_NEVER.has(name)) return false;
+	if (!name || /[=\0]/.test(name) || ENV_NEVER.has(name) || ENV_NEVER_PREFIX.some((p) => name.startsWith(p))) return false;
 	return !deny.some((d) => (d.endsWith("*") ? name.startsWith(d.slice(0, -1)) : name === d));
 }
 
@@ -53,7 +57,7 @@ export function probeScript(shell: string): { args: string[] } | undefined {
 			args: [
 				"-i",
 				"-c",
-				`cd -- "$PI_ROOST_PROBE_DIR" || exit 97; if [ -n "\${PROMPT_COMMAND:-}" ]; then eval "\${PROMPT_COMMAND[*]}" >/dev/null 2>&1 </dev/null; fi; ${dump}`,
+				`cd -- "$PI_ROOST_PROBE_DIR" || exit 97; for __pr_c in "\${PROMPT_COMMAND[@]}"; do eval "$__pr_c" >/dev/null 2>&1 </dev/null; done; ${dump}`,
 			],
 		};
 	}
@@ -88,6 +92,17 @@ export function parseProbe(out: Buffer): Record<string, string> | undefined {
 	return Object.keys(env).length > 0 ? env : undefined;
 }
 
+/** Probes running now: a host that is told to stop kills them (their whole group). */
+const live = new Set<number>();
+export function killProbes(): void {
+	for (const pid of live) {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {}
+	}
+	live.clear();
+}
+
 function run(file: string, args: string[], cwd: string, env: Record<string, string>, timeoutMs: number): Promise<{ code: number | null; out: Buffer } | undefined> {
 	return new Promise((resolve) => {
 		let child;
@@ -96,27 +111,38 @@ function run(file: string, args: string[], cwd: string, env: Record<string, stri
 		} catch {
 			return resolve(undefined);
 		}
+		const pid = child.pid;
+		if (pid !== undefined) live.add(pid);
 		const chunks: Buffer[] = [];
 		let size = 0;
-		const timer = setTimeout(() => {
-			// the whole group: a shell's rc may have started more
-			try {
-				process.kill(-child.pid!, "SIGKILL");
-			} catch {}
-			resolve(undefined);
-		}, timeoutMs);
+		let done = false;
+		let grace: NodeJS.Timeout | undefined;
+		const end = (r: { code: number | null; out: Buffer } | undefined) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			clearTimeout(grace);
+			child.stdout?.destroy();
+			// what the rc left running in the background goes with it
+			if (pid !== undefined) {
+				live.delete(pid);
+				try {
+					process.kill(-pid, "SIGKILL");
+				} catch {}
+			}
+			resolve(r);
+		};
+		const timer = setTimeout(() => end(undefined), timeoutMs);
 		child.stdout!.on("data", (b: Buffer) => {
 			size += b.length;
 			if (size <= 16 * 1024 * 1024) chunks.push(b);
 		});
-		child.on("error", () => {
-			clearTimeout(timer);
-			resolve(undefined);
+		child.on("error", () => end(undefined));
+		// a background child of the rc may hold stdout open: the shell's exit is enough
+		child.on("exit", (code) => {
+			grace = setTimeout(() => end({ code, out: Buffer.concat(chunks) }), 100);
 		});
-		child.on("close", (code) => {
-			clearTimeout(timer);
-			resolve({ code, out: Buffer.concat(chunks) });
-		});
+		child.on("close", (code) => end({ code, out: Buffer.concat(chunks) }));
 	});
 }
 
@@ -171,25 +197,44 @@ export async function workspaceEnv(
 	timeoutMs = PROBE_TIMEOUT_MS,
 ): Promise<WorkspaceEnvResult> {
 	if (mode === "off") return { env: base, via: "none" };
+	// the shell gets most of the time; direnv after it, both within timeoutMs
+	const started = Date.now();
+	const left = () => Math.max(1, timeoutMs - (Date.now() - started));
 	const finish = (probed: Record<string, string>, via: WorkspaceEnvResult["via"]): WorkspaceEnvResult => {
 		const env: Record<string, string> = {};
 		for (const [k, v] of Object.entries(probed)) {
 			if (PROBE_NOISE.has(k) || !keep(k)) continue;
 			env[k] = v;
 		}
-		// a name the base had and the probe has not is gone on purpose (an .envrc unloaded)
+		// a name the base had and the probe has not is gone on purpose (an .envrc unloaded),
+		// except one a shell cannot hold (FOO-BAR): it never had the chance to keep it
+		for (const [k, v] of Object.entries(base)) {
+			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && env[k] === undefined && keep(k)) env[k] = v;
+		}
 		return { env, via };
 	};
+	let shellEnv: Record<string, string> | undefined;
 	if (mode === "shell") {
 		const shell = base.SHELL || "/bin/sh";
 		const script = probeScript(shell);
 		if (script) {
-			const r = await run(shell, script.args, cwd, { ...base, PI_ROOST_PROBE_DIR: cwd, TERM: "dumb" }, timeoutMs);
-			const probed = r && r.code === 0 ? parseProbe(r.out) : undefined;
-			if (probed) return finish(probed, "shell");
+			// not "dumb": many rc files stop early for dumb terminals (emacs, TRAMP)
+			const r = await run(shell, script.args, cwd, { ...base, PI_ROOST_PROBE_DIR: cwd, TERM: base.TERM || "xterm-256color" }, Math.ceil(timeoutMs * 0.7));
+			// an exit hook may fail after the dump: the dump counts; 97 is a cd that failed
+			shellEnv = r && r.code !== 97 ? parseProbe(r.out) : undefined;
 		}
 	}
-	const viaD = await viaDirenv(cwd, base, timeoutMs);
+	if (shellEnv) {
+		// direnv loaded where the hub was and the shell did not move it (no hook in its rc):
+		// direnv itself, on top
+		const stale = base.DIRENV_DIR !== undefined && shellEnv.DIRENV_DIR === base.DIRENV_DIR && base.DIRENV_DIR.replace(/^-/, "") !== cwd;
+		if (stale) {
+			const viaD = await viaDirenv(cwd, shellEnv, left());
+			if (viaD) return finish(viaD, "shell");
+		}
+		return finish(shellEnv, "shell");
+	}
+	const viaD = await viaDirenv(cwd, base, left());
 	if (viaD) return finish(viaD, "direnv");
 	return { env: base, via: "none" };
 }

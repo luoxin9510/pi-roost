@@ -18,9 +18,10 @@ except:
   its own;
 - what names the launching terminal: `TERM*`, `TMUX*`, `STY`, `WINDOWID`, iTerm, kitty,
   WezTerm, Alacritty, Ghostty and Zellij ids, `COLUMNS`/`LINES`, `PWD`/`OLDPWD`,
-  `SHLVL`, `_`. The session runs in its own PTY and is opened later from any terminal,
-  or a phone;
-- `envDenyList` (exact names, or `PREFIX*`);
+  `SHLVL`, `_`, the launching tty (`GPG_TTY`, `SSH_TTY`), and editor/terminal prefixes
+  (`VSCODE_*`, `KONSOLE_*`, …). The session runs in its own PTY and is opened later from
+  any terminal, or a phone;
+- `envDenyList` (exact names, or `PREFIX*`); an `envAllowList` name passes it anyway;
 - names that cannot be set (with `=` or NUL).
 
 `inheritEnv: false` keeps the old allowlist.
@@ -53,8 +54,16 @@ The rest:
 - From the probe's result the host drops the probe's own variables and anything
   `envKept` refuses, so the deny list holds against an rc that exports a secret again.
 - `PWD` is set to the session's folder.
-- The probe has stdin closed, `TERM=dumb`, its own process group, and is killed after
-  8 s.
+- The probe has stdin closed and the session's `TERM` (not `dumb`: many rc files stop
+  early for dumb terminals). It runs in its own process group, which is killed when the
+  probe is done, so whatever the rc left in the background goes too. The shell's exit is
+  enough: a background child holding stdout open does not keep the probe waiting.
+- The probe's output counts even when an exit hook fails afterwards.
+- Variables a shell cannot hold (`FOO-BAR`) are kept from the base.
+- If direnv had loaded the hub's folder and the shell did not move it (direnv installed,
+  no hook in the rc), `direnv export json` runs on top.
+- Time budget: 8 s in all (70 % for the shell, the rest for direnv), under attach's 15 s.
+  A stop while probing kills the probe and ends the job.
 - It is measured at ~40 ms with a direnv-hooked zsh.
 - It runs at every start, so an `.envrc` changed since is picked up when a reaped
   session wakes.

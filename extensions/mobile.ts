@@ -45,7 +45,7 @@ export async function startForMobile(req: MobileStartRequest, connect = () => Da
 		execPath: process.execPath,
 		env: { ...process.env, ...env },
 		...envPolicy(config),
-		// the phone's own variables always go
+		// the phone's own variables always go (envAllowList names pass the deny list too)
 		extraEnv: [...config.envAllowList, ...Object.keys(env)],
 		piVersion: VERSION,
 		model: config.dispatchModel,

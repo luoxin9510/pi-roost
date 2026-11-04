@@ -387,7 +387,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `inheritEnv` | `true` | background sessions start with the launching shell's environment ([environment](#environment--环境变量)) | 后台会话继承启动它的 shell 的环境变量（见[环境变量](#environment--环境变量)） |
 | `workspaceEnv` | `"shell"` | each session gets its workspace's environment, as a shell that `cd`'d there: `"shell"` runs your shell's cd hooks (direnv, mise, fnm …), `"direnv"` runs `direnv export` only, `"off"` | 每个会话拿到它所在 workspace 的环境，就像 shell `cd` 进去那样：`"shell"` 运行你 shell 的 cd hook（direnv、mise、fnm 等），`"direnv"` 只跑 `direnv export`，`"off"` 关闭 |
 | `envDenyList` | `[]` | names never passed (`AWS_*` matches a prefix) | 永远不传的变量名（`AWS_*` 按前缀匹配） |
-| `envAllowList` | `[]` | with `inheritEnv: false`: extra variables on top of the basics | `inheritEnv: false` 时，在基础变量之外额外传的变量 |
+| `envAllowList` | `[]` | names that always go, even when `envDenyList` matches them; with `inheritEnv: false`, the extra variables on top of the basics | 总会传过去的变量名，即使 `envDenyList` 匹配到也照传；`inheritEnv: false` 时是基础变量之外额外传的变量 |
 | `subagentPanel`, `subagentPanelRows` | `true`, `5` | the panel of this session's subagents below the prompt, and how many rows it shows (1–10) | 提示符下方的子 agent 面板，以及最多显示几行（1–10） |
 | `subagentAutoClose` | `true` | close a subagent's process once it finished and reported; a message starts it again | 子 agent 完成并汇报后关闭其进程；再发消息会重新启动 |
 | `agentViewSubagents` | `"hide"` | `"inline"`: subagents are rows of the agent view again | `"inline"`：子 agent 重新作为 agent 视图里的行显示 |
@@ -417,9 +417,9 @@ again later), pi-roost runs your shell (`$SHELL -i`: zsh, bash, fish, or tcsh/cs
 the workspace's, and mise, fnm or nvm pick its tool versions. Their own trust rules
 apply (`direnv allow`, `mise trust`). Without a supported shell, or when that fails,
 `direnv export json` is used; when that fails too, the session keeps the environment it
-was launched with. A slow shell is cut off after 8 seconds.
+was launched with. All this is cut off after 8 seconds.
 
-然后它再拿到自己 workspace 的环境，所以在一个中央目录打开的 hub 把会话派到其他目录时，环境也是对的。每次会话进程启动（包括之后被重新拉起），pi-roost 会在会话所在目录运行你的 shell（`$SHELL -i`，支持 zsh、bash、fish，以及读 `.cshrc` 的 tcsh/csh），并执行 `cd` 时会跑的那些 hook：direnv 先卸载 hub 目录的 `.envrc` 再加载 workspace 的，mise、fnm、nvm 会切到这个项目的工具版本。它们自己的信任机制照常生效（`direnv allow`、`mise trust`）。不支持的 shell 或这一步失败时，改用 `direnv export json`；也失败的话，会话沿用启动时带来的环境。shell 启动超过 8 秒会被中止。
+然后它再拿到自己 workspace 的环境，所以在一个中央目录打开的 hub 把会话派到其他目录时，环境也是对的。每次会话进程启动（包括之后被重新拉起），pi-roost 会在会话所在目录运行你的 shell（`$SHELL -i`，支持 zsh、bash、fish，以及读 `.cshrc` 的 tcsh/csh），并执行 `cd` 时会跑的那些 hook：direnv 先卸载 hub 目录的 `.envrc` 再加载 workspace 的，mise、fnm、nvm 会切到这个项目的工具版本。它们自己的信任机制照常生效（`direnv allow`、`mise trust`）。不支持的 shell 或这一步失败时，改用 `direnv export json`；也失败的话，会话沿用启动时带来的环境。这一切超过 8 秒会被中止。
 
 The environment is saved with the session's record (`job.json`, readable by you only),
 so secrets in it are on disk as they are in your shell's files. `inheritEnv: false` goes

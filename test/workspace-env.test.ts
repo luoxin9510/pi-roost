@@ -24,6 +24,10 @@ describe("M20: the shell's environment", () => {
 		expect(workerEnv(env, { inheritEnv: false, extraEnv: ["MY_TOKEN"] })).toEqual({ PATH: "/bin", MY_TOKEN: "t" });
 		expect(envKept("PI_DAEMON_SOCK")).toBe(false);
 		expect(envKept("X", ["X*"])).toBe(false);
+		expect(envKept("GPG_TTY")).toBe(false);
+		expect(envKept("VSCODE_GIT_IPC_HANDLE")).toBe(false);
+		// envAllowList names pass the deny list
+		expect(workerEnv({ AWS_PROFILE: "p", AWS_X: "x" }, { envDenyList: ["AWS_*"], extraEnv: ["AWS_PROFILE"] })).toEqual({ AWS_PROFILE: "p" });
 	});
 
 	it("config: inheritEnv off turns the workspace's environment off too", () => {
@@ -79,6 +83,46 @@ describe("M20: the shell's environment", () => {
 			expect(r.env).toMatchObject({ WS_VAR: "from-ws", CWD_RAN: "yes" });
 			expect(r.env.HUB_ONLY).toBeUndefined();
 		}
+	});
+
+	it.runIf(has("zsh"))("rc files that stop for dumb terminals, exit hooks that fail, background children, names a shell cannot hold", async () => {
+		const zdot = mkdtempSync(join(tmpdir(), "roost-zdot-"));
+		const ws = mkdtempSync(join(tmpdir(), "roost-ws-"));
+		writeFileSync(
+			join(zdot, ".zshrc"),
+			['[[ $TERM == dumb ]] && return', "_h() { export HOOKED=yes }", "precmd_functions+=(_h)", "(sleep 30 &)", "zshexit() { return 3 }", ""].join("\n"),
+		);
+		const zsh = execFileSync("sh", ["-c", "command -v zsh"]).toString().trim();
+		const t = Date.now();
+		const r = await workspaceEnv(ws, { PATH: process.env.PATH!, HOME: zdot, ZDOTDIR: zdot, SHELL: zsh, "FOO-BAR": "1" }, "shell", (k) => envKept(k), 6000);
+		expect(Date.now() - t).toBeLessThan(3000);
+		expect(r.via).toBe("shell");
+		expect(r.env.HOOKED).toBe("yes");
+		expect(r.env["FOO-BAR"]).toBe("1");
+	});
+
+	it.runIf(has("bash"))("bash: every PROMPT_COMMAND entry, as a string or an array", async () => {
+		const home = mkdtempSync(join(tmpdir(), "roost-bash-"));
+		const ws = mkdtempSync(join(tmpdir(), "roost-ws-"));
+		const bash = execFileSync("sh", ["-c", "command -v bash"]).toString().trim();
+		const major = Number(execFileSync(bash, ["-c", "echo ${BASH_VERSINFO[0]}"]).toString());
+		writeFileSync(join(home, ".bashrc"), major >= 5 ? "a_h() { export A=1; }\nb_h() { export B=1; }\nPROMPT_COMMAND=(a_h b_h)\n" : "a_h() { export A=1; }\nb_h() { export B=1; }\nPROMPT_COMMAND='a_h; b_h'\n");
+		const r = await workspaceEnv(ws, { PATH: "/usr/bin:/bin", HOME: home, SHELL: bash }, "shell", (k) => envKept(k));
+		expect(r.via).toBe("shell");
+		expect(r.env).toMatchObject({ A: "1", B: "1" });
+	});
+
+	it.runIf(has("zsh"))("direnv on top when the shell has no direnv hook and the hub's .envrc is loaded", async () => {
+		const zdot = mkdtempSync(join(tmpdir(), "roost-zdot-"));
+		writeFileSync(join(zdot, ".zshrc"), "\n");
+		const bin = mkdtempSync(join(tmpdir(), "roost-bin-"));
+		writeFileSync(join(bin, "direnv"), `#!/bin/sh\nprintf '{"WS":"1","HUB_VAR":null,"DIRENV_DIR":"-/ws"}'\n`);
+		chmodSync(join(bin, "direnv"), 0o755);
+		const ws = mkdtempSync(join(tmpdir(), "roost-ws-"));
+		const zsh = execFileSync("sh", ["-c", "command -v zsh"]).toString().trim();
+		const r = await workspaceEnv(ws, { PATH: `${bin}:/usr/bin:/bin`, HOME: zdot, ZDOTDIR: zdot, SHELL: zsh, DIRENV_DIR: "-/hub", HUB_VAR: "h" }, "shell", (k) => envKept(k));
+		expect(r.env).toMatchObject({ WS: "1", DIRENV_DIR: "-/ws" });
+		expect(r.env.HUB_VAR).toBeUndefined();
 	});
 
 	it("falls back to direnv export json, then to the environment as carried", async () => {
