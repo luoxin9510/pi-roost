@@ -37,6 +37,15 @@ the sessions keep going.
   **聊到一半也能转后台**：在任意会话的空提示符下按 ←（或输入 `/bg`），当前对话原样转到后台继续跑。
 - **Outlives the terminal.** A per-user daemon keeps the sessions alive.<br>
   **不怕关终端**：每个用户一个常驻的后台守护进程，会话不会随终端一起退出。
+- **Agents that delegate.** Sessions spawn and message each other; a session's subagents
+  sit in a panel under its prompt, and Enter shows one's transcript.<br>
+  **会分派的 agent**：会话之间可以互相派发、发消息；子 agent 列在提示符下方的面板里，回车就能看它的 transcript。
+- **Pull requests in the list.** `#N` with its checks on the row; sessions whose pull
+  request needs you are grouped as *Ready for review*.<br>
+  **列表里看 PR**：行尾显示 `#N` 和检查状态；PR 需要你处理的会话归入“Ready for review”分组。
+- **Your shell, in every session.** Background sessions get your shell's environment, and
+  each one its own workspace's (direnv, mise, fnm), even when started from a hub elsewhere.<br>
+  **每个会话都是你的 shell**：后台会话继承你 shell 的环境变量，并且各自拿到所在 workspace 的环境（direnv、mise、fnm），即使是从别处的 hub 派发的。
 
 pi-roost is a plain pi package: one extension, a small per-user daemon and a PTY host per
 session. Pi itself is not changed.
@@ -87,11 +96,12 @@ summaries. Add one to `~/.pi/agent/roost.json`, for example
 
 ## What you get · 功能
 
-**One list, grouped by what needs you.** Sessions are grouped into *Needs input*,
-*Working* and *Completed* (or by directory, Ctrl+S). The terminal title counts the ones
+**One list, grouped by what needs you.** Sessions are grouped into *Ready for review*
+(when a pull request needs you), *Needs input*, *Working* and *Completed* (or by
+directory, Ctrl+S). The terminal title counts the ones
 waiting for you, and the terminal notifies you when one asks a question or finishes.
 
-**一个列表，按“需要你做什么”分组。** 会话分为“需要输入”“进行中”“已完成”三组（按 Ctrl+S 可改为按目录分组）。终端标题会显示有几个在等你，有会话提问或完成时，终端会发通知。
+**一个列表，按“需要你做什么”分组。** 会话分为“Ready for review”（有 PR 需要你处理时才出现）“需要输入”“进行中”“已完成”几组（按 Ctrl+S 可改为按目录分组）。终端标题会显示有几个在等你，有会话提问或完成时，终端会发通知。
 
 **Dispatch from anywhere. · 随处派发任务。**
 
@@ -99,6 +109,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 |---|---|---|
 | `fix the flaky test` | a new background session in this directory | 在当前目录开一个新的后台会话 |
 | `@api fix the flaky test` | the same, in `./api` (Tab completes repos and worktrees) | 同上，但在 `./api` 里（Tab 可补全仓库和 worktree） |
+| `reviewer check the diff`, `@reviewer …` | the task runs as that agent: its model, tools and system prompt ([agent presets](#agent-presets--agent-预设)) | 以那个 agent 的身份运行：用它的模型、工具和 system prompt（见 [agent 预设](#agent-presets--agent-预设)） |
 | `! npm test` | a shell command as a job; the row shows its last output line | 把一条 shell 命令作为任务运行，这一行显示它最后一行输出 |
 | `/model`, `/thinking` | model and thinking level for sessions started from this view (bare: pick from a list) | 设置从这个视图新开的会话所用的模型和 thinking 级别（不带参数则从列表里选） |
 | `/resume` | bring back an earlier session of this directory | 找回当前目录以前的会话 |
@@ -131,11 +142,12 @@ it running.
 
 **会话比终端活得久。** 所有会话都归每个用户一个的守护进程管理，所以关掉终端、或者关掉派发它们的那个 pi，会话都不会停。会话崩溃会自动重启一次。空闲超过一小时的会话会停掉进程（它仍在列表里，回复或进入它就会从停下的地方接着跑）；按 Ctrl+T 置顶可以让它一直运行。
 
-**Keep it tidy.** Filter with `s:working`, `n:auth`, `o:error` (combine with spaces),
+**Keep it tidy.** Filter with `s:working`, `s:ready`, `n:auth`, `o:error`, `a:reviewer`
+(agent), `#1234` or a pull request URL (combine with spaces),
 rename with Ctrl+R, reorder with Shift+↑/↓, fold groups, pin, and stop with Ctrl+X (twice
 to delete). Press `?` in the view for every key.
 
-**保持整洁。** 用 `s:working`、`n:auth`、`o:error` 过滤（可以用空格组合），Ctrl+R 改名，Shift+↑/↓ 调整顺序，还能折叠分组、置顶，Ctrl+X 停止（连按两次删除）。在视图里按 `?` 查看所有按键。
+**保持整洁。** 用 `s:working`、`s:ready`、`n:auth`、`o:error`、`a:reviewer`（按 agent）、`#1234` 或 PR 链接过滤（可以用空格组合），Ctrl+R 改名，Shift+↑/↓ 调整顺序，还能折叠分组、置顶，Ctrl+X 停止（连按两次删除）。在视图里按 `?` 查看所有按键。
 
 **See and switch each session's model.** Every row shows the session's model and how full
 its context window is (`claude-opus-5-5 · 43%`, yellow from 80%, red from 95%); the peek
@@ -349,6 +361,23 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 
 在会话里，空提示符下按 ←、输入 `/exit` 或按 Ctrl+Z，都会回到列表。
 
+| Key · 按键 | In the subagent panel (↓ on an empty prompt) | 在子 agent 面板里（空提示符下按 ↓） |
+|---|---|---|
+| ↑ ↓ | move; ↑ on the first row back to the prompt | 移动；在第一行按 ↑ 回到提示符 |
+| Enter | the transcript, over the conversation | 在对话上方显示 transcript |
+| → | open the child's own pi screen (an ended one: → again) | 进入子会话自己的 pi 界面（已结束的要再按一次 →） |
+| m | write it a message | 给它写一条消息 |
+| x · K | stop it (twice) · stop all (twice); x on a stopped one hides it | 停止它（按两次）· 停止全部（按两次）；对已停止的按 x 会隐藏 |
+| Esc ← | back to the prompt | 回到提示符 |
+
+| Key · 按键 | In a transcript | 在 transcript 里 |
+|---|---|---|
+| typing, Enter | send the subagent a message (it resumes) | 给子 agent 发消息（它会继续工作） |
+| ↑ ↓, Enter | select and open the parent, a sibling or a child | 选中并打开父会话、兄弟或子会话 |
+| PgUp PgDn | scroll | 滚动 |
+| Ctrl+O | go into the subagent's pi (an ended one: twice) | 进入子 agent 的 pi（已结束的按两次） |
+| Esc | clear the message · up one level · back to the conversation | 清空消息 · 回上一级 · 回到对话 |
+
 ## Configuration · 配置
 
 `~/.pi/agent/roost.json` (a project can override some keys in `.pi/roost.json`):
@@ -491,6 +520,9 @@ await attach(id); // hands this terminal to the session until it detaches · 把
 - Inside each worker the same extension reports state (working, waiting for input,
   done), the question it asked, and summaries.<br>
   在每个 worker 里，同一个扩展负责上报状态（进行中、等待输入、完成）、它提出的问题以及摘要。
+- Before a session's pi starts, its host runs your shell in the session's folder once,
+  the way a `cd` would, so direnv, mise or fnm set that workspace's environment.<br>
+  会话的 pi 启动之前，宿主进程会在会话目录里像 `cd` 那样跑一遍你的 shell，让 direnv、mise、fnm 设好这个 workspace 的环境。
 - The sessions are normal pi session files; `pi --resume` sees them too.<br>
   这些会话都是普通的 pi 会话文件，`pi --resume` 也能看到。
 
@@ -503,6 +535,12 @@ await attach(id); // hands this terminal to the session until it detaches · 把
   有些终端（Terminal.app、没开 `extended-keys` 的 tmux）把 Ctrl+Enter 当作回车发送：任务会启动，但不会自动进入，在它那一行按回车即可。
 - Pi's own double Ctrl+C quits without the offer to move the turn to the background.<br>
   pi 自带的连按两次 Ctrl+C 会直接退出，不会提示转到后台。
+- The transcript view shows three lines of each tool result; Ctrl+O opens the session for
+  the rest.<br>
+  transcript 里每个工具结果只显示前三行；要看全部，按 Ctrl+O 进入会话。
+- Workspace environments come from zsh, bash, fish and tcsh/csh hooks; other shells get
+  `direnv export` only.<br>
+  workspace 环境来自 zsh、bash、fish、tcsh/csh 的 hook；其他 shell 只走 `direnv export`。
 - `/fork` is pi's own command (branch from an earlier message); pi-roost's copy-to-background is `/bg-fork <prompt>`.<br>
   `/fork` 是 pi 自己的命令（从之前的消息分支）；pi-roost 的“复制到后台”是 `/bg-fork <prompt>`。
 
@@ -516,9 +554,11 @@ pi -e ./extensions/index.ts --agents      # try the checkout without installing 
 npm run install:local                     # or install the checkout as a local pi package · 或作为本地 pi 包安装
 ```
 
-Design notes and milestone acceptance records are in [`docs/plans/`](docs/plans/).
+Design notes and milestone acceptance records are in [`docs/plans/`](docs/plans/)
+([index](docs/plans/README.md)); [`docs/porting.md`](docs/porting.md) (in Chinese)
+explains how to rebuild pi-roost on another agent.
 
-设计说明和各里程碑的验收记录在 [`docs/plans/`](docs/plans/)。
+设计说明和各里程碑的验收记录在 [`docs/plans/`](docs/plans/)（[索引](docs/plans/README.md)）；[`docs/porting.md`](docs/porting.md) 说明如何在别的 agent 上重建 pi-roost。
 
 ## License · 许可证
 

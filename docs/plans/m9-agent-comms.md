@@ -1,6 +1,6 @@
 # M9: agent-to-agent communication
 
-Status: design, revised after an independent review (2026-11-03). Decisions taken with the user:
+Status: shipped (2026-11-03, PR #16), designed and revised after an independent review. Decisions taken with the user:
 
 - Full scope in one milestone pair: list peers, send messages, spawn child sessions that
   report back when they finish (Claude Code's ListAgents / SendMessage / background agent
