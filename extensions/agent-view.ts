@@ -12,6 +12,7 @@ import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
+import { TaskEditor } from "./task-editor.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
@@ -157,14 +158,14 @@ export class AgentView implements Component {
 	private cursor: { kind: "row"; id: string } | { kind: "header"; key: Section["key"] } | undefined;
 	private peek = false;
 	private help = false;
-	private input = new Input({ prompt: "› ", placeholder: "describe a task and press Enter to start it in the background" });
+	/** M17: pi's editor: several lines (Shift+Enter), long pastes folded. */
+	private input: TaskEditor;
 	private reply = new Input({ prompt: "reply › " });
 	/** AV-K10: the row being renamed, edited in its own input. */
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
 	private groupBy: "state" | "directory" = "state";
 	/** Ctrl+G: a multi-line task from $EDITOR, shown in the input as its first line. */
-	private longTask: { text: string; shown: string } | undefined;
 	/** DI-4: defaults for the next dispatches. */
 	private model: string | undefined;
 	private thinking: string | undefined;
@@ -193,6 +194,11 @@ export class AgentView implements Component {
 	private attachWhenLive: string | undefined;
 
 	constructor(o: AgentViewOptions) {
+		this.input = new TaskEditor(
+			o.tui,
+			{ border: (s) => o.theme.fg("border", s), dim: (s) => o.theme.fg("dim", s), accent: (s) => o.theme.fg("accent", s) },
+			"describe a task and press Enter to start it in the background · Shift+Enter new line",
+		);
 		this.o = o;
 		this.origin = o.origin;
 		this.groupBy = o.groupBy ?? "state";
@@ -377,8 +383,8 @@ export class AgentView implements Component {
 
 		switch (key) {
 			case "tab":
-				if (!this.peek && this.completeAt()) return;
-				break;
+				if (!this.peek) this.completeAt();
+				return;
 			case "ctrl+s":
 				return this.toggleGroupBy();
 			case "ctrl+t":
@@ -402,9 +408,10 @@ export class AgentView implements Component {
 			case "shift+down":
 				return void this.reorder(1);
 			case "up":
-				return this.moveAndRender(-1);
 			case "down":
-				return this.moveAndRender(1);
+				// M17: within a task of several lines the arrows move in the text
+				if (!this.peek && this.input.multiline() && !this.input.atEdge(key)) break;
+				return this.moveAndRender(key === "up" ? -1 : 1);
 			case "pageUp":
 				return this.moveAndRender(-10);
 			case "pageDown":
@@ -547,7 +554,7 @@ export class AgentView implements Component {
 	private async editExternally(): Promise<void> {
 		const editor = process.env.VISUAL || process.env.EDITOR;
 		if (!editor) return this.say("set $VISUAL or $EDITOR to edit the task in an editor", "warning");
-		const current = this.longTask && this.longTask.shown === this.input.getValue() ? this.longTask.text : this.input.getValue();
+		const current = this.input.getValue();
 		const { tui } = this.o;
 		let text: string | undefined;
 		let dir: string | undefined;
@@ -557,7 +564,7 @@ export class AgentView implements Component {
 			const file = join(dir, "task.md");
 			writeFileSync(file, current);
 			this.attached = true; // the terminal belongs to the editor
-			tui.stop();
+			tui.stop({ preserveScreen: true });
 			stopped = true;
 			// $VISUAL may carry arguments ("code -w"): a shell line, with the file quoted
 			const r = spawnSync(`${editor} '${file.replace(/'/g, "'\\''")}'`, { stdio: "inherit", shell: true });
@@ -573,15 +580,8 @@ export class AgentView implements Component {
 			if (dir) rmSync(dir, { recursive: true, force: true });
 		}
 		if (text === undefined) return this.say("editor exited with an error; task unchanged", "warning");
-		const lines = text.split("\n");
-		if (lines.length > 1) {
-			const shown = `${oneLine(lines[0] ?? "")} [+${lines.length - 1} lines]`;
-			this.longTask = { text, shown };
-			fill(this.input, shown);
-		} else {
-			this.longTask = undefined;
-			fill(this.input, text);
-		}
+		// M17: the editor keeps the lines
+		this.input.setValue(text);
 		this.o.tui.requestRender();
 	}
 
@@ -857,10 +857,7 @@ export class AgentView implements Component {
 	private async dispatch(attach: boolean): Promise<void> {
 		if (this.dispatching) return;
 		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
-		const shown = this.input.getValue();
-		// a task written in $EDITOR keeps its line breaks as long as the input is untouched
-		const typed = this.longTask && this.longTask.shown === shown ? this.longTask.text : shown;
-		this.longTask = undefined;
+		const typed = this.input.getValue();
 		const base = this.dispatchCwd();
 		const parsed = parseInput(typed, base);
 		if (parsed.kind === "command") {
@@ -1424,7 +1421,7 @@ export function fitScreen(
 const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
 
 /** Put text in an input with the cursor after it (setValue leaves the cursor where it was). */
-function fill(input: Input, value: string): void {
+function fill(input: { setValue(v: string): void; handleInput(d: string): void }, value: string): void {
 	input.setValue("");
 	// typed in, so the cursor ends after it whatever the user's key bindings
 	for (const ch of value.replace(CONTROL, " ")) input.handleInput(ch);
