@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-04
+
 - Sessions no longer freeze after switching: a Ctrl+Z that reached a background pi (typed with other keys, batched by a multiplexer such as herdr, or encoded with Caps/Num Lock on) made pi stop its screen and wait for a resume that never came, while the session kept running. Ctrl+Z is now found anywhere in the input and in every encoding, a background pi detaches on it instead of suspending, and entering a session resumes one that is stuck this way.
 - Rows stay true with many pi windows (herdr, tmux): a session moved to the background again takes over its old row (name and pin included), a session opened in another pi window no longer shows as needing input, a session shows as running as soon as its worker is up, and the agent view checks its rows against the background service every 15 s.
 - A session started from a herdr pane no longer inherits that pane's identity (`HERDR_*`), so it does not report its state into the pane it came from.
