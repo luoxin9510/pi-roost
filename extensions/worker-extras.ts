@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { readJson } from "../lib/atomic.ts";
+import { REPAINT_MARKER } from "../lib/attach.ts";
 import { loadConfig } from "../lib/config.ts";
 import { clip, messageText } from "../lib/heuristics.ts";
 import {
@@ -175,35 +176,57 @@ function attachedFile(): { attached?: unknown; at?: unknown } | undefined {
 
 const REPAINT_DELAY_MS = 15;
 
+/** The attach this process last repainted for (module-wide: it outlives a session switch). */
+let handledAt: unknown;
+/** True once a session's TUI is in hand: only then do reports promise a repaint. */
+let repaintReady = false;
+
+export function attachRepaintReady(): boolean {
+	return repaintReady;
+}
+
 /**
  * M14: attach feels like `pi --resume`. Nobody watched while this pi started, so the
- * terminal it set up (kitty keyboard, bracketed paste, …) was the host's, and what is on
- * the user's screen is the view they came from. On each attach this pi stops its TUI and
- * starts it again on the real terminal, which answers its queries now, then draws the
- * whole session once (synchronized, scrollback included), as a fresh start does.
+ * terminal it set up (fullscreen pi's alternate screen, mouse, kitty keyboard, …) was the
+ * host's, and what is on the user's screen is the view they came from. On each attach
+ * this pi stops its TUI and starts it again on the real terminal, which answers its
+ * queries now, then draws the session once (synchronized), as a fresh start does. It
+ * first writes REPAINT_MARKER: the host holds back what pi drew for a screen the user is
+ * not on and forwards from there.
  */
 export function registerAttachRepaint(pi: ExtensionAPI): void {
 	let tui: TUI | undefined;
-	let lastAt: unknown;
 	let timer: NodeJS.Timeout | undefined;
 	let onSignal: (() => void) | undefined;
 	const repaint = () => {
 		timer = undefined;
 		const t = tui;
 		if (!t || !attachedNow()) return;
+		process.stdout.write(REPAINT_MARKER);
 		try {
 			t.stop({ preserveScreen: true });
+		} catch {}
+		try {
 			t.start();
 			t.requestRender(true);
 		} catch {
-			// a TUI between sessions: the next render draws it
+			// a TUI between sessions: the next session draws it
 		}
+	};
+	const check = () => {
+		const f = attachedFile();
+		// a takeover writes a new time while it stays attached
+		if (f?.attached !== true || f.at === handledAt) return;
+		handledAt = f.at;
+		clearTimeout(timer);
+		timer = setTimeout(repaint, REPAINT_DELAY_MS);
+		timer.unref?.();
 	};
 	pi.on("session_start", (_event, ctx) => {
 		if (onSignal) process.off("SIGUSR2", onSignal);
 		onSignal = undefined;
 		if (!ctx.hasUI || !process.env.PI_JOB_DIR) return;
-		// a widget that draws nothing, for the TUI it is given
+		// a widget that draws nothing, for the TUI it is given (the factory runs now)
 		ctx.ui.setWidget(
 			"pi-roost-attach",
 			(t) => {
@@ -212,23 +235,18 @@ export function registerAttachRepaint(pi: ExtensionAPI): void {
 			},
 			{ placement: "belowEditor" },
 		);
-		lastAt = attachedFile()?.at;
-		onSignal = () => {
-			const f = attachedFile();
-			// a takeover writes a new time while it stays attached
-			if (f?.attached !== true || f.at === lastAt) return;
-			lastAt = f.at;
-			clearTimeout(timer);
-			timer = setTimeout(repaint, REPAINT_DELAY_MS);
-			timer.unref?.();
-		};
+		repaintReady = tui !== undefined;
+		onSignal = check;
 		process.on("SIGUSR2", onSignal);
+		// attached while no session listened (a session switch, a start): repaint now
+		check();
 	});
 	pi.on("session_shutdown", () => {
 		if (onSignal) process.off("SIGUSR2", onSignal);
 		onSignal = undefined;
 		clearTimeout(timer);
 		tui = undefined;
+		repaintReady = false;
 	});
 }
 

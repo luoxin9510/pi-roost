@@ -32,8 +32,23 @@ scrollback each time.
   synchronized output and autowrap, so `pi-roost attach` from a shell returns cleanly; the
   foreground's `tui.start()` re-enters its own screen.
 
-A regular-mode pi (`tuiMode: "regular"`) gets the same restart: its first frame clears
-and writes the whole session into the scrollback, as a resume does.
+A regular-mode pi (`tuiMode: "regular"`) gets the same restart; its frame clears the
+screen and the terminal's scrollback (`2J 3J`, as the old resize nudge did) and writes the
+whole session.
+
+## Review decisions
+
+- The worker writes a private marker (`OSC 7700;pi-roost-repaint`) before it repaints;
+  the host holds the attach stream back until it sees it, so a redraw caused by the
+  attach size (SIGWINCH, for the alternate screen the user is not on yet) never reaches
+  the real terminal. No marker within 1.5 s: the host clears and nudges as before.
+- The attach last handled is module-wide and `session_start` checks it, so an attach
+  during a session switch (`/new`, `/resume`) still repaints. Reports claim
+  `attachRepaint` only while a session's TUI is in hand.
+- `?1049l` after detach only when the stream entered the alternate screen: on a terminal
+  at its main screen it may restore a stale cursor.
+- The host greets an attach with a HELLO frame; a client that sees data first talks to an
+  older host and clears the screen itself, as before.
 
 ## Tests
 
