@@ -105,7 +105,7 @@ describe("subagent panel", () => {
 	it("says where a finished subagent went", () => {
 		expect(renderPanel(view([], { finished: true }), 80, plain)).toEqual(["  /subagents to see subagents"]);
 		expect(renderPanel(view([row()], { finished: true }), 120, plain).at(-1)).toBe("  ↓ select subagent · /subagents to see subagents");
-		expect(renderPanel(view([row()], { finished: true, focused: true }), 120, plain).at(-1)).toContain("↵ open");
+		expect(renderPanel(view([row()], { finished: true, focused: true }), 120, plain).at(-1)).toContain("↵ view · → attach");
 	});
 
 	it("shows nothing without children; a row per child, the hint, the selection", () => {
@@ -122,7 +122,7 @@ describe("subagent panel", () => {
 		expect(lines[2]).toContain("↓ select subagents");
 		const focused = renderPanel(view([a, b], { focused: true, sel: 1 }), 120, plain);
 		expect(focused[1]!.startsWith("› ")).toBe(true);
-		expect(focused[2]).toContain("↵ open · m message · x stop · K stop all · Esc back");
+		expect(focused[2]).toContain("↵ view · → attach · m message · x stop · K stop all · Esc back");
 	});
 
 	it("caps the rows and keeps the selection on screen", () => {
@@ -178,7 +178,7 @@ describe("subagent panel", () => {
 	it("reads the panel keys", () => {
 		expect(keyOf("\x1b[B")).toBe("down");
 		expect(keyOf("\x1b[A")).toBe("up");
-		expect(keyOf("\r")).toBe("open");
+		expect(keyOf("\r")).toBe("view");
 		expect(keyOf("\x1b[C")).toBe("open");
 		expect(keyOf("x")).toBe("stop");
 		expect(keyOf("\x1b")).toBe("back");
