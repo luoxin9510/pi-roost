@@ -102,6 +102,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `! npm test` | a shell command as a job; the row shows its last output line | 把一条 shell 命令作为任务运行，这一行显示它最后一行输出 |
 | `/model`, `/thinking` | model and thinking level for sessions started from this view (bare: pick from a list) | 设置从这个视图新开的会话所用的模型和 thinking 级别（不带参数则从列表里选） |
 | `/resume` | bring back an earlier session of this directory | 找回当前目录以前的会话 |
+| Shift+Enter | a new line in the task (the input is pi's editor: long pastes fold, Ctrl+Z… undo as in pi) | 在任务里换行（输入框就是 pi 的编辑器：长粘贴会折叠，撤销等操作和 pi 一样） |
 | Ctrl+G | write a long task in `$VISUAL` / `$EDITOR` | 在 `$VISUAL` / `$EDITOR` 里写长任务 |
 | Ctrl+Enter | start the task and open it straight away (needs a terminal that reports Ctrl+Enter) | 派发任务并立刻进入（需要终端能识别 Ctrl+Enter） |
 
