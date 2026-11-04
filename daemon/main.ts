@@ -201,7 +201,8 @@ function rowOf(id: string): JobRow | undefined {
 		rootSession: rec.rootSession ?? null,
 		parentOpen: rec.parentSession ? parentOpen(rec.parentSession) : false,
 		agent: rec.agent ?? null,
-		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch } : null,
+		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch, base: rec.worktree.base } : null,
+		fanout: rec.fanout ?? null,
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
 }
@@ -683,6 +684,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		...(str(a.model) ? { model: a.model } : {}),
 		...(str(a.thinking) ? { thinking: a.thinking } : {}),
 		...(str(a.agent) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(a.agent) ? { agent: a.agent } : {}),
+		...(str(a.fanout) && /^[A-Za-z0-9_-]{1,40}$/.test(a.fanout) ? { fanout: a.fanout } : {}),
 		...(a.workspaceEnv === "shell" || a.workspaceEnv === "direnv" ? { workspaceEnv: a.workspaceEnv } : {}),
 		...(Array.isArray(a.envDeny) ? { envDeny: a.envDeny.filter((d): d is string => typeof d === "string" && d !== "").slice(0, 256) } : {}),
 		...(Array.isArray(a.envForce) ? { envForce: a.envForce.filter((d): d is string => typeof d === "string" && d !== "").slice(0, 256) } : {}),

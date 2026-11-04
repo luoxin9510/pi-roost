@@ -59,8 +59,10 @@ export interface JobRow {
 	agent?: string | null;
 	/** M16: the session's pull requests as gh last reported them. */
 	prs?: PrInfo[];
-	/** M10: the session's own git worktree. */
-	worktree?: { path: string; branch: string } | null;
+	/** M10: the session's own git worktree (M26: and the commit it started from). */
+	worktree?: { path: string; branch: string; base?: string } | null;
+	/** M26: the sessions started together for one task with several models share this id. */
+	fanout?: string | null;
 }
 
 /** M9: a session an agent may message (roost_agents). */
@@ -145,6 +147,8 @@ export interface DispatchArgs {
 	piVersion?: string;
 	/** M10: the worktree the dispatching side made for this session (cwd is inside it). */
 	worktree?: { path: string; branch: string; repo: string; base: string };
+	/** M26: one task, several models: the id the sessions share. */
+	fanout?: string;
 }
 
 export interface DaemonStatus {
