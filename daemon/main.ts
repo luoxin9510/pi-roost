@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
@@ -56,6 +57,7 @@ import {
 	screenPath,
 	updateState,
 } from "../lib/store.ts";
+import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
@@ -195,7 +197,87 @@ function rowOf(id: string): JobRow | undefined {
 		rootSession: rec.rootSession ?? null,
 		parentOpen: rec.parentSession ? parentOpen(rec.parentSession) : false,
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch } : null,
+		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
+}
+
+const MAX_PR_LINKS = 20;
+
+function mergeLinks(had: unknown, add: unknown[]): string[] {
+	const out = new Set(Array.isArray(had) ? had.filter((u): u is string => typeof u === "string" && isPrUrl(u)) : []);
+	for (const u of add) if (typeof u === "string" && isPrUrl(u) && out.size < MAX_PR_LINKS) out.add(u);
+	return [...out];
+}
+
+// ---- M16: pull request status (Claude Code's #N label and "Ready for review") ----
+
+const PR_POLL_MS = Number(process.env.PI_ROOST_PR_POLL_MS) || 60_000;
+const PR_ACTIVE_MS = 7 * 24 * 60 * 60 * 1000;
+const PR_FIELDS = "number,url,state,isDraft,reviewDecision,statusCheckRollup,title";
+let lastPrPoll = 0;
+let prPolling = false;
+let ghMissingUntil = 0;
+const GH = () => process.env.PI_ROOST_GH || "gh";
+
+function gh(cwd: string, args: string[]): Promise<string | undefined> {
+	return new Promise((done) => {
+		execFile(GH(), args, { cwd: existsSync(cwd) ? cwd : homedir(), timeout: 20_000, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } }, (err, out) => {
+			if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+				if (ghMissingUntil < Date.now()) log("info", "gh not found: no pull request status");
+				ghMissingUntil = Date.now() + 10 * 60_000;
+			}
+			done(err ? undefined : String(out));
+		});
+	});
+}
+
+/** Look up linked pull requests (and a worktree branch's), store how they stand, push changed rows. */
+async function pollPrs(): Promise<void> {
+	const now = Date.now();
+	if (prPolling || now - lastPrPoll < PR_POLL_MS || now < ghMissingUntil) return;
+	prPolling = true;
+	lastPrPoll = now;
+	try {
+		for (const [id, rec] of [...recs]) {
+			if (rec.kind === "shell") continue;
+			const st = readState(id);
+			if (!st) continue;
+			const active = Math.max(st.startedAt, typeof st.stateSince === "number" ? st.stateSince : 0, st.endedAt ?? 0);
+			if (now - active > PR_ACTIVE_MS && !roster.has(id)) continue;
+			let links = mergeLinks(st.prLinks, []);
+			// a worktree's branch is the session's own: its pull request is the session's
+			if (rec.worktree && links.length === 0) {
+				const out = await gh(rec.worktree.repo, ["pr", "list", "--head", rec.worktree.branch, "--state", "all", "--json", "url", "--jq", ".[].url"]);
+				if (out) links = mergeLinks(links, prUrlsIn(out));
+				if (links.length > 0 && recs.has(id)) updateState(id, { prLinks: links });
+			}
+			if (links.length === 0) continue;
+			const before = Array.isArray(st.prs) ? (st.prs as PrInfo[]) : [];
+			const next: PrInfo[] = [];
+			for (const url of links) {
+				const known = before.find((p) => p.url === url);
+				// merged and closed ones do not change back often: once an hour
+				if (known && (known.status === "merged" || known.status === "closed") && now - (Number(st.prsAt) || 0) < 60 * 60_000) {
+					next.push(known);
+					continue;
+				}
+				const out = await gh(rec.cwd, ["pr", "view", url, "--json", PR_FIELDS]);
+				let info: PrInfo | undefined;
+				try {
+					info = out ? prFromGh(JSON.parse(out) as GhPr) : undefined;
+				} catch {}
+				const kept = info ?? known;
+				if (kept) next.push(kept);
+			}
+			if (!recs.has(id)) continue;
+			if (JSON.stringify(next) !== JSON.stringify(before)) {
+				updateState(id, { prs: next, prsAt: Date.now() });
+				pushJob(id);
+			}
+		}
+	} finally {
+		prPolling = false;
+	}
 }
 
 /** M10: a child's report ends with where its work is. */
@@ -922,6 +1004,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		reportedAt: Date.now(),
 		attachSignal: r.attachSignal === true,
 		attachRepaint: r.attachRepaint === true,
+		// M16: links only grow (a respawned worker starts with none)
+		...(Array.isArray(r.prLinks) ? { prLinks: mergeLinks(st.prLinks, r.prLinks) } : {}),
 		// a turn that ends normally clears the crash budget (DM-5)
 		// (only once the worker has stayed up a while, so a crash loop stays bounded)
 		...(r.state !== "working" && Date.now() - (typeof st.restartedAt === "number" ? st.restartedAt : 0) > CRASH_RESET_MS
@@ -1541,6 +1625,7 @@ const reaper = setInterval(
 	() => {
 		void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) }));
 		void cleanupOld().catch((err: unknown) => log("error", "cleanup failed", { error: String(err) }));
+		void pollPrs().catch((err: unknown) => log("error", "pull request poll failed", { error: String(err) }));
 	},
 	Number(process.env.PI_ROOST_REAP_CHECK_MS) || REAP_CHECK_MS,
 );

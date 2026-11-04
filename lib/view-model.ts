@@ -2,12 +2,14 @@
 // Rendering lives in extensions/agent-view.ts; this module is pure.
 import { homedir } from "node:os";
 import { type Filter, matches } from "./filter.ts";
+import { readyForReview } from "./pr.ts";
 import type { JobRow } from "./protocol.ts";
 
-export type GroupKey = "pinned" | "needs-input" | "working" | "completed";
+export type GroupKey = "pinned" | "ready" | "needs-input" | "working" | "completed";
 
 export const GROUPS: { key: GroupKey; title: string; hint: string }[] = [
 	{ key: "pinned", title: "Pinned", hint: "kept running and listed first (Ctrl+T)" },
+	{ key: "ready", title: "Ready for review", hint: "an open pull request needs review or has failing checks" },
 	{ key: "needs-input", title: "Needs input", hint: "waiting for an answer, a dialog or a first prompt" },
 	{ key: "working", title: "Working", hint: "running a turn right now" },
 	{ key: "completed", title: "Completed", hint: "finished, failed or stopped; attach or reply to continue" },
@@ -45,6 +47,8 @@ export function groupOf(row: JobRow, pinned: ReadonlySet<string> = new Set()): G
 	if (row.pinned || pinned.has(row.id)) return "pinned";
 	if (row.state === "blocked") return "needs-input";
 	if (row.state === "working") return "working";
+	// M16 (Claude Code): an open pull request that needs review or has failing checks
+	if (readyForReview(row.prs)) return "ready";
 	return "completed";
 }
 

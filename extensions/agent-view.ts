@@ -12,6 +12,7 @@ import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
+import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
 import {
@@ -305,7 +306,12 @@ export class AgentView implements Component {
 
 	/** DI-7: the input holds filters (s: n: o:) rather than a task. */
 	private filter(): Filter | undefined {
-		return this.peek || this.renaming ? undefined : parseFilter(this.input.getValue());
+		if (this.peek || this.renaming) return undefined;
+		const f = parseFilter(this.input.getValue());
+		// M16 (Claude Code): `#1234` or a pull request URL selects the session working on it,
+		// and is a task to dispatch when none is
+		if (f?.pr && ![...this.rows.values()].some((r) => rowHasPr(r.prs, f.pr!))) return undefined;
+		return f;
 	}
 
 	private itemList(): Item[] {
@@ -1226,7 +1232,10 @@ export class AgentView implements Component {
 		const head = `${t.fg(icon.tone, icon.glyph)} ${styled}${pad}  `;
 		const detail = this.detailText(row);
 		const ageCol = t.fg("dim", age.padStart(this.columns.ageW));
-		const tail = detail ? `${detail}  ${ageCol}` : ageCol;
+		// M16: Claude Code's `#N` at the right edge, coloured by status, linked to the pull request
+		const pr = prLabel(row.prs);
+		const prCol = pr ? `  ${hyperlink(t.fg(pr.tone, pr.text), pr.url)}` : "";
+		const tail = `${detail ? `${detail}  ${ageCol}` : ageCol}${prCol}`;
 		const room = width - visibleWidth(head) - visibleWidth(tail) - 2;
 		const summary = room > 4 ? t.fg(row.pid === null ? "dim" : "muted", truncateToWidth(oneLine(sentenceOf(row)), room)) : "";
 		const gap = Math.max(1, width - visibleWidth(head) - visibleWidth(summary) - visibleWidth(tail));
@@ -1292,6 +1301,10 @@ export class AgentView implements Component {
 			const live = kids.filter((r) => r.state === "working" || r.state === "blocked").length;
 			facts.push(`${kids.length} subagent${kids.length === 1 ? "" : "s"}${live ? ` (${live} running)` : ""}`);
 		}
+		for (const p of row.prs ?? []) {
+			const what = `#${p.number} ${p.status}${p.needsReview ? " · needs review" : ""}${p.title ? ` · ${oneLine(p.title)}` : ""}`;
+			lines.push(`    ${hyperlink(t.fg(prTone(p.status), truncateToWidth(what, inner)), p.url)}`);
+		}
 		if (row.worktree) {
 			facts.push(`⎇ ${oneLine(row.worktree.branch)}`);
 		}
@@ -1311,7 +1324,7 @@ export class AgentView implements Component {
 	private footer(): string {
 		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
-		if (this.filter()) return "filtering (s: n: o:) · Enter/→ attach · Esc clear";
+		if (this.filter()) return "filtering (s: n: o: #PR) · Enter/→ attach · Esc clear";
 		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close · ? keys";
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
