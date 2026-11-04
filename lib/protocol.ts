@@ -1,4 +1,5 @@
 import type { PrInfo } from "./pr.ts";
+import type { UsageInfo } from "./usage.ts";
 import { StringDecoder } from "node:string_decoder";
 
 export type JobStateName = "working" | "blocked" | "done" | "failed" | "stopped";
@@ -36,6 +37,8 @@ export interface JobRow {
 	thinking: string | null;
 	/** M8: context window use as last reported; null for shell jobs and before the first report. */
 	context: ContextInfo | null;
+	/** M24: what the session spent, as last reported (absent before it reports, or from older workers). */
+	usage?: UsageInfo | null;
 	error: string | null;
 	/** When the job entered its current state (for "waiting 3m"). */
 	stateSince: number;
@@ -106,6 +109,8 @@ export interface WorkerReport {
 	/** M8; absent from workers before 0.1.5. */
 	thinking?: string | null;
 	context?: ContextInfo | null;
+	/** M24: absent from workers before 0.1.11. */
+	usage?: UsageInfo | null;
 	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
 	attachSignal?: boolean;
 	/** M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21). */

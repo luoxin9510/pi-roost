@@ -8,6 +8,7 @@ import { messageText } from "../lib/heuristics.ts";
 import type { ArgsOf, ContextInfo, Event, Op, ResultOf, WorkerReport } from "../lib/protocol.ts";
 import { readJob } from "../lib/store.ts";
 import { worktreeNote } from "../lib/worktree.ts";
+import { sameUsage, sessionUsage, type UsageInfo } from "../lib/usage.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 import { onMobileActivity } from "./mobile.ts";
 import { type PrLinks, registerPrLinks } from "./pr-links.ts";
@@ -107,7 +108,13 @@ export class Reporter {
 	private schedule(): void {
 		if (this.closed || this.inflight || !this.latest || this.latest === this.sent) return;
 		const urgent = this.urgentPending || stateChanged(this.sent, this.latest);
-		if (!urgent && this.latest.summary === this.sent?.summary && sameContext(this.latest.context, this.sent?.context)) return;
+		if (
+			!urgent &&
+			this.latest.summary === this.sent?.summary &&
+			sameContext(this.latest.context, this.sent?.context) &&
+			sameUsage(this.latest.usage, this.sent?.usage)
+		)
+			return;
 		const due = Math.max(urgent ? Date.now() : Math.max(Date.now(), this.sentAt + this.intervalMs), this.backoffUntil);
 		if (this.timer && due >= this.dueAt) return;
 		clearTimeout(this.timer);
@@ -484,6 +491,17 @@ export class ReplyQueue {
 }
 
 /** M8: pi's context window use for the row; null when the model has no known window. */
+/** M24: the session's usage as pi's footer counts it; a subscription marks it notional. */
+export function usageOf(ctx: ExtensionContext, now = Date.now()): UsageInfo | null {
+	try {
+		const m = ctx.model;
+		const sub = m ? m.provider === "kimi-coding" || ctx.modelRegistry.isUsingOAuth(m) : false;
+		return sessionUsage(ctx.sessionManager.getEntries(), now, sub);
+	} catch {
+		return null; // a stale ctx after a session switch
+	}
+}
+
 export function contextOf(ctx: ExtensionContext): ContextInfo | null {
 	try {
 		const u = ctx.getContextUsage();
@@ -561,6 +579,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		});
 		// respawned without a prompt (reaped, restarted, replied to): no turn will start
 		if (event.reason === "startup" && process.env.PI_ROOST_RESTORE === "1") tracker.restore(lastAssistant(ctx));
+		tracker.setUsage(usageOf(ctx)); // M24: what it spent before this start
 		send();
 		clearTimeout(firstPromptTimer);
 		firstPromptTimer = setTimeout(() => {
@@ -596,7 +615,9 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		// pi saves the message after its message_end handlers: read the context use once it
 		// is in the session, or the share is one model request behind
 		setImmediate(() => {
-			if (tracker.setContext(contextOf(ctx))) send();
+			const a = tracker.setContext(contextOf(ctx));
+			const b = tracker.setUsage(usageOf(ctx)); // M24
+			if (a || b) send();
 		});
 	});
 	pi.on("agent_settled", (event, ctx) => {

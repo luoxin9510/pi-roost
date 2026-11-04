@@ -41,6 +41,7 @@ import {
 	contextFrom,
 	encodeLine,
 } from "../lib/protocol.ts";
+import { usageFrom } from "../lib/usage.ts";
 import {
 	type JobRecord,
 	type JobState,
@@ -189,6 +190,7 @@ function rowOf(id: string): JobRow | undefined {
 		model: text(st.model) ?? rec.model ?? null,
 		thinking: text(st.thinking) ?? rec.thinking ?? null,
 		context: rec.kind === "shell" ? null : contextFrom(st.context),
+		usage: rec.kind === "shell" ? null : usageFrom(st.usage),
 		error: text(st.error),
 		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
 		reaped: !live && st.reaped === true,
@@ -1141,6 +1143,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		// M8: workers before 0.1.5 send neither; keep what is known then
 		...(r.thinking !== undefined ? { thinking: opt(r.thinking, 20) } : {}),
 		...(r.context !== undefined ? { context: contextFrom(r.context) } : {}),
+		// M24: workers before 0.1.11 send none
+		...(r.usage !== undefined ? { usage: usageFrom(r.usage) } : {}),
 		// M11: a phone using the session keeps it from being reaped (never in the future)
 		...(typeof r.remoteAt === "number" && Number.isFinite(r.remoteAt) ? { remoteAt: Math.min(r.remoteAt, Date.now()) } : {}),
 		reportedAt: Date.now(),

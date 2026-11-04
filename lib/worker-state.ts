@@ -2,6 +2,7 @@
 // pi events. Pure apart from the injected clock, so it is unit-tested directly.
 import { clip, extractChoices, lastLine, looksLikeQuestion, messageText, questionLine } from "./heuristics.ts";
 import type { ContextInfo, JobStatus, WaitingFor, WorkerReport } from "./protocol.ts";
+import { sameUsage, type UsageInfo } from "./usage.ts";
 
 /** Time without a turn starting before an empty session counts as waiting for its first prompt. */
 export const FIRST_PROMPT_MS = 5000;
@@ -27,6 +28,8 @@ export class WorkerTracker {
 	private model: string | null = null;
 	private thinking: string | null = null;
 	private context: ContextInfo | null = null;
+	/** M24: what the session spent so far. */
+	private usage: UsageInfo | null = null;
 	/** SM-2: the summary model's line for the finished turn, or its progress line while running. */
 	private modelSummary: string | null = null;
 	/** Bumped at every run start: a late summary for an older run is dropped. */
@@ -171,6 +174,13 @@ export class WorkerTracker {
 		return true;
 	}
 
+	/** M24: the session's usage; true when it changed. */
+	setUsage(usage: UsageInfo | null): boolean {
+		if (sameUsage(this.usage, usage)) return false;
+		this.usage = usage;
+		return true;
+	}
+
 	/** No turn started yet; called once FIRST_PROMPT_MS after session start. */
 	firstPromptTimeout(messageCount: number): void {
 		if (this.sawTurn || this.running || this.dialogs.length > 0) return;
@@ -218,6 +228,7 @@ export class WorkerTracker {
 			model: this.model,
 			thinking: this.thinking,
 			context: this.context,
+			usage: this.usage,
 		};
 	}
 

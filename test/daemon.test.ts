@@ -363,6 +363,20 @@ describe("worker reports", () => {
 		});
 	});
 
+	it("M24: takes the session's usage, validates it, and keeps it when a report has none", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		const usage = { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 1.25, today: 0.5, day: 1, sub: false, models: { "a/b": { cost: 1.25, tokens: 30 } } };
+		await client.request("report", { id, token, report: { ...report(), usage } });
+		expect((await find(client, id))?.usage).toEqual(usage);
+		await client.request("report", { id, token, report: report() });
+		expect((await find(client, id))?.usage?.cost).toBe(1.25);
+		await client.request("report", { id, token, report: { ...report(), usage: { cost: "x", models: [] } as never } });
+		expect((await find(client, id))?.usage).toMatchObject({ cost: 0, sub: false });
+	});
+
 	it("M8: takes thinking and context use, validates them, and keeps them when a report has neither", async () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", args("sleep 30"));
