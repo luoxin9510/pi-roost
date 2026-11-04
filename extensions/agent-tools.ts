@@ -1,7 +1,7 @@
-import { discoverAgents } from "../lib/agents.ts";
 // M9: tools an agent uses to talk to other pi sessions (roost_agents, roost_send,
 // roost_spawn) and the renderer for the messages it receives.
 import { existsSync, statSync } from "node:fs";
+import { discoverAgents } from "../lib/agents.ts";
 import { resolve } from "node:path";
 import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";

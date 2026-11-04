@@ -1,3 +1,4 @@
+import type { AgentDef } from "../lib/agents.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { AgentView } from "../extensions/agent-view.ts";
@@ -77,7 +78,7 @@ class FakeClient {
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
 const launches: { task: string; opts: unknown }[] = [];
-function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void; switchCheckMs?: number } = {}) {
+function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void; switchCheckMs?: number; agents?: Map<string, AgentDef>; defaultAgent?: string } = {}) {
 	const client = new FakeClient(rows);
 	let renders = 0;
 	let doneCalls = 0;
@@ -107,6 +108,8 @@ function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string
 		reducedMotion: true,
 		onGroupBy: opts.onGroupBy,
 		switchCheckMs: opts.switchCheckMs,
+		...(opts.agents ? { agents: () => opts.agents! } : {}),
+		...(opts.defaultAgent ? { defaultAgent: opts.defaultAgent } : {}),
 	});
 	return { view, client, renders: () => renders, done: () => doneCalls };
 }
@@ -117,6 +120,52 @@ const type = (view: AgentView, text: string) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("AgentView render", () => {
+	it("M18: a first word or @name naming an agent runs the task as it; a: filters; peek says it", async () => {
+		const reviewer: AgentDef = { name: "reviewer", systemPromptMode: "replace", prompt: "You review.", file: "/a/reviewer.md" };
+		const agents = new Map([["reviewer", reviewer]]);
+		const tagged = row({ name: "check pr", agent: "reviewer" });
+		const plainRow = row({ name: "other work" });
+		const { view } = setup([tagged, plainRow], { agents });
+		await view.start();
+		launches.length = 0;
+		for (const t of ["reviewer look at the diff", "@reviewer and the tests", "reviewers are people too"]) {
+			type(view, t);
+			view.handleInput("\r");
+			await sleep(20);
+		}
+		expect(launches.map((l) => [l.task, (l.opts as { agent?: AgentDef }).agent?.name])).toEqual([
+			["look at the diff", "reviewer"],
+			["and the tests", "reviewer"],
+			["reviewers are people too", undefined],
+		]);
+		type(view, "a:reviewer");
+		const text = view.render(120).join("\n");
+		expect(text).toContain("check pr");
+		expect(text).not.toContain("other work");
+		for (let i = 0; i < 10; i++) view.handleInput("\x7f");
+		view.handleInput(" ");
+		expect(view.render(120).join("\n")).toContain("agent reviewer");
+	});
+
+	it("M18: dispatchAgent is the default; an unknown one is refused", async () => {
+		const helper: AgentDef = { name: "helper", systemPromptMode: "append", prompt: "Be brief.", file: "/a/helper.md" };
+		const { view } = setup([], { agents: new Map([["helper", helper]]), defaultAgent: "helper" });
+		await view.start();
+		launches.length = 0;
+		type(view, "write the notes");
+		view.handleInput("\r");
+		await sleep(20);
+		expect((launches[0]?.opts as { agent?: AgentDef }).agent?.name).toBe("helper");
+		const bad = setup([], { agents: new Map(), defaultAgent: "ghost" });
+		await bad.view.start();
+		launches.length = 0;
+		type(bad.view, "write the notes");
+		bad.view.handleInput("\r");
+		await sleep(20);
+		expect(launches).toHaveLength(0);
+		expect(bad.view.render(120).join("\n")).toContain("dispatchAgent ghost is not an agent here");
+	});
+
 	it("M16: a session with a pull request to review is Ready for review; #N filters to it; peek lists it", async () => {
 		const pr = { number: 2048, url: "https://github.com/o/r/pull/2048", status: "failing" as const, needsReview: true, title: "collision fix" };
 		const review = row({ name: "jump physics", state: "done", status: "idle", pid: null, prs: [pr] });

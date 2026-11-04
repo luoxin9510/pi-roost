@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Agent presets (as in Claude Code): a task that starts with an agent's name or `@name` runs as that pi-subagents definition (model, thinking, tools, system prompt); `--agent` with `--bg`, `roost_spawn`'s `agent`, `dispatchAgent`, the `a:` filter.
 - Subagents behave as in Claude Code (docs/plans/m13-subagent-lifecycle.md):
   - the agent view no longer lists a session's subagents as rows (`agentViewSubagents: "inline"` brings them back); a child whose parent pi is closed is listed while it works or waits;
   - a child that finished is closed once its report is out (`subagentAutoClose`); a message starts it again;
