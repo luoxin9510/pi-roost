@@ -19,3 +19,14 @@ neither"): Shift+Enter / Ctrl+J newlines (AV-K5) and paste collapse over long te
 Not ported: image paste. pi's `CustomEditor` reads images from the clipboard through
 pi's keybinding manager, which extensions do not get; and a dispatched session's first
 prompt is text.
+
+## Review decisions
+
+- A bare LF (Ctrl+J in a legacy terminal) goes to the editor as a new line; the view's
+  Enter handling sees CR only.
+- While a bracketed paste is open (it may arrive in several chunks) every chunk goes to
+  the editor, so a chunk that is `\r`, a space or `?` is not taken as a key.
+- Tab-completing `@dir` replaces only the word at the end; a folded paste before it
+  stays folded.
+- Limits: ↑/↓ move between rows on a long single line that wraps (logical lines
+  count); pi's jump mode (Ctrl+]) is not cancelled by keys the view handles.

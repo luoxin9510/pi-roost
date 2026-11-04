@@ -171,7 +171,6 @@ export class AgentView implements Component {
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
 	private groupBy: "state" | "directory" = "state";
-	/** Ctrl+G: a multi-line task from $EDITOR, shown in the input as its first line. */
 	/** DI-4: defaults for the next dispatches. */
 	private model: string | undefined;
 	private thinking: string | undefined;
@@ -386,6 +385,12 @@ export class AgentView implements Component {
 		if (this.renaming) return this.renameKey(key, data);
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
+		// M17: Ctrl+J (a bare LF) adds a line; a paste arriving in pieces goes to the editor whole
+		if (!this.peek && (data === "\n" || this.input.inPaste())) {
+			this.input.handleInput(data);
+			this.o.tui.requestRender();
+			return;
+		}
 
 		switch (key) {
 			case "tab":
@@ -719,7 +724,8 @@ export class AgentView implements Component {
 		if (prefix === undefined) return false;
 		const first = this.atSuggestions(prefix)[0];
 		if (!first) return true;
-		fill(this.input, `${value.slice(0, value.length - prefix.length)}${first} `);
+		// M17: only the word being typed changes; a folded paste before it stays folded
+		this.input.replaceTail(prefix.length, `${first} `);
 		this.o.tui.requestRender();
 		return true;
 	}

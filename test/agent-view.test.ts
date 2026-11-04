@@ -650,6 +650,17 @@ describe("M17: the task input is pi's editor", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		expect(launches.at(-1)?.task).toBe(long);
+		// Ctrl+J as a bare LF adds a line; a paste in pieces is not taken as keys
+		type(view, "one");
+		view.handleInput("\n");
+		type(view, "two");
+		view.handleInput("\x1b[200~");
+		view.handleInput("\r");
+		view.handleInput(" ?x");
+		view.handleInput("\x1b[201~");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(launches.at(-1)?.task).toBe("one\ntwo\n ?x");
 		view.dispose();
 	});
 });
