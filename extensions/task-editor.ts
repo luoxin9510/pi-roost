@@ -45,6 +45,23 @@ export class TaskEditor {
 		this.ed.handleInput(data);
 	}
 
+	/** Replace the last `count` characters of the text (an `@dir` being completed); the cursor goes to the end. */
+	replaceTail(count: number, text: string): void {
+		const lines = this.ed.getLines();
+		const { line, col } = this.ed.getCursor();
+		if (line !== lines.length - 1 || col !== (lines.at(-1) ?? "").length) {
+			// not typing at the end: the word is the text's last, so retype from there
+			this.ed.setText(this.ed.getText());
+		}
+		for (let i = 0; i < count; i++) this.ed.handleInput("\x7f");
+		this.ed.insertTextAtCursor(text);
+	}
+
+	/** Between a bracketed paste's start and end. */
+	inPaste(): boolean {
+		return (this.ed as unknown as { isInPaste?: boolean }).isInPaste === true;
+	}
+
 	/** More than one line: ↑↓ move within the text, not between rows. */
 	multiline(): boolean {
 		return this.ed.getLines().length > 1;
