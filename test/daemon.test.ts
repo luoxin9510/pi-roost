@@ -377,6 +377,14 @@ describe("worker reports", () => {
 		expect((await find(client, id))?.usage).toMatchObject({ cost: 0, sub: false });
 	});
 
+	it("M26: a dispatch's fan-out id reaches its row; a malformed one is dropped", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", { ...args("sleep 30"), fanout: "fabc123" });
+		expect((await find(client, id))?.fanout).toBe("fabc123");
+		const bad = await client.request("dispatch", { ...args("sleep 30"), fanout: "../../x" });
+		expect((await find(client, bad.id))?.fanout).toBeNull();
+	});
+
 	it("M8: takes thinking and context use, validates them, and keeps them when a report has neither", async () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", args("sleep 30"));

@@ -20,6 +20,8 @@ export interface JobRecord {
 	thinking?: string;
 	/** M18: the agent it runs as. */
 	agent?: string;
+	/** M26: the fan-out it belongs to. */
+	fanout?: string;
 	origin: "bg" | "dispatch" | "adopt" | "fork";
 	/** DI-6: a shell command instead of pi; absent means pi. */
 	kind?: "pi" | "shell";

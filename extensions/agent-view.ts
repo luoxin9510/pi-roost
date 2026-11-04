@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
@@ -11,12 +11,12 @@ import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/disp
 import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
-import { cleanupText } from "../lib/worktree.ts";
+import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
 import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
 import { TaskEditor } from "./task-editor.ts";
 import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
-import { refusedByDaemon } from "../lib/dispatch.ts";
+import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
 import {
 	ageOf,
@@ -52,6 +52,8 @@ const MODEL_COL = 20;
 const RESYNC_MS = 15_000;
 /** M8: how long a sent /model or /thinking may take to show in the session's reports. */
 const SWITCH_CHECK_MS = 8000;
+/** M26: the most models one task fans out to. */
+const MAX_FANOUT = 6;
 
 /** M23: a picker's items matching its search: every word of it, in any case. */
 export function pickerShown(p: { items: { label: string; value: string }[]; query?: string }): { label: string; value: string }[] {
@@ -128,6 +130,8 @@ export interface AgentViewOptions {
 	subagents?: "hide" | "inline";
 	/** M8: how long a /model or /thinking switch may take to show (tests shorten it). */
 	switchCheckMs?: number;
+	/** M26: what a session changed in its worktree (tests may replace git). */
+	worktreeChange?: (path: string, base: string) => Promise<WorktreeChange | undefined>;
 	done: () => void;
 }
 
@@ -146,6 +150,8 @@ export interface LaunchOptions {
 	origin?: "dispatch" | "adopt";
 	/** M18: run as this agent. */
 	agent?: AgentDef;
+	/** M26: one of a fan-out: a worktree when the directory is a repository, else none (no error). */
+	fanout?: string;
 }
 
 export interface Resumable {
@@ -244,6 +250,8 @@ export class AgentView implements Component {
 	/** M25: rows checked with Ctrl+O; the batch keys act on all of them. */
 	private marked = new Set<string>();
 	private sendingMarked = false;
+	/** M26: the next task starts one session per model. */
+	private fanout: string[] | undefined;
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -815,6 +823,34 @@ export class AgentView implements Component {
 			case "usage":
 				this.showUsage();
 				return done();
+			case "fanout": {
+				if (arg === "off") {
+					this.fanout = undefined;
+					this.say("the next task starts one session");
+					return done();
+				}
+				if (arg) {
+					const list = [...new Set(arg.split(/[\s,]+/).filter(Boolean))];
+					const known = this.o.models?.() ?? [];
+					const bad = list.find((m) => !m.includes("/") || (known.length > 0 && !known.includes(m)));
+					if (bad) {
+						this.say(`unknown model ${bad} (bare /fanout picks them)`, "warning");
+						return true;
+					}
+					if (list.length < 2 || list.length > MAX_FANOUT) {
+						this.say(`/fanout takes 2 to ${MAX_FANOUT} models`, "warning");
+						return true;
+					}
+					this.fanout = list;
+					this.say(`the next task runs with ${list.length} models, each in its own worktree`);
+					return done();
+				}
+				this.fanoutPicker();
+				return done();
+			}
+			case "compare":
+				this.compare();
+				return done();
 		}
 		const known = this.o.commands?.().find((c) => c.name === name);
 		if (known && (known.source === "prompt" || known.source === "skill")) return false;
@@ -1261,6 +1297,8 @@ export class AgentView implements Component {
 			const fallback = this.o.defaultAgent;
 			const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
 			if (fallback && !agent) return this.say(`dispatchAgent ${fallback} is not an agent here`, "warning");
+			// M26: one session per model
+			if (this.fanout) return this.dispatchFanout(task, cwd, agent, typed);
 			try {
 				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree, ...(agent ? { agent } : {}) });
 			} catch (err) {
@@ -1428,6 +1466,221 @@ export class AgentView implements Component {
 		}
 	}
 
+	/** M26: bare /fanout: Enter adds or removes a model, the list opens again until Esc. */
+	private fanoutPicker(): void {
+		const chosen = this.fanout ?? [];
+		this.modelPicker(`Fan out the next task (${chosen.length} chosen) · Enter adds or removes · Esc done`, chosen.at(-1) ?? "", false, (v) => {
+			const now = this.fanout ?? [];
+			const next = now.includes(v) ? now.filter((m) => m !== v) : now.length >= MAX_FANOUT ? now : [...now, v];
+			if (next === now) this.say(`at most ${MAX_FANOUT} models`, "warning");
+			this.fanout = next.length > 0 ? next : undefined;
+			this.fanoutPicker();
+		});
+		const p = this.picker;
+		if (!p) return;
+		const mark = (it: { label: string; value: string }) => ({ ...it, label: `${chosen.includes(it.value) ? "✓" : " "} ${it.label}` });
+		p.items = p.items.map(mark);
+		if (p.other) p.other.items = p.other.items.map(mark);
+	}
+
+	private async dispatchFanout(task: string, cwd: string, agent: AgentDef | undefined, typed: string): Promise<void> {
+		const models = this.fanout ?? [];
+		if (models.length < 2) return this.say("a fan-out needs two models at least (/fanout)", "warning");
+		if (!this.client) return this.say("background service unavailable", "error");
+		const fanout = `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+		const base = fallbackName(task);
+		const started: string[] = [];
+		const notes = new Set<string>();
+		const failed: string[] = [];
+		this.dispatching = true;
+		this.input.setValue("");
+		try {
+			for (const model of models) {
+				let args: LaunchRequest;
+				try {
+					args = this.o.launch(task, { cwd, model, thinking: this.thinking, worktree: true, fanout, name: `${base} · ${shortModel(model)}`, ...(agent ? { agent } : {}) });
+				} catch (err) {
+					failed.push(`${shortModel(model)}: ${oneLine((err as Error).message)}`);
+					continue;
+				}
+				const { discard, note, ...request } = args;
+				try {
+					const { id } = await this.client.request("dispatch", { ...request, fanout });
+					started.push(id);
+					if (note) notes.add(note);
+				} catch (err) {
+					if (refusedByDaemon(err)) discard?.();
+					failed.push(`${shortModel(model)}: ${oneLine((err as Error).message)}`);
+				}
+			}
+		} finally {
+			this.dispatching = false;
+		}
+		if (started.length === 0) {
+			if (!this.input.getValue()) this.input.setValue(typed);
+			return this.say(`nothing started · ${failed.join(" · ")}`, "error");
+		}
+		this.fanout = undefined; // once
+		this.cursor = { kind: "row", id: started[0]! };
+		const extra = [...notes, ...(failed.length ? [`not started: ${failed.join(", ")}`] : [])];
+		this.say(`started ${started.length} sessions, one per model · /compare on one of them${extra.length ? ` · ${extra.join(" · ")}` : ""}`, extra.length ? "warning" : "success");
+	}
+
+	/** M26: the sessions to compare: the selected row's fan-out, else the marked rows. */
+	private compareRows(): JobRow[] {
+		const row = this.selectedRow();
+		if (row?.fanout) {
+			return [...this.rows.values()].filter((r) => r.fanout === row.fanout).sort((a, b) => a.startedAt - b.startedAt || a.name.localeCompare(b.name));
+		}
+		return this.markedRows();
+	}
+
+	/** M26: /compare: one column per session, ← → choose, Enter opens it, k twice keeps it. */
+	private compare(): void {
+		const first = this.compareRows();
+		if (first.length < 2) return this.say("/compare works on a row of a fan-out (/fanout), or on two or more marked rows", "warning");
+		const ids = first.map((r) => r.id);
+		const changes = new Map<string, string>();
+		const view = this;
+		let index = Math.max(0, ids.indexOf(this.selectedRow()?.id ?? ""));
+		let keepArmed = 0;
+		let closed = false;
+		const change = this.o.worktreeChange ?? worktreeChange;
+		const load = () => {
+			for (const id of ids) {
+				const wt = this.rows.get(id)?.worktree;
+				if (!wt?.base) {
+					changes.set(id, "no worktree");
+					continue;
+				}
+				void change(wt.path, wt.base)
+					.then((c) => {
+						changes.set(id, c ? changeText(c) : "worktree gone");
+						if (!closed) this.o.tui.requestRender();
+					})
+					.catch(() => changes.set(id, "?"));
+			}
+		};
+		load();
+		this.overlay = {
+			render(width: number) {
+				const rows = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined);
+				if (rows.length === 0) {
+					queueMicrotask(() => view.closeOverlay());
+					return [];
+				}
+				index = Math.min(index, rows.length - 1);
+				const room = Math.max(6, (view.o.tui.terminal.rows || 30) - 7);
+				const keys = keepArmed && Date.now() - keepArmed < DOUBLE_PRESS_MS ? "k again: keep this one, delete the others" : "← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close";
+				return [...view.compareLines(rows, index, changes, width, room), "", view.o.theme.fg(keepArmed ? "warning" : "dim", truncateToWidth(keys, width))];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				const count = ids.filter((id) => view.rows.has(id)).length;
+				if (key !== "k" && data !== "k") keepArmed = 0;
+				if (key === "escape" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (key === "left") index = Math.max(0, index - 1);
+				else if (key === "right" || key === "tab") index = Math.min(count - 1, index + 1);
+				else if (data === "r") load();
+				else if (key === "enter") {
+					const row = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined)[index];
+					view.closeOverlay();
+					if (row) {
+						view.cursor = { kind: "row", id: row.id };
+						void view.attachTo(row.id).catch((err: unknown) => view.say(String(err), "error"));
+					}
+				} else if (data === "k") {
+					const now = Date.now();
+					if (!keepArmed || now - keepArmed > DOUBLE_PRESS_MS) {
+						keepArmed = now;
+						return;
+					}
+					keepArmed = 0;
+					const rows = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined);
+					const keep = rows[index];
+					view.closeOverlay();
+					if (keep) void view.keepOne(keep, rows.filter((r) => r.id !== keep.id));
+				}
+			},
+			dispose() {
+				closed = true;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	private compareLines(rows: JobRow[], index: number, changes: Map<string, string>, width: number, room: number): string[] {
+		const t = this.o.theme;
+		const now = Date.now();
+		// pi may have named the sessions since (each its own way): the first one's name, less its model
+		const first = rows[0]!;
+		const tag = first.model ? ` · ${shortModel(first.model)}` : "";
+		const title = tag && first.name.endsWith(tag) ? first.name.slice(0, -tag.length) : first.name;
+		const out = [t.bold(truncateToWidth(`Compare · ${oneLine(title)} · ${rows.length} sessions`, width)), ""];
+		const block = (r: JobRow, w: number, sel: boolean): string[] => {
+			const u = r.usage;
+			const tokens = u ? u.input + u.output + u.cacheRead + u.cacheWrite : 0;
+			const head = `${sel ? "›" : " "} ${r.model ? shortModel(r.model) : oneLine(r.name)}`;
+			const lines = [
+				sel ? t.fg("accent", t.bold(head)) : t.bold(head),
+				t.fg("dim", `  ${r.state} · ${ageOf(r, now)}`),
+				t.fg("muted", `  ${u ? `${formatCost(u.cost)} · ${formatTokens(tokens)} tok${u.sub ? " (sub)" : ""}` : "no usage yet"}`),
+				t.fg("muted", `  ${changes.get(r.id) ?? "…"}`),
+				"",
+			];
+			const text = r.question ?? r.summary ?? r.error ?? "";
+			const body = wrapTextWithAnsi(text.replace(/\r/g, ""), Math.max(4, w - 2)).map((l) => `  ${l}`);
+			return [...lines, ...body].map((l) => truncateToWidth(l, w));
+		};
+		const gap = 2;
+		const colW = Math.floor((width - gap * (rows.length - 1)) / rows.length);
+		if (colW >= 24) {
+			const blocks = rows.map((r, i) => block(r, colW, i === index));
+			const height = Math.min(room - 2, Math.max(...blocks.map((b) => b.length)));
+			for (let y = 0; y < height; y++) {
+				out.push(
+					blocks
+						.map((b) => {
+							const l = b[y] ?? "";
+							return l + " ".repeat(Math.max(0, colW - visibleWidth(l)));
+						})
+						.join(" ".repeat(gap)),
+				);
+			}
+			return out;
+		}
+		// narrow: the chosen one in full, the others as one line each
+		rows.forEach((r, i) => {
+			if (i === index) out.push(...block(r, width, true).slice(0, Math.max(5, room - rows.length - 2)));
+			else out.push(truncateToWidth(`  ${r.model ? shortModel(r.model) : oneLine(r.name)} · ${r.state} · ${r.usage ? formatCost(r.usage.cost) : "-"} · ${changes.get(r.id) ?? "…"}`, width));
+		});
+		return out;
+	}
+
+	/** M26: keep one of a comparison: the others are deleted (worktrees with work are kept). */
+	private async keepOne(keep: JobRow, others: JobRow[]): Promise<void> {
+		if (!this.client) return this.say("background service unavailable", "error");
+		const kept: string[] = [];
+		let deleted = 0;
+		const failed: string[] = [];
+		for (const r of others) {
+			try {
+				if (r.pid !== null) await this.client.request("stop", { id: r.id });
+				const res = await this.client.request("rm", { id: r.id });
+				deleted++;
+				this.marked.delete(r.id);
+				if (res.worktree && (!res.worktree.removed || res.worktree.branchKept)) kept.push(cleanupText(res.worktree));
+			} catch (err) {
+				failed.push(`${oneLine(r.name)}: ${oneLine((err as Error).message)}`);
+			}
+		}
+		this.cursor = { kind: "row", id: keep.id };
+		const parts = [`kept ${oneLine(rowName(keep))} · deleted ${deleted}`];
+		if (kept.length) parts.push(kept.join(" · "));
+		if (failed.length) parts.push(`not deleted: ${failed.join(", ")}`);
+		this.say(parts.join(" · "), kept.length || failed.length ? "warning" : "success");
+	}
+
 	/**
 	 * M25: the marked rows on screen, in list order. A marked row in a folded group or
 	 * filtered out stays marked but is not acted on: a batch never reaches what is not shown.
@@ -1466,8 +1719,12 @@ export class AgentView implements Component {
 		if (/^[!@]/.test(text)) return this.say("rows are marked: a typed text goes to them as a reply (Esc unmarks to start a task)", "warning");
 		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
 		if (setting) return this.markedSetting(rows, setting[1] as "model" | "thinking", (setting[2] ?? "").trim());
+		if (text === "/compare") {
+			this.input.setValue("");
+			return this.compare();
+		}
 		if (text.startsWith("/") && this.isViewCommand(text.slice(1).split(/\s/)[0] ?? "")) {
-			return this.say("only /model and /thinking act on marked sessions (Esc unmarks)", "warning");
+			return this.say("only /model, /thinking and /compare act on marked sessions (Esc unmarks)", "warning");
 		}
 		const pi = rows.filter((r) => r.kind !== "shell");
 		if (pi.length === 0) return this.say("the marked rows are shell jobs: nothing to send to", "warning");
@@ -1681,6 +1938,11 @@ export class AgentView implements Component {
 			const d = [model, this.thinking && `thinking ${this.thinking}`, wt && "own worktree"].filter(Boolean).join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
 		}
+		if (this.fanout) {
+			const n = this.fanout.length;
+			const list = this.fanout.map(shortModel).join(", ");
+			out.push(t.fg(n >= 2 ? "accent" : "warning", truncateToWidth(n >= 2 ? `next task: ${n} sessions, one per model (${list}), own worktrees · /fanout off` : `fan-out: ${list}, add one more model (/fanout)`, w)));
+		}
 		if (this.overlay) {
 			const rows = this.o.tui.terminal.rows || 30;
 			let body: string[];
@@ -1706,7 +1968,7 @@ export class AgentView implements Component {
 
 		const sections = this.sections();
 		const list = items(sections);
-		this.nameWidth = Math.max(1, Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(oneLine(r.name)) + (r.parentSession ? 2 : 0)))));
+		this.nameWidth = Math.max(1, Math.min(28, Math.floor(w / 3), Math.max(8, ...all.map((r) => visibleWidth(oneLine(rowName(r))) + (r.parentSession ? 2 : 0)))));
 		this.columns = this.columnsFor(all, Math.max(1, w - 2), now);
 		const sel = this.selectedIndex(list);
 		const empty = all.length === 0;
@@ -1762,7 +2024,13 @@ export class AgentView implements Component {
 		const icon = iconOf(row, this.frame, !this.o.reducedMotion);
 		const age = ageOf(row, now);
 		// M9: a spawned session is marked as someone's child
-		const name = truncateToWidth(oneLine(`${row.parentSession ? "↳ " : ""}${row.name}`), this.nameWidth);
+		const full = oneLine(`${row.parentSession ? "↳ " : ""}${rowName(row)}`);
+		// M26: a fan-out's model stays readable when its name is cut
+		const tag = row.fanout && row.model ? ` · ${shortModel(row.model)}` : "";
+		const name =
+			tag && visibleWidth(full) > this.nameWidth && full.endsWith(tag) && this.nameWidth > visibleWidth(tag) + 4
+				? truncateToWidth(full.slice(0, -tag.length), this.nameWidth - visibleWidth(tag)) + tag
+				: truncateToWidth(full, this.nameWidth);
 		const pad = " ".repeat(Math.max(0, this.nameWidth - visibleWidth(name)));
 		const styled = row.id === this.o.highlightId ? t.bold(t.fg(nameToneOf(row.id), name)) : t.fg(nameToneOf(row.id), name);
 		const head = `${t.fg(icon.tone, icon.glyph)} ${styled}${pad}  `;
@@ -1938,6 +2206,8 @@ export class AgentView implements Component {
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["/usage", "what the sessions spent: today, all, by model, by session"],
+			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
+			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],
 			["Esc", "close peek · clear input · unmark · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],
@@ -1955,6 +2225,13 @@ export class AgentView implements Component {
 		}
 		return ["", ...body, "", t.fg("dim", "any key to close")];
 	}
+}
+
+/** M26: a fan-out's rows say their model (pi names each session on its own, often alike). */
+export function rowName(row: JobRow): string {
+	if (!row.fanout || !row.model) return row.name;
+	const tag = shortModel(row.model);
+	return row.name.endsWith(` · ${tag}`) ? row.name : `${row.name} · ${tag}`;
 }
 
 /**

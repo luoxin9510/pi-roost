@@ -1052,7 +1052,7 @@ describe("AgentView batch (M25)", () => {
 		view.handleInput("\u0003");
 		type(view, "/worktree on");
 		view.handleInput("\r");
-		expect(view.render(100).join("\n")).toContain("only /model and /thinking act on marked sessions");
+		expect(view.render(100).join("\n")).toContain("only /model, /thinking and /compare act on marked sessions");
 		view.dispose();
 	});
 
@@ -1142,6 +1142,128 @@ describe("AgentView batch (M25)", () => {
 		view.handleInput("\x14");
 		await sleep(10);
 		expect(client.requests.filter((r) => r.op === "pin").map((r) => r.args)).toEqual([{ id: "b", pinned: false }]);
+		view.dispose();
+	});
+});
+
+describe("AgentView fan-out (M26)", () => {
+	it("/fanout checks its models; the next task starts one session per model, once", async () => {
+		const { view, client } = setup([]);
+		await view.start();
+		type(view, "/fanout a/one");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("/fanout takes 2 to 6 models");
+		view.handleInput("\u0003");
+		type(view, "/fanout a/one c/nope");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("unknown model c/nope");
+		view.handleInput("\u0003");
+		type(view, "/fanout a/one, b/two");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("next task: 2 sessions, one per model (one, two)");
+		const before = launches.length;
+		type(view, "fix the flaky test");
+		view.handleInput("\r");
+		await sleep(20);
+		const opts = launches.slice(before).map((l) => l.opts as { model: string; worktree: boolean; fanout: string; name: string });
+		expect(opts.map((o) => [o.model, o.worktree, o.name])).toEqual([
+			["a/one", true, "fix the flaky test · one"],
+			["b/two", true, "fix the flaky test · two"],
+		]);
+		expect(opts[0]!.fanout).toMatch(/^f[a-z0-9]+$/);
+		expect(opts[1]!.fanout).toBe(opts[0]!.fanout);
+		const sent = client.requests.filter((r) => r.op === "dispatch").map((r) => (r.args as { fanout?: string }).fanout);
+		expect(sent).toEqual([opts[0]!.fanout, opts[0]!.fanout]);
+		const out = view.render(100).join("\n");
+		expect(out).toContain("started 2 sessions, one per model");
+		expect(out).not.toContain("next task:");
+		// once: the next task is one session again
+		type(view, "write the changelog");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "dispatch")).toHaveLength(3);
+		view.dispose();
+	});
+
+	it("bare /fanout: Enter adds or removes a model, Esc keeps the choice; /fanout off cancels", async () => {
+		const { view } = setup([]);
+		await view.start();
+		type(view, "/fanout");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("Fan out the next task (0 chosen)");
+		view.handleInput("\r"); // a/one
+		view.handleInput("\x1b[B");
+		view.handleInput("\r"); // b/two
+		let out = view.render(100).join("\n");
+		expect(out).toContain("(2 chosen)");
+		expect(out).toContain("✓ a/one");
+		view.handleInput("\x1b[A");
+		view.handleInput("\r"); // a/one again: removed
+		expect(view.render(100).join("\n")).toContain("(1 chosen)");
+		view.handleInput("\x1b");
+		out = view.render(100).join("\n");
+		expect(out).toContain("fan-out: two, add one more model");
+		type(view, "/fanout off");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).not.toContain("fan-out:");
+		view.dispose();
+	});
+
+	it("/compare shows a fan-out side by side with its changes; k twice keeps one and deletes the others", async () => {
+		const wt = (b: string) => ({ path: `/wt/${b}`, branch: b, base: "abc" });
+		const rows = [
+			row({ id: "a", name: "fix it · one", model: "a/one", fanout: "f1", state: "done", summary: "Fixed by retrying.", worktree: wt("a"), usage: { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0.42, today: 0.42, day: 0, sub: false, models: {} } }),
+			row({ id: "b", name: "fix it · two", model: "b/two", fanout: "f1", state: "done", summary: "Rewrote the test.", worktree: wt("b") }),
+			row({ id: "c", name: "unrelated", model: "a/one", state: "done" }),
+		];
+		const asked: string[] = [];
+		const { view, client } = setup(rows, {
+			extra: {
+				worktreeChange: async (path) => {
+					asked.push(path);
+					return path.endsWith("a") ? { files: 1, insertions: 3, deletions: 1, untracked: 0 } : { files: 0, insertions: 0, deletions: 0, untracked: 2 };
+				},
+			},
+		});
+		await view.start();
+		type(view, "/compare");
+		view.handleInput("\r");
+		await sleep(10);
+		const out = view.render(120).join("\n");
+		expect(out).toContain("Compare · fix it · 2 sessions");
+		expect(out).toContain("1 file +3 −1");
+		expect(out).toContain("2 new");
+		expect(out).toContain("$0.42");
+		expect(out).toContain("Fixed by retrying.");
+		expect(out).toContain("Rewrote the test.");
+		expect(out).not.toContain("unrelated");
+		expect(asked.sort()).toEqual(["/wt/a", "/wt/b"]);
+		// a narrow terminal: the chosen one in full, the other on one line
+		expect(view.render(40).join("\n")).toContain("two · done");
+		view.handleInput("\x1b[C"); // → two
+		view.handleInput("k");
+		expect(view.render(120).join("\n")).toContain("k again");
+		view.handleInput("k");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "stop" || r.op === "rm").map((r) => [r.op, (r.args as { id: string }).id])).toEqual([
+			["stop", "a"],
+			["rm", "a"],
+		]);
+		expect(view.render(120).join("\n")).toContain("kept fix it · two · deleted 1");
+		view.dispose();
+	});
+
+	it("/compare needs a fan-out or marked rows", async () => {
+		const { view } = setup([row({ id: "a" }), row({ id: "b" })]);
+		await view.start();
+		type(view, "/compare");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("/compare works on a row of a fan-out");
+		view.handleInput("\x0f");
+		view.handleInput("\x0f");
+		type(view, "/compare");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("Compare · job");
 		view.dispose();
 	});
 });

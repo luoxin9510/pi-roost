@@ -410,3 +410,32 @@ export function cleanupText(r: CleanupResult): string {
 
 /** Where a worktree session is shown relative to (its repo), for messages. */
 export const worktreeLabel = (w: WorktreeInfo): string => `${w.branch} (${relative(w.repo, w.path) || w.path})`;
+
+/** M26: what a session changed in its worktree since it started (commits and uncommitted work). */
+export interface WorktreeChange {
+	files: number;
+	insertions: number;
+	deletions: number;
+	/** New files git does not track yet (not in the counts above). */
+	untracked: number;
+}
+
+export async function worktreeChange(path: string, base: string): Promise<WorktreeChange | undefined> {
+	const [stat, others] = await Promise.all([gitAsync(path, ["diff", "--shortstat", base]), gitAsync(path, ["ls-files", "--others", "--exclude-standard"])]);
+	if (stat === undefined || others === undefined) return undefined;
+	const num = (re: RegExp) => Number(re.exec(stat)?.[1] ?? 0);
+	return {
+		files: num(/(\d+) files? changed/),
+		insertions: num(/(\d+) insertions?\(\+\)/),
+		deletions: num(/(\d+) deletions?\(-\)/),
+		untracked: others ? others.split("\n").filter(Boolean).length : 0,
+	};
+}
+
+/** "3 files +40 −12 · 1 new", or "no changes". */
+export function changeText(c: WorktreeChange): string {
+	const parts: string[] = [];
+	if (c.files > 0) parts.push(`${c.files} file${c.files === 1 ? "" : "s"} +${c.insertions} −${c.deletions}`);
+	if (c.untracked > 0) parts.push(`${c.untracked} new`);
+	return parts.length > 0 ? parts.join(" · ") : "no changes";
+}

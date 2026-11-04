@@ -57,7 +57,8 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					// M10: only a new session can start in a worktree; a resumed one keeps its cwd
 					const fresh = !o.sessionFile;
 					const want = fresh && (o.worktree ?? isolationDefault(config.worktreeIsolation, false));
-					const iso = prepareIsolation(o.cwd ?? dispatchCwd, name, want, fresh && o.worktree === true);
+					// M26: a fan-out outside a repository shares the directory (said in the note)
+					const iso = prepareIsolation(o.cwd ?? dispatchCwd, name, want, fresh && o.worktree === true && !o.fanout);
 					const cwd = iso.cwd;
 					const sessionFile = o.sessionFile ?? SessionManager.create(cwd).getSessionFile();
 					if (!sessionFile) {

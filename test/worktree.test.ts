@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupWorktree, createWorktree, slugOf, validWorktree, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
+import { changeText, cleanupWorktree, createWorktree, slugOf, validWorktree, worktreeChange, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -30,6 +30,21 @@ let n = 0;
 const rand = () => (n++).toString(16).padStart(4, "0");
 
 describe("worktree", () => {
+	it("M26: counts what a worktree changed since its base, committed or not, and new files", async () => {
+		const r = repo();
+		const w = createWorktree(r, "compare me", rand);
+		dirs.push(w.path);
+		expect(changeText((await worktreeChange(w.path, w.base))!)).toBe("no changes");
+		writeFileSync(join(w.path, "src", "a.txt"), "a\nb\nc\n");
+		git(w.path, "commit", "-qam", "more");
+		writeFileSync(join(w.path, "src", "a.txt"), "x\nb\nc\n");
+		writeFileSync(join(w.path, "new.txt"), "n\n");
+		const c = (await worktreeChange(w.path, w.base))!;
+		expect(c).toEqual({ files: 1, insertions: 3, deletions: 1, untracked: 1 });
+		expect(changeText(c)).toBe("1 file +3 −1 · 1 new");
+		expect(await worktreeChange(join(r, "missing"), w.base)).toBeUndefined();
+	});
+
 	it("slugs names", () => {
 		expect(slugOf("Fix the flaky test!")).toBe("fix-the-flaky-test");
 		expect(slugOf("修复")).toBe("task");

@@ -33,5 +33,6 @@ Claude Code's documented behaviour.
 | M23 | [/resume and models in the hub](m23-resume-model.md) | next |
 | M24 | [usage and cost](m24-usage.md) | next |
 | M25 | [marking rows, batch actions](m25-batch.md) | next |
+| M26 | [one task, several models, compared](m26-fanout.md) | next |
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

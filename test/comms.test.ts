@@ -496,7 +496,7 @@ describe("worktrees through the daemon (M10)", () => {
 		const { id: childId } = await p.c.request("spawn", { launch: { ...launch("sleep 30", "wtchild"), cwd: made.cwd, worktree: wt } });
 		expect(readJob(childId)?.worktree).toEqual(wt);
 		const row = await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId && j.pid));
-		expect(row.worktree).toEqual({ path: wt.path, branch: wt.branch });
+		expect(row.worktree).toEqual({ path: wt.path, branch: wt.branch, base: wt.base });
 
 		writeFileSync(join(made.path, "a.txt"), "b\n");
 		git(made.path, "commit", "-q", "-am", "work");
