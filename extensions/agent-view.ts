@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Input, parseKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
-import { DaemonClient } from "../lib/client.ts";
+import { DaemonClient, type DaemonError } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
 import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
 import { type Filter, parseFilter } from "../lib/filter.ts";
@@ -51,6 +51,16 @@ const RESYNC_MS = 15_000;
 /** M8: how long a sent /model or /thinking may take to show in the session's reports. */
 const SWITCH_CHECK_MS = 8000;
 
+/** M23: a picker's items matching its search: every word of it, in any case. */
+export function pickerShown(p: { items: { label: string; value: string }[]; query?: string }): { label: string; value: string }[] {
+	const words = (p.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+	if (words.length === 0) return p.items;
+	return p.items.filter((it) => {
+		const hay = `${it.label} ${it.value}`.toLowerCase();
+		return words.every((w) => hay.includes(w));
+	});
+}
+
 export interface AgentViewOptions {
 	tui: TUI;
 	theme: Theme;
@@ -74,6 +84,24 @@ export interface AgentViewOptions {
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
 	resumable?: (cwd: string) => Promise<Resumable[]>;
+	/**
+	 * M23: pi's own session selector for /resume (search, this directory or all, sort);
+	 * without it, or when it cannot be built, the view's own list.
+	 */
+	sessionSelector?: (o: {
+		cwd: string;
+		onSelect: (session: Resumable) => void;
+		onCancel: () => void;
+		requestRender: () => void;
+		/** A session a live job runs (not to be deleted from the list). */
+		busy: (path: string) => boolean;
+	}) => Overlay;
+	/** M23: what new sessions run when no model is chosen ("provider/id"). */
+	defaultModel?: () => string | undefined;
+	/** M23: this pi's own session file (it cannot be resumed in the background). */
+	currentSession?: () => string | undefined;
+	/** M23: the models pi cycles through (`enabledModels`); none: all of them. */
+	scopedModels?: () => string[];
 	setTitle: (title: string) => void;
 	/** Daemon connection; tests pass a fake. */
 	connect?: () => Promise<DaemonClient>;
@@ -130,6 +158,20 @@ interface Picker {
 	items: { label: string; value: string }[];
 	index: number;
 	pick: (value: string) => void | Promise<void>;
+	/** M23: typed text narrows the list (every word, any case). */
+	query?: string;
+	/** M23: Tab shows these instead (all models vs the enabled ones), and back. */
+	other?: { label: string; items: { label: string; value: string }[] };
+	/** M23: what the list shows now, for the title (the enabled models, all models). */
+	scope?: string;
+}
+
+/** M23: a component shown in place of the list (pi's session selector), with its keys. */
+export interface Overlay {
+	render(width: number): string[];
+	handleInput?(data: string): void;
+	focused?: boolean;
+	dispose?(): void;
 }
 
 interface Columns {
@@ -180,6 +222,7 @@ export class AgentView implements Component {
 	/** M10: /worktree for the next dispatches (undefined: the user's default). */
 	private worktree: boolean | undefined;
 	private picker: Picker | undefined;
+	private overlay: Overlay | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
 	private ctrlCAt = 0;
@@ -234,6 +277,7 @@ export class AgentView implements Component {
 		this.closed = true;
 		clearInterval(this.spinner);
 		clearInterval(this.resync);
+		this.closeOverlay();
 		for (const s of this.switches.values()) clearTimeout(s.timer);
 		this.switches.clear();
 		this.client?.close();
@@ -446,7 +490,12 @@ export class AgentView implements Component {
 			this.o.tui.requestRender();
 			return;
 		}
-		if (this.picker) return this.pickerKey(key);
+		if (this.overlay) {
+			this.overlay.handleInput?.(data);
+			this.o.tui.requestRender();
+			return;
+		}
+		if (this.picker) return this.pickerKey(key, data);
 		if (this.renaming) return this.renameKey(key, data);
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
@@ -463,6 +512,24 @@ export class AgentView implements Component {
 				return;
 			case "ctrl+s":
 				return this.toggleGroupBy();
+			case "ctrl+l":
+				// M23: the model for new sessions, or for the session in the peek
+				if (this.peek) {
+					const row = this.peekId ? this.rows.get(this.peekId) : undefined;
+					if (row) this.sessionSetting(row, "model", "");
+					return;
+				}
+				return this.newModelPicker();
+			case "ctrl+p":
+				if (this.peek) break;
+				return this.cycleModel(1);
+			case "shift+ctrl+p":
+			case "ctrl+shift+p":
+				if (this.peek) break;
+				return this.cycleModel(-1);
+			case "shift+tab":
+				if (this.peek) break;
+				return this.cycleThinking();
 			case "ctrl+t":
 				return void this.togglePin();
 			case "ctrl+f":
@@ -692,11 +759,7 @@ export class AgentView implements Component {
 					this.say(this.model ? `new sessions use ${this.model}` : "new sessions use the default model");
 					return done();
 				}
-				const models = this.o.models?.() ?? [];
-				this.openPicker("Model for new sessions", ["default", ...models], this.model ?? "default", (v) => {
-					this.model = v === "default" ? undefined : v;
-					this.say(this.model ? `new sessions use ${this.model}` : "new sessions use the default model");
-				});
+				this.newModelPicker();
 				return done();
 			}
 			case "thinking": {
@@ -728,7 +791,7 @@ export class AgentView implements Component {
 				return done();
 			}
 			case "resume":
-				void this.resumePicker();
+				this.resume();
 				return done();
 		}
 		const known = this.o.commands?.().find((c) => c.name === name);
@@ -743,17 +806,159 @@ export class AgentView implements Component {
 		this.o.tui.requestRender();
 	}
 
-	private pickerKey(key: string | undefined): void {
+	/**
+	 * M23: models to choose from, searchable; the enabled ones (`enabledModels`, what pi
+	 * cycles through) first when there are some, Tab for all of them.
+	 */
+	private modelPicker(title: string, current: string, withDefault: boolean, pick: (v: string) => void | Promise<void>): void {
+		const all = this.o.models?.() ?? [];
+		const enabled = (this.o.scopedModels?.() ?? []).filter((m) => all.length === 0 || all.includes(m));
+		const def = this.o.defaultModel?.();
+		const head = withDefault ? [{ label: `default${def ? ` (${def})` : ""}`, value: "default" }] : [];
+		const list = (ids: string[]) => [...head, ...ids.map((m) => ({ label: m, value: m }))];
+		const items = list(enabled.length > 0 ? enabled : all);
+		this.picker = {
+			title,
+			items,
+			index: Math.max(0, items.findIndex((it) => it.value === current)),
+			pick,
+			...(enabled.length > 0 ? { scope: "enabled models", other: { label: "all models", items: list(all) } } : {}),
+		};
+		this.o.tui.requestRender();
+	}
+
+	/** M23: the model for new sessions (/model, Ctrl+L). */
+	private newModelPicker(): void {
+		this.modelPicker("Model for new sessions", this.model ?? "default", true, (v) => {
+			this.model = v === "default" ? undefined : v;
+			this.say(this.model ? `new sessions use ${this.model}` : "new sessions use the default model");
+		});
+	}
+
+	/** M23: Ctrl+P / Shift+Ctrl+P: the next or previous enabled model for new sessions, as in pi. */
+	private cycleModel(step: 1 | -1): void {
+		const all = this.o.models?.() ?? [];
+		const enabled = (this.o.scopedModels?.() ?? []).filter((m) => all.length === 0 || all.includes(m));
+		const ring = enabled.length > 0 ? enabled : all;
+		if (ring.length === 0) return this.say("no models available", "warning");
+		const at = this.model ? ring.indexOf(this.model) : -1;
+		const next = ring[(((at === -1 && step === -1 ? 0 : at) + step) % ring.length + ring.length) % ring.length]!;
+		this.model = next;
+		this.say(`new sessions use ${next}`);
+	}
+
+	/** M23: Shift+Tab: the next thinking level for new sessions, as in pi. */
+	private cycleThinking(): void {
+		const levels: (string | undefined)[] = [undefined, ...THINKING_LEVELS];
+		const at = levels.indexOf(this.thinking);
+		this.thinking = levels[(at + 1) % levels.length];
+		this.say(`new sessions think ${this.thinking ?? "at the default level"}`);
+	}
+
+	/** M23 /resume: pi's own session list when there is one, else the view's. */
+	private resume(): void {
+		if (this.o.sessionSelector) {
+			try {
+				const overlay = this.o.sessionSelector({
+					cwd: this.dispatchCwd(),
+					onSelect: (session) => {
+						this.closeOverlay();
+						void this.resumeSession(session).catch((err: unknown) => this.say((err as Error).message, "error"));
+					},
+					onCancel: () => this.closeOverlay(),
+					requestRender: () => this.o.tui.requestRender(),
+					busy: (path) => [...this.rows.values()].some((r) => r.sessionFile === path && (r.pid !== null || r.endedAt === null)),
+				});
+				if ("focused" in overlay) overlay.focused = true;
+				this.overlay = overlay;
+				this.o.tui.requestRender();
+				return;
+			} catch (err) {
+				this.say(`pi's session list is unavailable (${oneLine((err as Error).message)}): the simple one`, "warning");
+			}
+		}
+		void this.resumePicker();
+	}
+
+	private closeOverlay(): void {
+		try {
+			this.overlay?.dispose?.();
+		} catch {}
+		this.overlay = undefined;
+		this.o.tui.requestRender();
+	}
+
+	/**
+	 * M23: into a past session at once: its row when it has one (started again if it
+	 * ended), else a new background job on it, attached as soon as it runs.
+	 */
+	private async resumeSession(s: Resumable): Promise<void> {
+		if (s.path === this.o.currentSession?.()) return this.say("that is this pi's own session", "warning");
+		const row = [...this.rows.values()].find((r) => r.sessionFile === s.path);
+		if (row) {
+			this.cursor = { kind: "row", id: row.id };
+			// chosen on purpose: no "Enter again to start it"
+			this.restartAsk = { id: row.id, at: Date.now() };
+			return this.attachTo(row.id);
+		}
+		if (!this.client) return this.say("background service unavailable", "error");
+		const args = this.o.launch("", { cwd: s.cwd || this.dispatchCwd(), sessionFile: s.path, name: s.name, origin: "adopt" });
+		let r: { id: string; name: string };
+		try {
+			r = await this.client.request("dispatch", args);
+		} catch (err) {
+			args.discard?.();
+			const e = err as DaemonError;
+			if (e.code === "locked") return this.say(`${oneLine(s.name)} is open in another pi window`, "warning");
+			throw err;
+		}
+		this.cursor = { kind: "row", id: r.id };
+		this.say(`resuming ${oneLine(r.name)}…`, "accent");
+		// its first push may have come before this reply
+		if (this.rows.get(r.id)?.pid) {
+			if (!this.attached) void this.attachTo(r.id).catch((err: unknown) => this.say(String(err), "error"));
+		} else this.attachWhenLive = r.id;
+	}
+
+	private pickerKey(key: string | undefined, data = ""): void {
 		const p = this.picker!;
-		if (key === "escape" || key === "ctrl+c") this.picker = undefined;
-		else if (key === "up") p.index = Math.max(0, p.index - 1);
-		else if (key === "down") p.index = Math.min(p.items.length - 1, p.index + 1);
+		const shown = pickerShown(p);
+		if (key === "escape" || key === "ctrl+c") {
+			// M23: Esc clears the search first
+			if (p.query) {
+				p.query = "";
+				p.index = 0;
+			} else this.picker = undefined;
+		} else if (key === "up") p.index = Math.max(0, p.index - 1);
+		else if (key === "down") p.index = Math.min(shown.length - 1, p.index + 1);
 		else if (key === "pageUp") p.index = Math.max(0, p.index - 10);
-		else if (key === "pageDown") p.index = Math.min(p.items.length - 1, p.index + 10);
-		else if (key === "enter") {
+		else if (key === "pageDown") p.index = Math.min(shown.length - 1, p.index + 10);
+		else if (key === "tab" && p.other) {
+			// M23: the enabled models and all of them (the one selected stays selected)
+			const items = p.items;
+			const scope = p.scope;
+			const was = shown[p.index]?.value;
+			p.items = p.other.items;
+			p.scope = p.other.label;
+			p.other = { label: scope ?? "", items };
+			p.index = Math.max(0, pickerShown(p).findIndex((it) => it.value === was));
+		} else if (key === "backspace") {
+			p.query = (p.query ?? "").slice(0, -1);
+			p.index = 0;
+		} else if (key === "enter") {
+			// nothing matches: the search stays to be changed
+			if (shown.length === 0) return this.o.tui.requestRender();
 			this.picker = undefined;
-			const item = p.items[p.index];
+			const item = shown[p.index];
 			if (item) void Promise.resolve(p.pick(item.value)).catch((err: unknown) => this.say((err as Error).message, "error"));
+		} else {
+			// M23: typing searches (a paste too, its lines joined; a kitty-encoded key is decoded)
+			const pasted = data.startsWith("\x1b[200~") ? data.replace(/\x1b\[20[01]~/g, "").replace(/[\r\n\t]+/g, " ") : undefined;
+			const text = pasted ?? (isKeyRelease(data) ? undefined : (decodeKittyPrintable(data) ?? data));
+			if (text && !text.startsWith("\x1b") && !/[\x00-\x1f\x7f]/.test(text)) {
+				p.query = (p.query ?? "") + text;
+				p.index = 0;
+			}
 		}
 		this.o.tui.requestRender();
 	}
@@ -766,7 +971,7 @@ export class AgentView implements Component {
 		let sessions: Resumable[];
 		this.say("loading sessions…");
 		try {
-			sessions = (await this.o.resumable(cwd)).filter((s) => !known.has(s.path));
+			sessions = await this.o.resumable(cwd);
 		} catch (err) {
 			return this.say((err as Error).message, "error");
 		}
@@ -774,16 +979,12 @@ export class AgentView implements Component {
 		const byPath = new Map(sessions.map((s) => [s.path, s]));
 		this.picker = {
 			title: "Resume a session in the background",
-			items: sessions.slice(0, 200).map((s) => ({ label: `${oneLine(s.name)} · ${formatAgo(Date.now() - s.modified)}`, value: s.path })),
+			items: sessions.slice(0, 200).map((s) => ({
+				label: `${oneLine(s.name)} · ${formatAgo(Date.now() - s.modified)}${known.has(s.path) ? " · listed" : ""}`,
+				value: s.path,
+			})),
 			index: 0,
-			pick: async (path) => {
-				const s = byPath.get(path)!;
-				if (!this.client) return this.say("background service unavailable", "error");
-				const args = this.o.launch("", { cwd: s.cwd || cwd, sessionFile: s.path, name: s.name, origin: "adopt" });
-				const { id, name } = await this.client.request("dispatch", args);
-				this.cursor = { kind: "row", id };
-				this.say(`resumed · ${name}`, "success");
-			},
+			pick: (path) => this.resumeSession(byPath.get(path)!),
 		};
 		this.o.tui.requestRender();
 	}
@@ -1037,7 +1238,8 @@ export class AgentView implements Component {
 		if (values.length === 0) return this.say("no models available", "warning");
 		this.reply.setValue("");
 		const current = (which === "model" ? row.model : row.thinking) ?? "";
-		this.openPicker(`${which === "model" ? "Model" : "Thinking"} for ${oneLine(row.name)}`, values, current, apply);
+		if (which === "model") return this.modelPicker(`Model for ${oneLine(row.name)}`, current, false, apply);
+		this.openPicker(`Thinking for ${oneLine(row.name)}`, values, current, apply);
 	}
 
 	private async sendSetting(picked: JobRow, which: "model" | "thinking", value: string): Promise<void> {
@@ -1252,9 +1454,27 @@ export class AgentView implements Component {
 
 		if (this.origin && this.o.banner) out.push(t.fg("accent", truncateToWidth(this.o.banner, w)));
 		const wt = this.worktree ?? this.o.worktreeDefault === true;
-		if (this.model || this.thinking || wt) {
-			const d = [this.model && `model ${this.model}`, this.thinking && `thinking ${this.thinking}`, wt && "own worktree"].filter(Boolean).join(" · ");
+		// M23: always says what a new session runs (Ctrl+L, Ctrl+P and Shift+Tab change it)
+		const def = this.o.defaultModel?.();
+		if (this.model || this.thinking || wt || def) {
+			const model = this.model ? `model ${this.model}` : def ? `model ${def} (default)` : undefined;
+			const d = [model, this.thinking && `thinking ${this.thinking}`, wt && "own worktree"].filter(Boolean).join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
+		}
+		if (this.overlay) {
+			const rows = this.o.tui.terminal.rows || 30;
+			let body: string[];
+			try {
+				body = this.overlay.render(w);
+			} catch (err) {
+				this.closeOverlay();
+				this.say(`the session list failed: ${oneLine((err as Error).message)}`, "error");
+				body = [];
+			}
+			// its last lines (the keys) stay on screen
+			if (body.length > rows - out.length) body = [...body.slice(0, Math.max(1, rows - out.length - 2)), ...body.slice(-2)];
+			this.bottomFrom = out.length + body.length - 1;
+			return [...out, ...body].map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
 		}
 		if (this.picker || this.help) {
 			const rows = this.o.tui.terminal.rows || 30;
@@ -1429,14 +1649,18 @@ export class AgentView implements Component {
 	private pickerLines(width: number, room: number): string[] {
 		const t = this.o.theme;
 		const p = this.picker!;
-		const height = Math.max(1, Math.min(p.items.length, room - 4));
-		const start = Math.max(0, Math.min(p.index - Math.floor(height / 2), p.items.length - height));
-		const lines = [t.bold(truncateToWidth(p.title, width)), ""];
-		p.items.slice(start, start + height).forEach((it, i) => {
+		const shown = pickerShown(p);
+		const height = Math.max(1, Math.min(Math.max(1, shown.length), room - 5));
+		const start = Math.max(0, Math.min(p.index - Math.floor(height / 2), shown.length - height));
+		const title = p.scope ? `${p.title} · ${p.scope}` : p.title;
+		const lines = [t.bold(truncateToWidth(title, width)), truncateToWidth(`${t.fg("dim", "search: ")}${p.query ?? ""}▏`, width), ""];
+		if (shown.length === 0) lines.push(t.fg("dim", "  nothing matches"));
+		shown.slice(start, start + height).forEach((it, i) => {
 			const sel = start + i === p.index;
 			lines.push(this.mark(sel, truncateToWidth(sel ? t.fg("accent", it.label) : it.label, Math.max(1, width - 2))));
 		});
-		lines.push("", t.fg("dim", truncateToWidth("↑↓ choose · Enter pick · Esc cancel", width)));
+		const keys = `type to search · ↑↓ choose · Enter pick${p.other ? ` · Tab ${p.other.label}` : ""} · Esc ${p.query ? "clear" : "cancel"}`;
+		lines.push("", t.fg("dim", truncateToWidth(keys, width)));
 		return lines;
 	}
 
@@ -1462,9 +1686,12 @@ export class AgentView implements Component {
 			["@dir task", "start the task in that directory (Tab completes)"],
 			["! command", "run a shell command as a job"],
 			["/model /thinking", "defaults for new sessions (bare: pick; default resets)"],
+			["Ctrl+L", "pick the model for new sessions (in a peek: for that session)"],
+			["Ctrl+P Shift+Ctrl+P", "next / previous enabled model for new sessions"],
+			["Shift+Tab", "next thinking level for new sessions"],
 			["/worktree", "new sessions in their own git worktree and branch (toggle)"],
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
-			["/resume", "bring back a past session of this directory"],
+			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["Esc", "close peek · clear input · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],

@@ -111,8 +111,9 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `@api fix the flaky test` | the same, in `./api` (Tab completes repos and worktrees) | 同上，但在 `./api` 里（Tab 可补全仓库和 worktree） |
 | `reviewer check the diff`, `@reviewer …` | the task runs as that agent: its model, tools and system prompt ([agent presets](#agent-presets--agent-预设)) | 以那个 agent 的身份运行：用它的模型、工具和 system prompt（见 [agent 预设](#agent-presets--agent-预设)） |
 | `! npm test` | a shell command as a job; the row shows its last output line | 把一条 shell 命令作为任务运行，这一行显示它最后一行输出 |
-| `/model`, `/thinking` | model and thinking level for sessions started from this view (bare: pick from a list) | 设置从这个视图新开的会话所用的模型和 thinking 级别（不带参数则从列表里选） |
-| `/resume` | bring back an earlier session of this directory | 找回当前目录以前的会话 |
+| `/model`, `/thinking` | model and thinking level for sessions started from this view (bare: pick from a list you can search) | 设置从这个视图新开的会话所用的模型和 thinking 级别（不带参数则从可搜索的列表里选） |
+| Ctrl+L · Ctrl+P · Shift+Tab | as in pi: pick the model for new sessions (type to search, Tab: enabled or all models), cycle the enabled models (`enabledModels`), cycle the thinking level; the line under the header always says what a new session runs | 和 pi 一样：给新会话选模型（打字搜索，Tab 切换"已启用 / 全部"模型）、在已启用的模型（`enabledModels`）间轮换、轮换 thinking 级别；标题下面一行始终显示新会话会用什么 |
+| `/resume` | pi's own session list (search, this directory or all with Tab, sort): the session you pick opens at once, in the background | 打开 pi 自己的会话列表（可搜索，Tab 切换当前目录 / 全部，可排序）：选中的会话立刻在后台接上并进入 |
 | Shift+Enter | a new line in the task (the input is pi's editor: long pastes fold, Ctrl+Z… undo as in pi) | 在任务里换行（输入框就是 pi 的编辑器：长粘贴会折叠，撤销等操作和 pi 一样） |
 | Ctrl+G | write a long task in `$VISUAL` / `$EDITOR` | 在 `$VISUAL` / `$EDITOR` 里写长任务 |
 | Ctrl+Enter | start the task and open it straight away (needs a terminal that reports Ctrl+Enter) | 派发任务并立刻进入（需要终端能识别 Ctrl+Enter） |

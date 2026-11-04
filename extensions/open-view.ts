@@ -1,5 +1,5 @@
 import { discoverAgents } from "../lib/agents.ts";
-import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
+import { type ExtensionContext, type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { envPolicy, loadConfig, saveUserConfig } from "../lib/config.ts";
 import { buildLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import { readWriterLock } from "../lib/locks.ts";
@@ -112,6 +112,73 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						cwd: s.cwd,
 						modified: s.modified.getTime(),
 					})),
+				// M23: pi's own /resume list: search, this directory or all of them, sort
+				sessionSelector: ({ cwd, onSelect, onCancel, requestRender, busy }) => {
+					const seen = new Map<string, SessionInfo>();
+					const keep = (list: SessionInfo[]) => {
+						for (const s of list) seen.set(s.path, s);
+						return list;
+					};
+					const selector = new SessionSelectorComponent(
+						// this pi's session directory (a --session-dir too)
+						(onProgress, signal) => SessionManager.list(cwd, sessionDirOf(ctx), onProgress, signal).then(keep),
+						(onProgress, signal) => SessionManager.listAll(onProgress, signal).then(keep),
+						(path) => {
+							const s = seen.get(path);
+							onSelect({
+								path,
+								name: s?.name || fallbackName(s?.firstMessage || "session"),
+								cwd: s?.cwd || cwd,
+								modified: s ? s.modified.getTime() : Date.now(),
+							});
+						},
+						onCancel,
+						onCancel,
+						requestRender,
+						undefined,
+						ctx.sessionManager.getSessionFile(),
+					);
+					// a session a background job or another pi is writing is never deleted from here
+					const list = selector.getSessionList() as unknown as {
+						onDeleteSession?: (path: string) => Promise<void>;
+						onError?: (message: string) => void;
+					};
+					const remove = list.onDeleteSession;
+					list.onDeleteSession = async (path) => {
+						if (busy(path) || readWriterLock(path)) {
+							list.onError?.("in use by a running session: stop it first");
+							return;
+						}
+						await remove?.(path);
+					};
+					return {
+						render: (width: number) => selector.render(width),
+						handleInput: (data: string) => selector.handleInput(data),
+						get focused() {
+							return selector.focused;
+						},
+						set focused(v: boolean) {
+							selector.focused = v;
+						},
+						// its session lists may still be loading
+						dispose: () => (selector as unknown as { cancelLoads?: () => void }).cancelLoads?.(),
+					};
+				},
+				defaultModel: () => config.dispatchModel ?? launchDefaultModel(dispatchCwd),
+				currentSession: () => {
+					try {
+						return ctx.sessionManager.getSessionFile();
+					} catch {
+						return undefined;
+					}
+				},
+				scopedModels: () => {
+					try {
+						return ctx.scopedModels.map((m) => `${m.model.provider}/${m.model.id}`);
+					} catch {
+						return [];
+					}
+				},
 				setTitle: (title) => ctx.ui.setTitle(title),
 				groupBy: config.groupBy,
 				onGroupBy: (groupBy) => saveUserConfig({ groupBy }),
@@ -131,4 +198,39 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 	} finally {
 		g[VIEWS] = (g[VIEWS] ?? 1) - 1;
 	}
+}
+
+/** M23: the session directory of this pi (a --session-dir included), if it can tell. */
+function sessionDirOf(ctx: ExtensionContext): string | undefined {
+	try {
+		return ctx.sessionManager.getSessionDir();
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * M23: what a session started from here runs without a chosen model: the hub's own
+ * `--model` (new sessions inherit its command line), else pi's default from settings.
+ */
+let defaultCache: { cwd: string; at: number; value: string | undefined } | undefined;
+function launchDefaultModel(cwd: string): string | undefined {
+	const argv = process.argv;
+	for (let i = 0; i < argv.length; i++) {
+		if (argv[i] === "--model" && argv[i + 1]) return argv[i + 1];
+		if (argv[i]?.startsWith("--model=")) return argv[i]!.slice("--model=".length);
+	}
+	// read on render: a few seconds' cache
+	if (defaultCache && defaultCache.cwd === cwd && Date.now() - defaultCache.at < 5000) return defaultCache.value;
+	let value: string | undefined;
+	try {
+		const s = SettingsManager.create(cwd);
+		const model = s.getDefaultModel();
+		const provider = s.getDefaultProvider();
+		value = model ? (model.includes("/") || !provider ? model : `${provider}/${model}`) : undefined;
+	} catch {
+		value = undefined;
+	}
+	defaultCache = { cwd, at: Date.now(), value };
+	return value;
 }
