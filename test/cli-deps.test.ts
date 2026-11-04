@@ -6,7 +6,7 @@ import { truncateToWidth, visibleWidth } from "../lib/text-width.ts";
 
 // The CLI, the daemon and the host run with plain node from the package folder: pi's
 // own packages (peer dependencies) are not there (`npm run install:local` omits them).
-const RUNTIME = new Set(["node-pty", "@xterm/headless"]);
+const RUNTIME = new Set(["node-pty", "@xterm/headless", "@xterm/addon-serialize"]);
 
 function external(entry: string): string[] {
 	const seen = new Set<string>();

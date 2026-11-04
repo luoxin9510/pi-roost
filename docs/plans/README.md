@@ -28,5 +28,6 @@ Claude Code's documented behaviour.
 | M18 | [agent presets](m18-agent-presets.md) | 0.1.7 |
 | M19 | [subagent transcripts](m19-transcript-view.md) | 0.1.7 |
 | M20 | [your shell's environment, per workspace](m20-shell-environment.md) | 0.1.7 |
+| M21 | [an attach starts from the host's screen](m21-attach-replay.md) | next |
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

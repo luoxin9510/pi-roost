@@ -5,10 +5,12 @@ import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import xterm from "@xterm/headless";
+import serializeAddon from "@xterm/addon-serialize";
 import pty from "node-pty";
 import { writeFileAtomic, writeJsonAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
 import { REPAINT_MARKER } from "../lib/attach.ts";
+import { ModeTracker } from "../lib/term-modes.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
 import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
@@ -111,11 +113,15 @@ try {
 } catch {}
 
 const term = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
+// M21: an attach starts from this screen, as the program left it (tmux's model)
+const serializer = new serializeAddon.SerializeAddon();
+term.loadAddon(serializer);
+const modes = new ModeTracker();
 // M15: while nobody is attached the program's terminal queries (device attributes, cursor
 // position) are answered here, as a terminal would; attached, the user's terminal answers
 term.onData((reply) => {
-	// while the attach waits for the repaint (M14) the user's terminal does not see the queries
-	if ((attached && !attached.hold) || !workerAlive) return;
+	// attached, the user's terminal answers (it gets the query with the snapshot's backlog)
+	if (attached || !workerAlive) return;
 	try {
 		proc.write(reply);
 	} catch {}
@@ -160,8 +166,8 @@ function resizeAll(c: number, r: number): void {
 interface Attach {
 	sock: Socket;
 	decoder: StringDecoder;
-	/** M14: output held back until the worker's repaint marker. */
-	hold?: { carry: string; timer: NodeJS.Timeout };
+	/** M21: output after the snapshot's point, sent once the snapshot is. */
+	pending?: string[];
 }
 let attached: Attach | undefined;
 // nobody watches a new worker yet (a previous host may have died attached)
@@ -177,7 +183,8 @@ function setAttached(a: Attach | undefined): void {
 	if (was === now) return;
 	try {
 		// a file of its own: the daemon rewrites state.json on every report
-		writeJsonAtomic(join(jobDir(id), "attached.json"), { attached: now, at: Date.now() });
+		// replay: the host shows the screen (M21), the worker need not repaint it
+		writeJsonAtomic(join(jobDir(id), "attached.json"), { attached: now, at: Date.now(), replay: true });
 		if (readState(id)?.attachSignal === true && workerAlive) proc.kill("SIGUSR2");
 	} catch (err) {
 		log("attach signal failed", { error: String(err) });
@@ -188,61 +195,45 @@ proc.onData((data) => {
 	term.write(data, () => {
 		dirty = true;
 	});
+	modes.feed(data);
 	const a = attached;
 	if (!a || a.sock.destroyed) return;
-	let out = data;
-	if (a.hold) {
-		// M14: what the worker drew before its repaint was for a screen the user is not on
-		const buf = a.hold.carry + data;
-		const at = buf.indexOf(REPAINT_MARKER);
-		if (at < 0) {
-			a.hold.carry = buf.slice(-(REPAINT_MARKER.length - 1));
-			return;
-		}
-		releaseHold(a);
-		out = buf.slice(at + REPAINT_MARKER.length);
-	}
-	out = out.split(REPAINT_MARKER).join("");
-	if (out) a.sock.write(encodeFrame(FrameType.DATA, out));
+	// an older worker still marks its repaint (M14): the marker is not for the terminal
+	const out = data.split(REPAINT_MARKER).join("");
+	if (a.pending) a.pending.push(out);
+	else if (out) a.sock.write(encodeFrame(FrameType.DATA, out));
 });
 
-const REPAINT_WAIT_MS = 1500;
+/**
+ * M21: the screen as the program left it, for a terminal that has something else on it:
+ * the main screen's rows, the alternate screen if the program is on it, the cursor, the
+ * colours, and the modes (serialize's own and the ones ModeTracker follows). No
+ * scrollback: entering a session prints no history into the user's terminal.
+ */
+function snapshot(): string {
+	let s = serializer.serialize({ scrollback: 0 });
+	// the user's terminal may already be on its alternate screen, with the view on it
+	if (term.buffer.active.type === "alternate") s = s.replace("\x1b[?1049h", "\x1b[?1049h\x1b[H\x1b[2J");
+	return `\x1b[0m\x1b[H\x1b[2J${s}${modes.restore()}`;
+}
 
-/** M14: hold output back until the worker's repaint; if it never comes, clear and nudge. */
-function holdUntilRepaint(a: Attach): void {
-	const timer = setTimeout(() => {
-		if (!a.hold) return;
-		releaseHold(a);
-		log("no repaint after attach, nudging");
+/** M21: send the snapshot once the mirror has every byte that came before the attach. */
+function replay(a: Attach): void {
+	a.pending = [];
+	term.write("", () => {
 		if (attached !== a || a.sock.destroyed) return;
-		a.sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
-		nudge();
-	}, REPAINT_WAIT_MS);
-	timer.unref?.();
-	a.hold = { carry: "", timer };
-}
-
-function releaseHold(a: Attach): void {
-	if (a.hold) clearTimeout(a.hold.timer);
-	a.hold = undefined;
-}
-
-/** A redraw for programs that only repaint on a size change. */
-function nudge(): void {
-	if (!workerAlive || rows <= 1) return;
-	const r = rows;
-	try {
-		proc.resize(cols, r - 1);
-	} catch {}
-	setTimeout(() => {
 		try {
-			if (workerAlive) proc.resize(cols, r);
-		} catch {}
-	}, 30);
+			a.sock.write(encodeFrame(FrameType.DATA, Buffer.from(snapshot())));
+		} catch (err) {
+			log("snapshot failed", { error: String(err) });
+			a.sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
+		}
+		for (const p of a.pending ?? []) if (p) a.sock.write(encodeFrame(FrameType.DATA, p));
+		a.pending = undefined;
+	});
 }
 
 function kick(a: Attach, reason: "takeover" | "exit" | "request"): void {
-	releaseHold(a);
 	if (attached === a) setAttached(undefined);
 	if (a.sock.destroyed) return;
 	a.sock.end(encodeJsonFrame(FrameType.DETACHED, { reason }));
@@ -312,18 +303,12 @@ const server = createServer((sock) => {
 						role = "attach";
 						if (attached) kick(attached, "takeover");
 						me = { sock, decoder: new StringDecoder("utf8") };
-						const repaints = workerAlive && readState(id)?.attachRepaint === true;
-						// M14: tell the client this host clears for itself when it has to
-						sock.write(encodeJsonFrame(FrameType.HELLO, { repaint: repaints }));
-						// a blank program (a silent command) must not leave the previous screen showing
-						if (!repaints) sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
-						else holdUntilRepaint(me);
-						// the size first: a worker that repaints on the signal draws once, at the right size
+						// M21: the client gets this screen as it is (no clear, no waiting for the worker)
+						sock.write(encodeJsonFrame(FrameType.HELLO, { replay: true }));
+						// the size first: what the program draws for it follows the snapshot
 						if (hello.cols && hello.rows) resizeAll(hello.cols, hello.rows);
 						setAttached(me);
-						// M14: a worker that repaints itself needs no nudge; a shell program or an older
-						// worker redraws on the size change
-						if (!repaints) nudge();
+						replay(me);
 					} else throw new Error("bad role");
 					continue;
 				}

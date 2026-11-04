@@ -436,6 +436,8 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ### Step 13：attach 手感如 `pi --resume`（M14，`docs/plans/m14-attach-like-resume.md`）
 
+> **M21 已取代下面第 1–4 点的"重绘 + 扣输出"做法**，见 Step 20。移植时直接做 Step 20；第 5–7 点仍然适用。
+
 解决：宿主默认**全屏**（pi 1.5.0：备用屏、鼠标、应用内滚动）。worker 在无人观看时启动，进入备用屏、开鼠标上报、请求 kitty 键盘协议——但**只发生在 PTY 里**，真实终端没有这些模式。attach 时表现为：闪烁（host 把 PTY 缩一行再放大 = 两次整屏渲染）、滚轮不好使、每次进入都把你离开的那个视图的对话刷进终端滚动区。
 
 做法（详见计划文档的 "What changes" 与 "Review decisions"）：
@@ -535,6 +537,25 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ---
 
+### Step 20：attach 从 host 的屏幕开始（M21，`docs/plans/m21-attach-replay.md`）
+
+解决：M14 依赖 worker 收到 SIGUSR2 后重绘，host 扣住输出直到重绘标记。这有四个问题：没有回放（shell 任务、旧 worker、空闲时不重绘的程序看到的是旧画面或空白）；依赖时序（1.5 s 超时回退为清屏 + 缩放，会闪一下）；SIGWINCH 和 SIGUSR2 两个信号的先后不确定（Linux 上 bash 按信号编号执行 trap，USR2=12 先跑，WINCH 的重绘漏到标记之后，M14 的测试在 Linux 上稳定失败）；每次都画两遍。
+
+做法（tmux 的模型：host 的镜像就是真相）：
+
+1. attach 时 host 回 `HELLO {replay:true}`，先把 PTY 和镜像都调到客户端尺寸。
+2. `term.write("", cb)`：等镜像把 attach 之前收到的字节都解析完，在回调里发**快照**。快照由 `@xterm/addon-serialize` 生成（`serialize({scrollback:0})`，不往用户的滚动区倒历史），前面加 SGR 重置、回到左上角、清屏；程序在备用屏时，`?1049h` 之后再清一次（用户终端可能正停在 agent view 的备用屏上）；最后追加 serialize 不覆盖的模式。
+3. serialize 能还原应用光标键、bracketed paste、鼠标跟踪，但**不能还原**光标显隐、SGR/UTF-8/urxvt 鼠标编码、焦点事件、kitty 键盘标志栈、modifyOtherKeys。这些由 host 在输出流里自己跟踪（`lib/term-modes.ts` `ModeTracker`；序列可能被 chunk 截断，要留尾巴拼接）。
+4. 快照之后到达的字节先排队，快照发出后按顺序转发，之后照常直通。客户端最终就是镜像的屏幕，并和镜像同步；程序针对新尺寸的重绘排在快照之后，原样叠加。不扣输出、不丢输出、和信号先后无关。
+5. `attached.json` 写 `replay:true`，新 worker 看到就不再重绘（只画一次）。SIGUSR2 照发，"离开期间"回顾要用。旧 worker 仍会重绘，它的标记照样剔除，多画一次也无害。
+6. 删除：扣输出、`REPAINT_WAIT_MS`、清屏 + nudge 回退。有人 attach 时终端查询交给用户终端回答（随数据流到达）。
+
+主要文件：`host/main.ts`（`snapshot`、`replay`），`lib/term-modes.ts`，`extensions/worker-extras.ts`。运行时依赖新增 `@xterm/addon-serialize`（与 `@xterm/headless` 6.0 配套的 0.14）。
+
+**验收**：无人 attach 时启动的全屏 pi worker，`pi-roost attach` 后 0.4 s 内画面完整（对话、编辑框、底栏）；改尺寸、打字、detach、再 attach 都即时，草稿还在；host 日志里没有 repaint 和 nudge。单测：安静的程序不靠信号也能立刻拿到画面；WINCH 重绘排在快照之后；备用屏、鼠标、SGR 鼠标、kitty 标志、隐藏光标完整还原；旧 worker 的标记被剔除；抢占 attach 拿到同一屏幕。
+
+---
+
 ## 5. 配置项（`lib/config.ts`）
 
 用户级 `roost.json`，项目级 `.pi/roost.json` 可覆盖**部分**键：
@@ -591,7 +612,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | 面板里完成/失败/停止行保留、页脚提示（M13） | 30 s | `subagent-panel.ts` `LINGER_MS` |
 | 面板里 blocked/failed 高亮（M12） | 5 s | `subagent-panel.ts`（`onEvent` 内的定时器） |
 | 面板重连退避上限（M12） | 30 s | `subagent-panel.ts` `watch` |
-| attach 等待重绘标记（M14） | 1.5 s | `host/main.ts` `REPAINT_WAIT_MS` |
+| attach 等待重绘标记（M14，M21 已删除） | — | 原 `host/main.ts` `REPAINT_WAIT_MS` |
 | worker 收到 attach 信号后重绘延迟（M14） | 15 ms | `worker-extras.ts` `REPAINT_DELAY_MS` |
 | 等待 host socket 就绪（`ensureLive`） | 15 s | `lib/resume.ts` `START_TIMEOUT_MS` |
 | 记录清理检查间隔（M15） | 1 h | `daemon` `cleanupOld`（`PI_ROOST_CLEANUP_CHECK_MS`） |
@@ -619,7 +640,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - 扩展由宿主直接加载 `.ts`；daemon/host/bin 由 `tsc -p tsconfig.build.json` 编译到 `dist/`（`rewriteRelativeImportExtensions` 把 `.ts` 导入改成 `.js`），`scripts/fix-dts.mjs` 修 `.d.ts` 里的导入。宿主不能直接加载 TS 时，扩展也一起编译。
 - `lib/client.ts` `packageRoot()` 从模块位置向上找 `package.json` 来定位 `dist/daemon/main.js`、`dist/host/main.js`——**打包目录结构变了要同步改**。
 - 本地安装（`scripts/install-local.sh`）：先在旁边建新副本再原子替换（daemon 是懒加载 node-pty 的，不能从半装好的目录运行）；替换前 `daemon stop --keep-workers`，后台会话不断。
-- 运行时依赖只有两个：`node-pty`、`@xterm/headless`。
+- 运行时依赖只有三个：`node-pty`、`@xterm/headless`、`@xterm/addon-serialize`（M21）。CLI、daemon、host 不能引用宿主的包（peer 依赖），`test/cli-deps.test.ts` 守着。
 
 ---
 

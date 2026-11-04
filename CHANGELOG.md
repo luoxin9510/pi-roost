@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Entering a session shows its screen at once and correctly: the host sends its own copy of the screen (with the alternate screen, cursor and terminal modes), then the live output. No more stale or misplaced leftovers, flashes, or waiting for the session to redraw; shell jobs and idle sessions included. The race between the size change and the repaint (seen on Linux) is gone.
+
 ## [0.1.8] - 2026-11-04
 
 - The `pi-roost` CLI starts again: 0.1.7's `pi-roost list` table imported pi-tui, which the CLI cannot load outside pi (a peer dependency), so every CLI command failed. A test now keeps pi's packages out of the CLI, the daemon and the host.

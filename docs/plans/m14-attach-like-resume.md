@@ -1,6 +1,6 @@
 # M14: attach feels like `pi --resume`
 
-Status: implemented (2026-11-04). Entering a session from the agent view or the subagent
+Status: implemented (2026-11-04); the repaint-and-hold part is replaced by M21 (docs/plans/m21-attach-replay.md): an attach now starts from the host's own screen. Entering a session from the agent view or the subagent
 panel did not feel like pi: the screen flickered, the mouse wheel and in-app scrolling did
 not work, and the transcript of the view you left was printed into the terminal's
 scrollback each time.
