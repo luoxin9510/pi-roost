@@ -92,7 +92,7 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					command: [process.env.SHELL || "/bin/sh", "-lc", command],
 					env: workerEnv(process.env, envPolicy(config)),
 					...(config.inheritEnv && config.workspaceEnv !== "off" ? { workspaceEnv: config.workspaceEnv } : {}),
-					...(config.envDenyList.length ? { envDeny: config.envDenyList } : {}),
+					...(config.envDenyList.length ? { envDeny: config.envDenyList, ...(config.envAllowList.length ? { envForce: config.envAllowList } : {}) } : {}),
 					name: `! ${fallbackName(command)}`,
 					origin: "dispatch" as const,
 				}),

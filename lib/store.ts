@@ -14,6 +14,8 @@ export interface JobRecord {
 	workspaceEnv?: "shell" | "direnv" | "off";
 	/** M20: names (or `PREFIX*`) a workspace's environment may not set. */
 	envDeny?: string[];
+	/** M20: names that pass envDeny (envAllowList). */
+	envForce?: string[];
 	model?: string;
 	thinking?: string;
 	/** M18: the agent it runs as. */

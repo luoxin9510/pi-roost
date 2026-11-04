@@ -81,7 +81,7 @@ const earlyStop = () => {
 process.once("SIGTERM", earlyStop);
 process.once("SIGHUP", earlyStop);
 const workspace = job.workspaceEnv
-	? await workspaceEnv(job.cwd, job.env, job.workspaceEnv, (k) => envKept(k, job.envDeny))
+	? await workspaceEnv(job.cwd, job.env, job.workspaceEnv, (k) => envKept(k, job.envForce?.includes(k) ? [] : job.envDeny))
 	: { env: job.env, via: "none" as const };
 if (job.workspaceEnv) log("workspace env", { mode: job.workspaceEnv, via: workspace.via });
 process.off("SIGTERM", earlyStop);

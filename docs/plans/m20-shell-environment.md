@@ -62,6 +62,10 @@ The rest:
 - Variables a shell cannot hold (`FOO-BAR`) are kept from the base.
 - If direnv had loaded the hub's folder and the shell did not move it (direnv installed,
   no hook in the rc), `direnv export json` runs on top.
+- The dump ends with an end marker; output cut short is not taken.
+- Something the rc starts in the background (`nohup x &`) is killed with the probe's
+  group; daemons that leave the group themselves (ssh-agent, gpg-agent) are not.
+- `envAllowList` names pass `envDenyList` at dispatch and in the host (`envForce`).
 - Time budget: 8 s in all (70 % for the shell, the rest for direnv), under attach's 15 s.
   A stop while probing kills the probe and ends the job.
 - It is measured at ~40 ms with a direnv-hooked zsh.

@@ -36,11 +36,16 @@ describe("M20: the shell's environment", () => {
 		const l = buildLaunch({ task: "x", cwd: "/w", sessionFile: "/s", name: "x", origin: "dispatch", argv: ["n", "p"], execPath: "n", env: { A: "1" }, ...envPolicy({ ...DEFAULTS, inheritEnv: false }) });
 		expect(l).not.toHaveProperty("workspaceEnv");
 		expect(l.env).toEqual({});
+		// envAllowList names pass the deny list at the host too
+		const f = buildLaunch({ task: "x", cwd: "/w", sessionFile: "/s", name: "x", origin: "dispatch", argv: ["n", "p"], execPath: "n", env: { PI_MOBILE_X: "1" }, ...envPolicy({ ...DEFAULTS, envDenyList: ["PI_MOBILE_*"], envAllowList: ["PI_MOBILE_X"] }) });
+		expect(f).toMatchObject({ env: { PI_MOBILE_X: "1" }, envDeny: ["PI_MOBILE_*"], envForce: ["PI_MOBILE_X"] });
 	});
 
 	it("reads the probe's output after its marker", () => {
-		const out = Buffer.from("rc noise\nmore\n__PI_ROOST_ENV__\nA=1\0B=x=y\0\0junk\0");
+		const out = Buffer.from("rc noise\nmore\n__PI_ROOST_ENV__\nA=1\0B=x=y\0\0junk\0__PI_ROOST_END__\n");
 		expect(parseProbe(out)).toEqual({ A: "1", B: "x=y" });
+		// cut short: not taken
+		expect(parseProbe(Buffer.from("__PI_ROOST_ENV__\nA=1\0B=half"))).toBeUndefined();
 		expect(parseProbe(Buffer.from("no marker"))).toBeUndefined();
 		expect(probeScript("/bin/zsh")?.args[0]).toBe("-i");
 		expect(probeScript("/bin/tcsh")?.args[0]).toBe("-i");

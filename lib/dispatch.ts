@@ -149,7 +149,7 @@ export function buildLaunch(input: LaunchInput) {
 		env: workerEnv(input.env, input),
 		// M20: the host evaluates the workspace's environment each time the worker starts
 		...(input.inheritEnv !== false && (input.workspaceEnv ?? "shell") !== "off" ? { workspaceEnv: input.workspaceEnv ?? "shell" } : {}),
-		...(input.envDenyList?.length ? { envDeny: input.envDenyList } : {}),
+		...(input.envDenyList?.length ? { envDeny: input.envDenyList, ...(input.extraEnv?.length ? { envForce: input.extraEnv } : {}) } : {}),
 		name: input.name,
 		origin: input.origin,
 		...(input.model ? { model: input.model } : {}),

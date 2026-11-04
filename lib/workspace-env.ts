@@ -34,6 +34,8 @@ export function envKept(name: string, deny: readonly string[] = []): boolean {
 }
 
 const MARK = "__PI_ROOST_ENV__";
+/** After the dump: a probe cut short (a busy machine, a held stdout) is not taken as whole. */
+const END = "__PI_ROOST_END__";
 export const PROBE_TIMEOUT_MS = 8000;
 
 /** Names the probe itself sets or that describe the probe's shell, not the session. */
@@ -42,7 +44,7 @@ const PROBE_NOISE = new Set(["PI_ROOST_PROBE_DIR", "PWD", "OLDPWD", "SHLVL", "_"
 /** The script that cds like a person would and prints the environment after a marker. */
 export function probeScript(shell: string): { args: string[] } | undefined {
 	const name = basename(shell);
-	const dump = `printf '\\n${MARK}\\n'; command env -0`;
+	const dump = `printf '\\n${MARK}\\n'; command env -0; printf '${END}\\n'`;
 	if (name === "zsh") {
 		return {
 			args: [
@@ -68,12 +70,12 @@ export function probeScript(shell: string): { args: string[] } | undefined {
 			args: [
 				"-i",
 				"-c",
-				`if ( ! -d "$PI_ROOST_PROBE_DIR" ) exit 97; cd "$PI_ROOST_PROBE_DIR"; eval "\`alias cwdcmd\`" >& /dev/null; eval "\`alias precmd\`" >& /dev/null; printf "\\n${MARK}\\n"; env -0`,
+				`if ( ! -d "$PI_ROOST_PROBE_DIR" ) exit 97; cd "$PI_ROOST_PROBE_DIR"; eval "\`alias cwdcmd\`" >& /dev/null; eval "\`alias precmd\`" >& /dev/null; printf "\\n${MARK}\\n"; env -0; printf "${END}\\n"`,
 			],
 		};
 	}
 	if (name === "fish") {
-		return { args: ["-i", "-c", `cd -- $PI_ROOST_PROBE_DIR; or exit 97; emit fish_prompt >/dev/null 2>&1 </dev/null; printf '\\n${MARK}\\n'; command env -0`] };
+		return { args: ["-i", "-c", `cd -- $PI_ROOST_PROBE_DIR; or exit 97; emit fish_prompt >/dev/null 2>&1 </dev/null; printf '\\n${MARK}\\n'; command env -0; printf '${END}\\n'`] };
 	}
 	return undefined;
 }
@@ -83,8 +85,11 @@ export function parseProbe(out: Buffer): Record<string, string> | undefined {
 	const marker = Buffer.from(`\n${MARK}\n`);
 	const at = out.lastIndexOf(marker);
 	if (at === -1) return undefined;
+	const rest = out.subarray(at + marker.length);
+	const end = rest.lastIndexOf(Buffer.from(`${END}\n`));
+	if (end === -1) return undefined;
 	const env: Record<string, string> = {};
-	for (const pair of out.subarray(at + marker.length).toString("utf8").split("\0")) {
+	for (const pair of rest.subarray(0, end).toString("utf8").split("\0")) {
 		const eq = pair.indexOf("=");
 		if (eq <= 0) continue;
 		env[pair.slice(0, eq)] = pair.slice(eq + 1);
@@ -179,6 +184,8 @@ async function viaDirenv(cwd: string, base: Record<string, string>, timeoutMs: n
 	}
 }
 
+const inside = (dir: string, root: string) => dir === root || dir.startsWith(root.endsWith("/") ? root : `${root}/`);
+
 export interface WorkspaceEnvResult {
 	env: Record<string, string>;
 	/** What gave it: the shell's hooks, direnv, or nothing (the base as it came). */
@@ -227,7 +234,7 @@ export async function workspaceEnv(
 	if (shellEnv) {
 		// direnv loaded where the hub was and the shell did not move it (no hook in its rc):
 		// direnv itself, on top
-		const stale = base.DIRENV_DIR !== undefined && shellEnv.DIRENV_DIR === base.DIRENV_DIR && base.DIRENV_DIR.replace(/^-/, "") !== cwd;
+		const stale = base.DIRENV_DIR !== undefined && shellEnv.DIRENV_DIR === base.DIRENV_DIR && !inside(cwd, base.DIRENV_DIR.replace(/^-/, ""));
 		if (stale) {
 			const viaD = await viaDirenv(cwd, shellEnv, left());
 			if (viaD) return finish(viaD, "shell");

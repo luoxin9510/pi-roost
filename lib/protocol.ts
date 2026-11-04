@@ -134,6 +134,8 @@ export interface DispatchArgs {
 	workspaceEnv?: "shell" | "direnv" | "off";
 	/** M20: names (or `PREFIX*`) a workspace's environment may not set. */
 	envDeny?: string[];
+	/** M20: names that pass envDeny (envAllowList). */
+	envForce?: string[];
 	origin: DispatchOrigin;
 	piVersion?: string;
 	/** M10: the worktree the dispatching side made for this session (cwd is inside it). */
