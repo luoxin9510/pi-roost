@@ -8,6 +8,10 @@
   - the panel drops a finished child at once and the footer says `/subagents to see subagents` for 30 s; failed and stopped rows stay 30 s;
   - `/subagents` also lists the ones finished in the last 30 s, and `/subagents all` lists every one;
   - nested subagents show as a tree with `(+N)` counts.
+- Entering a session feels like `pi --resume` (docs/plans/m14-attach-like-resume.md): the
+  worker sets the real terminal up again (fullscreen pi's alternate screen, mouse wheel,
+  kitty keyboard) and draws once; no resize flicker, and no transcript printed into the
+  scrollback on the way in.
 
 ## [0.1.6] - 2026-11-03
 

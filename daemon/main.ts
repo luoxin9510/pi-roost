@@ -589,6 +589,7 @@ async function respawn(
 			removeAt: undefined,
 			reaped: false,
 			attachSignal: false,
+			attachRepaint: false,
 			restartedAt: now,
 			command,
 			restore,
@@ -841,6 +842,7 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		...(typeof r.remoteAt === "number" && Number.isFinite(r.remoteAt) ? { remoteAt: Math.min(r.remoteAt, Date.now()) } : {}),
 		reportedAt: Date.now(),
 		attachSignal: r.attachSignal === true,
+		attachRepaint: r.attachRepaint === true,
 		// a turn that ends normally clears the crash budget (DM-5)
 		// (only once the worker has stayed up a while, so a crash loop stays bounded)
 		...(r.state !== "working" && Date.now() - (typeof st.restartedAt === "number" ? st.restartedAt : 0) > CRASH_RESET_MS

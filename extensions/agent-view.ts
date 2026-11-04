@@ -1089,7 +1089,8 @@ export class AgentView implements Component {
 		let failure: string | undefined;
 		try {
 			this.attached = true;
-			tui.stop();
+			// M14: leave the screen as it is (fullscreen pi would print its transcript first)
+			tui.stop({ preserveScreen: true });
 			if (row.pid === null) await ensureLive(this.client!, row, process.stdout);
 			reason = await attachToHost(hostSocketPath(id), { stdin: process.stdin, stdout: process.stdout });
 		} catch (err) {

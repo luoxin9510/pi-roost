@@ -12,9 +12,10 @@ export interface AttachIO {
 const LOCAL_DETACH = /^(?:\x1a|\x1b\[122;5(?::[12])?u)$/;
 
 // Modes a worker may have left on (AT-4): kitty keyboard, bracketed paste,
-// mouse tracking, modifyOtherKeys; then show the cursor.
+// mouse tracking, focus events, modifyOtherKeys, synchronized output, the alternate
+// screen of a fullscreen pi (M14); then autowrap and the cursor back.
 export const TERMINAL_RESET =
-	"\x1b[<u\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[>4;0m\x1b[?25h";
+	"\x1b[<u\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[>4;0m\x1b[?2026l\x1b[?1049l\x1b[?7h\x1b[?25h";
 
 export function isLocalDetach(chunk: Buffer): boolean {
 	return LOCAL_DETACH.test(chunk.toString("latin1"));
@@ -54,9 +55,8 @@ export function attachToHost(socketPath: string, io: AttachIO): Promise<DetachRe
 
 		sock = connect(socketPath);
 		sock.on("connect", () => {
-			// the host repaints what its program drew; a blank one (a silent command) must not
-			// leave the previous screen showing
-			stdout.write("\x1b[2J\x1b[H");
+			// the host clears the screen first when its program only redraws (M14: a pi worker
+			// sets the terminal up and draws itself, the alternate screen included)
 			sock?.write(encodeJsonFrame(FrameType.HELLO, { role: "attach", ...size() }));
 			if (stdin.isTTY) stdin.setRawMode(true);
 			stdin.on("data", onInput);

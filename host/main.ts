@@ -233,9 +233,15 @@ const server = createServer((sock) => {
 						role = "attach";
 						if (attached) kick(attached, "takeover");
 						me = { sock, decoder: new StringDecoder("utf8") };
-						setAttached(me);
+						const repaints = workerAlive && readState(id)?.attachRepaint === true;
+						// a blank program (a silent command) must not leave the previous screen showing
+						if (!repaints) sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
+						// the size first: a worker that repaints on the signal draws once, at the right size
 						if (hello.cols && hello.rows) resizeAll(hello.cols, hello.rows);
-						if (workerAlive && rows > 1) {
+						setAttached(me);
+						// M14: a worker that repaints itself needs no nudge; a shell program or an older
+						// worker redraws on the size change
+						if (workerAlive && rows > 1 && !repaints) {
 							const r = rows;
 							try {
 								proc.resize(cols, r - 1);

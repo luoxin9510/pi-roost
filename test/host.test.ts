@@ -51,7 +51,7 @@ afterEach(() => {
 	else process.env.PI_ROOST_RUNTIME_DIR = saved.rt;
 });
 
-async function startHost(script: string): Promise<{ id: string; child: ChildProcess }> {
+async function startHost(script: string, state: Record<string, unknown> = {}): Promise<{ id: string; child: ChildProcess }> {
 	const id = newJobId();
 	const now = Date.now();
 	const record: JobRecord = {
@@ -65,7 +65,7 @@ async function startHost(script: string): Promise<{ id: string; child: ChildProc
 		createdAt: now,
 		roostVersion: "0.0.0",
 	};
-	createJob(record, { state: "working", startedAt: now, updatedAt: now });
+	createJob(record, { state: "working", startedAt: now, updatedAt: now, ...state });
 	const child = spawn(process.execPath, ["host/main.ts", id], { stdio: "ignore", env: process.env });
 	hosts.push(child);
 	await waitFor(() => existsSync(hostSocketPath(id)));
@@ -124,6 +124,26 @@ describe("host", () => {
 		const ex = readExit(id);
 		expect(ex && (ex.signal !== null || ex.code !== 0)).toBe(true);
 		expect(existsSync(exitPath(id))).toBe(true);
+	});
+
+	it("M14: a worker that repaints itself gets the signal, no clear and no resize nudge; others get both", async () => {
+		const loop = "trap 'echo usr2' USR2; trap 'echo winch' WINCH; echo ready; while :; do sleep 0.05; done";
+		const self = await startHost(loop, { attachSignal: true, attachRepaint: true });
+		await new Promise((r) => setTimeout(r, 300));
+		// the size it already has: only a nudge would change it
+		const a = watch(await connectHost(self.id, { role: "attach", cols: 120, rows: 30 }));
+		await waitFor(() => a.text().includes("usr2"));
+		await new Promise((r) => setTimeout(r, 300));
+		expect(a.text()).not.toContain("\x1b[2J");
+		expect(a.text()).not.toContain("winch");
+		const old = await startHost(loop);
+		await new Promise((r) => setTimeout(r, 300));
+		const b = watch(await connectHost(old.id, { role: "attach", cols: 120, rows: 30 }));
+		await waitFor(() => b.text().includes("winch"));
+		expect(b.text().startsWith("\x1b[2J\x1b[H")).toBe(true);
+		expect(b.text()).not.toContain("usr2");
+		await hostControl(self.id, "terminate");
+		await hostControl(old.id, "terminate");
 	});
 
 	it("control snapshot", async () => {

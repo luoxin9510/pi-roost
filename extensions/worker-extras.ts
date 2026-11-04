@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, type TUI } from "@earendil-works/pi-tui";
 import { readJson } from "../lib/atomic.ts";
 import { loadConfig } from "../lib/config.ts";
 import { clip, messageText } from "../lib/heuristics.ts";
@@ -164,9 +164,72 @@ export function registerSummaries(pi: ExtensionAPI, d: Deps): void {
  * process the host started: launch pi directly, not through a wrapper without a handler.
  */
 function attachedNow(): boolean {
+	return attachedFile()?.attached === true;
+}
+
+function attachedFile(): { attached?: unknown; at?: unknown } | undefined {
 	const dir = process.env.PI_JOB_DIR;
-	if (!dir) return false;
-	return readJson<{ attached?: unknown }>(join(dir, "attached.json"))?.attached === true;
+	if (!dir) return undefined;
+	return readJson<{ attached?: unknown; at?: unknown }>(join(dir, "attached.json"));
+}
+
+const REPAINT_DELAY_MS = 15;
+
+/**
+ * M14: attach feels like `pi --resume`. Nobody watched while this pi started, so the
+ * terminal it set up (kitty keyboard, bracketed paste, …) was the host's, and what is on
+ * the user's screen is the view they came from. On each attach this pi stops its TUI and
+ * starts it again on the real terminal, which answers its queries now, then draws the
+ * whole session once (synchronized, scrollback included), as a fresh start does.
+ */
+export function registerAttachRepaint(pi: ExtensionAPI): void {
+	let tui: TUI | undefined;
+	let lastAt: unknown;
+	let timer: NodeJS.Timeout | undefined;
+	let onSignal: (() => void) | undefined;
+	const repaint = () => {
+		timer = undefined;
+		const t = tui;
+		if (!t || !attachedNow()) return;
+		try {
+			t.stop({ preserveScreen: true });
+			t.start();
+			t.requestRender(true);
+		} catch {
+			// a TUI between sessions: the next render draws it
+		}
+	};
+	pi.on("session_start", (_event, ctx) => {
+		if (onSignal) process.off("SIGUSR2", onSignal);
+		onSignal = undefined;
+		if (!ctx.hasUI || !process.env.PI_JOB_DIR) return;
+		// a widget that draws nothing, for the TUI it is given
+		ctx.ui.setWidget(
+			"pi-roost-attach",
+			(t) => {
+				tui = t;
+				return { render: () => [], invalidate: () => {} };
+			},
+			{ placement: "belowEditor" },
+		);
+		lastAt = attachedFile()?.at;
+		onSignal = () => {
+			const f = attachedFile();
+			// a takeover writes a new time while it stays attached
+			if (f?.attached !== true || f.at === lastAt) return;
+			lastAt = f.at;
+			clearTimeout(timer);
+			timer = setTimeout(repaint, REPAINT_DELAY_MS);
+			timer.unref?.();
+		};
+		process.on("SIGUSR2", onSignal);
+	});
+	pi.on("session_shutdown", () => {
+		if (onSignal) process.off("SIGUSR2", onSignal);
+		onSignal = undefined;
+		clearTimeout(timer);
+		tui = undefined;
+	});
 }
 
 const GUARD = Symbol.for("pi-roost.sigusr2-guard");
