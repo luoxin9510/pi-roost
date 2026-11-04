@@ -70,6 +70,8 @@ afterEach(() => {
 		["PI_ROOST_REAP_MINUTES", undefined],
 		["PI_ROOST_REAP_CHECK_MS", undefined],
 		["PI_ROOST_SHELL_KEEP_MS", undefined],
+		["PI_ROOST_CLEANUP_DAYS", undefined],
+		["PI_ROOST_CLEANUP_CHECK_MS", undefined],
 	] as const) {
 		if (v === undefined) delete process.env[k];
 		else process.env[k] = v;
@@ -254,6 +256,31 @@ describe("daemon", () => {
 		const second = await startDaemon();
 		expect((await find(second.client, id))?.state).toBe("stopped");
 		expect(readState(id)?.error).toBe("ended while the background service was off");
+	});
+
+	it("M15: records of sessions ended long ago are removed; pinned and recent ones stay", async () => {
+		process.env.PI_ROOST_CLEANUP_DAYS = "1";
+		process.env.PI_ROOST_CLEANUP_CHECK_MS = "1";
+		process.env.PI_ROOST_REAP_CHECK_MS = "150";
+		const { client } = await startDaemon();
+		const ids: string[] = [];
+		for (const name of ["old", "pinned", "recent"]) ids.push((await client.request("dispatch", args("true", { name }))).id);
+		await waitFor(async () => {
+			const jobs = (await client.request("list", { all: true })).jobs;
+			return ids.every((id) => jobs.find((j) => j.id === id)?.endedAt);
+		});
+		const old = Date.now() - 3 * 24 * 3600_000;
+		for (const [i, id] of ids.entries()) {
+			if (i === 2) continue;
+			const statePath = join(jobDir(id), "state.json");
+			const st = JSON.parse(readFileSync(statePath, "utf8"));
+			writeFileSync(statePath, JSON.stringify({ ...st, endedAt: old, ...(i === 1 ? { pinned: true } : {}) }));
+		}
+		await waitFor(async () => !(await client.request("list", { all: true })).jobs.some((j) => j.id === ids[0]));
+		const left = (await client.request("list", { all: true })).jobs.map((j) => j.id);
+		expect(left).toContain(ids[1]);
+		expect(left).toContain(ids[2]);
+		expect(existsSync(jobDir(ids[0]!))).toBe(false);
 	});
 
 	it("shutdown without keepWorkers terminates hosts", async () => {

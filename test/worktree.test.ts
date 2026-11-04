@@ -145,6 +145,39 @@ describe("worktree", () => {
 		expect(git(r, "branch", "--list", clean.branch)).toBe("");
 	});
 
+	it("M15: .worktreeinclude copies ignored files it names; rm removes them unless edited", async () => {
+		const r = repo();
+		writeFileSync(join(r, ".gitignore"), ".env\nnode_modules/\nsecret.key\n");
+		writeFileSync(join(r, ".worktreeinclude"), ".env\nnode_modules/\nsrc/a.txt\n");
+		git(r, "add", ".");
+		git(r, "commit", "-q", "-m", "include");
+		writeFileSync(join(r, ".env"), "TOKEN=1\n");
+		writeFileSync(join(r, "secret.key"), "k\n");
+		mkdirSync(join(r, "node_modules", "dep"), { recursive: true });
+		writeFileSync(join(r, "node_modules", "dep", "index.js"), "x\n");
+		const w = createWorktree(r, "inc", rand);
+		expect(w.included.sort()).toEqual([".env", "node_modules/"]);
+		expect(readFileSync(join(w.path, ".env"), "utf8")).toBe("TOKEN=1\n");
+		expect(existsSync(join(w.path, "node_modules", "dep", "index.js"))).toBe(true);
+		// ignored but not named: not copied; tracked: there anyway
+		expect(existsSync(join(w.path, "secret.key"))).toBe(false);
+		expect((await worktreeStatus(w)).ignored).toBe(false);
+		expect(await cleanupWorktree(w, false)).toMatchObject({ removed: true });
+		// an edited copy is work
+		const w2 = createWorktree(r, "inc2", rand);
+		writeFileSync(join(w2.path, ".env"), "TOKEN=2\n");
+		expect(await cleanupWorktree(w2, false)).toMatchObject({ removed: false, reason: expect.stringContaining("ignores") });
+		// a new ignored file it did not bring in is work too
+		const w3 = createWorktree(r, "inc3", rand);
+		writeFileSync(join(w3.path, "secret.key"), "mine\n");
+		expect(await cleanupWorktree(w3, false)).toMatchObject({ removed: false });
+		// the undo after a refused dispatch removes a fresh one with its copies
+		const w4 = createWorktree(r, "inc4", rand);
+		const { discardWorktree } = await import("../lib/worktree.ts");
+		discardWorktree(w4);
+		expect(existsSync(w4.path)).toBe(false);
+	});
+
 	it("keeps a worktree that switched branches", async () => {
 		const r = repo();
 		const w = createWorktree(r, "x", rand);

@@ -8,6 +8,10 @@
   - the panel drops a finished child at once and the footer says `/subagents to see subagents` for 30 s; failed and stopped rows stay 30 s;
   - `/subagents` also lists the ones finished in the last 30 s, and `/subagents all` lists every one;
   - nested subagents show as a tree with `(+N)` counts.
+- `.worktreeinclude` (as in Claude Code): ignored files it names are copied into new worktrees; `rm` does not count them as work unless changed.
+- `pi-roost list` (`ls`): a table of sessions as the agent view lists them (`--subagents` adds those).
+- `cleanupDays` (30): records of sessions ended that long ago are removed; session files stay.
+- The PTY host answers terminal queries while nobody is attached.
 - Entering a session feels like `pi --resume` (docs/plans/m14-attach-like-resume.md): the
   worker sets the real terminal up again (fullscreen pi's alternate screen, mouse wheel,
   kitty keyboard) and draws once; no resize flicker, and no transcript printed into the

@@ -1,7 +1,7 @@
 // M10 (PRD C7): a new background session in its own git worktree, and its cleanup on rm.
 import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export interface WorktreeInfo {
@@ -19,6 +19,63 @@ export interface CreatedWorktree extends WorktreeInfo {
 	cwd: string;
 	/** The dispatch checkout had uncommitted changes (they are not in the worktree). */
 	sourceDirty: boolean;
+	/** M15: ignored files and folders copied in by .worktreeinclude. */
+	included: string[];
+}
+
+export const INCLUDE_FILE = ".worktreeinclude";
+
+const nulList = (out: string | undefined) => (out ?? "").split("\0").filter(Boolean);
+
+/**
+ * M15 (Claude Code's .worktreeinclude): the entries of `dir` that its .worktreeinclude
+ * names (gitignore syntax) and git ignores; tracked files are in a worktree anyway.
+ * Folders come as one entry ending in "/". Never pi-roost's own worktrees.
+ */
+export function includedEntries(dir: string): string[] {
+	const file = join(dir, INCLUDE_FILE);
+	if (!existsSync(file)) return [];
+	const listed = nulList(tryGit(dir, ["ls-files", "-z", "--others", "--ignored", "--directory", `--exclude-from=${file}`]));
+	if (listed.length === 0) return [];
+	const ignored = nulList(tryGit(dir, ["ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-standard"]));
+	const set = new Set(ignored);
+	const dirs = ignored.filter((e) => e.endsWith("/"));
+	const own = `${WORKTREES_DIR.split(sep).join("/")}/`;
+	return listed.filter((e) => !e.startsWith(own) && !own.startsWith(e) && (set.has(e) || dirs.some((d) => e.startsWith(d))));
+}
+
+/** Copy the .worktreeinclude entries of `from` into `to`; what could not be copied is skipped. */
+function copyIncluded(from: string, to: string): string[] {
+	const done: string[] = [];
+	for (const e of includedEntries(from)) {
+		const rel = e.replace(/\/$/, "");
+		try {
+			mkdirSync(dirname(join(to, rel)), { recursive: true });
+			cpSync(join(from, rel), join(to, rel), { recursive: true, verbatimSymlinks: true, force: false, errorOnExist: false });
+			done.push(e);
+		} catch {
+			// a socket, a permission: the session does without it
+		}
+	}
+	return done;
+}
+
+/**
+ * An ignored entry of the worktree that rm may delete: one .worktreeinclude copied in,
+ * a folder (dependencies, rebuilt from the repository) or a file still the same as in
+ * the checkout it came from. An edited .env is work, and keeps the worktree.
+ */
+function replaceable(w: WorktreeInfo, entry: string, included: ReadonlySet<string>, dirs: string[]): boolean {
+	if (!included.has(entry) && !dirs.some((d) => entry.startsWith(d))) return false;
+	if (entry.endsWith("/")) return true;
+	try {
+		const a = join(w.path, entry);
+		const b = join(w.repo, entry);
+		if (lstatSync(a).isSymbolicLink()) return true;
+		return readFileSync(a).equals(readFileSync(b));
+	} catch {
+		return false;
+	}
 }
 
 export const WORKTREES_DIR = join(".pi", "worktrees");
@@ -133,7 +190,8 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
 	const rel = relative(top, real(cwd));
 	const inside = rel && !rel.startsWith("..") && !isAbsolute(rel) ? join(path, rel) : path;
 	const sourceDirty = (tryGit(top, ["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "";
-	return { path, branch, repo: top, base, cwd: existsSync(inside) ? inside : path, sourceDirty };
+	const included = copyIncluded(top, path);
+	return { path, branch, repo: top, base, cwd: existsSync(inside) ? inside : path, sourceDirty, included };
 }
 
 /**
@@ -142,7 +200,8 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
  */
 export function discardWorktree(w: WorktreeInfo): void {
 	if (existsSync(w.path)) {
-		if (tryGit(w.path, ["status", "--porcelain", "--ignored"]) !== "") return;
+		const lines = (tryGit(w.path, ["status", "--porcelain", "--ignored"]) ?? "?").split("\n").filter(Boolean);
+		if (holdsWork(w, lines)) return;
 		if (tryGit(w.repo, ["worktree", "remove", "--", w.path]) === undefined) return;
 	}
 	if (tryGit(w.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]) === w.base) tryGit(w.repo, ["branch", "-D", "--", w.branch]);
@@ -184,6 +243,20 @@ export const isInside = (dir: string, root: string): boolean => {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
 
+/** `git status --porcelain --ignored` lines that are not what .worktreeinclude brought in. */
+function uncoveredIgnored(w: WorktreeInfo, lines: string[]): boolean {
+	const ignored = lines.filter((l) => l.startsWith("!! ")).map((l) => l.slice(3).replace(/^"|"$/g, ""));
+	if (ignored.length === 0) return false;
+	const inc = includedEntries(w.path);
+	const set = new Set(inc);
+	const dirs = inc.filter((e) => e.endsWith("/"));
+	return ignored.some((e) => !replaceable(w, e, set, dirs));
+}
+
+function holdsWork(w: WorktreeInfo, lines: string[]): boolean {
+	return lines.some((l) => !l.startsWith("!!")) || uncoveredIgnored(w, lines);
+}
+
 export interface WorktreeStatus {
 	exists: boolean;
 	/** Uncommitted or untracked changes. */
@@ -208,7 +281,7 @@ export async function worktreeStatus(w: WorktreeInfo): Promise<WorktreeStatus> {
 	return {
 		exists,
 		dirty: exists && lines.some((l) => !l.startsWith("!!")),
-		ignored: exists && lines.some((l) => l.startsWith("!!")),
+		ignored: exists && uncoveredIgnored(w, lines),
 		ahead,
 		atBase: tip === w.base,
 	};
@@ -260,6 +333,7 @@ export async function cleanupWorktree(w: WorktreeInfo, inUse: boolean): Promise<
 		if (!(await validWorktree(w))) return out(false, true, "it is no longer on its branch");
 		if (st.dirty) return out(false, true, "it has uncommitted changes");
 		if (st.ignored) return out(false, true, "it has files git ignores (.env, build output, dependencies)");
+		// no --force: git still refuses if a change appeared since the check
 		if ((await gitAsync(w.repo, ["worktree", "remove", "--", w.path], 20_000)) === undefined) return out(false, true, "git worktree remove failed");
 	} else await gitAsync(w.repo, ["worktree", "prune"]);
 	// a branch moved anywhere (even behind base) keeps whatever it points at

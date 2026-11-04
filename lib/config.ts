@@ -9,6 +9,8 @@ export interface RoostConfig {
 	leftArrowOpensAgents: boolean;
 	defaultToAgentsView: boolean;
 	reapIdleMinutes: number;
+	/** M15: records of sessions ended this many days ago are removed (0: never). */
+	cleanupDays: number;
 	summaryModel?: string;
 	dispatchModel?: string;
 	dispatchThinking?: string;
@@ -55,6 +57,7 @@ export const DEFAULTS: RoostConfig = {
 	leftArrowOpensAgents: true,
 	defaultToAgentsView: false,
 	reapIdleMinutes: 60,
+	cleanupDays: 30,
 	envAllowList: [],
 	groupBy: "state",
 	fullscreen: true,
@@ -80,6 +83,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (typeof r.leftArrowOpensAgents === "boolean") out.leftArrowOpensAgents = r.leftArrowOpensAgents;
 	if (typeof r.defaultToAgentsView === "boolean") out.defaultToAgentsView = r.defaultToAgentsView;
 	if (typeof r.reapIdleMinutes === "number" && r.reapIdleMinutes > 0) out.reapIdleMinutes = r.reapIdleMinutes;
+	if (typeof r.cleanupDays === "number" && r.cleanupDays >= 0 && r.cleanupDays <= 3650) out.cleanupDays = r.cleanupDays;
 	for (const k of ["summaryModel", "dispatchModel", "dispatchThinking"] as const) {
 		if (typeof r[k] === "string" && r[k]) out[k] = r[k] as string;
 	}
