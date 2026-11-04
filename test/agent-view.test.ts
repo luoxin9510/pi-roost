@@ -117,6 +117,33 @@ const type = (view: AgentView, text: string) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("AgentView render", () => {
+	it("M16: a session with a pull request to review is Ready for review; #N filters to it; peek lists it", async () => {
+		const pr = { number: 2048, url: "https://github.com/o/r/pull/2048", status: "failing" as const, needsReview: true, title: "collision fix" };
+		const review = row({ name: "jump physics", state: "done", status: "idle", pid: null, prs: [pr] });
+		const merged = row({ name: "old work", state: "done", status: "idle", pid: null, prs: [{ ...pr, number: 7, url: "https://github.com/o/r/pull/7", status: "merged", needsReview: false }] });
+		const other = row({ name: "busy one" });
+		const { view } = setup([review, merged, other]);
+		await view.start();
+		const text = view.render(120).join("\n").replace(/\u001b\]8;;[^\u0007]*\u0007/g, "");
+		expect(text).toMatch(/Ready for review[\s\S]*jump physics[\s\S]*Working[\s\S]*Completed[\s\S]*old work/);
+		expect(text).toContain("#2048");
+		expect(text).toContain("#7");
+		for (const w of [30, 45, 60]) for (const l of view.render(w)) expect(visibleWidth(l)).toBeLessThanOrEqual(w);
+		type(view, "#2048");
+		const filtered = view.render(120).join("\n");
+		expect(filtered).toContain("jump physics");
+		expect(filtered).not.toContain("busy one");
+		// no session has it: a task to dispatch, not a filter
+		for (let i = 0; i < 5; i++) view.handleInput("\x7f");
+		type(view, "#99");
+		expect(view.render(120).join("\n")).toContain("busy one");
+		for (let i = 0; i < 3; i++) view.handleInput("\x7f");
+		for (let i = 0; i < 10 && !view.render(120).some((l) => l.includes("›") && l.includes("jump physics")); i++) view.handleInput("\x1b[B");
+		view.handleInput(" ");
+		expect(view.render(120).join("\n")).toContain("#2048 failing · needs review · collision fix");
+		view.dispose();
+	});
+
 	it("M13: subagents a session spawns are not rows (Claude Code); one whose parent is gone and still runs is", async () => {
 		const parent = row({ name: "parent job" });
 		const child = row({ name: "held child", parentSession: parent.sessionFile, parentOpen: true });

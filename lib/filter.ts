@@ -1,8 +1,12 @@
 // DI-7 filters typed into the agent view's input: s:<state|group>, n:<name text>,
-// o:<result text> (bare o: = rows with a result), combinable with spaces.
+// o:<result text> (bare o: = rows with a result), combinable with spaces; or alone
+// `#1234` / a pull request URL (M16).
+import { prQuery, readyForReview, rowHasPr } from "./pr.ts";
 import type { JobRow } from "./protocol.ts";
 
 export interface Filter {
+	/** M16: `#1234` or a pull request URL: the session working on it. */
+	pr?: { number: number; url?: string };
 	states: string[];
 	names: string[];
 	outputs: string[];
@@ -16,6 +20,8 @@ const TOKEN = /^(s|n|o):(.*)$/i;
 export function parseFilter(text: string): Filter | undefined {
 	const tokens = text.trim().split(/\s+/).filter(Boolean);
 	if (tokens.length === 0) return undefined;
+	const pr = tokens.length === 1 ? prQuery(tokens[0]!) : undefined;
+	if (pr) return { pr, states: [], names: [], outputs: [], hasOutput: false };
 	const f: Filter = { states: [], names: [], outputs: [], hasOutput: false };
 	for (const tok of tokens) {
 		const m = TOKEN.exec(tok);
@@ -42,6 +48,7 @@ const STATE_WORDS: Record<string, (r: JobRow) => boolean> = {
 	failed: (r) => r.state === "failed",
 	stopped: (r) => r.state === "stopped",
 	completed: (r) => r.state === "done" || r.state === "failed" || r.state === "stopped",
+	ready: (r) => r.state !== "blocked" && r.state !== "working" && readyForReview(r.prs),
 	pinned: (r) => r.pinned,
 	running: (r) => r.pid !== null,
 	reaped: (r) => r.reaped,
@@ -58,6 +65,7 @@ const resultOf = (r: JobRow) => [r.summary, r.question, r.error].filter(Boolean)
 
 /** Every token kind must match; several values of one kind match any of them. */
 export function matches(row: JobRow, f: Filter): boolean {
+	if (f.pr && !rowHasPr(row.prs, f.pr)) return false;
 	if (f.states.length > 0 && !f.states.some((s) => stateMatches(row, s))) return false;
 	const name = row.name.toLowerCase();
 	if (f.names.length > 0 && !f.names.some((n) => name.includes(n))) return false;

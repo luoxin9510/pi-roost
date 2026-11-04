@@ -1,3 +1,4 @@
+import type { PrInfo } from "./pr.ts";
 import { StringDecoder } from "node:string_decoder";
 
 export type JobStateName = "working" | "blocked" | "done" | "failed" | "stopped";
@@ -51,6 +52,8 @@ export interface JobRow {
 	rootSession?: string | null;
 	/** M13: someone holds the parent session now (a foreground pi, or a job recorded for it). */
 	parentOpen?: boolean;
+	/** M16: the session's pull requests as gh last reported them. */
+	prs?: PrInfo[];
 	/** M10: the session's own git worktree. */
 	worktree?: { path: string; branch: string } | null;
 }
@@ -109,6 +112,8 @@ export interface WorkerReport {
 	agentItems?: boolean;
 	/** M11: when a phone (pi-mobile) last acted on this session (ms epoch): it is in use. */
 	remoteAt?: number;
+	/** M16: pull request URLs the session linked (gh output, branch lookups). */
+	prLinks?: string[];
 }
 
 export interface DispatchArgs {
