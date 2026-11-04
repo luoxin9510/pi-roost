@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentDef } from "../lib/agents.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
@@ -1312,12 +1314,13 @@ describe("AgentView fan-out (M26)", () => {
 
 describe("AgentView presets (M27)", () => {
 	const reviewer: AgentDef = { name: "reviewer", systemPromptMode: "replace", prompt: "You review.", file: "/a/reviewer.md" };
-	function withPresets(initial: Record<string, import("../lib/config.ts").Preset>) {
+	function withPresets(initial: Record<string, import("../lib/config.ts").Preset>, cwd?: string) {
 		const store = { ...initial };
 		const user = new Set(Object.keys(initial));
 		const s = setup([], {
 			agents: new Map([["reviewer", reviewer]]),
 			extra: {
+				...(cwd ? { cwd } : {}),
 				presets: () => store,
 				savePreset: (name, p) => {
 					if (p) {
@@ -1335,7 +1338,15 @@ describe("AgentView presets (M27)", () => {
 	}
 
 	it("/preset name applies it: model, thinking, agent and directory reach the next task; a typed @dir wins", async () => {
-		const { view } = withPresets({ review: { model: "b/two", thinking: "high", agent: "reviewer", dir: "api" } });
+		const { mkdirSync, mkdtempSync, realpathSync, symlinkSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const hub = realpathSync(mkdtempSync(join(tmpdir(), "roost-preset-")));
+		mkdirSync(join(hub, "api"));
+		symlinkSync(tmpdir(), join(hub, "out"));
+		const { view } = withPresets(
+			{ review: { model: "b/two", thinking: "high", agent: "reviewer", dir: "api" }, escape: { dir: "out" }, gone: { dir: "nope" }, fast: { model: "a/one" } },
+			hub,
+		);
 		await view.start();
 		type(view, "/preset nope");
 		view.handleInput("\r");
@@ -1349,17 +1360,41 @@ describe("AgentView presets (M27)", () => {
 		view.handleInput("\r");
 		await sleep(10);
 		const o = launches[before]!.opts as { cwd: string; model: string; thinking: string; agent?: AgentDef };
-		expect(o).toMatchObject({ cwd: "/w/api", model: "b/two", thinking: "high" });
+		expect(o).toMatchObject({ cwd: join(hub, "api"), model: "b/two", thinking: "high" });
 		expect(o.agent?.name).toBe("reviewer");
 		type(view, "@/tmp check the other diff");
 		view.handleInput("\r");
 		await sleep(10);
 		expect((launches[before + 1]!.opts as { cwd: string }).cwd).toMatch(/tmp$/);
-		// off: back to the defaults
+		// another preset replaces the whole choice: nothing of review's stays
+		type(view, "/preset fast");
+		view.handleInput("\r");
+		const head = view.render(140).find((l) => l.startsWith("new sessions:"))!;
+		expect(head).toBe("new sessions: preset fast · model a/one");
+		// a link out of the hub's directory, or a directory that is not there, starts nothing
+		for (const [name, says] of [
+			["escape", "leads outside"],
+			["gone", "does not exist here"],
+		] as const) {
+			const n = launches.length;
+			type(view, `/preset ${name}`);
+			view.handleInput("\r");
+			type(view, "run the whole suite");
+			view.handleInput("\r");
+			await sleep(10);
+			expect(launches.length).toBe(n);
+			expect(view.render(140).join("\n")).toContain(says);
+			view.handleInput("\u0003");
+		}
+		// off: back to the defaults; a name like toString is no preset
 		type(view, "/preset off");
 		view.handleInput("\r");
-		expect(view.render(120).join("\n")).not.toContain("preset review");
+		expect(view.render(120).join("\n")).not.toContain("new sessions: preset");
+		type(view, "/preset toString");
+		view.handleInput("\r");
+		expect(view.render(120).join("\n")).toContain("no preset toString");
 		view.dispose();
+		rmSync(hub, { recursive: true, force: true });
 	});
 
 	it("/preset save keeps the current choices; bare /preset picks; rm removes only the user's", async () => {

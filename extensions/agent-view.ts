@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, isAbsolute } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, stripTerminalSequences, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
@@ -18,7 +18,7 @@ import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
-import type { Preset } from "../lib/config.ts";
+import { type Preset, presetFrom } from "../lib/config.ts";
 import {
 	ageOf,
 	counts,
@@ -1300,12 +1300,17 @@ export class AgentView implements Component {
 			if (!parsed.command) return this.say("! needs a command", "warning");
 			if (picked) return this.say(`${picked.agent.name} runs a task, not a ! command`, "warning");
 			if (!this.o.launchShell) return this.say("shell jobs are not available here", "warning");
-			args = this.o.launchShell(parsed.command, parsed.cwd ?? this.presetDir(base) ?? base);
+			const dir = parsed.cwd ? undefined : this.presetDir();
+			if (dir && "error" in dir) return this.say(dir.error, "warning");
+			args = this.o.launchShell(parsed.command, parsed.cwd ?? dir?.path ?? base);
 		} else {
 			const task = parsed.kind === "task" ? parsed.task : (picked ? picked.task : typed).trim();
 			if (task.length < MIN_TASK) return this.say("Too short", "warning");
 			// M27: a typed @dir or agent wins over the preset's
-			const cwd = parsed.kind === "task" ? (parsed.cwd ?? this.presetDir(base) ?? base) : (this.presetDir(base) ?? base);
+			const typedDir = parsed.kind === "task" ? parsed.cwd : undefined;
+			const dir = typedDir ? undefined : this.presetDir();
+			if (dir && "error" in dir) return this.say(dir.error, "warning");
+			const cwd = typedDir ?? dir?.path ?? base;
 			const fallback = this.preset?.agent ?? this.o.defaultAgent;
 			const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
 			if (fallback && !agent) return this.say(`${this.preset?.agent ? "the preset's agent" : "dispatchAgent"} ${fallback} is not an agent here`, "warning");
@@ -1478,14 +1483,31 @@ export class AgentView implements Component {
 		}
 	}
 
-	/** M27: the preset's directory under `base`, when it has one. */
-	private presetDir(base: string): string | undefined {
-		return this.preset?.dir ? resolve(base, this.preset.dir) : undefined;
+	/**
+	 * M27: the preset's directory, under the hub's (links resolved: a cloned project's
+	 * preset cannot reach outside it), when it has one.
+	 */
+	private presetDir(): { path: string } | { error: string } | undefined {
+		const d = this.preset?.dir;
+		if (!d) return undefined;
+		const path = resolve(this.o.cwd, d);
+		let real: string;
+		let root: string;
+		try {
+			real = realpathSync(path);
+			root = realpathSync(this.o.cwd);
+		} catch {
+			return { error: `the preset's directory ${d} does not exist here` };
+		}
+		const rel = relative(root, real);
+		if (rel.startsWith("..") || isAbsolute(rel)) return { error: `the preset's directory ${d} leads outside ${this.o.cwd}` };
+		return { path };
 	}
 
 	/** M27: /preset [name | off | save name | rm name]; false: the text stays in the input. */
 	private presetCommand(arg: string): boolean {
 		const all = this.o.presets?.() ?? {};
+		const has = (n: string) => Object.hasOwn(all, n);
 		const [verb, name = "", ...rest] = arg.split(/\s+/).filter(Boolean);
 		if (!verb) {
 			const names = Object.keys(all).sort();
@@ -1503,6 +1525,10 @@ export class AgentView implements Component {
 			return true;
 		}
 		if (verb === "off" && !name) {
+			if (!this.preset) {
+				this.say("no preset in use");
+				return true;
+			}
 			this.clearPreset();
 			return true;
 		}
@@ -1515,8 +1541,8 @@ export class AgentView implements Component {
 				this.say("presets cannot be saved here", "warning");
 				return false;
 			}
-			if (verb === "rm" && !(this.o.userPreset?.(name) ?? name in all)) {
-				this.say(name in all ? `${name} is a project's preset (.pi/roost.json)` : `no preset ${name}`, "warning");
+			if (verb === "rm" && !(this.o.userPreset?.(name) ?? has(name))) {
+				this.say(has(name) ? `${name} is a project's preset (.pi/roost.json)` : `no preset ${name}`, "warning");
 				return false;
 			}
 			const p: Preset = {
@@ -1527,6 +1553,11 @@ export class AgentView implements Component {
 				...(this.preset?.dir ? { dir: this.preset.dir } : {}),
 				...(this.fanout && this.fanout.length >= 2 ? { fanout: this.fanout } : {}),
 			};
+			// what would not read back (a model without its provider) is not saved
+			if (verb === "save" && JSON.stringify(presetFrom(p)) !== JSON.stringify(p)) {
+				this.say("these choices do not make a preset (a model needs provider/id)", "warning");
+				return false;
+			}
 			try {
 				this.o.savePreset(name, verb === "save" ? p : null);
 			} catch (err) {
@@ -1535,7 +1566,8 @@ export class AgentView implements Component {
 			}
 			if (verb === "rm") {
 				if (this.preset?.name === name) this.preset = undefined;
-				this.say(`removed preset ${name}`);
+				const still = Object.hasOwn(this.o.presets?.() ?? {}, name);
+				this.say(still ? `removed your preset ${name} (the project's ${name} stays)` : `removed preset ${name}`);
 			} else {
 				this.preset = { name, ...(p.agent ? { agent: p.agent } : {}), ...(p.dir ? { dir: p.dir } : {}) };
 				this.say(`saved preset ${name}: ${presetText(p) || "the defaults"}`, "success");
@@ -1546,7 +1578,7 @@ export class AgentView implements Component {
 			this.say("/preset <name>, off, save <name> or rm <name>", "warning");
 			return false;
 		}
-		const p = all[verb];
+		const p = has(verb) ? all[verb] : undefined;
 		if (!p) {
 			this.say(`no preset ${verb} (bare /preset lists them)`, "warning");
 			return false;
@@ -1556,13 +1588,14 @@ export class AgentView implements Component {
 	}
 
 	private applyPreset(name: string, p: Preset): void {
-		// what the preset leaves out stays as it was
-		if (p.model) this.model = p.model;
-		if (p.thinking) this.thinking = p.thinking;
-		if (p.worktree !== undefined) this.worktree = p.worktree;
-		if (p.fanout) this.fanout = [...p.fanout];
+		// a preset is the whole choice: what it leaves out is the default (nothing from the last one stays)
+		this.model = p.model;
+		this.thinking = p.thinking;
+		this.worktree = p.worktree;
+		this.fanout = p.fanout ? [...p.fanout] : undefined;
 		this.preset = { name, ...(p.agent ? { agent: p.agent } : {}), ...(p.dir ? { dir: p.dir } : {}) };
-		const missing = p.dir && !existsSync(resolve(this.o.cwd, p.dir)) ? ` · ${p.dir} does not exist here` : "";
+		const dir = this.presetDir();
+		const missing = dir && "error" in dir ? ` · ${dir.error}` : "";
 		this.say(`preset ${name}: ${presetText(p) || "nothing to change"}${missing}`, missing ? "warning" : "success");
 	}
 

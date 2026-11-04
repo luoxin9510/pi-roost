@@ -1,6 +1,6 @@
 // pi-roost settings (PRD §8.1): ~/.pi/agent/roost.json, overridden per project
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
@@ -66,6 +66,11 @@ export interface Preset {
 }
 
 export const PRESET_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
+/** The /preset subcommands: not names. */
+const PRESET_WORDS = new Set(["off", "save", "rm"]);
+export function presetName(name: string): boolean {
+	return PRESET_NAME.test(name) && !PRESET_WORDS.has(name);
+}
 const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 /** M27: a preset from JSON, or undefined when it is not one. */
@@ -79,7 +84,8 @@ export function presetFrom(v: unknown): Preset | undefined {
 	if (typeof o.worktree === "boolean") p.worktree = o.worktree;
 	if (typeof o.agent === "string" && AGENT_NAME.test(o.agent)) p.agent = o.agent;
 	// a directory under the hub's: a cloned project's preset cannot point elsewhere
-	if (typeof o.dir === "string" && o.dir && o.dir.length <= 200 && !o.dir.startsWith("/") && !o.dir.startsWith("~") && !o.dir.split(/[\\/]/).includes("..")) p.dir = o.dir;
+	// (the view checks again, after links, that it stays under the hub's directory)
+	if (typeof o.dir === "string" && o.dir && o.dir.length <= 200 && relativeDir(o.dir)) p.dir = o.dir;
 	if (Array.isArray(o.fanout)) {
 		const list = [...new Set(o.fanout.filter(model))];
 		if (list.length >= 2 && list.length <= 6) p.fanout = list;
@@ -87,11 +93,16 @@ export function presetFrom(v: unknown): Preset | undefined {
 	return p;
 }
 
+function relativeDir(d: string): boolean {
+	if (d.startsWith("/") || d.startsWith("\\") || d.startsWith("~") || /^[A-Za-z]:/.test(d)) return false;
+	return !d.split(/[\\/]/).includes("..") && !/[\x00-\x1f]/.test(d);
+}
+
 function presetsFrom(v: unknown): Record<string, Preset> | undefined {
 	if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
 	const out: Record<string, Preset> = Object.create(null);
 	for (const [name, raw] of Object.entries(v as Record<string, unknown>).slice(0, 100)) {
-		const p = PRESET_NAME.test(name) ? presetFrom(raw) : undefined;
+		const p = presetName(name) ? presetFrom(raw) : undefined;
 		if (p) out[name] = p;
 	}
 	return out;
@@ -187,7 +198,7 @@ export function loadConfig(cwd: string): RoostConfig {
 	// agents may reach and multiply.
 	for (const k of USER_ONLY) delete project[k];
 	// M27: presets merge by name (a project's wins)
-	const presets = user.presets || project.presets ? { ...user.presets, ...project.presets } : undefined;
+	const presets = user.presets || project.presets ? Object.assign(Object.create(null) as Record<string, Preset>, user.presets, project.presets) : undefined;
 	return { ...DEFAULTS, ...user, ...project, ...(presets ? { presets } : {}) };
 }
 
@@ -201,14 +212,17 @@ export function saveUserConfig(patch: Partial<RoostConfig>): void {
 
 /** M27: save a preset to the user's file (null removes it); other presets and keys stay. */
 export function saveUserPreset(name: string, preset: Preset | null): void {
-	if (!PRESET_NAME.test(name)) throw new Error("a preset name is letters, digits, . _ - (up to 32)");
+	if (!presetName(name)) throw new Error("a preset name is letters, digits, . _ - (up to 32), not off, save or rm");
 	const file = userConfigPath();
-	const cur = readJson<Record<string, unknown>>(file) ?? {};
-	const presets = cur.presets && typeof cur.presets === "object" && !Array.isArray(cur.presets) ? { ...(cur.presets as Record<string, unknown>) } : {};
+	const cur = readJson<Record<string, unknown>>(file);
+	// a file that does not parse is never replaced by one with only the presets
+	if (!cur && existsSync(file)) throw new Error(`${file} does not parse: fix it first`);
+	const old = cur?.presets;
+	const presets = old && typeof old === "object" && !Array.isArray(old) ? { ...(old as Record<string, unknown>) } : {};
 	if (preset) presets[name] = preset;
 	else delete presets[name];
 	mkdirSync(dirname(file), { recursive: true });
-	writeJsonAtomic(file, { ...cur, presets });
+	writeJsonAtomic(file, { ...(cur ?? {}), presets });
 }
 
 /** Settings that belong to the user, not a project (the daemon has no project). */

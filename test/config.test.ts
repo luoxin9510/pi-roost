@@ -64,5 +64,16 @@ describe("M27 presets", () => {
 		expect(file.groupBy).toBe("directory");
 		expect(Object.keys(file.presets).sort()).toEqual(["bad name!", "fast", "odd", "review"]);
 		expect(() => saveUserPreset("../evil", {})).toThrow();
+		expect(() => saveUserPreset("off", {})).toThrow();
+		// a file that does not parse is not replaced
+		writeFileSync(join(home, "roost.json"), "{ broken");
+		expect(() => saveUserPreset("x", {})).toThrow(/does not parse/);
+		expect(readFileSync(join(home, "roost.json"), "utf8")).toBe("{ broken");
+		// no way out of the project's directory
+		writeFileSync(join(project, ".pi", "roost.json"), JSON.stringify({ presets: { a: { dir: "C:\\x" }, b: { dir: "\\\\host\\share" }, c: { dir: "sub/dir" }, off: { model: "a/one" } } }));
+		const q = loadConfig(project).presets!;
+		expect([q.a, q.b, q.c]).toEqual([{}, {}, { dir: "sub/dir" }]);
+		expect(Object.hasOwn(q, "off")).toBe(false);
+		expect(Object.getPrototypeOf(q)).toBeNull();
 	});
 });
