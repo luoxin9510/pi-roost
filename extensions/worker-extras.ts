@@ -168,10 +168,10 @@ function attachedNow(): boolean {
 	return attachedFile()?.attached === true;
 }
 
-function attachedFile(): { attached?: unknown; at?: unknown } | undefined {
+function attachedFile(): { attached?: unknown; at?: unknown; replay?: unknown } | undefined {
 	const dir = process.env.PI_JOB_DIR;
 	if (!dir) return undefined;
-	return readJson<{ attached?: unknown; at?: unknown }>(join(dir, "attached.json"));
+	return readJson<{ attached?: unknown; at?: unknown; replay?: unknown }>(join(dir, "attached.json"));
 }
 
 const REPAINT_DELAY_MS = 15;
@@ -186,7 +186,9 @@ export function attachRepaintReady(): boolean {
 }
 
 /**
- * M14: attach feels like `pi --resume`. Nobody watched while this pi started, so the
+ * M14 (kept for hosts from before M21, which wait for this repaint; a newer host shows
+ * its own copy of the screen and says `replay` in attached.json, and then this does
+ * nothing). M14: attach feels like `pi --resume`. Nobody watched while this pi started, so the
  * terminal it set up (fullscreen pi's alternate screen, mouse, kitty keyboard, …) was the
  * host's, and what is on the user's screen is the view they came from. On each attach
  * this pi stops its TUI and starts it again on the real terminal, which answers its
@@ -218,6 +220,8 @@ export function registerAttachRepaint(pi: ExtensionAPI): void {
 		// a takeover writes a new time while it stays attached
 		if (f?.attached !== true || f.at === handledAt) return;
 		handledAt = f.at;
+		// M21: the host shows the screen as it is; a repaint now would only draw it twice
+		if (f.replay === true) return;
 		clearTimeout(timer);
 		timer = setTimeout(repaint, REPAINT_DELAY_MS);
 		timer.unref?.();

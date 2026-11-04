@@ -56,7 +56,7 @@ A program in the PTY may ask its terminal questions (device attributes `ESC[c`, 
 position `ESC[6n`). While someone is attached, the user's terminal answers. While nobody
 is, nothing did, and programs that wait for an answer hung. The host's headless xterm
 now answers (`term.onData` → `proc.write`) while nobody is attached, and while an attach
-waits for its repaint (M14 `hold`).
+waits for its repaint (M14 `hold`; since M21, until the attach's snapshot point is parsed).
 
 ## Tests
 
