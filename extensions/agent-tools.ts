@@ -1,3 +1,4 @@
+import { discoverAgents } from "../lib/agents.ts";
 // M9: tools an agent uses to talk to other pi sessions (roost_agents, roost_send,
 // roost_spawn) and the renderer for the messages it receives.
 import { existsSync, statSync } from "node:fs";
@@ -99,6 +100,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 			model: Type.Optional(Type.String({ description: "provider/id (default: your current model)" })),
 			thinking: Type.Optional(Type.String({ description: "Thinking level (default: yours)" })),
 			worktree: Type.Optional(Type.Boolean({ description: "Run in its own git worktree and branch (default: the user's setting)" })),
+			agent: Type.Optional(Type.String({ description: "Run as this agent: a pi-subagents definition (its model, thinking, tools, system prompt)" })),
 		}),
 		async execute(_id, params, _signal, _update, ctx) {
 			const task = params.task.trim();
@@ -107,6 +109,9 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 			if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
 			const name = params.name?.trim() || fallbackName(task);
 			const config = loadConfig(cwd);
+			const agentName = params.agent?.trim();
+			const agent = agentName ? discoverAgents(cwd).get(agentName) : undefined;
+			if (agentName && !agent) throw new Error(`no agent named ${agentName}; known: ${[...discoverAgents(cwd).keys()].join(", ") || "none"}`);
 			// M10: a worktree when asked, or by the user's default (which falls back outside a repository)
 			const iso = prepareIsolation(cwd, name, params.worktree ?? isolationDefault(config.worktreeIsolation, true), params.worktree === true);
 			const sessionFile = SessionManager.create(iso.cwd).getSessionFile();
@@ -127,8 +132,10 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 					env: process.env,
 					extraEnv: config.envAllowList,
 					piVersion: VERSION,
-					model: params.model?.trim() || current,
-					thinking: params.thinking?.trim() || pi.getThinkingLevel(),
+					// an agent's own model and thinking level unless the call names them
+					model: params.model?.trim() || (agent?.model ? undefined : current),
+					thinking: params.thinking?.trim() || (agent?.thinking ? undefined : pi.getThinkingLevel()),
+					...(agent ? { agent } : {}),
 					worktree: iso.worktree,
 				});
 				const r = await link.call("spawn", { launch });

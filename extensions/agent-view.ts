@@ -13,6 +13,7 @@ import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
 import { TaskEditor } from "./task-editor.ts";
+import { type AgentDef, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
@@ -57,6 +58,9 @@ export interface AgentViewOptions {
 	/** Builds the dispatch request for a task typed into the view. */
 	/** A new pi job; the view adds its /model and /thinking defaults and @dir target. */
 	launch: (task: string, opts?: LaunchOptions) => LaunchRequest;
+	/** M18: agents a task's first word or `@name` can pick, and the default one (`dispatchAgent`). */
+	agents?: () => ReadonlyMap<string, AgentDef>;
+	defaultAgent?: string;
 	/** DI-6: a shell job (no model). */
 	launchShell?: (command: string, cwd: string) => DispatchArgs;
 	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
@@ -107,6 +111,8 @@ export interface LaunchOptions {
 	sessionFile?: string;
 	name?: string;
 	origin?: "dispatch" | "adopt";
+	/** M18: run as this agent. */
+	agent?: AgentDef;
 }
 
 export interface Resumable {
@@ -859,7 +865,13 @@ export class AgentView implements Component {
 		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
 		const typed = this.input.getValue();
 		const base = this.dispatchCwd();
-		const parsed = parseInput(typed, base);
+		// M18 (Claude Code): a first word or `@name` naming an agent runs the task as it
+		const agents = !/^[!/]/.test(typed.trim()) ? this.o.agents?.() : undefined;
+		const picked = agents ? pickAgent(typed, new Set(agents.keys())) : undefined;
+		const agentName = picked?.agent ?? this.o.defaultAgent;
+		const agent = agentName ? agents?.get(agentName) ?? this.o.agents?.().get(agentName) : undefined;
+		if (agentName && !agent && !picked) return this.say(`dispatchAgent ${agentName} is not an agent here`, "warning");
+		const parsed = parseInput(picked ? picked.task : typed, base);
 		if (parsed.kind === "command") {
 			const handled = this.command(parsed.name, parsed.arg);
 			if (handled) return;
@@ -875,7 +887,7 @@ export class AgentView implements Component {
 			if (task.length < MIN_TASK) return this.say("Too short", "warning");
 			const cwd = parsed.kind === "task" ? (parsed.cwd ?? base) : base;
 			try {
-				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree });
+				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree, ...(agent ? { agent } : {}) });
 			} catch (err) {
 				return this.say((err as Error).message, "error");
 			}
@@ -1304,6 +1316,7 @@ export class AgentView implements Component {
 			const what = `#${p.number} ${p.status}${p.needsReview ? " · needs review" : ""}${p.title ? ` · ${oneLine(p.title)}` : ""}`;
 			lines.push(`    ${hyperlink(t.fg(prTone(p.status), truncateToWidth(what, inner)), p.url)}`);
 		}
+		if (row.agent) facts.push(`agent ${oneLine(row.agent)}`);
 		if (row.worktree) {
 			facts.push(`⎇ ${oneLine(row.worktree.branch)}`);
 		}
@@ -1323,7 +1336,7 @@ export class AgentView implements Component {
 	private footer(): string {
 		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
-		if (this.filter()) return "filtering (s: n: o: #PR) · Enter/→ attach · Esc clear";
+		if (this.filter()) return "filtering (s: n: o: a: #PR) · Enter/→ attach · Esc clear";
 		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close · ? keys";
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}

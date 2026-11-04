@@ -1,3 +1,4 @@
+import { discoverAgents } from "../lib/agents.ts";
 import { setJobEventBus } from "../lib/job-events.ts";
 import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
@@ -23,6 +24,7 @@ export default function (pi: ExtensionAPI) {
 	setCommandSource(() => pi.getCommands().map((c) => ({ name: c.name, source: c.source })));
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
 	pi.registerFlag("bg-name", { description: "Name for the --bg session", type: "string" });
+	pi.registerFlag("agent", { description: "With --bg: run as this agent (pi-subagents definition)", type: "string" });
 	pi.registerFlag("worktree", { description: "With --bg: run the session in its own git worktree and branch", type: "boolean" });
 	pi.registerFlag("agents", { description: "Open the agent view of background sessions", type: "boolean" });
 	pi.registerFlag("agents-cwd", { description: "Limit the agent view to sessions under <dir>", type: "string" });
@@ -129,6 +131,13 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 		return fail("could not allocate a session file");
 	}
 
+	// M18: --agent, else the user's dispatchAgent
+	const agentName = (typeof pi.getFlag("agent") === "string" && (pi.getFlag("agent") as string).trim()) || loadConfig(ctx.cwd).dispatchAgent;
+	const agent = agentName ? discoverAgents(ctx.cwd).get(agentName) : undefined;
+	if (agentName && !agent) {
+		iso.discard();
+		return fail(`no agent named ${agentName} (pi-subagents definitions in ~/.pi/agent/agents, .pi/agents)`);
+	}
 	let client: DaemonClient | undefined;
 	try {
 		client = await DaemonClient.connectOrStart();
@@ -141,6 +150,7 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 				name,
 				origin: "bg",
 				worktree: iso.worktree,
+				...(agent ? { agent } : {}),
 				argv: process.argv,
 				execPath: process.execPath,
 				env: process.env,

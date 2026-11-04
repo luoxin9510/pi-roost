@@ -196,6 +196,7 @@ function rowOf(id: string): JobRow | undefined {
 		parentSession: rec.parentSession ?? null,
 		rootSession: rec.rootSession ?? null,
 		parentOpen: rec.parentSession ? parentOpen(rec.parentSession) : false,
+		agent: rec.agent ?? null,
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch } : null,
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
@@ -676,6 +677,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		env,
 		...(str(a.model) ? { model: a.model } : {}),
 		...(str(a.thinking) ? { thinking: a.thinking } : {}),
+		...(str(a.agent) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(a.agent) ? { agent: a.agent } : {}),
 		origin,
 		createdAt: now,
 		...(str(a.piVersion) ? { piVersion: a.piVersion } : {}),
