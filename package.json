@@ -1,6 +1,6 @@
 {
   "name": "pi-roost",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Agent view for pi: every background pi session on one screen — dispatch, peek, reply, attach, detach. Sessions outlive the terminal.",
   "keywords": [
     "pi-package",
