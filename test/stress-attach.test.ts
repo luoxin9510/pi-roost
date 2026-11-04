@@ -8,7 +8,7 @@ import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload
 import { connectHost, hostControl } from "../lib/hostclient.ts";
 import { newJobId } from "../lib/ids.ts";
 import { ensureDirs, hostSocketPath } from "../lib/paths.ts";
-import { type JobRecord, createJob } from "../lib/store.ts";
+import { type JobRecord, createJob, updateState } from "../lib/store.ts";
 
 // M22: attach/detach under stress. A worker that keeps printing and echoes what it is
 // sent; clients come and go quickly, take over each other mid-snapshot, vanish without a
@@ -58,6 +58,8 @@ afterEach(() => {
 const WORKER = `
 let n = 0, usr2 = 0, stopped = false;
 process.on("SIGUSR2", () => usr2++);
+// ready for SIGUSR2 now (as pi reports attachSignal only once its extension is loaded)
+require("node:fs").writeFileSync(process.env.READY_FILE, "");
 setInterval(() => { if (!stopped) process.stdout.write("tick " + (n++) + "\\r\\n"); }, 10);
 process.stdin.setRawMode?.(true); // as pi: keys arrive as bytes
 let buf = "";
@@ -83,22 +85,27 @@ process.stdin.on("data", (d) => {
 async function startHost(): Promise<{ id: string; child: ChildProcess }> {
 	const id = newJobId();
 	const now = Date.now();
+	const ready = join(home, `ready-${id}`);
 	const record: JobRecord = {
 		id,
 		name: "s",
 		cwd: home,
 		sessionFile: join(home, "s.jsonl"),
 		command: [process.execPath, "-e", WORKER],
-		env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", READY_FILE: ready },
 		origin: "bg",
 		createdAt: now,
 		roostVersion: "0.0.0",
 	};
-	// attachSignal: the host signals the worker on every attach and detach, as with pi
-	createJob(record, { state: "working", startedAt: now, updatedAt: now, attachSignal: true });
+	createJob(record, { state: "working", startedAt: now, updatedAt: now });
 	const child = spawn(process.execPath, ["host/main.ts", id], { stdio: "ignore", env: process.env });
 	hosts.push(child);
 	await waitFor(() => existsSync(hostSocketPath(id)), 8000, "host socket");
+	// attachSignal: from now on the host signals the worker on every attach and detach, as
+	// with pi. Not before its handler is in: SIGUSR2's default action ends the process (on
+	// Linux an attach right after the host listens beat node's start-up)
+	await waitFor(() => existsSync(ready), 8000, "worker ready");
+	updateState(id, { attachSignal: true });
 	return { id, child };
 }
 
