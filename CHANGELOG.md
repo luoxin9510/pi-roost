@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Launch presets: `presets` in `roost.json` (yours and a project's) name combinations of model, thinking, worktree, agent, directory and fan-out; `/preset name` uses one for new sessions (bare: pick), `/preset save name` keeps the current choices, `/preset rm name`, `/preset off`. The line under the header names the preset in use.
 - One task, several models: `/fanout a/x b/y` (bare: pick them) starts the next task once per model, each in its own git worktree; `/compare` on one of them shows them side by side (state, cost, what each changed in its worktree, its last reply), opens one, or keeps one and deletes the others.
 - Act on many sessions at once: Ctrl+O marks rows (on a group header, the whole group); with rows marked, the typed text goes to all of them, `/model` and `/thinking` switch all of them, Ctrl+X stops and then deletes them, Ctrl+T pins them. Esc clears the marks.
 - What sessions spend: each row shows its session's cost, the header today's and all of it, and `/usage` lists it by model and by session. Counted as pi's footer counts it (every reply and compaction); subscription use is priced per token and marked `(sub)`.

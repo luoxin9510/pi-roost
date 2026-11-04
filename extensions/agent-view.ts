@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve, isAbsolute } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, stripTerminalSequences, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
@@ -18,6 +18,7 @@ import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
+import { type Preset, presetFrom } from "../lib/config.ts";
 import {
 	ageOf,
 	counts,
@@ -130,6 +131,11 @@ export interface AgentViewOptions {
 	subagents?: "hide" | "inline";
 	/** M8: how long a /model or /thinking switch may take to show (tests shorten it). */
 	switchCheckMs?: number;
+	/** M27: the presets (user's and project's) and saving one to the user's file (null removes). */
+	presets?: () => Record<string, Preset>;
+	savePreset?: (name: string, preset: Preset | null) => void;
+	/** M27: whether the user's own file has this preset (a project's cannot be removed here). */
+	userPreset?: (name: string) => boolean;
 	/** M26: what a session changed in its worktree (tests may replace git). */
 	worktreeChange?: (path: string, base: string) => Promise<WorktreeChange | undefined>;
 	done: () => void;
@@ -252,6 +258,8 @@ export class AgentView implements Component {
 	private sendingMarked = false;
 	/** M26: the next task starts one session per model. */
 	private fanout: string[] | undefined;
+	/** M27: the preset in use: its name, and what the view has no setting of its own for. */
+	private preset: { name: string; agent?: string; dir?: string } | undefined;
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -851,6 +859,9 @@ export class AgentView implements Component {
 			case "compare":
 				this.compare();
 				return done();
+			case "preset":
+				if (this.presetCommand(arg)) return done();
+				return true;
 		}
 		const known = this.o.commands?.().find((c) => c.name === name);
 		if (known && (known.source === "prompt" || known.source === "skill")) return false;
@@ -1289,14 +1300,20 @@ export class AgentView implements Component {
 			if (!parsed.command) return this.say("! needs a command", "warning");
 			if (picked) return this.say(`${picked.agent.name} runs a task, not a ! command`, "warning");
 			if (!this.o.launchShell) return this.say("shell jobs are not available here", "warning");
-			args = this.o.launchShell(parsed.command, parsed.cwd ?? base);
+			const dir = parsed.cwd ? undefined : this.presetDir();
+			if (dir && "error" in dir) return this.say(dir.error, "warning");
+			args = this.o.launchShell(parsed.command, parsed.cwd ?? dir?.path ?? base);
 		} else {
 			const task = parsed.kind === "task" ? parsed.task : (picked ? picked.task : typed).trim();
 			if (task.length < MIN_TASK) return this.say("Too short", "warning");
-			const cwd = parsed.kind === "task" ? (parsed.cwd ?? base) : base;
-			const fallback = this.o.defaultAgent;
+			// M27: a typed @dir or agent wins over the preset's
+			const typedDir = parsed.kind === "task" ? parsed.cwd : undefined;
+			const dir = typedDir ? undefined : this.presetDir();
+			if (dir && "error" in dir) return this.say(dir.error, "warning");
+			const cwd = typedDir ?? dir?.path ?? base;
+			const fallback = this.preset?.agent ?? this.o.defaultAgent;
 			const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
-			if (fallback && !agent) return this.say(`dispatchAgent ${fallback} is not an agent here`, "warning");
+			if (fallback && !agent) return this.say(`${this.preset?.agent ? "the preset's agent" : "dispatchAgent"} ${fallback} is not an agent here`, "warning");
 			// M26: one session per model
 			if (this.fanout) return this.dispatchFanout(task, cwd, agent, typed, attach);
 			try {
@@ -1464,6 +1481,131 @@ export class AgentView implements Component {
 			} else if (which === "thinking") this.say(`${row.name} thinks ${actual ?? "?"}: the closest its model supports to ${s.value}`, "warning");
 			else this.say(`${row.name} now uses ${actual ?? "?"}`, "warning");
 		}
+	}
+
+	/**
+	 * M27: the preset's directory, under the hub's (links resolved: a cloned project's
+	 * preset cannot reach outside it), when it has one.
+	 */
+	private presetDir(): { path: string } | { error: string } | undefined {
+		const d = this.preset?.dir;
+		if (!d) return undefined;
+		const path = resolve(this.o.cwd, d);
+		let real: string;
+		let root: string;
+		try {
+			real = realpathSync(path);
+			root = realpathSync(this.o.cwd);
+		} catch {
+			return { error: `the preset's directory ${d} does not exist here` };
+		}
+		const rel = relative(root, real);
+		if (rel.startsWith("..") || isAbsolute(rel)) return { error: `the preset's directory ${d} leads outside ${this.o.cwd}` };
+		return { path };
+	}
+
+	/** M27: /preset [name | off | save name | rm name]; false: the text stays in the input. */
+	private presetCommand(arg: string): boolean {
+		const all = this.o.presets?.() ?? {};
+		const has = (n: string) => Object.hasOwn(all, n);
+		const [verb, name = "", ...rest] = arg.split(/\s+/).filter(Boolean);
+		if (!verb) {
+			const names = Object.keys(all).sort();
+			if (names.length === 0) {
+				this.say("no presets yet: /preset save <name> keeps what new sessions use now", "warning");
+				return false;
+			}
+			this.picker = {
+				title: "Preset for new sessions",
+				items: [{ label: "none (the defaults)", value: "" }, ...names.map((n) => ({ label: `${n}  ${presetText(all[n]!)}`, value: n }))],
+				index: Math.max(0, names.indexOf(this.preset?.name ?? "") + 1),
+				pick: (v) => (v ? this.applyPreset(v, all[v]!) : this.clearPreset()),
+			};
+			this.o.tui.requestRender();
+			return true;
+		}
+		if (verb === "off" && !name) {
+			if (!this.preset) {
+				this.say("no preset in use");
+				return true;
+			}
+			this.clearPreset();
+			return true;
+		}
+		if (verb === "save" || verb === "rm") {
+			if (!name || rest.length > 0) {
+				this.say(`/preset ${verb} <name>`, "warning");
+				return false;
+			}
+			if (!this.o.savePreset) {
+				this.say("presets cannot be saved here", "warning");
+				return false;
+			}
+			if (verb === "rm" && !(this.o.userPreset?.(name) ?? has(name))) {
+				this.say(has(name) ? `${name} is a project's preset (.pi/roost.json)` : `no preset ${name}`, "warning");
+				return false;
+			}
+			const p: Preset = {
+				...(this.model ? { model: this.model } : {}),
+				...(this.thinking ? { thinking: this.thinking } : {}),
+				...(this.worktree !== undefined ? { worktree: this.worktree } : {}),
+				...(this.preset?.agent ? { agent: this.preset.agent } : {}),
+				...(this.preset?.dir ? { dir: this.preset.dir } : {}),
+				...(this.fanout && this.fanout.length >= 2 ? { fanout: this.fanout } : {}),
+			};
+			// what would not read back (a model without its provider) is not saved
+			if (verb === "save" && JSON.stringify(presetFrom(p)) !== JSON.stringify(p)) {
+				this.say("these choices do not make a preset (a model needs provider/id)", "warning");
+				return false;
+			}
+			try {
+				this.o.savePreset(name, verb === "save" ? p : null);
+			} catch (err) {
+				this.say((err as Error).message, "error");
+				return false;
+			}
+			if (verb === "rm") {
+				if (this.preset?.name === name) this.preset = undefined;
+				const still = Object.hasOwn(this.o.presets?.() ?? {}, name);
+				this.say(still ? `removed your preset ${name} (the project's ${name} stays)` : `removed preset ${name}`);
+			} else {
+				this.preset = { name, ...(p.agent ? { agent: p.agent } : {}), ...(p.dir ? { dir: p.dir } : {}) };
+				this.say(`saved preset ${name}: ${presetText(p) || "the defaults"}`, "success");
+			}
+			return true;
+		}
+		if (name) {
+			this.say("/preset <name>, off, save <name> or rm <name>", "warning");
+			return false;
+		}
+		const p = has(verb) ? all[verb] : undefined;
+		if (!p) {
+			this.say(`no preset ${verb} (bare /preset lists them)`, "warning");
+			return false;
+		}
+		this.applyPreset(verb, p);
+		return true;
+	}
+
+	private applyPreset(name: string, p: Preset): void {
+		// a preset is the whole choice: what it leaves out is the default (nothing from the last one stays)
+		this.model = p.model;
+		this.thinking = p.thinking;
+		this.worktree = p.worktree;
+		this.fanout = p.fanout ? [...p.fanout] : undefined;
+		this.preset = { name, ...(p.agent ? { agent: p.agent } : {}), ...(p.dir ? { dir: p.dir } : {}) };
+		const dir = this.presetDir();
+		const missing = dir && "error" in dir ? ` · ${dir.error}` : "";
+		this.say(`preset ${name}: ${presetText(p) || "nothing to change"}${missing}`, missing ? "warning" : "success");
+	}
+
+	private clearPreset(): void {
+		this.preset = undefined;
+		this.model = undefined;
+		this.thinking = undefined;
+		this.worktree = undefined;
+		this.fanout = undefined;
+		this.say("new sessions use the defaults");
 	}
 
 	/** M26: bare /fanout: Enter adds or removes a model, the list opens again until Esc. */
@@ -1953,9 +2095,12 @@ export class AgentView implements Component {
 		const wt = this.worktree ?? this.o.worktreeDefault === true;
 		// M23: always says what a new session runs (Ctrl+L, Ctrl+P and Shift+Tab change it)
 		const def = this.o.defaultModel?.();
-		if (this.model || this.thinking || wt || def) {
+		if (this.model || this.thinking || wt || def || this.preset) {
 			const model = this.model ? `model ${this.model}` : def ? `model ${def} (default)` : undefined;
-			const d = [model, this.thinking && `thinking ${this.thinking}`, wt && "own worktree"].filter(Boolean).join(" · ");
+			const pr = this.preset;
+			const d = [pr && `preset ${pr.name}`, model, this.thinking && `thinking ${this.thinking}`, wt && "own worktree", pr?.agent && `as ${pr.agent}`, pr?.dir && `in @${pr.dir}`]
+				.filter(Boolean)
+				.join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
 		}
 		if (this.fanout) {
@@ -2228,6 +2373,7 @@ export class AgentView implements Component {
 			["/usage", "what the sessions spent: today, all, by model, by session"],
 			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
 			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],
+			["/preset [name]", "saved choices for new sessions (save <name>, rm <name>, off)"],
 			["Esc", "close peek · clear input · unmark · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],
@@ -2245,6 +2391,20 @@ export class AgentView implements Component {
 		}
 		return ["", ...body, "", t.fg("dim", "any key to close")];
 	}
+}
+
+/** M27: what a preset sets, short. */
+export function presetText(p: Preset): string {
+	return [
+		p.model && shortModel(p.model),
+		p.thinking && `thinking ${p.thinking}`,
+		p.worktree === true ? "own worktree" : p.worktree === false ? "no worktree" : undefined,
+		p.agent && `as ${p.agent}`,
+		p.dir && `@${p.dir}`,
+		p.fanout && `fan-out ${p.fanout.map(shortModel).join(", ")}`,
+	]
+		.filter(Boolean)
+		.join(" · ");
 }
 
 /** M26: a fan-out's rows say their model (pi names each session on its own, often alike). */

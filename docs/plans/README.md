@@ -34,5 +34,6 @@ Claude Code's documented behaviour.
 | M24 | [usage and cost](m24-usage.md) | next |
 | M25 | [marking rows, batch actions](m25-batch.md) | next |
 | M26 | [one task, several models, compared](m26-fanout.md) | next |
+| M27 | [launch presets](m27-presets.md) | next |
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

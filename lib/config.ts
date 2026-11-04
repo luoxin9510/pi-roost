@@ -1,6 +1,6 @@
 // pi-roost settings (PRD §8.1): ~/.pi/agent/roost.json, overridden per project
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
@@ -48,6 +48,64 @@ export interface RoostConfig {
 	agentMaxChildren: number;
 	agentMaxTree: number;
 	agentMaxTotal: number;
+	/** M27: saved choices for new sessions, by name (the user's and a project's, merged). */
+	presets?: Record<string, Preset>;
+}
+
+/** M27: what a preset sets for new sessions; everything is optional. */
+export interface Preset {
+	model?: string;
+	thinking?: string;
+	worktree?: boolean;
+	/** An agent preset (pi-subagents definition) by name. */
+	agent?: string;
+	/** Relative to the hub's directory, as `@dir` takes it. */
+	dir?: string;
+	/** Two to six models: the next task runs once per model (M26). */
+	fanout?: string[];
+}
+
+export const PRESET_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
+/** The /preset subcommands: not names. */
+const PRESET_WORDS = new Set(["off", "save", "rm"]);
+export function presetName(name: string): boolean {
+	return PRESET_NAME.test(name) && !PRESET_WORDS.has(name);
+}
+const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+/** M27: a preset from JSON, or undefined when it is not one. */
+export function presetFrom(v: unknown): Preset | undefined {
+	if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+	const o = v as Record<string, unknown>;
+	const model = (m: unknown): m is string => typeof m === "string" && m.includes("/") && m.length <= 200;
+	const p: Preset = {};
+	if (model(o.model)) p.model = o.model;
+	if (typeof o.thinking === "string" && /^[a-z]{1,16}$/.test(o.thinking)) p.thinking = o.thinking;
+	if (typeof o.worktree === "boolean") p.worktree = o.worktree;
+	if (typeof o.agent === "string" && AGENT_NAME.test(o.agent)) p.agent = o.agent;
+	// a directory under the hub's: a cloned project's preset cannot point elsewhere
+	// (the view checks again, after links, that it stays under the hub's directory)
+	if (typeof o.dir === "string" && o.dir && o.dir.length <= 200 && relativeDir(o.dir)) p.dir = o.dir;
+	if (Array.isArray(o.fanout)) {
+		const list = [...new Set(o.fanout.filter(model))];
+		if (list.length >= 2 && list.length <= 6) p.fanout = list;
+	}
+	return p;
+}
+
+function relativeDir(d: string): boolean {
+	if (d.startsWith("/") || d.startsWith("\\") || d.startsWith("~") || /^[A-Za-z]:/.test(d)) return false;
+	return !d.split(/[\\/]/).includes("..") && !/[\x00-\x1f]/.test(d);
+}
+
+function presetsFrom(v: unknown): Record<string, Preset> | undefined {
+	if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+	const out: Record<string, Preset> = Object.create(null);
+	for (const [name, raw] of Object.entries(v as Record<string, unknown>).slice(0, 100)) {
+		const p = presetName(name) ? presetFrom(raw) : undefined;
+		if (p) out[name] = p;
+	}
+	return out;
 }
 
 /** Keys a project's .pi/roost.json may not set. */
@@ -120,6 +178,8 @@ function pick(raw: unknown): Partial<RoostConfig> {
 		const v = r[k];
 		if (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 1000) out[k] = v;
 	}
+	const presets = presetsFrom(r.presets);
+	if (presets) out.presets = presets;
 	if (r.notify === "auto" || r.notify === "osc9" || r.notify === "osc777" || r.notify === "bell" || r.notify === "off") {
 		out.notify = r.notify;
 	}
@@ -137,7 +197,9 @@ export function loadConfig(cwd: string): RoostConfig {
 	// which provider receives transcript excerpts (or what they cost), nor how far its
 	// agents may reach and multiply.
 	for (const k of USER_ONLY) delete project[k];
-	return { ...DEFAULTS, ...user, ...project };
+	// M27: presets merge by name (a project's wins)
+	const presets = user.presets || project.presets ? Object.assign(Object.create(null) as Record<string, Preset>, user.presets, project.presets) : undefined;
+	return { ...DEFAULTS, ...user, ...project, ...(presets ? { presets } : {}) };
 }
 
 /** Change user settings (AV-K6 persists the grouping); other keys are kept as written. */
@@ -146,6 +208,21 @@ export function saveUserConfig(patch: Partial<RoostConfig>): void {
 	const cur = readJson<Record<string, unknown>>(file) ?? {};
 	mkdirSync(dirname(file), { recursive: true });
 	writeJsonAtomic(file, { ...cur, ...patch });
+}
+
+/** M27: save a preset to the user's file (null removes it); other presets and keys stay. */
+export function saveUserPreset(name: string, preset: Preset | null): void {
+	if (!presetName(name)) throw new Error("a preset name is letters, digits, . _ - (up to 32), not off, save or rm");
+	const file = userConfigPath();
+	const cur = readJson<Record<string, unknown>>(file);
+	// a file that does not parse is never replaced by one with only the presets
+	if (!cur && existsSync(file)) throw new Error(`${file} does not parse: fix it first`);
+	const old = cur?.presets;
+	const presets = old && typeof old === "object" && !Array.isArray(old) ? { ...(old as Record<string, unknown>) } : {};
+	if (preset) presets[name] = preset;
+	else delete presets[name];
+	mkdirSync(dirname(file), { recursive: true });
+	writeJsonAtomic(file, { ...(cur ?? {}), presets });
 }
 
 /** Settings that belong to the user, not a project (the daemon has no project). */
