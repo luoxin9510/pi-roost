@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -81,7 +81,10 @@ describe("paths", () => {
 		try {
 			expect(() => ensureDirs()).toThrow();
 		} finally {
-			rmSync(link, { force: true });
+			// the link itself (rmSync on a link to a directory fails on Linux)
+			try {
+				unlinkSync(link);
+			} catch {}
 			rmSync(target, { recursive: true, force: true });
 		}
 	});
