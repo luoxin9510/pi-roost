@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Sessions no longer freeze after switching: a Ctrl+Z that reached a background pi (typed with other keys, batched by a multiplexer such as herdr, or encoded with Caps/Num Lock on) made pi stop its screen and wait for a resume that never came, while the session kept running. Ctrl+Z is now found anywhere in the input and in every encoding, a background pi detaches on it instead of suspending, and entering a session resumes one that is stuck this way.
+- Rows stay true with many pi windows (herdr, tmux): a session moved to the background again takes over its old row (name and pin included), a session opened in another pi window no longer shows as needing input, a session shows as running as soon as its worker is up, and the agent view checks its rows against the background service every 15 s.
+- A session started from a herdr pane no longer inherits that pane's identity (`HERDR_*`), so it does not report its state into the pane it came from.
+- The model column shows the part that tells models apart: gateway and Bedrock prefixes (`anthropic::`, `us.anthropic.`) and version suffixes are dropped, and a name too long keeps its end.
+- Robustness found by stress tests and a destructive review: a worker reconnecting to a daemon that is down backs off (it retried hundreds of times a second); an attach taken over no longer types into or resizes the session; idle reaping never stops a session someone attached to meanwhile; one attach at a time from the agent view; a respawn that hangs no longer leaves the view's terminal stopped; a list reply no longer hides newer pushes.
+
 ## [0.1.9] - 2026-11-04
 
 - Entering a session shows its screen at once and correctly: the host sends its own copy of the screen (with the alternate screen, cursor and terminal modes), then the live output. No more stale or misplaced leftovers, flashes, or waiting for the session to redraw; shell jobs and idle sessions included. The race between the size change and the repaint (seen on Linux) is gone.

@@ -35,6 +35,9 @@ export function startingFrame(id: string, cols: number, rows: number): string {
 	return `\x1b[2J\x1b[H\x1b[2m${body.join("\r\n")}\x1b[0m\x1b[${rows};1H\x1b[7m Session is starting… \x1b[0m`;
 }
 
+/** M22: how long a respawn request may take before the attach gives up. */
+const RESPAWN_TIMEOUT_MS = 20_000;
+
 /**
  * AT-1: make sure a job has a live worker before attaching. A reaped or ended job
  * is started again from its session file; meanwhile the last screen is shown dimmed.
@@ -45,7 +48,14 @@ export async function ensureLive(
 	out?: { write(s: string): unknown; columns?: number; rows?: number },
 ): Promise<void> {
 	if (row.pid !== null) return;
-	const { results } = await client.request("respawn", { id: row.id, prompt: resumePrompt(row) });
+	// M22: the terminal is the caller's meanwhile (its TUI stopped): never wait for ever
+	let timer: NodeJS.Timeout | undefined;
+	const { results } = await Promise.race([
+		client.request("respawn", { id: row.id, prompt: resumePrompt(row) }),
+		new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(new Error("the background service did not answer")), RESPAWN_TIMEOUT_MS);
+		}),
+	]).finally(() => clearTimeout(timer));
 	const r = results[0];
 	if (r?.error) throw new Error(r.error);
 	out?.write(startingFrame(row.id, out.columns || 80, out.rows || 24));

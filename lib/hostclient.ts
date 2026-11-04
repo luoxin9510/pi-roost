@@ -9,7 +9,7 @@ export interface HostHello {
 	rows?: number;
 }
 
-export type HostControlOp = "snapshot" | "status" | "detach" | "terminate";
+export type HostControlOp = "snapshot" | "status" | "detach" | "terminate" | "terminate-idle";
 
 // Connects and sends HELLO; the caller owns the socket. `id` may be a socket path.
 export function connectHost(id: string, hello: HostHello): Promise<Socket> {
