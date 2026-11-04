@@ -23,6 +23,10 @@ export interface RoostConfig {
 	/** M12: this session's subagents in a panel below the prompt (↓ selects, Enter opens). */
 	subagentPanel: boolean;
 	subagentPanelRows: number;
+	/** M13: stop a subagent's worker once it finished and reported (a message starts it again). */
+	subagentAutoClose: boolean;
+	/** M13: as in Claude Code, subagents a session spawns are not rows of the agent view (inline: they are). */
+	agentViewSubagents: "hide" | "inline";
 	/** M10: new sessions in their own git worktree: none, roost_spawn children, or every pi dispatch. */
 	worktreeIsolation: "off" | "children" | "all";
 	/** M9: the roost_agents / roost_send / roost_spawn tools in every session. */
@@ -59,6 +63,8 @@ export const DEFAULTS: RoostConfig = {
 	worktreeIsolation: "off",
 	subagentPanel: true,
 	subagentPanelRows: 5,
+	subagentAutoClose: true,
+	agentViewSubagents: "hide",
 	agentTools: true,
 	agentExternalMessages: false,
 	agentMaxDepth: 3,
@@ -85,6 +91,8 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (typeof r.subagentPanelRows === "number" && Number.isInteger(r.subagentPanelRows) && r.subagentPanelRows >= 1 && r.subagentPanelRows <= 10) {
 		out.subagentPanelRows = r.subagentPanelRows;
 	}
+	if (typeof r.subagentAutoClose === "boolean") out.subagentAutoClose = r.subagentAutoClose;
+	if (r.agentViewSubagents === "hide" || r.agentViewSubagents === "inline") out.agentViewSubagents = r.agentViewSubagents;
 	if (r.worktreeIsolation === "off" || r.worktreeIsolation === "children" || r.worktreeIsolation === "all") out.worktreeIsolation = r.worktreeIsolation;
 	for (const k of ["agentTools", "agentExternalMessages"] as const) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
 	for (const k of ["agentMaxDepth", "agentMaxChildren", "agentMaxTree", "agentMaxTotal"] as const) {

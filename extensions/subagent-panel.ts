@@ -23,46 +23,80 @@ const SHORT = 12;
 
 type ArmKey = "open" | "stop" | "stopAll";
 const ALL = "*";
+const FINISHED_HINT = "/subagents to see subagents";
 
 const RANK: Record<JobRow["state"], number> = { blocked: 0, working: 1, failed: 2, done: 3, stopped: 4 };
 
-/** This session's children, waiting and working first, then in the order they were spawned. */
-export function childrenOf(all: JobRow[], session: string | undefined, hidden: ReadonlySet<string> = new Set()): JobRow[] {
-	if (!session) return [];
-	return all
-		.filter((r) => r.parentSession === session && !hidden.has(r.id))
-		.sort((a, b) => RANK[a.state] - RANK[b.state] || a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+/** M13 (Claude Code): a failed or stopped subagent's row, and a finished one in /subagents, stay this long. */
+export const LINGER_MS = 30_000;
+
+/**
+ * Which rows the panel holds. `panel`: running and waiting subagents, failed and
+ * stopped ones for LINGER_MS (a finished one leaves at once). `list` (/subagents): also
+ * finished ones for LINGER_MS. `all` (/subagents all): every subagent there is.
+ */
+export type PanelMode = "panel" | "list" | "all";
+
+export function shownIn(r: JobRow, now: number, mode: PanelMode): boolean {
+	if (mode === "all" || r.state === "working" || r.state === "blocked") return true;
+	const recent = now - r.stateSince < LINGER_MS;
+	return r.state === "done" ? mode === "list" && recent : recent;
 }
 
-/** Descendants below each child (shown as "(+N)"; they are not rows of their own). */
-export function descendantCounts(all: JobRow[], children: JobRow[]): Map<string, number> {
+const bySpawn = (a: JobRow, b: JobRow) => RANK[a.state] - RANK[b.state] || a.startedAt - b.startedAt || a.id.localeCompare(b.id);
+
+export interface TreeRow {
+	row: JobRow;
+	depth: number;
+}
+
+/**
+ * This session's subagents as a tree (Claude Code shows nested subagents as one): each
+ * row, then the rows below it, waiting and working first at each level. A row that is
+ * no longer shown stays while something below it still is, so a path leads to it.
+ */
+export function panelTree(all: JobRow[], session: string | undefined, opts: { now?: number; mode?: PanelMode; hidden?: ReadonlySet<string> } = {}): TreeRow[] {
+	if (!session) return [];
+	const now = opts.now ?? Date.now();
+	const mode = opts.mode ?? "panel";
+	const hidden = opts.hidden ?? new Set<string>();
 	const kids = new Map<string, JobRow[]>();
 	for (const r of all) {
 		if (!r.parentSession) continue;
-		const list = kids.get(r.parentSession) ?? [];
-		list.push(r);
-		kids.set(r.parentSession, list);
+		kids.set(r.parentSession, [...(kids.get(r.parentSession) ?? []), r]);
 	}
-	const out = new Map<string, number>();
-	for (const c of children) {
-		let n = 0;
-		const seen = new Set<string>([c.id]);
-		const stack = [...(kids.get(c.sessionFile) ?? [])];
-		while (stack.length > 0) {
-			const r = stack.pop()!;
-			if (seen.has(r.id)) continue;
-			seen.add(r.id);
-			n++;
-			stack.push(...(kids.get(r.sessionFile) ?? []));
+	const seen = new Set<string>();
+	const walk = (file: string, depth: number): TreeRow[] => {
+		const out: TreeRow[] = [];
+		for (const k of [...(kids.get(file) ?? [])].sort(bySpawn)) {
+			if (seen.has(k.id)) continue;
+			seen.add(k.id);
+			const below = k.sessionFile && k.sessionFile !== file ? walk(k.sessionFile, depth + 1) : [];
+			if (below.length > 0 || (!hidden.has(k.id) && shownIn(k, now, mode))) out.push({ row: k, depth }, ...below);
 		}
-		if (n > 0) out.set(c.id, n);
-	}
+		return out;
+	};
+	return walk(session, 0);
+}
+
+/** Rows below each row of the tree ("(+N)", Claude Code's count of descendants in the panel). */
+export function descendantCounts(tree: TreeRow[]): Map<string, number> {
+	const out = new Map<string, number>();
+	tree.forEach((t, i) => {
+		let n = 0;
+		for (let j = i + 1; j < tree.length && tree[j]!.depth > t.depth; j++) n++;
+		if (n > 0) out.set(t.row.id, n);
+	});
 	return out;
 }
 
 export interface PanelView {
 	rows: JobRow[];
 	descendants: Map<string, number>;
+	/** M13: how deep each row sits in the tree (0: this session's own subagent). */
+	depth?: ReadonlyMap<string, number>;
+	/** M13: a subagent finished just now: "/subagents to see subagents" (Claude Code's footer). */
+	finished?: boolean;
 	focused: boolean;
 	sel: number;
 	maxRows: number;
@@ -84,7 +118,8 @@ const oneLine = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace
 
 /** The panel's lines; every line fits `width` (pi-tui ends the session on a wider one). */
 export function renderPanel(v: PanelView, width: number, fg: Fg, bold: (s: string) => string = (s) => s): string[] {
-	if (v.rows.length === 0 || width < 1) return [];
+	if (width < 1) return [];
+	if (v.rows.length === 0) return v.finished ? [truncateToWidth(fg("dim", `  ${FINISHED_HINT}`), width)] : [];
 	const fit = (s: string) => truncateToWidth(s, width);
 	const busy = v.rows.filter((r) => r.state === "working" && r.status === "busy").length;
 	const waiting = v.rows.filter((r) => r.state === "blocked").length;
@@ -101,16 +136,21 @@ export function renderPanel(v: PanelView, width: number, fg: Fg, bold: (s: strin
 	// keep the selection on screen
 	const start = overflow ? Math.min(Math.max(0, v.sel - shownCount + 1), v.rows.length - shownCount) : 0;
 	const shown = v.rows.slice(start, start + shownCount);
-	const nameW = Math.min(NAME_MAX, Math.max(...shown.map((r) => visibleWidth(oneLine(r.name)))));
+	const indent = (r: JobRow) => {
+		const d = v.depth?.get(r.id) ?? 0;
+		return d > 0 ? `${"  ".repeat(d - 1)}└ ` : "";
+	};
+	const nameW = Math.max(...shown.map((r) => visibleWidth(indent(r)) + Math.min(NAME_MAX, visibleWidth(oneLine(r.name)))));
 	const lines: string[] = [];
 	for (const [i, r] of shown.entries()) {
 		const index = start + i;
 		const selected = v.focused && index === v.sel;
 		const icon = iconOf(r, v.frame);
-		const name = truncateToWidth(oneLine(r.name), nameW, "…");
-		const pad = " ".repeat(Math.max(0, nameW - visibleWidth(name)));
+		const pre = indent(r);
+		const name = truncateToWidth(oneLine(r.name), Math.max(1, Math.min(NAME_MAX, nameW - visibleWidth(pre))), "…");
+		const pad = " ".repeat(Math.max(0, nameW - visibleWidth(pre) - visibleWidth(name)));
 		const lead = selected ? fg("accent", "› ") : "  ";
-		const nameText = selected ? bold(name) : v.flash?.has(r.id) ? fg("warning", name) : name;
+		const nameText = (pre ? fg("dim", pre) : "") + (selected ? bold(name) : v.flash?.has(r.id) ? fg("warning", name) : name);
 		if (width < NARROW) {
 			lines.push(fit(`${lead}${fg(icon.tone, icon.glyph)} ${nameText}`));
 			continue;
@@ -128,7 +168,11 @@ export function renderPanel(v: PanelView, width: number, fg: Fg, bold: (s: strin
 	if (overflow) lines.push(fit(fg("dim", `  … ${v.rows.length - shownCount} more (/agents)`)));
 	if (v.notice && v.focused) lines.push(fit(fg("warning", `  ${oneLine(v.notice)}`)));
 	else {
-		const keys = v.composer ? "  ↵ send · Esc cancel" : v.focused ? "  ↵ open · m message · x stop · K stop all · Esc back" : `  ↓ select subagent${v.rows.length === 1 ? "" : "s"}`;
+		const keys = v.composer
+			? "  ↵ send · Esc cancel"
+			: v.focused
+				? "  ↵ open · m message · x stop · K stop all · Esc back"
+				: `  ↓ select subagent${v.rows.length === 1 ? "" : "s"}${v.finished ? ` · ${FINISHED_HINT}` : ""}`;
 		lines.push(fit(fg("dim", keys)));
 	}
 	return lines;
@@ -168,6 +212,12 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	const flashTimers = new Set<NodeJS.Timeout>();
 	let all = new Map<string, JobRow>();
 	let rows: JobRow[] = [];
+	let tree: TreeRow[] = [];
+	/** M13: what the panel holds; /subagents widens it while the panel is selected. */
+	let mode: PanelMode = "panel";
+	/** M13: until then the footer says "/subagents to see subagents" (a subagent finished). */
+	let finishedUntil = 0;
+	let expiryTimer: NodeJS.Timeout | undefined;
 	const hidden = new Set<string>();
 	const flash = new Set<string>();
 	let focused = false;
@@ -195,8 +245,14 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	};
 
 	function recompute(): void {
-		rows = childrenOf([...all.values()], session(), hidden);
-		if (rows.length === 0) unfocus();
+		const now = Date.now();
+		tree = panelTree([...all.values()], session(), { hidden, now, mode });
+		if (tree.length === 0 && focused) {
+			unfocus();
+			tree = panelTree([...all.values()], session(), { hidden, now, mode });
+		}
+		rows = tree.map((t) => t.row);
+		scheduleExpiry(now);
 		const at = selId ? rows.findIndex((r) => r.id === selId) : -1;
 		select(at >= 0 ? at : sel);
 		// a spinner while a child is busy, else a tick a second for the ages of live ones
@@ -217,10 +273,53 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		}
 	}
 
-	/** Leaving the panel drops a half-written message with it. */
+	/** Leaving the panel drops a half-written message with it, and what /subagents added. */
 	function unfocus(): void {
 		focused = false;
 		composer = undefined;
+		mode = "panel";
+	}
+
+	/** M13: look again when a lingering row or the footer hint is due to go. */
+	function scheduleExpiry(now: number): void {
+		clearTimeout(expiryTimer);
+		expiryTimer = undefined;
+		let next = finishedUntil > now ? finishedUntil : Infinity;
+		if (mode !== "all") {
+			for (const r of rows) {
+				if (r.state === "working" || r.state === "blocked") continue;
+				const at = r.stateSince + LINGER_MS;
+				if (at > now) next = Math.min(next, at);
+			}
+		}
+		if (next === Infinity) return;
+		expiryTimer = setTimeout(
+			() => {
+				expiryTimer = undefined;
+				recompute();
+				requestRender();
+			},
+			Math.max(50, next - now + 20),
+		);
+		expiryTimer.unref?.();
+	}
+
+	/** M13: stopping all reaches the whole tree the panel shows, not only direct children. */
+	function nestedLive(): boolean {
+		return tree.some((t) => t.depth > 0 && t.row.pid !== null);
+	}
+
+	/** A subagent of this session, at any depth. */
+	function isMine(job: JobRow): boolean {
+		const me = session();
+		const byFile = new Map([...all.values()].map((r) => [r.sessionFile, r]));
+		const seen = new Set<string>();
+		for (let p = job.parentSession; p; p = byFile.get(p)?.parentSession) {
+			if (p === me) return true;
+			if (seen.has(p)) return false;
+			seen.add(p);
+		}
+		return false;
 	}
 
 	function select(i: number): void {
@@ -244,7 +343,9 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			return renderPanel(
 				{
 					rows,
-					descendants: descendantCounts([...all.values()], rows),
+					descendants: descendantCounts(tree),
+					depth: new Map(tree.map((t) => [t.row.id, t.depth])),
+					finished: Date.now() < finishedUntil,
 					focused,
 					sel,
 					maxRows,
@@ -269,7 +370,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		if (!armed || Date.now() - armed.at > ARM_MS) return undefined;
 		if (armed.key === "stopAll") {
 			const n = armed.count ?? 0;
-			return `K again stops ${n} running subagent${n === 1 ? "" : "s"}`;
+			return `K again stops ${n} running subagent${n === 1 ? "" : "s"}${nestedLive() ? ", nested ones included" : ""}`;
 		}
 		const row = rows.find((r) => r.id === armed!.id);
 		if (!row) return undefined;
@@ -299,8 +400,10 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			const before = lastStates.get(e.job.id);
 			const now = e.job.state;
 			lastStates.set(e.job.id, now);
-			// SP-13: a child that starts waiting or finishes stands out until the panel is used
-			if (before && before !== now && (now === "blocked" || now === "done" || now === "failed") && e.job.parentSession === session()) {
+			// M13: a finished subagent leaves the panel; the footer says where it went
+			if (before && before !== now && now === "done" && isMine(e.job)) finishedUntil = Date.now() + LINGER_MS;
+			// SP-13: a child that starts waiting or fails stands out until the panel is used
+			if (before && before !== now && (now === "blocked" || now === "failed") && isMine(e.job)) {
 				flash.add(e.job.id);
 				const t = setTimeout(() => {
 					flashTimers.delete(t);
@@ -368,6 +471,9 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		flashTimers.clear();
 		flash.clear();
 		clearTimeout(reconnectTimer);
+		clearTimeout(expiryTimer);
+		expiryTimer = undefined;
+		finishedUntil = 0;
 		clearTimeout(renderTimer);
 		renderTimer = undefined;
 		clearInterval(spin);
@@ -378,6 +484,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		c?.close();
 		all = new Map();
 		rows = [];
+		tree = [];
 		unfocus();
 	}
 
@@ -536,11 +643,14 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				select(sel + 1);
 				break;
 			case "up":
-				if (sel === 0) unfocus();
-				else select(sel - 1);
+				if (sel === 0) {
+					unfocus();
+					recompute();
+				} else select(sel - 1);
 				break;
 			case "back":
 				unfocus();
+				recompute();
 				break;
 			case "open": {
 				const row = rows[sel];
@@ -574,6 +684,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			default:
 				// typing goes back to the prompt, with the key
 				unfocus();
+				recompute();
 				tui?.requestRender();
 				return undefined;
 		}
@@ -584,6 +695,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	pi.on("ui_prompt_start", () => {
 		dialogs++;
 		unfocus();
+		recompute();
 		composer = undefined;
 	});
 	pi.on("ui_prompt_end", () => {
@@ -626,25 +738,40 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("subagents", {
-		description: "Select this session's subagents in the panel below the prompt (/subagents stop: stop them all)",
-		getArgumentCompletions: (prefix: string) => ("stop".startsWith(prefix) ? [{ value: "stop", label: "stop", description: "stop every running subagent of this session" }] : null),
+		description: "Select this session's subagents below the prompt, with the ones that just finished (all: every one it ever had; stop: stop them all)",
+		getArgumentCompletions: (prefix: string) => {
+			const opts = [
+				{ value: "all", label: "all", description: "every subagent of this session, finished ones too" },
+				{ value: "stop", label: "stop", description: "stop every running subagent of this session" },
+			].filter((o) => o.value.startsWith(prefix));
+			return opts.length > 0 ? opts : null;
+		},
 		handler: async (args, c) => {
 			if (!enabled) return c.ui.notify("pi-roost: the subagent panel is off here", "info");
 			await watch();
 			for (let i = 0; i < 20 && !client && connectingGen !== -1; i++) await new Promise((r) => setTimeout(r, 50));
-			if (rows.length === 0) return c.ui.notify("pi-roost: this session has no subagents", "info");
-			if (args.trim() === "stop") {
+			const arg = args.trim();
+			if (arg === "stop") {
 				const n = rows.filter((r) => r.pid !== null).length;
 				if (n === 0) return c.ui.notify("pi-roost: no subagent is running", "info");
-				if (!(await c.ui.confirm("Stop subagents", `Stop ${n} running subagent${n === 1 ? "" : "s"} of this session?`))) return;
+				if (!(await c.ui.confirm("Stop subagents", `Stop ${n} running subagent${n === 1 ? "" : "s"} of this session${nestedLive() ? ", nested ones included" : ""}?`))) return;
 				try {
 					return c.ui.notify(`pi-roost: ${await stopAll()}`, "info");
 				} catch (err) {
 					return c.ui.notify(`pi-roost: could not stop the subagents: ${(err as Error).message}`, "error");
 				}
 			}
+			// M13: as Claude Code's /tasks, finished subagents are listed for a while too
+			mode = arg === "all" ? "all" : "list";
+			recompute();
+			if (rows.length === 0) {
+				mode = "panel";
+				recompute();
+				return c.ui.notify(arg === "all" ? "pi-roost: this session has no subagents" : "pi-roost: no subagent finished just now · /subagents all lists every one", "info");
+			}
 			composer = undefined;
 			focused = true;
+			finishedUntil = 0;
 			select(0);
 			tui?.requestRender();
 		},

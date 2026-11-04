@@ -117,6 +117,23 @@ const type = (view: AgentView, text: string) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("AgentView render", () => {
+	it("M13: subagents a session spawns are not rows (Claude Code); one whose parent is gone and still runs is", async () => {
+		const parent = row({ name: "parent job" });
+		const child = row({ name: "held child", parentSession: parent.sessionFile, parentOpen: true });
+		const orphan = row({ name: "orphan child", parentSession: "/s/gone.jsonl", parentOpen: false });
+		const orphanDone = row({ name: "orphan done", state: "done", status: "idle", pid: null, parentSession: "/s/gone.jsonl", parentOpen: false });
+		const { view } = setup([parent, child, orphan, orphanDone]);
+		await view.start();
+		const text = view.render(100).join("\n");
+		expect(text).toContain("parent job");
+		expect(text).toContain("orphan child");
+		expect(text).not.toContain("held child");
+		expect(text).not.toContain("orphan done");
+		view.dispose();
+		const { listed } = await import("../lib/view-model.ts");
+		expect([listed(child), listed(orphan), listed(orphanDone), listed(child, "inline"), listed(parent)]).toEqual([false, true, false, true, true]);
+	});
+
 	it("never renders a line wider than the terminal, whatever the content", async () => {
 		const rows = [
 			row({ name: "调查不稳定的复位测试用例并修复它", summary: "正在运行 bash：npm test -- --run 很长很长的输出" }),

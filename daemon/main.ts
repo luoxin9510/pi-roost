@@ -111,6 +111,9 @@ const starting = new Set<string>();
 const stopping = new Set<string>();
 /** DM-4: being stopped for idleness; the row keeps its state. */
 const reaping = new Set<string>();
+/** M13: closing finished subagents (scheduleAutoClose). */
+const AUTO_CLOSE_MS = Number(process.env.PI_ROOST_AUTO_CLOSE_MS) || 3000;
+const closeTimers = new Map<string, NodeJS.Timeout>();
 const respawning = new Set<string>();
 const conns = new Set<Conn>();
 /** The connection each live worker reports on; replies are pushed down it. */
@@ -190,6 +193,7 @@ function rowOf(id: string): JobRow | undefined {
 		orderKey: typeof st.orderKey === "string" ? st.orderKey : null,
 		parentSession: rec.parentSession ?? null,
 		rootSession: rec.rootSession ?? null,
+		parentOpen: rec.parentSession ? parentOpen(rec.parentSession) : false,
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch } : null,
 	};
 }
@@ -218,8 +222,31 @@ function pushJob(id: string): void {
 	if (job) push({ event: "job", job });
 }
 
+/**
+ * M13: a running pi holds the session (a foreground pi, or a live job): its subagent panel
+ * shows the children and their reports reach it. A parent job that ended or was reaped
+ * does not count, so a child that waits for an answer is listed in the agent view.
+ */
+function parentOpen(key: string): boolean {
+	for (const c of fgPeers.values()) if (c.peer?.kind === "fg" && (c.peer.session ?? `peer:${c.peer.id}`) === key && !c.sock.destroyed) return true;
+	for (const r of recs.values()) if (r.kind !== "shell" && r.sessionFile === key && roster.has(r.id)) return true;
+	return false;
+}
+
+/** M13: the children of `key` changed whether they show in the agent view. */
+function pushChildrenOf(key: string | undefined): void {
+	if (!key) return;
+	for (const r of recs.values()) if (r.parentSession === key) pushJob(r.id);
+}
+
 function finalize(id: string, why: string, opts: { startup?: boolean } = {}): void {
 	roster.delete(id);
+	clearTimeout(closeTimers.get(id));
+	closeTimers.delete(id);
+	pushChildrenOf(recs.get(id)?.sessionFile); // M13: its children's parent is gone
+	// M13: a parent that waited for this child to end may close now
+	const parentKey = recs.get(id)?.parentSession;
+	if (parentKey) for (const r of recs.values()) if (r.sessionFile === parentKey && roster.has(r.id)) scheduleAutoClose(r.id);
 	workerConns.delete(id);
 	starting.delete(id);
 	const st = readState(id);
@@ -469,6 +496,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		throw err;
 	}
 	log("info", "dispatch", { id, name, cwd: rec.cwd, origin });
+	if (!shell) pushChildrenOf(rec.sessionFile); // M13: an adopted session's children have a parent row now
 	return { id, name };
 }
 
@@ -484,6 +512,7 @@ async function startHost(rec: JobRecord): Promise<void> {
 	}
 	const ref: HostRef = { hostPid, hostToken: "" };
 	roster.set(id, ref);
+	pushChildrenOf(rec.sessionFile); // M13: its children's parent runs again
 	for (let i = 0; i < 25 && !ref.hostToken; i++) {
 		ref.hostToken = processStartToken(hostPid) ?? "";
 		if (!ref.hostToken) await sleep(20);
@@ -820,6 +849,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	});
 	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
 	pushJob(id);
+	// M13: a subagent that finished closes (each report while done and idle starts the wait again)
+	if (r.state === "done" && r.status === "idle" && recs.get(id)?.parentSession) scheduleAutoClose(id);
 }
 
 /** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
@@ -1116,7 +1147,63 @@ async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Pr
 	if (state !== "done" && state !== "blocked" && state !== "failed") throw new OpError("bad_request", "invalid state");
 	const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.slice(0, max) : null);
 	const body = reportBody({ state, result: text(args?.result, 6000), question: text(args?.question, 2000), error: text(args?.error, 1000) });
-	return { routed: await routeReport(peer.id, await withWorktreeLine(peer.id, body)) };
+	const routed = await routeReport(peer.id, await withWorktreeLine(peer.id, body));
+	// M13: the report is routed or held on the record: the worker may go
+	if (state === "done") scheduleAutoClose(peer.id);
+	return { routed };
+}
+
+
+/**
+ * M13: stop the worker of a child that finished, as a subagent ends in Claude Code. The
+ * record stays (state done, reaped): a message from the parent or the user starts it
+ * again from its session file. Like the idle reaper it leaves a pinned, attached, busy
+ * or waiting child alone, and one with replies still queued.
+ */
+function scheduleAutoClose(id: string): void {
+	if (!recs.get(id)?.parentSession || !loadUserConfig().subagentAutoClose) return;
+	clearTimeout(closeTimers.get(id));
+	const t = setTimeout(() => {
+		closeTimers.delete(id);
+		void autoClose(id);
+	}, AUTO_CLOSE_MS);
+	t.unref?.();
+	closeTimers.set(id, t);
+}
+
+function closable(id: string): boolean {
+	if (!roster.has(id) || starting.has(id) || stopping.has(id) || respawning.has(id)) return false;
+	const st = readState(id);
+	if (!st || st.pinned === true || st.state !== "done") return false;
+	if (st.status !== "idle" || st.waitingFor) return false;
+	// done for a moment: its report goes out right after the turn settles
+	if (Date.now() - (typeof st.stateSince === "number" ? st.stateSince : 0) < AUTO_CLOSE_MS / 2) return false;
+	// its own children still run and report to it: it would only be started again
+	const file = recs.get(id)?.sessionFile;
+	if (file && [...recs.values()].some((r) => r.parentSession === file && roster.has(r.id))) return false;
+	return pendingReplies(id).length === 0;
+}
+
+async function autoClose(id: string): Promise<void> {
+	if (reaping.has(id) || !closable(id)) return;
+	reaping.add(id); // a stop sees this while we ask the host
+	let attached = true;
+	try {
+		attached = !!((await hostControl(id, "status")) as { attached?: boolean }).attached;
+	} catch {
+		// unknown: leave it
+	}
+	// anything may have happened during the await: decide again
+	if (attached || !reaping.has(id) || !closable(id)) {
+		reaping.delete(id);
+		return;
+	}
+	log("info", "auto-close", { id });
+	try {
+		await hostControl(id, "terminate");
+	} catch {
+		reaping.delete(id);
+	}
 }
 
 function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd?: unknown; pid?: unknown } | undefined): { id: string } {
@@ -1140,6 +1227,8 @@ function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd
 	conn.peer = { kind: "fg", id, session, name, cwd, pid };
 	// the newest registration for a session wins (a pi re-opened on it)
 	fgPeers.set(id, conn);
+	if (previous?.kind === "fg" && previous.session !== session) pushChildrenOf(previous.session);
+	pushChildrenOf(session);
 	// after the response: the client only takes deliveries for the id it is told
 	if (session) setImmediate(() => void retryReports(session));
 	return { id };
@@ -1262,6 +1351,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 				}
 			}
 			const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
+			const file = recs.get(id)?.sessionFile;
 			recs.delete(id);
 			shellPids.delete(id);
 			stopping.delete(id);
@@ -1269,6 +1359,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			removeJob(id);
 			log("info", "rm", { id });
 			push({ event: "removed", id });
+			pushChildrenOf(file); // M13: its children have no parent row now
 			if (!w) return { id };
 			// M10: remove what holds no work; never fail rm over it
 			let worktree: CleanupResult;
@@ -1386,7 +1477,10 @@ server = createServer((sock) => {
 	sock.on("error", () => {});
 	sock.on("close", () => {
 		conns.delete(conn);
-		if (conn.peer?.kind === "fg" && fgPeers.get(conn.peer.id) === conn) fgPeers.delete(conn.peer.id);
+		if (conn.peer?.kind === "fg" && fgPeers.get(conn.peer.id) === conn) {
+			fgPeers.delete(conn.peer.id);
+			pushChildrenOf(conn.peer.session);
+		}
 	});
 });
 server.on("error", (err) => {

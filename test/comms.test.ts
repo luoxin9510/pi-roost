@@ -280,6 +280,111 @@ describe("agent messaging through the daemon", () => {
 		await waitFor(() => delivered(events, "message")[0]);
 	});
 
+	it("M13: a finished child's worker closes after its report; the record stays and a message wakes it", async () => {
+		process.env.PI_ROOST_AUTO_CLOSE_MS = "100";
+		try {
+			await startDaemon();
+			const p = await foreground("closer");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "closer-child") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			const w = await worker(childId);
+			// still working: a report alone does not close it
+			await w.c.request("handback", { state: "blocked", result: null, question: "Which?", error: null });
+			await new Promise((r) => setTimeout(r, 400));
+			expect((await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid).not.toBeNull();
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "done", status: "idle" }) });
+			await w.c.request("handback", { state: "done", result: "Finished.", question: null, error: null });
+			await waitFor(() => delivered(p.events, "report").find((e) => e.text.includes("Finished.")));
+			const row = await waitFor(async () => (await p.c.request("list", { all: true })).jobs.find((j) => j.id === childId && j.pid === null));
+			expect(row).toMatchObject({ state: "done", reaped: true });
+			// no "ended" report for a close the daemon made
+			await new Promise((r) => setTimeout(r, 200));
+			expect(delivered(p.events, "report").some((e) => e.text.includes("ended ("))).toBe(false);
+		} finally {
+			delete process.env.PI_ROOST_AUTO_CLOSE_MS;
+		}
+	});
+
+	it("M13: subagentAutoClose false keeps a finished child running", async () => {
+		process.env.PI_ROOST_AUTO_CLOSE_MS = "100";
+		try {
+			await startDaemon();
+			writeFileSync(join(home, "roost.json"), JSON.stringify({ subagentAutoClose: false }));
+			const p = await foreground("keeper");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			const w = await worker(childId);
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "done", status: "idle" }) });
+			await w.c.request("handback", { state: "done", result: "ok", question: null, error: null });
+			await new Promise((r) => setTimeout(r, 500));
+			expect((await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid).not.toBeNull();
+		} finally {
+			delete process.env.PI_ROOST_AUTO_CLOSE_MS;
+		}
+	});
+
+	it("M13: rows say whether the parent session is held", async () => {
+		await startDaemon();
+		const p = await foreground("holder");
+		const watcher = await connect();
+		await watcher.c.request("subscribe", {});
+		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+		expect((await watcher.c.request("list", {})).jobs.find((j) => j.id === childId)?.parentOpen).toBe(true);
+		p.c.close();
+		await waitFor(() => watcher.events.some((e) => e.event === "job" && e.job.id === childId && e.job.parentOpen === false));
+		const { c } = await connect();
+		await c.request("peer_register", { session: p.session, name: "holder", cwd: work, pid: process.pid });
+		await waitFor(() => watcher.events.some((e) => e.event === "job" && e.job.id === childId && e.job.parentOpen === true && watcher.events.indexOf(e) > 0));
+		// a child of a background job: the job's row is the way to it
+		const w = await worker(childId);
+		const { id: grand } = await w.c.request("spawn", { launch: launch("sleep 30") });
+		expect((await watcher.c.request("list", {})).jobs.find((j) => j.id === grand)?.parentOpen).toBe(true);
+	});
+
+	it("M13: a child that goes on working after its report closes once it is done again; one with a live child waits", async () => {
+		process.env.PI_ROOST_AUTO_CLOSE_MS = "200";
+		try {
+			await startDaemon();
+			const p = await foreground("later");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "mid") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			const w = await worker(childId);
+			// its own child runs: it is not closed
+			const { id: grand } = await w.c.request("spawn", { launch: launch("sleep 30", "grand") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === grand)?.pid);
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "done", status: "idle" }) });
+			await w.c.request("handback", { state: "done", result: "first", question: null, error: null });
+			// and it works on right after the report
+			await w.c.request("report", { id: childId, token: w.token, report: report() });
+			await new Promise((r) => setTimeout(r, 500));
+			expect((await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid).not.toBeNull();
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "done", status: "idle" }) });
+			await new Promise((r) => setTimeout(r, 500));
+			expect((await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid).not.toBeNull();
+			// the grandchild ends; the middle one takes its "ended" report and is done again: now it goes
+			await p.c.request("stop", { id: grand });
+			const ended = await waitFor(() => delivered(w.events, "report")[0]);
+			await w.c.request("ack", { id: childId, token: w.token, seq: ended.seq, exact: true });
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "done", status: "idle" }) });
+			await waitFor(async () => (await p.c.request("list", { all: true })).jobs.find((j) => j.id === childId && j.pid === null && j.reaped));
+		} finally {
+			delete process.env.PI_ROOST_AUTO_CLOSE_MS;
+		}
+	});
+
+	it("M13: a parent job that ended does not count as holding its children", async () => {
+		await startDaemon();
+		const { c } = await connect();
+		const { id: parentId } = await c.request("dispatch", launch("sleep 30", "pjob"));
+		await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === parentId)?.pid);
+		const pw = await worker(parentId);
+		const { id: kid } = await pw.c.request("spawn", { launch: launch("sleep 30", "kid") });
+		expect((await c.request("list", {})).jobs.find((j) => j.id === kid)?.parentOpen).toBe(true);
+		await c.request("stop", { id: parentId });
+		await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === kid)?.parentOpen === false);
+	});
+
 	it("removing a live child tells its parent once", async () => {
 		await startDaemon();
 		const p = await foreground("rmparent");

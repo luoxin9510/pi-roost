@@ -31,6 +31,16 @@ export interface Section {
 
 export type Item = { kind: "header"; section: Section } | { kind: "row"; row: JobRow; section: Section };
 
+/**
+ * M13: whether the agent view lists a row. As in Claude Code, subagents a session spawns
+ * are not rows of their own: its subagent panel shows them. A child whose parent nobody
+ * holds any more and that still works or waits is listed, so live work never goes unseen.
+ */
+export function listed(row: JobRow, subagents: "hide" | "inline" = "hide"): boolean {
+	if (subagents === "inline" || !row.parentSession) return true;
+	return row.parentOpen !== true && (row.state === "working" || row.state === "blocked");
+}
+
 export function groupOf(row: JobRow, pinned: ReadonlySet<string> = new Set()): GroupKey {
 	if (row.pinned || pinned.has(row.id)) return "pinned";
 	if (row.state === "blocked") return "needs-input";

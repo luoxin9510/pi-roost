@@ -160,10 +160,13 @@ Every pi session with pi-roost gets three tools, modelled on Claude Code's backg
 | `roost_agents` | list the sessions you can reach, with state and what each is doing or asking | 列出能通信的会话，以及各自的状态、正在做什么或在问什么 |
 
 So a session can fan work out to children and gather their results, the way subagent
-workflows do, except that every child is a full pi session you can watch, peek at, answer
-or attach to in the agent view (children show as `↳ name`).
+workflows do, except that every child is a full pi session you can open, answer or message
+from its parent's subagent panel. As in Claude Code, the agent view does not list a
+session's subagents as rows of their own (its peek counts them); a child whose parent pi
+is closed is listed while it still works or waits (`↳ name`). A child that finished is
+closed once its report is out (a message starts it again).
 
-这样一个会话就能像 subagent 工作流那样，把任务分派给多个子会话，再收集它们的结果。区别在于每个子会话都是完整的 pi 会话：你可以在 agent 视图里看它、偷看它、回答它的问题，或者直接进入它（子会话显示为 `↳ 名字`）。
+这样一个会话就能像 subagent 工作流那样，把任务分派给多个子会话，再收集它们的结果。区别在于每个子会话都是完整的 pi 会话：你可以在 agent 视图里看它、偷看它、回答它的问题，或者直接进入它，入口都在父会话的子 agent 面板里。和 Claude Code 一样，agent 视图不会把会话召唤的子 agent 列成单独的行（偷看父会话时会显示子 agent 数量）；父会话的 pi 已关闭、而子会话仍在工作或等待时，才会列出它（`↳ 名字`）。子会话完成并送出汇报后，进程会自动关闭（再给它发消息就会重新启动）。
 
 **Your subagents below the prompt.** While a session has children, a panel under its
 prompt lists them, one row each: state, name, time, what it is doing or its result, its
@@ -173,8 +176,14 @@ child's full pi screen (an ended one asks for Enter again, then starts), and the
 a stopped one hides its row; **m** writes a message to the selected child (Enter sends it, as if you had typed it in
 that session; Esc cancels), **K** twice stops every running child. **Esc**, **←** or typing
 returns to the prompt. `/subagents` selects the panel; `/subagents stop` stops them all. This works in a background session you attached to as well.
+As in Claude Code, a child that finishes leaves the panel at once and the footer says
+`/subagents to see subagents` for 30 seconds; a failed or stopped one stays 30 seconds
+(**x** clears it sooner). `/subagents` also lists the ones finished in the last 30 seconds;
+`/subagents all` lists every subagent the session had. Nested subagents show as a tree,
+with `(+N)` on a row that has rows below it.
 
 **提示符下方的子 agent 面板。** 会话有子会话时，提示符下方会出现一个面板，每个子会话一行：状态、名字、耗时、正在做什么或最终结果、所在分支。在空提示符上按 **↓** 选中一行（↑↓ 移动），按 **回车** 或 **→** 进入那个子会话的完整 pi 界面（已结束的要再按一次回车，确认后重启），在子会话里用它自己的退出键（空提示符按 ←、Ctrl+Z、`/exit`）就回到原会话。连按两次 **x** 停止运行中的子会话；对已停止的按 **x** 会把它从面板隐藏；按 **m** 给选中的子会话写一条消息（回车发送，相当于你在那个会话里打字；Esc 取消）；连按两次 **K** 停止全部运行中的子会话。按 **Esc**、**←** 或直接打字就回到提示符。也可以用 `/subagents` 选中面板，`/subagents stop` 停止全部子会话。进入一个后台会话后，它的面板同样可用。
+与 Claude Code 一致：子会话成功完成后立刻从面板消失，底部提示 `/subagents to see subagents` 30 秒；失败或被停止的保留 30 秒（按 **x** 可提前清掉）。`/subagents` 还会列出最近 30 秒内完成的子会话；`/subagents all` 列出这个会话的全部子会话。嵌套的子 agent 以树形显示，下面还有行的会标 `(+N)`。
 
 How it behaves · 运行方式：
 
@@ -323,6 +332,8 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `defaultToAgentsView` | `false` | plain `pi` opens the agent view | 直接运行 `pi` 时打开 agent 视图 |
 | `envAllowList` | `[]` | extra environment variables for background sessions | 额外传给后台会话的环境变量 |
 | `subagentPanel`, `subagentPanelRows` | `true`, `5` | the panel of this session's subagents below the prompt, and how many rows it shows (1–10) | 提示符下方的子 agent 面板，以及最多显示几行（1–10） |
+| `subagentAutoClose` | `true` | close a subagent's process once it finished and reported; a message starts it again | 子 agent 完成并汇报后关闭其进程；再发消息会重新启动 |
+| `agentViewSubagents` | `"hide"` | `"inline"`: subagents are rows of the agent view again | `"inline"`：子 agent 重新作为 agent 视图里的行显示 |
 | `worktreeIsolation` | `"off"` | `"children"`: `roost_spawn` children get their own worktree; `"all"`: every new session; outside a git repository they run without one | `"children"`：`roost_spawn` 派出的子会话各用独立 worktree；`"all"`：所有新会话都用；不在 git 仓库里时照常运行、不建 worktree |
 | `agentTools` | `true` | the `roost_*` tools in every session | 在每个会话里提供 `roost_*` 工具 |
 | `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
