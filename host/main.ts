@@ -8,6 +8,7 @@ import xterm from "@xterm/headless";
 import pty from "node-pty";
 import { writeFileAtomic, writeJsonAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
+import { REPAINT_MARKER } from "../lib/attach.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
 
@@ -133,6 +134,8 @@ function resizeAll(c: number, r: number): void {
 interface Attach {
 	sock: Socket;
 	decoder: StringDecoder;
+	/** M14: output held back until the worker's repaint marker. */
+	hold?: { carry: string; timer: NodeJS.Timeout };
 }
 let attached: Attach | undefined;
 // nobody watches a new worker yet (a previous host may have died attached)
@@ -160,10 +163,60 @@ proc.onData((data) => {
 		dirty = true;
 	});
 	const a = attached;
-	if (a && !a.sock.destroyed) a.sock.write(encodeFrame(FrameType.DATA, data));
+	if (!a || a.sock.destroyed) return;
+	let out = data;
+	if (a.hold) {
+		// M14: what the worker drew before its repaint was for a screen the user is not on
+		const buf = a.hold.carry + data;
+		const at = buf.indexOf(REPAINT_MARKER);
+		if (at < 0) {
+			a.hold.carry = buf.slice(-(REPAINT_MARKER.length - 1));
+			return;
+		}
+		releaseHold(a);
+		out = buf.slice(at + REPAINT_MARKER.length);
+	}
+	out = out.split(REPAINT_MARKER).join("");
+	if (out) a.sock.write(encodeFrame(FrameType.DATA, out));
 });
 
+const REPAINT_WAIT_MS = 1500;
+
+/** M14: hold output back until the worker's repaint; if it never comes, clear and nudge. */
+function holdUntilRepaint(a: Attach): void {
+	const timer = setTimeout(() => {
+		if (!a.hold) return;
+		releaseHold(a);
+		log("no repaint after attach, nudging");
+		if (attached !== a || a.sock.destroyed) return;
+		a.sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
+		nudge();
+	}, REPAINT_WAIT_MS);
+	timer.unref?.();
+	a.hold = { carry: "", timer };
+}
+
+function releaseHold(a: Attach): void {
+	if (a.hold) clearTimeout(a.hold.timer);
+	a.hold = undefined;
+}
+
+/** A redraw for programs that only repaint on a size change. */
+function nudge(): void {
+	if (!workerAlive || rows <= 1) return;
+	const r = rows;
+	try {
+		proc.resize(cols, r - 1);
+	} catch {}
+	setTimeout(() => {
+		try {
+			if (workerAlive) proc.resize(cols, r);
+		} catch {}
+	}, 30);
+}
+
 function kick(a: Attach, reason: "takeover" | "exit" | "request"): void {
+	releaseHold(a);
 	if (attached === a) setAttached(undefined);
 	if (a.sock.destroyed) return;
 	a.sock.end(encodeJsonFrame(FrameType.DETACHED, { reason }));
@@ -233,19 +286,18 @@ const server = createServer((sock) => {
 						role = "attach";
 						if (attached) kick(attached, "takeover");
 						me = { sock, decoder: new StringDecoder("utf8") };
-						setAttached(me);
+						const repaints = workerAlive && readState(id)?.attachRepaint === true;
+						// M14: tell the client this host clears for itself when it has to
+						sock.write(encodeJsonFrame(FrameType.HELLO, { repaint: repaints }));
+						// a blank program (a silent command) must not leave the previous screen showing
+						if (!repaints) sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
+						else holdUntilRepaint(me);
+						// the size first: a worker that repaints on the signal draws once, at the right size
 						if (hello.cols && hello.rows) resizeAll(hello.cols, hello.rows);
-						if (workerAlive && rows > 1) {
-							const r = rows;
-							try {
-								proc.resize(cols, r - 1);
-							} catch {}
-							setTimeout(() => {
-								try {
-									if (workerAlive) proc.resize(cols, r);
-								} catch {}
-							}, 30);
-						}
+						setAttached(me);
+						// M14: a worker that repaints itself needs no nudge; a shell program or an older
+						// worker redraws on the size change
+						if (!repaints) nudge();
 					} else throw new Error("bad role");
 					continue;
 				}

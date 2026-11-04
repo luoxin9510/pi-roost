@@ -51,7 +51,7 @@ afterEach(() => {
 	else process.env.PI_ROOST_RUNTIME_DIR = saved.rt;
 });
 
-async function startHost(script: string): Promise<{ id: string; child: ChildProcess }> {
+async function startHost(script: string, state: Record<string, unknown> = {}): Promise<{ id: string; child: ChildProcess }> {
 	const id = newJobId();
 	const now = Date.now();
 	const record: JobRecord = {
@@ -65,7 +65,7 @@ async function startHost(script: string): Promise<{ id: string; child: ChildProc
 		createdAt: now,
 		roostVersion: "0.0.0",
 	};
-	createJob(record, { state: "working", startedAt: now, updatedAt: now });
+	createJob(record, { state: "working", startedAt: now, updatedAt: now, ...state });
 	const child = spawn(process.execPath, ["host/main.ts", id], { stdio: "ignore", env: process.env });
 	hosts.push(child);
 	await waitFor(() => existsSync(hostSocketPath(id)));
@@ -124,6 +124,45 @@ describe("host", () => {
 		const ex = readExit(id);
 		expect(ex && (ex.signal !== null || ex.code !== 0)).toBe(true);
 		expect(existsSync(exitPath(id))).toBe(true);
+	});
+
+	it("M14: a repainting worker: output held until its marker, no clear, no nudge", async () => {
+		const script = `trap "printf '\\033]7700;pi-roost-repaint\\007painted\\n'" USR2; trap 'echo winch' WINCH; echo ready; while :; do sleep 0.05; done`;
+		const self = await startHost(script, { attachSignal: true, attachRepaint: true });
+		await new Promise((r) => setTimeout(r, 300));
+		// another size: the redraw it causes is for the screen the user is not on yet
+		const a = watch(await connectHost(self.id, { role: "attach", cols: 80, rows: 24 }));
+		await waitFor(() => a.text().includes("painted"));
+		await new Promise((r) => setTimeout(r, 200));
+		expect(a.text()).not.toContain("\x1b[2J");
+		expect(a.text()).not.toContain("winch");
+		expect(a.text()).not.toContain("7700");
+		await hostControl(self.id, "terminate");
+	});
+
+	it("M14: no repaint in time: clear and nudge; an older worker gets both at once", async () => {
+		const loop = "trap 'echo usr2' USR2; trap 'echo winch' WINCH; echo ready; while :; do sleep 0.05; done";
+		const silent = await startHost(loop, { attachSignal: true, attachRepaint: true });
+		await new Promise((r) => setTimeout(r, 300));
+		const a = watch(await connectHost(silent.id, { role: "attach", cols: 120, rows: 30 }));
+		await waitFor(() => a.text().includes("winch"), 4000);
+		expect(a.text().startsWith("\x1b[2J\x1b[H")).toBe(true);
+		const old = await startHost(loop);
+		await new Promise((r) => setTimeout(r, 300));
+		const b = watch(await connectHost(old.id, { role: "attach", cols: 120, rows: 30 }));
+		await waitFor(() => b.text().includes("winch"), 1000);
+		expect(b.text().startsWith("\x1b[2J\x1b[H")).toBe(true);
+		expect(b.text()).not.toContain("usr2");
+		await hostControl(silent.id, "terminate");
+		await hostControl(old.id, "terminate");
+	});
+
+	it("M14: the client leaves the alternate screen only when the session entered it", async () => {
+		const { altScreenAfter } = await import("../lib/attach.ts");
+		expect(altScreenAfter("x\x1b[?1049hy", false)).toBe(true);
+		expect(altScreenAfter("\x1b[?1049h…\x1b[?1049l", true)).toBe(false);
+		expect(altScreenAfter("plain", true)).toBe(true);
+		expect(altScreenAfter("plain", false)).toBe(false);
 	});
 
 	it("control snapshot", async () => {

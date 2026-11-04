@@ -497,7 +497,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		composer = undefined;
 		attached = true;
 		try {
-			t.stop();
+			t.stop({ preserveScreen: true }); // M14: no transcript printed on the way out
 			if (row.pid === null) {
 				process.stdout.write(`starting ${oneLine(row.name)} …\r\n`);
 				const daemon = client ?? (await DaemonClient.connectOrStart());

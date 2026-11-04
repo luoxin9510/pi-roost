@@ -10,7 +10,7 @@ import { readJob } from "../lib/store.ts";
 import { worktreeNote } from "../lib/worktree.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 import { onMobileActivity } from "./mobile.ts";
-import { registerRecap, registerSummaries } from "./worker-extras.ts";
+import { attachRepaintReady, registerAttachRepaint, registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
 	CUSTOM_DIALOG_MS,
 	FIRST_PROMPT_MS,
@@ -514,7 +514,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	/** M11: when a phone (pi-mobile) last acted on this session: it counts as in use. */
 	let remoteAt: number | undefined;
 	const send = (urgent = false) =>
-		reporter?.update({ ...tracker.report(), attachSignal: true, agentItems: true, ...(remoteAt !== undefined ? { remoteAt } : {}) }, urgent);
+		reporter?.update({ ...tracker.report(), attachSignal: true, attachRepaint: attachRepaintReady(), agentItems: true, ...(remoteAt !== undefined ? { remoteAt } : {}) }, urgent);
 	onMobileActivity(pi, () => {
 		remoteAt = Date.now();
 		send(true);
@@ -656,6 +656,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 	// read the tracker's view of the same event (run ids, settled state).
 	registerSummaries(pi, { tracker, send: () => send(true), ctx: () => current });
 	registerRecap(pi, { tracker, send: () => send(), ctx: () => current });
+	registerAttachRepaint(pi);
 	// M10: a session in its own worktree is told so, every run (it is not in the session file)
 	const worktree = readJob(job.id)?.worktree;
 	if (worktree) {
