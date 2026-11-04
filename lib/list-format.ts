@@ -1,5 +1,6 @@
 // M15: `pi-roost list`, a table for people (`--json` is for programs).
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+// (not pi-tui: the CLI runs without pi's packages)
+import { truncateToWidth, visibleWidth } from "./text-width.ts";
 import type { JobRow } from "./protocol.ts";
 import { ageOf, groupOf, listed, sentenceOf, shortPath } from "./view-model.ts";
 

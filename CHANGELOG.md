@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The `pi-roost` CLI starts again: 0.1.7's `pi-roost list` table imported pi-tui, which the CLI cannot load outside pi (a peer dependency), so every CLI command failed. A test now keeps pi's packages out of the CLI, the daemon and the host.
+
 ## [0.1.7] - 2026-11-04
 
 - Background sessions see what your shell sees: they inherit the launching shell's whole environment (less a job's identity, the launching terminal's own variables and `envDenyList`), then take on their workspace's environment each time they start: your shell's cd hooks run in the session's folder (direnv, mise, fnm, nvm), so a hub opened in one folder starts sessions in others with the right `.envrc` and tool versions (`workspaceEnv`: `"shell"`, `"direnv"`, `"off"`). `inheritEnv: false` brings back the allowlist (`envAllowList`).
