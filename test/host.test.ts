@@ -136,7 +136,9 @@ describe("host", () => {
 		const a = watch(await connectHost(self.id, { role: "attach", cols: 80, rows: 24 }));
 		await waitFor(() => a.text().includes("line two"), 2000);
 		expect(Date.now() - t0).toBeLessThan(1000);
-		expect(a.text().startsWith("\x1b[0m\x1b[H\x1b[2J")).toBe(true);
+		// the user's terminal back to defaults, then this screen
+		expect(a.text().startsWith("\x1b[0m\x1b[r")).toBe(true);
+		expect(a.text()).toContain("\x1b[H\x1b[2J");
 		await waitFor(() => a.text().includes("winch"), 2000);
 		expect(a.text().indexOf("winch")).toBeGreaterThan(a.text().indexOf("line two"));
 		expect(a.text()).not.toContain("7700");
@@ -154,12 +156,30 @@ describe("host", () => {
 		expect(first).toContain("\x1b[?1049h\x1b[H\x1b[2J");
 		expect(first.indexOf("\x1b[?1049h")).toBeLessThan(first.indexOf("ALT SCREEN"));
 		for (const m of ["\x1b[?1000h", "\x1b[?1006h", "\x1b[>1u", "\x1b[?25l"]) expect(first, JSON.stringify(m)).toContain(m);
+		// on the alternate screen: the main screen's rows do not land on the user's own
+		expect(first).not.toContain("main");
 		// no scrollback: nothing from before the screen's rows
 		await waitFor(() => a.text().includes("redrawn"), 2000);
 		expect(a.text()).not.toContain("7700");
 		// a takeover starts from the same screen
 		const b = watch(await connectHost(self.id, { role: "attach", cols: 120, rows: 30 }));
 		await waitFor(() => b.text().includes("ALT SCREEN"), 2000);
+		await hostControl(self.id, "terminate");
+	});
+
+	it("M21: a sequence cut at the snapshot point arrives whole; modes counted once", async () => {
+		// the program stops inside a colour sequence, after pushing kitty flags
+		const script = `printf '\\033[>1uhead \\033[3'; sleep 1; printf '1mRED\\033[0m\\033[>2u'; while :; do sleep 0.05; done`;
+		const self = await startHost(script);
+		await new Promise((r) => setTimeout(r, 400));
+		const a = watch(await connectHost(self.id, { role: "attach", cols: 120, rows: 30 }));
+		await waitFor(() => a.text().includes("RED"), 3000);
+		const text = a.text();
+		// the cut part and its rest together, never "1mRED" on its own
+		expect(text).toContain("\x1b[31mRED");
+		// kitty flags from before the attach once, the later push from the stream once
+		expect(text.split("\x1b[>1u").length - 1).toBe(1);
+		expect(text.split("\x1b[>2u").length - 1).toBe(1);
 		await hostControl(self.id, "terminate");
 	});
 

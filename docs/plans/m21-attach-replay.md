@@ -62,6 +62,38 @@ client is attached.
 No scrollback goes into the snapshot, so entering a session still prints no history into
 the user's terminal (M14's goal).
 
+## Review decisions
+
+- **A sequence cut at the snapshot point.** A chunk may end inside an escape sequence.
+  The part already written sits in the mirror's parser, not in the snapshot, and the
+  rest is in the pending output, so the client would print the rest as text. The host
+  follows the unfinished sequence (`StreamTail`: CSI, OSC/DCS/APC/PM/SOS up to ST or
+  BEL, charset designations) and sends it first.
+- **Modes at the snapshot point.** They are taken in `replay()`, not when the snapshot
+  is written. A kitty push in the window would otherwise count twice, leaving the
+  user's keyboard in kitty mode after detach.
+- **The alternate screen alone.** When the program is on its alternate screen, the
+  snapshot sends only that screen; the main rows would replace what the user's own main
+  screen shows.
+- **The client reset first.** `CLIENT_RESET` covers SGR, the scroll region, origin
+  mode, the charset, cursor visibility, every mouse mode and encoding, focus, bracketed
+  paste, application cursor, autowrap and the cursor shape. Modes are then set only
+  where they differ from the defaults.
+- **More state followed.**
+  - DECSTBM: reset on resize; after setting it, the cursor is put back, origin mode
+    considered.
+  - DECSCUSR and the G0 charset.
+  - RIS and DECSTR reset everything.
+  - The kitty flags have one stack for each screen, as the protocol does, at most 32
+    deep.
+- **Resize order.** The mirror's resize waits for what it has yet to parse; the PTY's is
+  immediate.
+- **Terminal queries.** The host keeps answering them until the snapshot point is
+  parsed: queries from before it never reach the client.
+
+Left as is: a client that detaches right after receiving a query never answers it
+(rare; the program times out, as with any terminal that goes away).
+
 ## Tested
 
 - Host:

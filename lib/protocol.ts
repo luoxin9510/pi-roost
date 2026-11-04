@@ -108,7 +108,7 @@ export interface WorkerReport {
 	context?: ContextInfo | null;
 	/** The worker reacts to the host's SIGUSR2 attach signal (AT-5). */
 	attachSignal?: boolean;
-	/** M14: on attach the worker sets the terminal up again and repaints itself (no resize nudge). */
+	/** M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21). */
 	attachRepaint?: boolean;
 	/** M9: the worker takes agent messages and reports (custom messages, per-item acks). */
 	agentItems?: boolean;

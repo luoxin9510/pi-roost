@@ -20,7 +20,7 @@ export const TERMINAL_RESET =
 const ALT_ON = "\x1b[?1049h";
 const ALT_OFF = "\x1b[?1049l";
 
-/** M14: a worker writes this before it repaints on attach; the host forwards from there. */
+/** M14: a worker writes this before it repaints on attach (for hosts before M21); a host strips it. */
 export const REPAINT_MARKER = "\x1b]7700;pi-roost-repaint\x07";
 
 /** Whether `chunk` leaves the alternate screen on (true), off (false) or as it was. */
@@ -71,8 +71,8 @@ export function attachToHost(socketPath: string, io: AttachIO): Promise<DetachRe
 
 		sock = connect(socketPath);
 		sock.on("connect", () => {
-			// the host clears the screen first when its program only redraws (M14: a pi worker
-			// sets the terminal up and draws itself, the alternate screen included)
+			// the host greets, then sends its own copy of the screen (M21); a host from before
+			// M14 sends neither, so the first data clears the screen (below)
 			sock?.write(encodeJsonFrame(FrameType.HELLO, { role: "attach", ...size() }));
 			if (stdin.isTTY) stdin.setRawMode(true);
 			stdin.on("data", onInput);

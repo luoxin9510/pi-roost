@@ -186,7 +186,9 @@ export function attachRepaintReady(): boolean {
 }
 
 /**
- * M14: attach feels like `pi --resume`. Nobody watched while this pi started, so the
+ * M14 (kept for hosts from before M21, which wait for this repaint; a newer host shows
+ * its own copy of the screen and says `replay` in attached.json, and then this does
+ * nothing). M14: attach feels like `pi --resume`. Nobody watched while this pi started, so the
  * terminal it set up (fullscreen pi's alternate screen, mouse, kitty keyboard, …) was the
  * host's, and what is on the user's screen is the view they came from. On each attach
  * this pi stops its TUI and starts it again on the real terminal, which answers its

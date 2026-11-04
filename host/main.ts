@@ -10,7 +10,7 @@ import pty from "node-pty";
 import { writeFileAtomic, writeJsonAtomic } from "../lib/atomic.ts";
 import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload } from "../lib/framing.ts";
 import { REPAINT_MARKER } from "../lib/attach.ts";
-import { ModeTracker } from "../lib/term-modes.ts";
+import { ModeTracker, StreamTail } from "../lib/term-modes.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
 import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
@@ -117,11 +117,13 @@ const term = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true
 const serializer = new serializeAddon.SerializeAddon();
 term.loadAddon(serializer);
 const modes = new ModeTracker();
+const tail = new StreamTail();
 // M15: while nobody is attached the program's terminal queries (device attributes, cursor
 // position) are answered here, as a terminal would; attached, the user's terminal answers
 term.onData((reply) => {
-	// attached, the user's terminal answers (it gets the query with the snapshot's backlog)
-	if (attached || !workerAlive) return;
+	// attached, the user's terminal answers; a query from before the attach's snapshot
+	// point never reaches it, so the host still answers until that point is parsed
+	if ((attached && !attached.answering) || !workerAlive) return;
 	try {
 		proc.write(reply);
 	} catch {}
@@ -159,7 +161,11 @@ function resizeAll(c: number, r: number): void {
 	try {
 		proc.resize(c, r);
 	} catch {}
-	term.resize(c, r);
+	// the mirror takes the size after what it has yet to parse, as a terminal would
+	term.write("", () => {
+		term.resize(c, r);
+		modes.resized();
+	});
 	dirty = true;
 }
 
@@ -168,6 +174,8 @@ interface Attach {
 	decoder: StringDecoder;
 	/** M21: output after the snapshot's point, sent once the snapshot is. */
 	pending?: string[];
+	/** M21: the mirror is still parsing what came before the snapshot point. */
+	answering?: boolean;
 }
 let attached: Attach | undefined;
 // nobody watches a new worker yet (a previous host may have died attached)
@@ -196,6 +204,7 @@ proc.onData((data) => {
 		dirty = true;
 	});
 	modes.feed(data);
+	tail.feed(data);
 	const a = attached;
 	if (!a || a.sock.destroyed) return;
 	// an older worker still marks its repaint (M14): the marker is not for the terminal
@@ -204,26 +213,47 @@ proc.onData((data) => {
 	else if (out) a.sock.write(encodeFrame(FrameType.DATA, out));
 });
 
+/** M21: what a terminal may still be in from before (the view, a shell): back to defaults. */
+const CLIENT_RESET = "\x1b[0m\x1b[r\x1b[?6l\x1b(B\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b[?7h\x1b[0 q";
+
 /**
  * M21: the screen as the program left it, for a terminal that has something else on it:
- * the main screen's rows, the alternate screen if the program is on it, the cursor, the
- * colours, and the modes (serialize's own and the ones ModeTracker follows). No
- * scrollback: entering a session prints no history into the user's terminal.
+ * the main screen's rows (or, when the program is on its alternate screen, that screen
+ * alone: the user's own main screen stays as it is), the cursor, the colours, the modes
+ * (serialize's own and the ones ModeTracker follows) and the scroll region. No
+ * scrollback: entering a session prints no history into the user's terminal. `extra` is
+ * the modes as they were at the snapshot point.
  */
-function snapshot(): string {
+function snapshot(extra: { modes: string; region: [number, number] | undefined }): string {
 	let s = serializer.serialize({ scrollback: 0 });
-	// the user's terminal may already be on its alternate screen, with the view on it
-	if (term.buffer.active.type === "alternate") s = s.replace("\x1b[?1049h", "\x1b[?1049h\x1b[H\x1b[2J");
-	return `\x1b[0m\x1b[H\x1b[2J${s}${modes.restore()}`;
+	const buf = term.buffer.active;
+	if (buf.type === "alternate") {
+		// the main rows would land on the user's own main screen: only the alternate one goes
+		const at = s.indexOf("\x1b[?1049h");
+		s = `\x1b[?1049h\x1b[H\x1b[2J${at >= 0 ? s.slice(at + "\x1b[?1049h".length) : s}`;
+	} else s = `\x1b[H\x1b[2J${s}`;
+	let end = "";
+	if (extra.region) {
+		// DECSTBM moves the cursor home: put it back (origin mode off while placing it)
+		const [top, bottom] = extra.region;
+		end += `\x1b[?6l\x1b[${top};${bottom || term.rows}r\x1b[${buf.cursorY + 1};${buf.cursorX + 1}H`;
+		if (term.modes.originMode) end += `\x1b[?6h\x1b[${buf.cursorY - top + 2};${buf.cursorX + 1}H`;
+	}
+	return `${CLIENT_RESET}${s}${extra.modes}${end}`;
 }
 
 /** M21: send the snapshot once the mirror has every byte that came before the attach. */
 function replay(a: Attach): void {
-	a.pending = [];
+	// all taken at the snapshot point: what follows is in the pending output
+	const extra = { modes: modes.restore(), region: modes.scrollRegion() };
+	const cut = tail.text();
+	a.pending = cut ? [cut] : [];
+	a.answering = true;
 	term.write("", () => {
+		a.answering = false;
 		if (attached !== a || a.sock.destroyed) return;
 		try {
-			a.sock.write(encodeFrame(FrameType.DATA, Buffer.from(snapshot())));
+			a.sock.write(encodeFrame(FrameType.DATA, Buffer.from(snapshot(extra))));
 		} catch (err) {
 			log("snapshot failed", { error: String(err) });
 			a.sock.write(encodeFrame(FrameType.DATA, Buffer.from("\x1b[2J\x1b[H")));
