@@ -49,6 +49,8 @@ export interface JobRow {
 	/** M9: the session that spawned this one (roost_spawn), and its tree's root. */
 	parentSession?: string | null;
 	rootSession?: string | null;
+	/** M13: someone holds the parent session now (a foreground pi, or a job recorded for it). */
+	parentOpen?: boolean;
 	/** M10: the session's own git worktree. */
 	worktree?: { path: string; branch: string } | null;
 }

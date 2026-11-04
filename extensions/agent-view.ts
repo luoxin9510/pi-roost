@@ -26,6 +26,7 @@ import {
 	type Item,
 	items,
 	layout,
+	listed,
 	nameToneOf,
 	type Section,
 	sentenceOf,
@@ -84,6 +85,8 @@ export interface AgentViewOptions {
 	fullscreen?: boolean;
 	/** M8: show each row's model and context window use (default true). */
 	rowDetails?: boolean;
+	/** M13: subagents a session spawns are not rows (Claude Code), or are (inline). */
+	subagents?: "hide" | "inline";
 	/** M8: how long a /model or /thinking switch may take to show (tests shorten it). */
 	switchCheckMs?: number;
 	done: () => void;
@@ -260,7 +263,8 @@ export class AgentView implements Component {
 			this.rows.set(e.job.id, e.job);
 			this.checkSwitch(e.job);
 			const kind = observeJob(e.job);
-			if (kind && !this.attached) this.o.notify?.(e.job, kind);
+			// M13: a subagent tells its own session, not the agent view
+			if (kind && !this.attached && listed(e.job, this.o.subagents)) this.o.notify?.(e.job, kind);
 			if (this.attachWhenLive === e.job.id && !this.attached) {
 				if (e.job.pid) {
 					this.attachWhenLive = undefined;
@@ -277,15 +281,20 @@ export class AgentView implements Component {
 	private render0(): void {
 		// while attached the terminal belongs to the worker: no title or repaint
 		if (this.closed || this.attached) return;
-		this.o.setTitle(titleText(counts([...this.rows.values()])));
+		this.o.setTitle(titleText(counts(this.listedRows())));
 		this.o.tui.requestRender();
 	}
 
 	// ---- model -----------------------------------------------------------
 
+	/** M13: the rows the view lists (subagents live in their session's panel). */
+	private listedRows(): JobRow[] {
+		return [...this.rows.values()].filter((r) => listed(r, this.o.subagents));
+	}
+
 	private sections(): Section[] {
 		const height = this.o.tui.terminal.rows || 30;
-		return layout([...this.rows.values()], {
+		return layout(this.listedRows(), {
 			collapsed: this.collapsed,
 			groupBy: this.groupBy,
 			filter: this.filter(),
@@ -794,7 +803,7 @@ export class AgentView implements Component {
 		if (it?.kind !== "row" || !this.client) return;
 		if (this.filter()) return this.say("clear the filter to reorder", "warning");
 		// the whole section, including rows folded into "… N more"
-		const full = layout([...this.rows.values()], { groupBy: this.groupBy }).find((s) => s.key === it.section.key);
+		const full = layout(this.listedRows(), { groupBy: this.groupBy }).find((s) => s.key === it.section.key);
 		const rows = full?.rows ?? it.section.rows;
 		const i = rows.findIndex((r) => r.id === it.row.id);
 		const j = i + dir;
@@ -1131,7 +1140,7 @@ export class AgentView implements Component {
 		// the peeked row vanished (deleted, folded, collapsed): never reply to another one
 		if (this.peek && !this.itemList().some((it) => it.kind === "row" && it.row.id === this.peekId)) this.closePeek();
 		if (this.notice && now > this.notice.until) this.notice = undefined;
-		const all = [...this.rows.values()];
+		const all = this.listedRows();
 		const c = counts(all);
 		const out: string[] = [];
 		const short = (this.o.tui.terminal.rows || 30) < 18;
@@ -1276,6 +1285,11 @@ export class AgentView implements Component {
 		if (row.parentSession) {
 			const parent = [...this.rows.values()].find((r) => r.sessionFile === row.parentSession && r.id !== row.id);
 			facts.push(`child of ${parent ? oneLine(parent.name) : "a foreground session"}`);
+		}
+		const kids = [...this.rows.values()].filter((r) => r.parentSession && r.parentSession === row.sessionFile && r.id !== row.id);
+		if (kids.length > 0) {
+			const live = kids.filter((r) => r.state === "working" || r.state === "blocked").length;
+			facts.push(`${kids.length} subagent${kids.length === 1 ? "" : "s"}${live ? ` (${live} running)` : ""}`);
 		}
 		if (row.worktree) {
 			facts.push(`⎇ ${oneLine(row.worktree.branch)}`);

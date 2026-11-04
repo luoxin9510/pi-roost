@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+- Subagents behave as in Claude Code (docs/plans/m13-subagent-lifecycle.md):
+  - the agent view no longer lists a session's subagents as rows (`agentViewSubagents: "inline"` brings them back); a child whose parent pi is closed is listed while it works or waits;
+  - a child that finished is closed once its report is out (`subagentAutoClose`); a message starts it again;
+  - the panel drops a finished child at once and the footer says `/subagents to see subagents` for 30 s; failed and stopped rows stay 30 s;
+  - `/subagents` also lists the ones finished in the last 30 s, and `/subagents all` lists every one;
+  - nested subagents show as a tree with `(+N)` counts.
+
 ## [0.1.6] - 2026-11-03
 
 - Subagent panel: a session's `roost_spawn` children are listed below its prompt; ↓ on an

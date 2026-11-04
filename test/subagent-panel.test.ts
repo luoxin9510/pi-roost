@@ -1,7 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { JobRow } from "../lib/protocol.ts";
-import { childrenOf, descendantCounts, keyOf, renderPanel } from "../extensions/subagent-panel.ts";
+import { descendantCounts, keyOf, LINGER_MS, panelTree, renderPanel, shownIn } from "../extensions/subagent-panel.ts";
 
 let n = 0;
 function row(over: Partial<JobRow> = {}): JobRow {
@@ -51,25 +51,61 @@ const view = (rows: JobRow[], over: Record<string, unknown> = {}) => ({
 });
 
 describe("subagent panel", () => {
-	it("lists only this session's children, waiting and working first, minus hidden ones", () => {
-		const done = row({ state: "done", status: "idle", pid: null, summary: "All green" });
+	it("lists this session's children, waiting and working first; finished ones leave at once (Claude Code)", () => {
+		const now = Date.now();
+		const done = row({ state: "done", status: "idle", pid: null, summary: "All green", stateSince: now - 1000 });
 		const working = row();
 		const waiting = row({ state: "blocked", status: "waiting", question: "Which color?" });
+		const failed = row({ state: "failed", status: null, pid: null, stateSince: now - 1000 });
 		const other = row({ parentSession: "/s/other.jsonl" });
-		const all = [done, working, waiting, other];
-		expect(childrenOf(all, "/s/parent.jsonl").map((r) => r.id)).toEqual([waiting.id, working.id, done.id]);
-		expect(childrenOf(all, "/s/parent.jsonl", new Set([working.id])).map((r) => r.id)).toEqual([waiting.id, done.id]);
-		expect(childrenOf(all, undefined)).toEqual([]);
+		const all = [done, working, waiting, failed, other];
+		const ids = (mode?: "panel" | "list" | "all", hidden?: Set<string>, at = now) => panelTree(all, "/s/parent.jsonl", { now: at, mode, hidden }).map((t) => t.row.id);
+		expect(ids()).toEqual([waiting.id, working.id, failed.id]);
+		expect(ids("panel", new Set([failed.id]))).toEqual([waiting.id, working.id]);
+		// /subagents: the finished one too, below running work
+		expect(ids("list")).toEqual([waiting.id, working.id, failed.id, done.id]);
+		// 30 s later only running work is left, unless asked for every one
+		expect(ids("list", undefined, now + LINGER_MS)).toEqual([waiting.id, working.id]);
+		expect(ids("all", undefined, now + LINGER_MS)).toEqual([waiting.id, working.id, failed.id, done.id]);
+		expect(panelTree(all, undefined)).toEqual([]);
 	});
 
-	it("counts descendants below each child", () => {
-		const a = row();
-		const a1 = row({ parentSession: a.sessionFile });
-		const a2 = row({ parentSession: a1.sessionFile });
-		const b = row();
-		const counts = descendantCounts([a, a1, a2, b], [a, b]);
+	it("keeps stopped and failed rows for 30 seconds", () => {
+		const now = Date.now();
+		const stopped = row({ state: "stopped", pid: null, stateSince: now - LINGER_MS + 1 });
+		expect(shownIn(stopped, now, "panel")).toBe(true);
+		expect(shownIn(stopped, now + 1, "panel")).toBe(false);
+		expect(shownIn(row({ state: "done", stateSince: now }), now, "panel")).toBe(false);
+	});
+
+	it("nests subagents as a tree, counts what is below, keeps the path to a live one", () => {
+		const now = Date.now();
+		const a = row({ name: "a" });
+		const a1 = row({ name: "a1", parentSession: a.sessionFile });
+		const a2 = row({ name: "a2", parentSession: a1.sessionFile });
+		const b = row({ name: "b", state: "done", status: "idle", pid: null, stateSince: now - 60_000 });
+		const b1 = row({ name: "b1", parentSession: b.sessionFile });
+		const tree = panelTree([a, a1, a2, b, b1], "/s/parent.jsonl", { now });
+		expect(tree.map((t) => [t.row.name, t.depth])).toEqual([
+			["a", 0],
+			["a1", 1],
+			["a2", 2],
+			["b", 0],
+			["b1", 1],
+		]);
+		const counts = descendantCounts(tree);
 		expect(counts.get(a.id)).toBe(2);
-		expect(counts.has(b.id)).toBe(false);
+		expect(counts.get(a1.id)).toBe(1);
+		expect(counts.has(a2.id)).toBe(false);
+		const lines = renderPanel(view(tree.map((t) => t.row), { descendants: counts, depth: new Map(tree.map((t) => [t.row.id, t.depth])) }), 120, plain);
+		expect(lines[1]).toMatch(/^ {2}. └ a1/);
+		expect(lines[2]).toMatch(/^ {2}. {3}└ a2/);
+	});
+
+	it("says where a finished subagent went", () => {
+		expect(renderPanel(view([], { finished: true }), 80, plain)).toEqual(["  /subagents to see subagents"]);
+		expect(renderPanel(view([row()], { finished: true }), 120, plain).at(-1)).toBe("  ↓ select subagent · /subagents to see subagents");
+		expect(renderPanel(view([row()], { finished: true, focused: true }), 120, plain).at(-1)).toContain("↵ open");
 	});
 
 	it("shows nothing without children; a row per child, the hint, the selection", () => {

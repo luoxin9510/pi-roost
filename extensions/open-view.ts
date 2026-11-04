@@ -115,6 +115,7 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 				},
 				fullscreen: config.fullscreen,
 				rowDetails: config.rowDetails,
+				subagents: config.agentViewSubagents,
 				done: () => done(),
 			});
 			void view.start();
