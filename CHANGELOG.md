@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-04
+
 - Entering a session shows its screen at once and correctly: the host sends its own copy of the screen (with the alternate screen, cursor and terminal modes), then the live output. No more stale or misplaced leftovers, flashes, or waiting for the session to redraw; shell jobs and idle sessions included. The race between the size change and the repaint (seen on Linux) is gone.
 
 ## [0.1.8] - 2026-11-04
