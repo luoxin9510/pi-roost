@@ -232,6 +232,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	let viewing = false;
 	let viewHandle: { hide(): void } | undefined;
 	let viewComp: TranscriptView | undefined;
+	let viewDone: ((r: undefined) => void) | undefined;
 	let dialogs = 0;
 	let frame = 0;
 	let spin: NodeJS.Timeout | undefined;
@@ -471,6 +472,11 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 
 	/** M19: a transcript open over a session that goes away goes too. */
 	function closeView(): void {
+		// pi's own close (it hides and disposes, and view() returns); hide() if that fails
+		try {
+			viewDone?.(undefined);
+		} catch {}
+		viewDone = undefined;
 		try {
 			viewHandle?.hide();
 		} catch {}
@@ -646,6 +652,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		try {
 			result = await c.ui.custom<{ attach?: JobRow } | undefined>(
 				(t, th, _kb, done) =>
+					((viewDone = done),
 					(viewComp = new TranscriptView({
 						tui: t,
 						theme: { fg: (col, s) => th.fg(col as never, s), bold: (s) => th.bold(s) },
@@ -654,7 +661,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 						start: row.id,
 						send: (id, text) => deliver(id, text),
 						done,
-					})),
+					}))),
 				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 }, onHandle: (h) => (viewHandle = h) },
 			);
 		} catch (err) {
@@ -665,6 +672,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			viewing = false;
 			viewHandle = undefined;
 			viewComp = undefined;
+			viewDone = undefined;
 		}
 		if (ctx !== c) return; // the session changed meanwhile
 		recompute();

@@ -225,13 +225,15 @@ export class TranscriptView implements Component {
 			}
 		} else if (matchesKey(data, Key.enter)) {
 			if (this.input.getValue().trim() !== "") this.submit();
-			else {
+			else if (this.navHeight(this.nav().length) > 0) {
 				const nav = this.nav();
 				this.resolveSel(nav);
 				const n = nav[this.sel];
 				if (n?.kind === "back") this.back();
 				else if (n && n.row.id !== this.id) this.go(n.row);
 			}
+		} else if ((matchesKey(data, Key.up) || matchesKey(data, Key.down)) && this.navHeight(this.nav().length) === 0) {
+			// the tree is not on screen (a short terminal): nothing to select
 		} else if (matchesKey(data, Key.up)) {
 			this.resolveSel(this.nav());
 			this.select(this.sel - 1);
