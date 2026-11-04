@@ -58,5 +58,33 @@ describe("M21: the unfinished sequence at a chunk's end", () => {
 		t.feed("H");
 		expect(t.text()).toBe("");
 	});
+
+	it("review: aborted strings, CAN/SUB, a capped string keeps its start", () => {
+		const t = new StreamTail();
+		t.feed("\x1b]0;ti\x1b[31m");
+		expect(t.text()).toBe("");
+		t.feed("\x1b[3\x18x");
+		expect(t.text()).toBe("");
+		t.feed(`\x1b]52;c;${"A".repeat(70000)}`);
+		expect(t.text().startsWith("\x1b]52;c;")).toBe(true);
+		expect(t.text().length).toBe(65536);
+	});
+});
+
+describe("M21 review: ModeTracker", () => {
+	it("cursor shape, charset and DECSTR cut between chunks; a scroll region per screen", () => {
+		const m = new ModeTracker();
+		m.feed("\x1b[5 ");
+		m.feed("q\x1b(");
+		m.feed("0");
+		expect(m.restore()).toBe("\x1b[5 q\x1b(0");
+		m.feed("\x1b[!");
+		m.feed("p");
+		expect(m.restore()).toBe("");
+		m.feed("\x1b[?1049h\x1b[3;4r");
+		expect(m.scrollRegion()).toEqual([3, 4]);
+		m.feed("\x1b[?1049l");
+		expect(m.scrollRegion()).toBeUndefined();
+	});
 });
 

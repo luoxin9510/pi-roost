@@ -161,11 +161,10 @@ function resizeAll(c: number, r: number): void {
 	try {
 		proc.resize(c, r);
 	} catch {}
+	// a resize resets the scroll region now: what the program sends for the new size follows
+	modes.resized();
 	// the mirror takes the size after what it has yet to parse, as a terminal would
-	term.write("", () => {
-		term.resize(c, r);
-		modes.resized();
-	});
+	term.write("", () => term.resize(c, r));
 	dirty = true;
 }
 
@@ -233,10 +232,10 @@ function snapshot(extra: { modes: string; region: [number, number] | undefined }
 		s = `\x1b[?1049h\x1b[H\x1b[2J${at >= 0 ? s.slice(at + "\x1b[?1049h".length) : s}`;
 	} else s = `\x1b[H\x1b[2J${s}`;
 	let end = "";
-	if (extra.region) {
-		// DECSTBM moves the cursor home: put it back (origin mode off while placing it)
-		const [top, bottom] = extra.region;
-		end += `\x1b[?6l\x1b[${top};${bottom || term.rows}r\x1b[${buf.cursorY + 1};${buf.cursorX + 1}H`;
+	if (extra.region || term.modes.originMode) {
+		// DECSTBM and DECOM move the cursor home: put it back (origin mode off while placing it)
+		const [top, bottom] = extra.region ?? [1, term.rows];
+		end += `\x1b[?6l${extra.region ? `\x1b[${top};${bottom || term.rows}r` : ""}\x1b[${buf.cursorY + 1};${buf.cursorX + 1}H`;
 		if (term.modes.originMode) end += `\x1b[?6h\x1b[${buf.cursorY - top + 2};${buf.cursorX + 1}H`;
 	}
 	return `${CLIENT_RESET}${s}${extra.modes}${end}`;

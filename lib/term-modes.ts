@@ -14,7 +14,7 @@ const DECSET: Record<number, boolean> = {
 
 const SEQ = /\x1b\[(\?[\d;]+[hl]|[<>=][\d;]*u|>4(?:;\d+)?m|[\d;]*r|\d* q|!p)|\x1bc|\x1b\([0AB]/g;
 /** The longest tail that may be the start of a sequence cut by a chunk boundary. */
-const TAIL = /\x1b(?:\[[?<>=]?[\d;]*)?$/;
+const TAIL = /\x1b(?:\[[?<>=!]?[\d;]*[ !]?|[()])?$/;
 
 export class ModeTracker {
 	private decset = new Map<number, boolean>();
@@ -25,8 +25,8 @@ export class ModeTracker {
 	private kitty = { main: { cur: 0, prev: [] as number[] }, alt: { cur: 0, prev: [] as number[] } };
 	private alt = false;
 	private otherKeys = 0;
-	/** DECSTBM: the scroll region, 1-based and inclusive, or none. */
-	private region: [number, number] | undefined;
+	/** DECSTBM: the scroll region of each screen, 1-based and inclusive, or none. */
+	private regions: { main?: [number, number]; alt?: [number, number] } = {};
 	/** DECSCUSR: the cursor's shape (0: the terminal's default). */
 	private cursorShape = 0;
 	/** The G0 character set (B: ASCII, 0: line drawing). */
@@ -44,7 +44,7 @@ export class ModeTracker {
 
 	/** A resize resets the scroll region, as terminals do. */
 	resized(): void {
-		this.region = undefined;
+		this.regions = {};
 	}
 
 	private stack() {
@@ -56,7 +56,7 @@ export class ModeTracker {
 		this.kitty = { main: { cur: 0, prev: [] }, alt: { cur: 0, prev: [] } };
 		this.alt = false;
 		this.otherKeys = 0;
-		this.region = undefined;
+		this.regions = {};
 		this.cursorShape = 0;
 		this.g0 = "B";
 	}
@@ -77,7 +77,9 @@ export class ModeTracker {
 			const [a, b] = s.slice(1, -1).split(";").map((x) => (x === "" ? undefined : Number(x)));
 			const k = this.stack();
 			if (s[0] === ">") {
-				if (k.prev.length < 32) k.prev.push(k.cur);
+				// the protocol drops the oldest entry of a full stack
+				k.prev.push(k.cur);
+				if (k.prev.length > 32) k.prev.shift();
 				k.cur = a ?? 0;
 			} else if (s[0] === "<") {
 				for (let i = Math.max(1, a ?? 1); i > 0; i--) k.cur = k.prev.pop() ?? 0;
@@ -90,7 +92,7 @@ export class ModeTracker {
 			this.otherKeys = Number(s.slice(3, -1)) || 0;
 		} else if (end === "r") {
 			const [t, b] = s.slice(0, -1).split(";").map((x) => (x === "" ? undefined : Number(x)));
-			this.region = t || b ? [t || 1, b || 0] : undefined;
+			this.regions[this.alt ? "alt" : "main"] = t || b ? [t || 1, b || 0] : undefined;
 		} else if (end === "q") {
 			this.cursorShape = Number(s.slice(0, -2)) || 0;
 		}
@@ -98,7 +100,7 @@ export class ModeTracker {
 
 	/** The scroll region in force, if any (the snapshot sets it after its content). */
 	scrollRegion(): [number, number] | undefined {
-		return this.region;
+		return this.regions[this.alt ? "alt" : "main"];
 	}
 
 	/** Sequences that put a fresh terminal in these modes (the scroll region aside). */
@@ -127,6 +129,18 @@ export class StreamTail {
 		let start = this.state === "ground" ? -1 : 0;
 		for (let i = 0; i < chunk.length; i++) {
 			const c = chunk.charCodeAt(i);
+			// CAN and SUB abort any sequence
+			if ((c === 0x18 || c === 0x1a) && this.state !== "ground") {
+				this.state = "ground";
+				start = -1;
+				continue;
+			}
+			// ESC inside a string not followed by \ aborts the string and starts a new escape
+			if (this.state === "strEsc" && c !== 0x5c) {
+				this.state = "esc";
+				this.buf = "";
+				start = i - 1;
+			}
 			switch (this.state) {
 				case "ground":
 					if (c === 0x1b) {
@@ -168,8 +182,9 @@ export class StreamTail {
 		if (this.state === "ground") this.buf = "";
 		else {
 			this.buf += chunk.slice(Math.max(0, start));
-			// a string that never ends (a huge OSC 52) is not worth keeping whole
-			if (this.buf.length > 65536) this.buf = this.buf.slice(-65536);
+			// a string that never ends (a huge OSC 52): keep its start, so what follows
+			// still reads as the same string
+			if (this.buf.length > 65536) this.buf = this.buf.slice(0, 65536);
 		}
 	}
 

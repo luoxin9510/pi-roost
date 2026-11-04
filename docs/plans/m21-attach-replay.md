@@ -91,6 +91,16 @@ the user's terminal (M14's goal).
 - **Terminal queries.** The host keeps answering them until the snapshot point is
   parsed: queries from before it never reach the client.
 
+- Second round:
+  - a resize clears the tracked scroll region at once, not when the mirror gets to it;
+    a region the program sets for the new size must not be lost;
+  - a scroll region per screen;
+  - the cursor is put back after origin mode even without a region;
+  - a string that overflows the 64 KB tail keeps its start;
+  - ESC inside a string aborts it, and so do CAN/SUB;
+  - sequences cut between chunks include cursor shape, charset and DECSTR;
+  - a full kitty stack drops its oldest entry.
+
 Left as is: a client that detaches right after receiving a query never answers it
 (rare; the program times out, as with any terminal that goes away).
 
