@@ -121,7 +121,8 @@ export function layout(all: JobRow[], opts: LayoutOptions = {}): Section[] {
 	for (const row of rows) buckets.get(groupOf(row, pinned))!.push(row);
 	for (const g of GROUPS) {
 		const list = ordered(buckets.get(g.key)!, g.key === "completed" ? byEnded : byNewest, g.key);
-		if (list.length === 0 && !keepEmpty) continue;
+		// M16: Ready for review shows only with a pull request in it
+		if (list.length === 0 && (!keepEmpty || g.key === "ready")) continue;
 		const shown = g.key === "completed" ? fold(list) : { rows: list, hidden: 0 };
 		sections.push({ ...g, ...shown, collapsed: !filter && collapsed.has(g.key) });
 	}
