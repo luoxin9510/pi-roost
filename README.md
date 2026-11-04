@@ -212,6 +212,41 @@ Design notes: [`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md).
 
 设计说明：[`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md)。
 
+## Agent presets · agent 预设
+
+As in Claude Code, a task can run as a named agent: its model, thinking level, tools and
+system prompt come from a [pi-subagents](https://www.npmjs.com/package/pi-subagents)
+definition (a markdown file with YAML frontmatter). Definitions are read from
+pi-subagents' builtins, installed packages, `~/.pi/agent/agents/`, `~/.agents/` and the
+project's `.pi/agents/` (legacy `.agents/`, from the repository root down); a project one
+wins over a user one of the same name.
+
+和 Claude Code 一样，任务可以以某个具名 agent 的身份运行：它的模型、thinking 级别、工具和
+system prompt 来自 [pi-subagents](https://www.npmjs.com/package/pi-subagents) 的定义文件（带
+YAML frontmatter 的 markdown）。定义从 pi-subagents 自带的、已安装的包、`~/.pi/agent/agents/`
+、`~/.agents/` 和项目的 `.pi/agents/`（旧位置 `.agents/`，从仓库根往下）读取；同名时项目的优先于用户的。
+
+- In the agent view, start a task with the agent's name (or an alias) or `@name`:
+  `reviewer check the diff`. A project's agent came with the repository, so it needs `@name`.
+  在 agent 视图里，以 agent 名字（或别名）或 `@名字` 开头：`reviewer check the diff`。项目里的
+  agent 是随仓库来的，必须用 `@名字`。
+- `pi --bg "task" --agent reviewer`, and `roost_spawn`'s `agent` parameter.
+  `pi --bg "task" --agent reviewer`，以及 `roost_spawn` 的 `agent` 参数。
+- `dispatchAgent` in the config is the default for tasks started from the view and `--bg`.
+  配置里的 `dispatchAgent` 是从视图和 `--bg` 新开任务时的默认 agent。
+- `a:reviewer` filters the rows; the peek shows `agent reviewer`.
+  `a:reviewer` 过滤行；peek 里显示 `agent reviewer`。
+
+`tools` and `excludeTools` become `--tools` and `--exclude-tools`; pi-roost's own `roost_*`
+tools stay on. Agents with another `runner` (codex, claude), disabled ones and ones without
+a `description` are skipped. A `/model` or `/thinking` chosen in the view, or a `--model`
+typed with `--bg`, wins over the agent's; the agent's wins over `dispatchModel`.
+
+`tools`、`excludeTools` 会变成 `--tools`、`--exclude-tools`；pi-roost 自己的 `roost_*` 工具仍然保留。
+使用其他 `runner`（codex、claude）的 agent、被禁用的、没有 `description` 的都会被跳过。在视图里用
+`/model`、`/thinking` 选的，或 `--bg` 时命令行上写的 `--model`，优先于 agent 的；agent 的又优先于
+`dispatchModel`。
+
 ## Worktrees · 独立 worktree
 
 A new background session can work in its own git worktree and branch, so several
@@ -339,6 +374,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `groupBy` | `"state"` | or `"directory"` (Ctrl+S toggles and remembers) | 或 `"directory"`（Ctrl+S 切换并记住） |
 | `summaryModel` | none · 无 | a cheap model for row summaries, session names and "while you were away" recaps; without it rows show the latest output; any model pi can reach works, including a company endpoint ([guide](docs/summary-model.md), in Chinese) | 一个便宜的模型，用来写行摘要、给会话命名、生成“离开期间”回顾；不配置时行里显示最新输出；pi 能调用的模型都可以，包括公司内部节点（见[说明](docs/summary-model.md)） |
 | `dispatchModel`, `dispatchThinking` | pi's defaults · pi 的默认值 | for sessions started from the view | 从视图新开的会话所用的模型和 thinking 级别 |
+| `dispatchAgent` | none · 无 | run tasks started from the view and `--bg` as this agent ([presets](#agent-presets--agent-预设)) | 从视图和 `--bg` 新开的任务以这个 agent 运行（见[预设](#agent-presets--agent-预设)） |
 | `reapIdleMinutes` | `60` | stop the process of a session idle this long (it restarts on demand) | 会话空闲这么久后停掉进程（需要时自动重启） |
 | `cleanupDays` | `30` | remove the records of sessions that ended this many days ago (`0`: never); session files stay for `/resume`; pinned ones, and ones whose worktree holds uncommitted work, are kept | 结束超过这么多天的会话记录会被移除（`0` 表示从不）；会话文件保留，`/resume` 仍可用；被 pin 的、worktree 里有未提交工作的会保留 |
 | `notify` | `"auto"` | `"osc9"`, `"osc777"`, `"bell"` or `"off"` | 通知方式：`"osc9"`、`"osc777"`、`"bell"` 或 `"off"` |
