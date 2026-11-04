@@ -32,7 +32,9 @@ export class DaemonClient {
 	private sock: Socket;
 	private reader = new LineReader();
 	private nextId = 1;
-	private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+	private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; at?: number }>();
+	/** M22: lines received so far: an event's or a reply's place in the stream. */
+	private lines = 0;
 	private listeners = new Set<(event: Event) => void>();
 	private closeListeners = new Set<() => void>();
 	private closed = false;
@@ -96,12 +98,29 @@ export class DaemonClient {
 	}
 
 	request<O extends Op>(op: O, args: ArgsOf<O>): Promise<ResultOf<O>> {
+		return this.requestAt(op, args).then((r) => r.result);
+	}
+
+	/**
+	 * M22: a request and where its reply was in the stream: events with a higher `position()`
+	 * came after it (an event handled before the reply's continuation runs may be newer).
+	 */
+	requestAt<O extends Op>(op: O, args: ArgsOf<O>): Promise<{ result: ResultOf<O>; at: number }> {
 		if (this.closed) return Promise.reject(new DaemonError("daemon connection closed", "closed"));
 		const id = this.nextId++;
 		return new Promise((resolve, reject) => {
-			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+			const entry: { resolve: (v: unknown) => void; reject: (e: Error) => void; at?: number } = {
+				resolve: (v) => resolve({ result: v as ResultOf<O>, at: entry.at ?? this.lines }),
+				reject,
+			};
+			this.pending.set(id, entry);
 			this.sock.write(encodeLine({ id, op, args }));
 		});
+	}
+
+	/** M22: the place in the stream of the line being handled now. */
+	position(): number {
+		return this.lines;
 	}
 
 	/** Receive pushed job events; call after request("subscribe", {}). */
@@ -125,6 +144,7 @@ export class DaemonClient {
 
 	private onLine(line: string): void {
 		if (!line.trim()) return;
+		this.lines++;
 		let msg: Response | Event;
 		try {
 			msg = JSON.parse(line);
@@ -132,12 +152,22 @@ export class DaemonClient {
 			return;
 		}
 		if ("event" in msg) {
-			for (const l of this.listeners) l(msg);
+			// a listener that throws must not cost the lines after it in this chunk
+			for (const l of this.listeners) {
+				try {
+					l(msg);
+				} catch (err) {
+					queueMicrotask(() => {
+						throw err;
+					});
+				}
+			}
 			return;
 		}
 		const p = this.pending.get(msg.id);
 		if (!p) return;
 		this.pending.delete(msg.id);
+		p.at = this.lines;
 		if (msg.ok) p.resolve(msg.result);
 		else p.reject(new DaemonError(msg.error, msg.code));
 	}

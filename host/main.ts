@@ -199,9 +199,14 @@ function setAttached(a: Attach | undefined): void {
 }
 
 proc.onData((data) => {
-	term.write(data, () => {
-		dirty = true;
-	});
+	try {
+		term.write(data, () => {
+			dirty = true;
+		});
+	} catch (err) {
+		// xterm throws once far behind (tens of MB): the mirror misses this, the client does not
+		log("mirror write failed", { error: String(err) });
+	}
 	modes.feed(data);
 	tail.feed(data);
 	const a = attached;
@@ -268,6 +273,21 @@ function kick(a: Attach, reason: "takeover" | "exit" | "request"): void {
 	a.sock.end(encodeJsonFrame(FrameType.DETACHED, { reason }));
 }
 
+/**
+ * M22: SIGCONT to the worker's process group (it leads its own session in the PTY). pi
+ * stops itself on Ctrl+Z, and in the background no shell would ever continue it.
+ */
+function continueWorker(): void {
+	if (!workerAlive) return;
+	try {
+		process.kill(-proc.pid, "SIGCONT");
+	} catch {
+		try {
+			process.kill(proc.pid, "SIGCONT");
+		} catch {}
+	}
+}
+
 let killTimer: NodeJS.Timeout | undefined;
 function terminateWorker(): void {
 	if (!workerAlive) return;
@@ -301,6 +321,14 @@ function control(sock: Socket, op: string): void {
 			terminateWorker();
 			reply = { ok: true };
 			break;
+		case "terminate-idle":
+			// M22: the reaper's stop, only while nobody is attached (decided here, atomically)
+			if (attached) reply = { ok: false, attached: true };
+			else {
+				terminateWorker();
+				reply = { ok: true };
+			}
+			break;
 		default:
 			reply = { error: `unknown op: ${op}` };
 	}
@@ -330,6 +358,11 @@ const server = createServer((sock) => {
 						role = "control";
 					} else if (hello.role === "attach") {
 						role = "attach";
+						// M22: the worker has exited and the host is going: say so
+						if (finishing) {
+							sock.end(encodeJsonFrame(FrameType.DETACHED, { reason: "exit" }));
+							return;
+						}
 						if (attached) kick(attached, "takeover");
 						me = { sock, decoder: new StringDecoder("utf8") };
 						// M21: the client gets this screen as it is (no clear, no waiting for the worker)
@@ -337,11 +370,15 @@ const server = createServer((sock) => {
 						// the size first: what the program draws for it follows the snapshot
 						if (hello.cols && hello.rows) resizeAll(hello.cols, hello.rows);
 						setAttached(me);
+						// M22: a worker stopped by a stray Ctrl+Z (pi suspends itself) carries on
+						continueWorker();
 						replay(me);
 					} else throw new Error("bad role");
 					continue;
 				}
 				if (role === "attach" && me) {
+					// M22: an attach taken over (or kicked) no longer types or sizes the session
+					if (attached !== me) continue;
 					if (frame.type === FrameType.DATA) {
 						if (workerAlive) proc.write(me.decoder.write(frame.payload));
 					} else if (frame.type === FrameType.RESIZE) {

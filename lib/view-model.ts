@@ -213,11 +213,27 @@ export function headerText(c: Counts): string {
 export const CONTEXT_WARN_PERCENT = 80;
 export const CONTEXT_ERROR_PERCENT = 95;
 
-/** "anthropic/claude-haiku-4-5-20251001" → "claude-haiku-4-5": the id, without a date suffix. */
+/**
+ * "anthropic/claude-haiku-4-5-20251001" → "claude-haiku-4-5": the id, without the provider,
+ * a gateway's vendor prefix ("anthropic::", Bedrock's "us.anthropic."), a version or a date
+ * suffix, so the part that tells models apart is what the column shows (M22).
+ */
 export function shortModel(model: string): string {
 	const at = model.indexOf("/");
-	const id = at > 0 ? model.slice(at + 1) : model;
-	return id.replace(/[-@](?:20\d{6}|\d{4}-\d{2}-\d{2})$/, "") || id;
+	let id = at > 0 ? model.slice(at + 1) : model;
+	const vendor = id.lastIndexOf("::");
+	if (vendor >= 0 && vendor + 2 < id.length) id = id.slice(vendor + 2);
+	id = id.replace(/^(?:(?:us|eu|apac|global|[a-z]{2})\.)?anthropic\.(?=claude)/, "");
+	const short = id.replace(/-v\d+(?::\d+)?$/, "").replace(/[-@](?:20\d{6}|\d{4}-\d{2}-\d{2})$/, "");
+	return short || id;
+}
+
+/** M22: a name too long for its column keeps its end ("…aude-opus-5-5"): that is what differs. */
+export function fitTail(text: string, width: number): string {
+	if (width <= 0) return "";
+	const chars = [...text];
+	if (chars.length <= width) return text;
+	return width === 1 ? "…" : `…${chars.slice(chars.length - (width - 1)).join("")}`;
 }
 
 /** 950 → "950", 86_400 → "86k", 1_000_000 → "1M", 1_250_000 → "1.3M". */

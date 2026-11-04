@@ -61,6 +61,8 @@ export class Reporter {
 	private dueAt = Number.POSITIVE_INFINITY;
 	private inflight: Promise<void> | undefined;
 	private retryMs = 500;
+	/** M22: after a failed request nothing goes out before this (not even a state change). */
+	private backoffUntil = 0;
 	private closed = false;
 	private job: JobIdentity;
 	private onDeliver: (item: DeliverItem) => void;
@@ -106,7 +108,7 @@ export class Reporter {
 		if (this.closed || this.inflight || !this.latest || this.latest === this.sent) return;
 		const urgent = this.urgentPending || stateChanged(this.sent, this.latest);
 		if (!urgent && this.latest.summary === this.sent?.summary && sameContext(this.latest.context, this.sent?.context)) return;
-		const due = urgent ? Date.now() : Math.max(Date.now(), this.sentAt + this.intervalMs);
+		const due = Math.max(urgent ? Date.now() : Math.max(Date.now(), this.sentAt + this.intervalMs), this.backoffUntil);
 		if (this.timer && due >= this.dueAt) return;
 		clearTimeout(this.timer);
 		this.dueAt = due;
@@ -176,6 +178,7 @@ export class Reporter {
 			this.sent = report;
 			this.sentAt = Date.now();
 			this.retryMs = 500;
+			this.backoffUntil = 0;
 		} catch {
 			const dead = this.client;
 			this.client = undefined;
@@ -184,6 +187,7 @@ export class Reporter {
 			// The daemon may be restarting: try again with the newest report later.
 			clearTimeout(this.timer);
 			this.dueAt = Date.now() + this.retryMs;
+			this.backoffUntil = this.dueAt;
 			this.timer = setTimeout(() => void this.send(), this.retryMs);
 			this.timer.unref?.();
 			this.retryMs = Math.min(this.retryMs * 2, 5000);
@@ -198,7 +202,7 @@ const hostSocketOf = (job: JobIdentity) => join(dirname(job.socket), `host-${job
 
 /**
  * AT-3: keys that would leave or kill a worker detach the attached terminal
- * instead (← on an empty prompt, /exit, a double Ctrl+C or Ctrl+D).
+ * instead (← on an empty prompt, /exit, a double Ctrl+C or Ctrl+D, Ctrl+Z).
  */
 function registerDetachKeys(ctx: ExtensionContext, job: JobIdentity, dialogOpen: () => boolean): () => void {
 	let lastCtrlC = 0;
@@ -206,6 +210,12 @@ function registerDetachKeys(ctx: ExtensionContext, job: JobIdentity, dialogOpen:
 	const detach = () => void hostControl(hostSocketOf(job), "detach").catch(() => {});
 	return ctx.ui.onTerminalInput((data) => {
 		if (isKeyRelease(data)) return undefined;
+		// M22: pi suspends itself on Ctrl+Z; in the background nothing would continue it
+		// (the session froze for good). Any Ctrl+Z that gets here detaches instead.
+		if (matchesKey(data, Key.ctrl("z"))) {
+			detach();
+			return { consume: true };
+		}
 		// Listeners see keys before any focused component, but getEditorText() is always
 		// the main editor: leave dialogs and overlays their keys.
 		if (dialogOpen()) return undefined;

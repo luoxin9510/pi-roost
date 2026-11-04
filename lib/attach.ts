@@ -8,8 +8,11 @@ export interface AttachIO {
 	stdout: NodeJS.WriteStream;
 }
 
-// Ctrl+Z in legacy encoding and as a kitty CSI-u press or repeat.
-const LOCAL_DETACH = /^(?:\x1a|\x1b\[122;5(?::[12])?u)$/;
+// Ctrl+Z: legacy, a kitty CSI-u press or repeat (any alternate keys, lock bits, text),
+// xterm's modifyOtherKeys; and the bracketed paste markers (a pasted ^Z is text).
+const DETACH_SCAN = /\x1a|\x1b\[122(?::\d*)*;(\d+)(?::(\d+))?(?:;[\d:]*)?u|\x1b\[27;(\d+);122~|\x1b\[20([01])~/g;
+/** Caps Lock and Num Lock (kitty's modifier bits 64 and 128) do not make it another key. */
+const ctrlOnly = (mods: string) => ((Number(mods) - 1) & ~(64 | 128)) === 4;
 
 // Modes a worker may have left on (AT-4): kitty keyboard, bracketed paste,
 // mouse tracking, focus events, modifyOtherKeys, synchronized output; then autowrap and
@@ -31,7 +34,32 @@ export function altScreenAfter(chunk: string, was: boolean): boolean {
 }
 
 export function isLocalDetach(chunk: Buffer): boolean {
-	return LOCAL_DETACH.test(chunk.toString("latin1"));
+	const s = chunk.toString("latin1");
+	const r = localDetachAt(s);
+	return r.at === 0 && r.end === s.length;
+}
+
+/**
+ * M22: where the local detach key is in a chunk of input, if anywhere. Keys typed fast,
+ * a terminal or multiplexer that batches input, or a lock key held on can put Ctrl+Z
+ * among other bytes or in another encoding; sent on, it would reach the session's pi,
+ * which suspends itself, and nothing in the background would ever continue it.
+ * `pasting` carries a bracketed paste across chunks. Offsets are bytes (latin1).
+ */
+export function localDetachAt(s: string, pasting = false): { at: number; end: number; pasting: boolean } {
+	DETACH_SCAN.lastIndex = 0;
+	for (let m = DETACH_SCAN.exec(s); m; m = DETACH_SCAN.exec(s)) {
+		if (m[4] !== undefined) {
+			pasting = m[4] === "0";
+			continue;
+		}
+		if (pasting) continue;
+		const mods = m[1] ?? m[3];
+		// a release (event 3) is not a press
+		if (mods !== undefined && (!ctrlOnly(mods) || m[2] === "3")) continue;
+		return { at: m.index, end: m.index + m[0].length, pasting };
+	}
+	return { at: -1, end: -1, pasting };
 }
 
 /**
@@ -50,10 +78,18 @@ export function attachToHost(socketPath: string, io: AttachIO): Promise<DetachRe
 		let greeted: boolean | undefined;
 
 		const size = () => ({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
+		let pasting = false;
 		const onInput = (chunk: Buffer | string) => {
 			const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-			if (isLocalDetach(buf)) return finish("local");
-			sock?.write(encodeFrame(FrameType.DATA, buf));
+			const r = localDetachAt(buf.toString("latin1"), pasting);
+			pasting = r.pasting;
+			if (r.at === -1) {
+				sock?.write(encodeFrame(FrameType.DATA, buf));
+				return;
+			}
+			// what was typed before it still goes; what follows it is the view's
+			if (r.at > 0) sock?.write(encodeFrame(FrameType.DATA, buf.subarray(0, r.at)));
+			finish("local");
 		};
 		const onResize = () => sock?.write(encodeJsonFrame(FrameType.RESIZE, size()));
 

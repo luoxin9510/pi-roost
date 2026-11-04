@@ -8,6 +8,7 @@ import { DaemonClient, DaemonError } from "../lib/client.ts";
 import { daemonSocketPath, jobDir } from "../lib/paths.ts";
 import { isAlive, processStartToken } from "../lib/proc.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
+import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { listJobIds, readState } from "../lib/store.ts";
 
 const DAEMON = resolve("daemon/main.ts");
@@ -754,5 +755,72 @@ describe("shell jobs and lifecycle", () => {
 		});
 		expect(r.state).toBe("stopped");
 		await waitFor(async () => !(await find(client, id)), 8000);
+	});
+});
+
+describe("M22: one row per session", () => {
+	const blocked = {
+		state: "blocked" as const,
+		status: "waiting" as const,
+		waitingFor: "question" as const,
+		summary: "go on?",
+		question: "go on?",
+		choices: [],
+		tool: null,
+		error: null,
+		name: null,
+		model: null,
+	};
+
+	it("a job that runs an ended job's session again takes its row, name and pin", async () => {
+		const { client } = await startDaemon();
+		const sessionFile = join(work, "same.jsonl");
+		const a = await client.request("dispatch", args("true", { sessionFile, name: "rif-diff" }));
+		await waitFor(async () => (await find(client, a.id))?.endedAt);
+		await client.request("pin", { id: a.id, pinned: true });
+		const events: Event[] = [];
+		client.onEvent((e) => events.push(e));
+		await client.request("subscribe", {});
+		// moved to the background again from another pi window
+		const b = await client.request("dispatch", args("sleep 30", { sessionFile, name: "rif-diff", origin: "adopt" }));
+		expect(b.name).toBe("rif-diff");
+		await waitFor(() => events.some((e) => e.event === "removed" && e.id === a.id));
+		const rows = (await client.request("list", {})).jobs;
+		expect(rows.map((r) => r.id)).toEqual([b.id]);
+		expect(rows[0]!.pinned).toBe(true);
+		// its records stay (a worktree, its links), only the row goes
+		expect(readState(a.id)?.supersededBy).toBe(b.id);
+	});
+
+	it("an ended job waiting for an answer stops asking once another pi window opens its session", async () => {
+		const { client } = await startDaemon();
+		const sessionFile = join(work, "asked.jsonl");
+		const { id } = await client.request("dispatch", args("sleep 0.6", { sessionFile }));
+		await waitFor(async () => (await find(client, id))?.pid);
+		await client.request("report", { id, token: readState(id)?.jobToken as string, report: blocked });
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		expect((await find(client, id))?.state).toBe("blocked");
+		expect(acquireWriterLock(sessionFile).ok).toBe(true);
+		try {
+			const fg = await DaemonClient.connect();
+			clients.push(fg);
+			await fg.request("peer_register", { session: sessionFile, name: "fg", cwd: work, pid: process.pid });
+			const row = await waitFor(async () => {
+				const r = await find(client, id);
+				return r?.state === "done" ? r : undefined;
+			});
+			expect(row).toMatchObject({ waitingFor: null, question: null, summary: "continued in another pi window" });
+		} finally {
+			releaseWriterLock(sessionFile);
+		}
+	});
+
+	it("a live job's worker shows with its pid before it reports", async () => {
+		const { client } = await startDaemon();
+		const events: Event[] = [];
+		client.onEvent((e) => events.push(e));
+		await client.request("subscribe", {});
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(() => events.some((e) => e.event === "job" && e.job.id === id && e.job.pid !== null), 6000);
 	});
 });
