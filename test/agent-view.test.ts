@@ -50,7 +50,18 @@ class FakeClient {
 	}
 	onEvent(l: (e: Event) => void) {
 		this.events.push(l);
-		return () => {};
+		return () => {
+			this.events = this.events.filter((x) => x !== l);
+		};
+	}
+	/** M22: events emitted so far (a fake place in the stream). */
+	emitted = 0;
+	position() {
+		return this.emitted;
+	}
+	async requestAt(op: string, args: unknown): Promise<{ result: unknown; at: number }> {
+		const result = await this.request(op, args);
+		return { result, at: this.emitted };
 	}
 	onClose(l: () => void) {
 		this.closes.push(l);
@@ -60,7 +71,8 @@ class FakeClient {
 		this.closed = true;
 	}
 	emit(e: Event) {
-		for (const l of this.events) l(e);
+		this.emitted++;
+		for (const l of [...this.events]) l(e);
 	}
 	async request(op: string, args: unknown): Promise<unknown> {
 		this.requests.push({ op, args });

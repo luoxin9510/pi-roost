@@ -158,8 +158,8 @@ function hostGone(ref: HostRef): boolean {
 	return ref.hostToken ? !sameProcess(ref.hostPid, ref.hostToken) : false;
 }
 
-// the worker pid each shell row was last pushed with: a command that prints nothing
-// still has to show (and attach) once its host is up
+// the worker pid each live row was last pushed with: a command that prints nothing, or a
+// pi whose first report is late, still has to show (and attach) once its host is up
 const shellPids = new Map<string, number | null>();
 
 function rowOf(id: string): JobRow | undefined {
@@ -167,6 +167,8 @@ function rowOf(id: string): JobRow | undefined {
 	const st = readState(id);
 	if (!rec || !st) return undefined;
 	const live = roster.has(id);
+	// M22: shown as the job that took the session (while that one is there)
+	if (!live && hidden(st)) return undefined;
 	const text = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
 	return {
 		id,
@@ -661,7 +663,8 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	let id = newJobId();
 	while (recs.has(id)) id = newJobId();
 	const base = str(a.name) ? a.name : id;
-	const taken = new Set([...recs.values()].map((r) => r.name));
+	// M22: a job this one takes the session from gives up its name (one row per session)
+	const taken = new Set([...recs.values()].filter((r) => !(!shell && foldsInto(r, a.sessionFile)) && !hiddenJob(r.id)).map((r) => r.name));
 	let name = base;
 	for (let n = 2; taken.has(name); n++) name = `${base} (${n})`;
 
@@ -699,8 +702,72 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		throw err;
 	}
 	log("info", "dispatch", { id, name, cwd: rec.cwd, origin });
+	if (!shell) supersedeOthers(id);
 	if (!shell) pushChildrenOf(rec.sessionFile); // M13: an adopted session's children have a parent row now
 	return { id, name };
+}
+
+/** M22: a job whose session another job took over (while that one is there). */
+function hidden(st: JobState): boolean {
+	return str(st.supersededBy) && recs.has(st.supersededBy);
+}
+function hiddenJob(id: string): boolean {
+	if (roster.has(id)) return false;
+	const st = readState(id);
+	return st ? hidden(st) : false;
+}
+
+/** M22: an ended pi job on this session (it gives way to the job that runs it now). */
+function foldsInto(r: JobRecord, session: string | undefined): boolean {
+	return !!session && r.kind !== "shell" && r.sessionFile === session && !roster.has(r.id);
+}
+
+/**
+ * M22: one row per session. A job that runs a session again (moved to the background
+ * from another pi window, reopened by a new dispatch) takes over the rows of the ended
+ * jobs on it: they stop being listed (their records stay), and a pin carries over.
+ */
+function supersedeOthers(id: string): void {
+	const rec = recs.get(id);
+	if (!rec || rec.kind === "shell" || !rec.sessionFile) return;
+	let pinned = false;
+	for (const r of recs.values()) {
+		if (r.id === id || !foldsInto(r, rec.sessionFile)) continue;
+		const st = readState(r.id);
+		if (!st || hidden(st)) continue;
+		if (st.pinned === true) pinned = true;
+		updateState(r.id, { supersededBy: id });
+		push({ event: "removed", id: r.id });
+		log("info", "superseded", { id: r.id, by: id });
+	}
+	if (pinned && readState(id)?.pinned !== true) {
+		updateState(id, { pinned: true });
+		pushJob(id);
+	}
+}
+
+/**
+ * M22: a pi in another window (herdr, tmux, a second terminal) opened a session whose job
+ * ended waiting or failed: the question or the failure is that pi's now, so the row stops
+ * asking for input.
+ */
+function continuedElsewhere(session: string): void {
+	for (const r of recs.values()) {
+		if (!foldsInto(r, session)) continue;
+		const st = readState(r.id);
+		if (!st || hidden(st) || (st.state !== "blocked" && st.state !== "failed")) continue;
+		updateState(r.id, {
+			state: "done",
+			waitingFor: null,
+			question: null,
+			choices: [],
+			error: null,
+			summary: "continued in another pi window",
+			stateSince: Date.now(),
+		});
+		pushJob(r.id);
+		log("info", "continued elsewhere", { id: r.id });
+	}
 }
 
 async function startHost(rec: JobRecord): Promise<void> {
@@ -791,6 +858,7 @@ async function respawn(
 			stopRequested: false,
 			removeAt: undefined,
 			reaped: false,
+			supersededBy: undefined,
 			attachSignal: false,
 			attachRepaint: false,
 			restartedAt: now,
@@ -799,6 +867,7 @@ async function respawn(
 			crashRestarts: opts.crash ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + 1 : 0,
 		});
 		await startHost(rec);
+		if (!shell) supersedeOthers(id);
 		log("info", "respawn", { id, crash: !!opts.crash, restart: !!opts.restart, prompt: !!prompt });
 		return { id, started: true };
 	} finally {
@@ -810,7 +879,18 @@ async function respawn(
 function shellTick(): void {
 	const now = Date.now();
 	for (const [id, rec] of recs) {
-		if (rec.kind !== "shell") continue;
+		if (rec.kind !== "shell") {
+			// M22: a worker that is up shows as such before its first report (or without one)
+			if (!roster.has(id)) shellPids.delete(id);
+			else {
+				const pid = readWorkerPid(id) ?? null;
+				if (shellPids.get(id) !== pid) {
+					shellPids.set(id, pid);
+					pushJob(id);
+				}
+			}
+			continue;
+		}
 		const st = readState(id);
 		if (!st) continue;
 		if (!roster.has(id)) {
@@ -859,6 +939,25 @@ function reapable(id: string, now: number, minutes: number): number | undefined 
 	return now - since < minutes * 60_000 ? undefined : since;
 }
 
+/**
+ * M22: stop a worker only if nobody is attached, decided in the host itself: an attach
+ * between asking for its status and terminating it would otherwise lose its session.
+ * A host from before M22 does not know the op: it is terminated as before.
+ */
+async function terminateIfIdle(id: string): Promise<boolean> {
+	try {
+		const r = (await hostControl(id, "terminate-idle")) as { ok?: boolean; error?: string };
+		if (r.error) await hostControl(id, "terminate");
+		else if (r.ok !== true) {
+			log("info", "not stopped: attached meanwhile", { id });
+			return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** DM-4: stop workers that have been idle, unattached and unpinned for reapIdleMinutes. */
 async function reapIdle(): Promise<void> {
 	const minutes = Number(process.env.PI_ROOST_REAP_MINUTES) || loadUserConfig().reapIdleMinutes;
@@ -881,21 +980,22 @@ async function reapIdle(): Promise<void> {
 			continue;
 		}
 		log("info", "reap", { id, idleMinutes: Math.round((now - since) / 60_000) });
-		try {
-			await hostControl(id, "terminate");
-		} catch {
-			reaping.delete(id);
-		}
+		if (!(await terminateIfIdle(id))) reaping.delete(id);
 	}
 }
 
 function resolve(query: unknown): string {
 	if (!str(query)) throw new OpError("bad_request", "query required");
 	if (recs.has(query)) return query;
-	const byPrefix = [...recs.keys()].filter((id) => id.startsWith(query));
+	// M22: jobs folded into another one's row are matched only when nothing listed is
+	const shown = (ids: string[]) => {
+		const v = ids.filter((id) => !hiddenJob(id));
+		return v.length > 0 ? v : ids;
+	};
+	const byPrefix = shown([...recs.keys()].filter((id) => id.startsWith(query)));
 	if (byPrefix.length === 1) return byPrefix[0]!;
 	const q = query.toLowerCase();
-	const matches = byPrefix.length > 1 ? byPrefix : [...recs.values()].filter((r) => r.name.toLowerCase().includes(q)).map((r) => r.id);
+	const matches = byPrefix.length > 1 ? byPrefix : shown([...recs.values()].filter((r) => r.name.toLowerCase().includes(q)).map((r) => r.id));
 	if (matches.length === 1) return matches[0]!;
 	if (matches.length === 0) throw new OpError("not_found", `no job matches "${query}"`);
 	const list = matches.map((id) => `${id} · ${recs.get(id)!.name}`).join(", ");
@@ -1406,11 +1506,7 @@ async function autoClose(id: string): Promise<void> {
 		return;
 	}
 	log("info", "auto-close", { id });
-	try {
-		await hostControl(id, "terminate");
-	} catch {
-		reaping.delete(id);
-	}
+	if (!(await terminateIfIdle(id))) reaping.delete(id);
 }
 
 function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd?: unknown; pid?: unknown } | undefined): { id: string } {
@@ -1438,6 +1534,7 @@ function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd
 	pushChildrenOf(session);
 	// after the response: the client only takes deliveries for the id it is told
 	if (session) setImmediate(() => void retryReports(session));
+	if (session) continuedElsewhere(session);
 	return { id };
 }
 

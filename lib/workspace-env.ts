@@ -23,8 +23,12 @@ export const ENV_NEVER = new Set([
 	// the launching tty (pinentry and ssh would talk to a terminal the session is not on)
 	"GPG_TTY", "SSH_TTY", "VTE_VERSION", "WT_SESSION", "WT_PROFILE_ID", "TERMINAL_EMULATOR",
 ]);
-/** Prefixes of the same kind: an editor's or a terminal's own (VS Code's git askpass socket dies with it). */
-const ENV_NEVER_PREFIX = ["VSCODE_", "KONSOLE_", "ITERM_", "KITTY_", "WEZTERM_", "ZELLIJ_"];
+/**
+ * Prefixes of the same kind: an editor's or a terminal's own (VS Code's git askpass socket
+ * dies with it), and a multiplexer's pane identity (M22: herdr's pi integration reports the
+ * agent in HERDR_PANE_ID, so a background session would take over the pane it came from).
+ */
+const ENV_NEVER_PREFIX = ["VSCODE_", "KONSOLE_", "ITERM_", "KITTY_", "WEZTERM_", "ZELLIJ_", "HERDR_"];
 
 /** A name a worker's environment may hold: not on the never list, not denied. */
 export function envKept(name: string, deny: readonly string[] = []): boolean {

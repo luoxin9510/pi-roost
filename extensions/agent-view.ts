@@ -24,6 +24,7 @@ import {
 	headerText,
 	iconOf,
 	modelFacts,
+	fitTail,
 	rowDetailsOf,
 	shortModel,
 	type Item,
@@ -45,6 +46,8 @@ const SPIN_MS = 150;
 /** M8: the row's model and context column only shows while the summary keeps this many columns. */
 const MIN_SUMMARY = 24;
 const MODEL_COL = 20;
+/** M22: how often the view checks its rows against the daemon's. */
+const RESYNC_MS = 15_000;
 /** M8: how long a sent /model or /thinking may take to show in the session's reports. */
 const SWITCH_CHECK_MS = 8000;
 
@@ -182,6 +185,7 @@ export class AgentView implements Component {
 	private ctrlCAt = 0;
 	private frame = 0;
 	private spinner: NodeJS.Timeout | undefined;
+	private resync: NodeJS.Timeout | undefined;
 	private attached = false;
 	private closed = false;
 	private connectError: string | undefined;
@@ -229,6 +233,7 @@ export class AgentView implements Component {
 	dispose(): void {
 		this.closed = true;
 		clearInterval(this.spinner);
+		clearInterval(this.resync);
 		for (const s of this.switches.values()) clearTimeout(s.timer);
 		this.switches.clear();
 		this.client?.close();
@@ -244,17 +249,23 @@ export class AgentView implements Component {
 			if (this.closed) return client.close();
 			client.onEvent((e) => this.onEvent(e));
 			await client.request("subscribe", {});
-			const { jobs } = await client.request("list", this.o.cwdFilter ? { cwd: this.o.cwdFilter } : {});
+			const { jobs, after } = await this.listFrom(client);
 			if (this.closed) return client.close();
 			this.rows = new Map(jobs.map((j) => [j.id, j]));
+			for (const e of after) this.applyRow(e);
 			for (const j of jobs) observeJob(j); // what is already there is not news
 			for (const j of jobs) this.checkSwitch(j); // a switch shown while we were away
 			this.client = client;
 			this.connectError = undefined;
 			// AV-8: pushed events only; reconnect when the daemon goes away.
 			const live = client;
+			// M22: a push lost on the way (or never sent) shows up within RESYNC_MS
+			clearInterval(this.resync);
+			this.resync = setInterval(() => void this.resyncRows(live), RESYNC_MS);
+			this.resync.unref?.();
 			client.onClose(() => {
 				if (this.client !== live) return;
+				clearInterval(this.resync);
 				this.client = undefined;
 				this.connectError = "reconnecting…";
 				this.render0();
@@ -265,6 +276,60 @@ export class AgentView implements Component {
 			if (this.closed) return;
 			this.connectError = (err as Error).message;
 			setTimeout(() => void this.connect(), 2000).unref?.();
+		}
+		this.render0();
+	}
+
+	/**
+	 * M22: the rows, and the events that came after the reply: those are newer than it,
+	 * though handled before the code after the await runs.
+	 */
+	private async listFrom(client: DaemonClient): Promise<{ jobs: JobRow[]; after: Event[] }> {
+		const heard: { e: Event; at: number }[] = [];
+		const off = client.onEvent((e) => heard.push({ e, at: client.position() }));
+		try {
+			const { result, at } = await client.requestAt("list", this.o.cwdFilter ? { cwd: this.o.cwdFilter } : {});
+			const after = heard.filter((h) => h.at > at).map((h) => h.e);
+			return { jobs: result.jobs, after: after.filter((e) => e.event !== "job" || !this.o.cwdFilter || within(e.job.cwd, this.o.cwdFilter)) };
+		} finally {
+			off();
+		}
+	}
+
+	/** M22: a row event over a fresh list (no notifications: it was seen already). */
+	private applyRow(e: Event): void {
+		if (e.event === "job") {
+			if (this.o.cwdFilter && !within(e.job.cwd, this.o.cwdFilter)) return;
+			this.rows.set(e.job.id, e.job);
+		} else if (e.event === "removed") this.rows.delete(e.id);
+	}
+
+	/** M22: the daemon's rows as they are now (the stream after the reply carries on from them). */
+	private async resyncRows(client: DaemonClient): Promise<void> {
+		if (this.closed || this.client !== client) return;
+		let jobs: JobRow[];
+		let after: Event[];
+		try {
+			({ jobs, after } = await this.listFrom(client));
+		} catch {
+			return; // the close handler reconnects
+		}
+		if (this.closed || this.client !== client) return;
+		const next = new Map(jobs.map((j) => [j.id, j]));
+		for (const e of after) {
+			if (e.event === "job") next.set(e.job.id, e.job);
+			else if (e.event === "removed") next.delete(e.id);
+		}
+		for (const id of this.rows.keys()) if (!next.has(id)) forgetJob(id);
+		for (const j of jobs) observeJob(j);
+		this.rows = next;
+		for (const j of jobs) this.checkSwitch(j);
+		const waiting = this.attachWhenLive ? next.get(this.attachWhenLive) : undefined;
+		if (waiting && !this.attached) {
+			if (waiting.pid) {
+				this.attachWhenLive = undefined;
+				void this.attachTo(waiting.id).catch((err: unknown) => this.say(String(err), "error"));
+			} else if (waiting.endedAt !== null) this.attachWhenLive = undefined;
 		}
 		this.render0();
 	}
@@ -1098,6 +1163,9 @@ export class AgentView implements Component {
 
 	/** AT-1/AT-2: hand the terminal to the job's PTY host, then repaint. */
 	private async attachTo(id: string): Promise<void> {
+		// M22: one attach at a time: a second one would share the terminal with the first,
+		// and the first one's end would pause the input of the second
+		if (this.attached) return;
 		const row = this.rows.get(id);
 		if (!row) return;
 		if (row.pid === null) {
@@ -1296,7 +1364,7 @@ export class AgentView implements Component {
 		const d = rowDetailsOf(row);
 		const share = d?.context ? t.fg(d.tone, d.context.padStart(c.shareW)) : " ".repeat(c.shareW);
 		if (c.mode === "share") return share;
-		const raw = d?.model ? truncateToWidth(oneLine(d.model), c.modelW) : "";
+		const raw = d?.model ? fitTail(oneLine(d.model), c.modelW) : "";
 		// right-aligned as a block: the shares line up, the model sits next to its share
 		const lead = (w: number) => " ".repeat(Math.max(0, c.modelW - w));
 		if (c.shareW === 0) return lead(visibleWidth(raw)) + t.fg("dim", raw);

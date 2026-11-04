@@ -14,6 +14,7 @@ import {
 	rowDetailsOf,
 	sentenceOf,
 	shortModel,
+	fitTail,
 	titleText,
 } from "../lib/view-model.ts";
 
@@ -55,6 +56,22 @@ describe("model and context (M8)", () => {
 		expect(shortModel("corp/qwen/qwen3-8b")).toBe("qwen/qwen3-8b");
 		expect(shortModel("openai/gpt-5@2026-01-15")).toBe("gpt-5");
 		expect(shortModel("bare")).toBe("bare");
+	});
+
+	it("M22: gateway and Bedrock vendor prefixes and version suffixes go too", () => {
+		expect(shortModel("work/anthropic::claude-opus-4-5")).toBe("claude-opus-4-5");
+		expect(shortModel("anthropic::claude-sonnet-4-5-20250929")).toBe("claude-sonnet-4-5");
+		expect(shortModel("bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0")).toBe("claude-opus-4-5");
+		expect(shortModel("bedrock/anthropic.claude-haiku-4-5-v1")).toBe("claude-haiku-4-5");
+		expect(shortModel("x/odd::")).toBe("odd::");
+	});
+
+	it("M22: a model name too long for its column keeps its end", () => {
+		expect(fitTail("claude-opus-4-5-thinking", 12)).toBe("…pus-4-5-thinking".slice(-12).replace(/^./, "…"));
+		expect(fitTail("short", 12)).toBe("short");
+		expect(fitTail("abcdef", 1)).toBe("…");
+		expect(fitTail("abcdef", 0)).toBe("");
+		expect(fitTail("abcdef", 4)).toBe("…def");
 	});
 
 	it("formats token counts", () => {

@@ -160,4 +160,23 @@ describe("Reporter", () => {
 		await r.close();
 		expect(Date.now() - t0).toBeLessThan(1500);
 	});
+
+	it("M22: backs off against a daemon that drops every request, even for state changes", async () => {
+		let accepted = 0;
+		server = createServer((c: Socket) => {
+			accepted++;
+			c.on("error", () => {});
+			c.destroy();
+		});
+		await new Promise<void>((res) => server!.listen(sock, () => res()));
+		const r = new Reporter({ id: "j", token: "t", socket: sock });
+		r.update(base, true);
+		await sleep(400);
+		// state changes meanwhile wait for the back-off too
+		r.update({ ...base, state: "blocked", status: "waiting", waitingFor: "question" });
+		r.update({ ...base, state: "done", status: "idle" });
+		await sleep(2000);
+		expect(accepted).toBeLessThanOrEqual(5);
+		await r.close();
+	});
 });
