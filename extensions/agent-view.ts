@@ -241,6 +241,9 @@ export class AgentView implements Component {
 	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0, costW: 0 };
 	/** M8: switches sent to live sessions, until their reports show them (or do not). */
 	private switches = new Map<string, Switch>();
+	/** M25: rows checked with Ctrl+O; the batch keys act on all of them. */
+	private marked = new Set<string>();
+	private sendingMarked = false;
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -536,6 +539,9 @@ export class AgentView implements Component {
 				return this.cycleThinking();
 			case "ctrl+t":
 				return void this.togglePin();
+			case "ctrl+o":
+				if (this.peek) break;
+				return this.toggleMark();
 			case "ctrl+f":
 				if (this.peek) break;
 				fill(this.input, "n:");
@@ -648,6 +654,11 @@ export class AgentView implements Component {
 			this.o.tui.requestRender();
 			return;
 		}
+		if (this.markedRows().length > 0) {
+			this.marked.clear();
+			this.say("marks cleared");
+			return;
+		}
 		const origin = this.origin;
 		if (origin) {
 			const row = this.rows.get(origin);
@@ -685,6 +696,10 @@ export class AgentView implements Component {
 
 	private async enter(): Promise<void> {
 		if (this.peek) return this.sendReply();
+		// a second Enter while a batch is sent neither sends again nor attaches
+		if (this.sendingMarked) return;
+		// M25: with rows marked, the typed text goes to each of them
+		if (this.input.getValue().trim() && !this.filter() && this.markedRows().length > 0) return this.sendToMarked();
 		// AV-K2: filter text is not a task: Enter acts on the selection
 		if (this.input.getValue().trim() && !this.filter()) return this.dispatch(false);
 		const it = this.selected();
@@ -1093,6 +1108,21 @@ export class AgentView implements Component {
 	}
 
 	private async togglePin(): Promise<void> {
+		// a peek acts on its own row, never on the marks
+		const marked = this.peek ? [] : this.markedRows();
+		if (marked.length > 0 && this.client) {
+			// M25: pin them all, unless all are pinned already
+			const pinned = marked.some((r) => !r.pinned);
+			let failed = 0;
+			for (const r of marked) {
+				try {
+					await this.client.request("pin", { id: r.id, pinned });
+				} catch {
+					failed++;
+				}
+			}
+			return this.say(`${pinned ? "pinned" : "unpinned"} ${marked.length - failed} sessions${failed ? ` · ${failed} failed` : ""}`, failed ? "warning" : "muted");
+		}
 		const row = this.selectedRow();
 		if (!row || !this.client) return;
 		try {
@@ -1289,7 +1319,7 @@ export class AgentView implements Component {
 	private sessionSetting(row: JobRow, which: "model" | "thinking", arg: string): void {
 		if (row.kind === "shell") return this.say("a shell job has no model", "warning");
 		const values: string[] = which === "model" ? (this.o.models?.() ?? []) : [...THINKING_LEVELS];
-		const apply = (v: string) => this.sendSetting(row, which, v);
+		const apply = async (v: string) => void (await this.sendSetting(row, which, v));
 		if (arg) {
 			if (arg === "default") return this.say(`a running session has no default ${which}: pick one (bare /${which})`, "warning");
 			if (which === "model" && !arg.includes("/")) return this.say("use provider/id (bare /model lists them)", "warning");
@@ -1305,28 +1335,45 @@ export class AgentView implements Component {
 		this.openPicker(`Thinking for ${oneLine(row.name)}`, values, current, apply);
 	}
 
-	private async sendSetting(picked: JobRow, which: "model" | "thinking", value: string): Promise<void> {
-		if (!this.client) return this.say("background service unavailable", "error");
+	private async sendSetting(picked: JobRow, which: "model" | "thinking", value: string, quiet = false): Promise<boolean> {
+		// M25: quiet (a batch) says nothing itself and answers whether it reached the session
+		const say = (text: string, tone?: Tone) => {
+			if (!quiet) this.say(text, tone);
+		};
+		if (!this.client) {
+			say("background service unavailable", "error");
+			return false;
+		}
 		// the picker may have been open a while: act on the row as it is now
 		const row = this.rows.get(picked.id);
-		if (!row) return this.say("that session no longer exists", "warning");
+		if (!row) {
+			say("that session no longer exists", "warning");
+			return false;
+		}
 		const pending = this.switches.get(switchKey(row.id, which));
 		// a second switch before the first shows: compare with what the session had before both
 		const before = pending ? pending.before : ((which === "model" ? row.model : row.thinking) ?? null);
 		try {
 			const r = await this.client.request("reply", { id: row.id, text: `/${which} ${value}` });
-			this.reply.setValue("");
+			if (!quiet) this.reply.setValue("");
 			if (r.delivered) {
 				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
-				if (!pending && before === value) return this.say(`${row.name} already uses ${which} ${value}`);
+				if (!pending && before === value) {
+					say(`${row.name} already uses ${which} ${value}`);
+					return true;
+				}
 				this.watchSwitch(row, which, value, before, pending ? [...pending.superseded, pending.value] : []);
-				this.say(`asked ${row.name} to use ${which} ${value}…`);
-			} else if (r.respawned) this.say(`${which} ${value} · starting ${row.name} again`, "success");
-			else if (r.saved) this.say(`saved; ${which} changes when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
-			else if (row.pid !== null || row.endedAt === null) this.say(`${row.name} is starting; try again in a moment`, "warning");
-			else this.say("not delivered: the session is not running", "error");
+				say(`asked ${row.name} to use ${which} ${value}…`);
+				return true;
+			}
+			if (r.respawned) say(`${which} ${value} · starting ${row.name} again`, "success");
+			else if (r.saved) say(`saved; ${which} changes when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
+			else if (row.pid !== null || row.endedAt === null) say(`${row.name} is starting; try again in a moment`, "warning");
+			else say("not delivered: the session is not running", "error");
+			return r.respawned === true || r.saved === true;
 		} catch (err) {
-			this.say((err as Error).message, "error");
+			say((err as Error).message, "error");
+			return false;
 		}
 	}
 
@@ -1381,14 +1428,120 @@ export class AgentView implements Component {
 		}
 	}
 
+	/**
+	 * M25: the marked rows on screen, in list order. A marked row in a folded group or
+	 * filtered out stays marked but is not acted on: a batch never reaches what is not shown.
+	 */
+	private markedRows(): JobRow[] {
+		if (this.marked.size === 0) return [];
+		for (const id of this.marked) if (!this.rows.has(id)) this.marked.delete(id);
+		return this.itemList().flatMap((it) => (it.kind === "row" && this.marked.has(it.row.id) ? [it.row] : []));
+	}
+
+	/** M25: Ctrl+O marks the row, or on a header the whole group (again: unmarks it). */
+	private toggleMark(): void {
+		const it = this.selected();
+		if (!it) return;
+		const ids = it.kind === "row" ? [it.row.id] : it.section.rows.map((r) => r.id);
+		if (ids.length === 0) return;
+		const unmark = ids.every((id) => this.marked.has(id));
+		for (const id of ids) {
+			if (unmark) this.marked.delete(id);
+			else this.marked.add(id);
+		}
+		// a row moves on to the next one, so Ctrl+O Ctrl+O marks two
+		if (it.kind === "row") this.move(1);
+		const n = this.markedRows().length;
+		this.say(n > 0 ? `${n} marked · type and Enter to send to all · Ctrl+X stop · Ctrl+T pin · Esc unmark` : "marks cleared");
+	}
+
+	/** M25: the typed text to every marked session; /model and /thinking switch them all. */
+	private async sendToMarked(): Promise<void> {
+		if (this.sendingMarked) return;
+		const rows = this.markedRows();
+		const typed = this.input.getValue();
+		const text = typed.trim();
+		if (!this.client) return this.say("background service unavailable", "error");
+		// a new task or a shell job is never sent as a reply by mistake: the input stays
+		if (/^[!@]/.test(text)) return this.say("rows are marked: a typed text goes to them as a reply (Esc unmarks to start a task)", "warning");
+		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
+		if (setting) return this.markedSetting(rows, setting[1] as "model" | "thinking", (setting[2] ?? "").trim());
+		if (text.startsWith("/") && this.isViewCommand(text.slice(1).split(/\s/)[0] ?? "")) {
+			return this.say("only /model and /thinking act on marked sessions (Esc unmarks)", "warning");
+		}
+		const pi = rows.filter((r) => r.kind !== "shell");
+		if (pi.length === 0) return this.say("the marked rows are shell jobs: nothing to send to", "warning");
+		let sent = 0;
+		let later = 0;
+		const failed: string[] = [];
+		// cleared first: a second Enter while sending has nothing to send
+		this.sendingMarked = true;
+		this.input.setValue("");
+		try {
+			for (const r of pi) {
+				try {
+					const res = await this.client.request("reply", { id: r.id, text });
+					if (res.delivered || res.respawned) sent++;
+					else if (res.saved) later++;
+					else failed.push(r.name);
+				} catch {
+					failed.push(r.name);
+				}
+			}
+		} finally {
+			this.sendingMarked = false;
+		}
+		// nothing reached anyone: the text comes back
+		if (sent === 0 && later === 0 && !this.input.getValue()) this.input.setValue(typed);
+		const parts = [`sent to ${sent} of ${pi.length} sessions`];
+		if (later) parts.push(`${later} saved for their next start`);
+		if (failed.length) parts.push(`not delivered: ${failed.map(oneLine).join(", ")}`);
+		if (pi.length < rows.length) parts.push(`${rows.length - pi.length} shell jobs skipped`);
+		this.say(parts.join(" · "), failed.length ? "warning" : "success");
+	}
+
+	private markedSetting(rows: JobRow[], which: "model" | "thinking", arg: string): void {
+		const pi = rows.filter((r) => r.kind !== "shell");
+		if (pi.length === 0) return this.say("a shell job has no model", "warning");
+		const values: string[] = which === "model" ? (this.o.models?.() ?? []) : [...THINKING_LEVELS];
+		const apply = async (v: string) => {
+			let ok = 0;
+			for (const r of pi) if (await this.sendSetting(r, which, v, true)) ok++;
+			this.input.setValue("");
+			this.say(`asked ${ok} of ${pi.length} sessions to use ${which} ${v}…`, ok === pi.length ? "muted" : "warning");
+		};
+		if (arg) {
+			if (arg === "default") return this.say(`a running session has no default ${which}: pick one (bare /${which})`, "warning");
+			if (which === "model" && !arg.includes("/")) return this.say("use provider/id (bare /model lists them)", "warning");
+			if (values.length > 0 && !values.includes(arg)) {
+				return this.say(which === "model" ? `unknown model ${arg} (bare /model lists them)` : `thinking is one of ${values.join(", ")}`, "warning");
+			}
+			return void apply(arg);
+		}
+		if (values.length === 0) return this.say("no models available", "warning");
+		this.input.setValue("");
+		const title = `${which === "model" ? "Model" : "Thinking"} for ${pi.length} marked sessions`;
+		const same = new Set(pi.map((r) => (which === "model" ? r.model : r.thinking) ?? ""));
+		const current = same.size === 1 ? [...same][0]! : "";
+		if (which === "model") return this.modelPicker(title, current, false, apply);
+		this.openPicker(title, values, current, apply);
+	}
+
 	/** AV-K12: stop; again within 2 s delete; on a header, the whole group. */
 	private async stopSelected(): Promise<void> {
 		if (!this.client) return;
 		const it = this.selected();
-		if (!it) return;
-		const targets = it.kind === "row" ? [it.row] : it.section.rows;
+		const marked = this.peek ? [] : this.markedRows();
+		if (!it && marked.length === 0) return;
+		// M25: the marked rows, else the row, else the header's group
+		const targets = marked.length > 0 ? marked : it!.kind === "row" ? [it!.row] : it!.section.rows;
 		if (targets.length === 0) return;
-		const key = it.kind === "row" ? it.row.id : `group:${it.section.key}:${targets.map((r) => r.id).join(",")}`;
+		const key =
+			marked.length > 0
+				? `marked:${targets.map((r) => r.id).join(",")}`
+				: it!.kind === "row"
+					? it!.row.id
+					: `group:${it!.section.key}:${targets.map((r) => r.id).join(",")}`;
 		const now = Date.now();
 		const armed = this.armedStop?.id === key && now - this.armedStop.at < DOUBLE_PRESS_MS;
 		this.armedStop = { id: key, at: now };
@@ -1405,6 +1558,7 @@ export class AgentView implements Component {
 					}
 				}
 				this.armedStop = undefined;
+				for (const r of targets) this.marked.delete(r.id);
 				if (targets.length === 1) this.say(`deleted · ${targets[0]!.name}${only ? ` · ${only}` : ""}`, kept.length > 0 ? "warning" : "muted");
 				else this.say(`deleted ${targets.length} sessions${kept.length > 0 ? ` · ${kept.length} worktrees or branches kept` : ""}`, kept.length > 0 ? "warning" : "muted");
 			} else {
@@ -1563,11 +1717,12 @@ export class AgentView implements Component {
 				const label = `${s.collapsed ? "▸" : "▾"} ${s.title}${s.rows.length || s.hidden ? ` (${s.rows.length + s.hidden})` : ""}`;
 				const hint = empty ? t.fg("dim", `  ${s.hint}`) : "";
 				if (isSel) this.selLine = out.length;
-				out.push(this.mark(isSel, truncateToWidth(t.bold(label) + hint, Math.max(1, w - 2))));
+				const all = s.rows.length > 0 && s.rows.every((r) => this.marked.has(r.id));
+				out.push(this.mark(isSel, truncateToWidth(t.bold(label) + hint, Math.max(1, w - 2)), all));
 				return;
 			}
 			if (isSel) this.selLine = out.length;
-			out.push(truncateToWidth(this.mark(isSel, this.rowLine(it.row, Math.max(1, w - 2), now)), w));
+			out.push(truncateToWidth(this.mark(isSel, this.rowLine(it.row, Math.max(1, w - 2), now), this.marked.has(it.row.id)), w));
 			// the peek belongs right under its row, before the section's "… N more"
 			if (isSel && this.peek) out.push(...this.peekLines(it.row, w, now));
 			if (isSel) this.selEnd = out.length - 1;
@@ -1596,8 +1751,10 @@ export class AgentView implements Component {
 		return out.map((l) => (visibleWidth(l) > w ? truncateToWidth(l, w) : l));
 	}
 
-	private mark(selected: boolean, line: string): string {
-		return selected ? `${this.o.theme.fg("accent", "›")} ${line}` : `  ${line}`;
+	private mark(selected: boolean, line: string, checked = false): string {
+		const t = this.o.theme;
+		// M25: a marked row has a check in the second column
+		return `${selected ? t.fg("accent", "›") : " "}${checked ? t.fg("success", "✓") : " "}${line}`;
 	}
 
 	private rowLine(row: JobRow, width: number, now: number): string {
@@ -1725,6 +1882,8 @@ export class AgentView implements Component {
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
 		if (this.filter()) return "filtering (s: n: o: a: #PR) · Enter/→ attach · Esc clear";
 		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close · ? keys";
+		const n = this.markedRows().length;
+		if (n > 0) return `${n} marked · type, Enter: send to all · /model /thinking · Ctrl+T pin · Ctrl+X stop · Ctrl+O mark · Esc unmark`;
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
 	}
 
@@ -1759,6 +1918,9 @@ export class AgentView implements Component {
 			["Ctrl+X", "stop; again within 2 s to delete (on a header: the group)"],
 			["Ctrl+S", "group by state / directory"],
 			["Ctrl+T", "pin / unpin (pinned sessions keep running)"],
+			["Ctrl+O", "mark the row (on a header: the group) for a batch"],
+			["marked: type, Enter", "send it to every marked session (/model, /thinking too)"],
+			["marked: Ctrl+X Ctrl+T", "stop / delete, pin / unpin all of them"],
 			["Ctrl+R", "rename"],
 			["Shift+↑ Shift+↓", "move the row within its group"],
 			["Alt+↑ Alt+↓", "previous / next group"],
@@ -1776,7 +1938,7 @@ export class AgentView implements Component {
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["/usage", "what the sessions spent: today, all, by model, by session"],
-			["Esc", "close peek · clear input · exit"],
+			["Esc", "close peek · clear input · unmark · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],
 		];
