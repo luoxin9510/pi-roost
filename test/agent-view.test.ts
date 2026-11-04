@@ -1309,3 +1309,97 @@ describe("AgentView fan-out (M26)", () => {
 		view.dispose();
 	});
 });
+
+describe("AgentView presets (M27)", () => {
+	const reviewer: AgentDef = { name: "reviewer", systemPromptMode: "replace", prompt: "You review.", file: "/a/reviewer.md" };
+	function withPresets(initial: Record<string, import("../lib/config.ts").Preset>) {
+		const store = { ...initial };
+		const user = new Set(Object.keys(initial));
+		const s = setup([], {
+			agents: new Map([["reviewer", reviewer]]),
+			extra: {
+				presets: () => store,
+				savePreset: (name, p) => {
+					if (p) {
+						store[name] = p;
+						user.add(name);
+					} else {
+						delete store[name];
+						user.delete(name);
+					}
+				},
+				userPreset: (name) => user.has(name),
+			},
+		});
+		return { ...s, store, user };
+	}
+
+	it("/preset name applies it: model, thinking, agent and directory reach the next task; a typed @dir wins", async () => {
+		const { view } = withPresets({ review: { model: "b/two", thinking: "high", agent: "reviewer", dir: "api" } });
+		await view.start();
+		type(view, "/preset nope");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("no preset nope");
+		view.handleInput("\u0003");
+		type(view, "/preset review");
+		view.handleInput("\r");
+		expect(view.render(120).join("\n")).toContain("new sessions: preset review · model b/two · thinking high · as reviewer · in @api");
+		const before = launches.length;
+		type(view, "check the latest diff");
+		view.handleInput("\r");
+		await sleep(10);
+		const o = launches[before]!.opts as { cwd: string; model: string; thinking: string; agent?: AgentDef };
+		expect(o).toMatchObject({ cwd: "/w/api", model: "b/two", thinking: "high" });
+		expect(o.agent?.name).toBe("reviewer");
+		type(view, "@/tmp check the other diff");
+		view.handleInput("\r");
+		await sleep(10);
+		expect((launches[before + 1]!.opts as { cwd: string }).cwd).toMatch(/tmp$/);
+		// off: back to the defaults
+		type(view, "/preset off");
+		view.handleInput("\r");
+		expect(view.render(120).join("\n")).not.toContain("preset review");
+		view.dispose();
+	});
+
+	it("/preset save keeps the current choices; bare /preset picks; rm removes only the user's", async () => {
+		const { view, store, user } = withPresets({});
+		await view.start();
+		type(view, "/preset");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("no presets yet");
+		view.handleInput("\u0003");
+		type(view, "/model a/one");
+		view.handleInput("\r");
+		type(view, "/fanout a/one b/two");
+		view.handleInput("\r");
+		type(view, "/preset save duo");
+		view.handleInput("\r");
+		expect(store.duo).toEqual({ model: "a/one", fanout: ["a/one", "b/two"] });
+		expect(view.render(120).join("\n")).toContain("saved preset duo");
+		// a project's preset is not the user's to remove
+		store.shared = { thinking: "low" };
+		type(view, "/preset rm shared");
+		view.handleInput("\r");
+		expect(view.render(120).join("\n")).toContain("shared is a project's preset");
+		view.handleInput("\u0003");
+		type(view, "/preset off");
+		view.handleInput("\r");
+		type(view, "/preset");
+		view.handleInput("\r");
+		let out = view.render(120).join("\n");
+		expect(out).toContain("Preset for new sessions");
+		expect(out).toContain("duo  one · fan-out one, two");
+		view.handleInput("\x1b[B"); // duo
+		view.handleInput("\r");
+		out = view.render(120).join("\n");
+		expect(out).toContain("preset duo");
+		expect(out).toContain("next task: 2 sessions");
+		type(view, "/preset rm duo");
+		view.handleInput("\r");
+		expect(store.duo).toBeUndefined();
+		expect(user.has("duo")).toBe(false);
+		expect(view.render(120).join("\n")).not.toContain("new sessions: preset duo");
+		view.dispose();
+	});
+});

@@ -1,6 +1,6 @@
 import { discoverAgents } from "../lib/agents.ts";
 import { type ExtensionContext, type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { envPolicy, loadConfig, saveUserConfig } from "../lib/config.ts";
+import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset } from "../lib/config.ts";
 import { buildLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import { readWriterLock } from "../lib/locks.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
@@ -85,6 +85,10 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					return { ...launch, ...(iso.worktree ? { worktree: iso.worktree, discard: iso.discard } : {}), ...(iso.note ? { note: iso.note } : {}) };
 				},
 				agents: () => discoverAgents(dispatchCwd),
+				// M27: read again each time (a save from another hub, or an edited file)
+				presets: () => loadConfig(dispatchCwd).presets ?? {},
+				savePreset: saveUserPreset,
+				userPreset: (name) => name in (loadUserConfig().presets ?? {}),
 				...(config.dispatchAgent ? { defaultAgent: config.dispatchAgent } : {}),
 				launchShell: (command, cwd) => ({
 					kind: "shell" as const,
