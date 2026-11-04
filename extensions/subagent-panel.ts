@@ -1,6 +1,6 @@
 // M12: the session's own subagents (roost_spawn children) in a panel below the prompt,
-// as in Claude Code: ↓ on an empty prompt selects a row, Enter opens (attaches to) it,
-// its own detach keys come back here. PRD: "PRD: pi-roost 会话内子 agent 面板（M12）".
+// as in Claude Code: ↓ on an empty prompt selects a row, Enter opens its transcript
+// (M19), → attaches to it; its own detach keys come back here. PRD: "PRD: pi-roost 会话内子 agent 面板（M12）".
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
@@ -12,6 +12,7 @@ import { ensureLive } from "../lib/resume.ts";
 import { ageOf, iconOf, sentenceOf } from "../lib/view-model.ts";
 import { focusedOf, isPromptEditor } from "./foreground.ts";
 import { agentViewOpen } from "./open-view.ts";
+import { type SendResult, TranscriptView } from "./transcript-view.ts";
 import { hasChildren } from "./peer-link.ts";
 
 const WIDGET_KEY = "pi-roost-subagents";
@@ -171,20 +172,22 @@ export function renderPanel(v: PanelView, width: number, fg: Fg, bold: (s: strin
 		const keys = v.composer
 			? "  ↵ send · Esc cancel"
 			: v.focused
-				? "  ↵ open · m message · x stop · K stop all · Esc back"
+				? "  ↵ view · → attach · m message · x stop · K stop all · Esc back"
 				: `  ↓ select subagent${v.rows.length === 1 ? "" : "s"}${v.finished ? ` · ${FINISHED_HINT}` : ""}`;
 		lines.push(fit(fg("dim", keys)));
 	}
 	return lines;
 }
 
-export type PanelKey = "down" | "up" | "open" | "stop" | "stopAll" | "message" | "back" | "other";
+export type PanelKey = "down" | "up" | "view" | "open" | "stop" | "stopAll" | "message" | "back" | "other";
 
 export function keyOf(data: string): PanelKey | undefined {
 	if (isKeyRelease(data)) return undefined;
 	if (matchesKey(data, Key.down)) return "down";
 	if (matchesKey(data, Key.up)) return "up";
-	if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) return "open";
+	// M19: Enter shows the transcript here, → goes into the session
+	if (matchesKey(data, Key.enter)) return "view";
+	if (matchesKey(data, Key.right)) return "open";
 	// plain text, or a terminal that encodes printable keys as CSI-u
 	const ch = data.length === 1 ? data : decodeKittyPrintable(data);
 	if (ch === "x") return "stop";
@@ -225,6 +228,11 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	/** The selected child, so a re-sort (a child finished) does not move the selection. */
 	let selId: string | undefined;
 	let attached = false;
+	/** M19: a transcript is on screen (it has the keys). */
+	let viewing = false;
+	let viewHandle: { hide(): void } | undefined;
+	let viewComp: TranscriptView | undefined;
+	let viewDone: ((r: undefined) => void) | undefined;
 	let dialogs = 0;
 	let frame = 0;
 	let spin: NodeJS.Timeout | undefined;
@@ -374,7 +382,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		}
 		const row = rows.find((r) => r.id === armed!.id);
 		if (!row) return undefined;
-		return armed.key === "open" ? `${oneLine(row.name)} is ${row.state} · ↵ again starts it` : `x again stops ${oneLine(row.name)}`;
+		return armed.key === "open" ? `${oneLine(row.name)} is ${row.state} · → again starts it` : `x again stops ${oneLine(row.name)}`;
 	}
 
 	/** True when this is the second press of `key` on `row` in time; otherwise arms it. */
@@ -462,7 +470,24 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		backoff = Math.min(backoff * 2, 30_000);
 	}
 
+	/** M19: a transcript open over a session that goes away goes too. */
+	function closeView(): void {
+		// pi's own close (it hides and disposes, and view() returns); hide() if that fails
+		try {
+			viewDone?.(undefined);
+		} catch {}
+		viewDone = undefined;
+		try {
+			viewHandle?.hide();
+		} catch {}
+		viewHandle = undefined;
+		viewComp?.dispose();
+		viewComp = undefined;
+		viewing = false;
+	}
+
 	function unwatch(): void {
+		closeView();
 		gen++;
 		watching = false;
 		armed = undefined;
@@ -589,34 +614,76 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	}
 
 	/** SP-16: as a reply from the user (it starts a run that reports back, M9). */
-	async function sendMessage(id: string, text: string): Promise<boolean> {
-		const name = oneLine(rows.find((r) => r.id === id)?.name ?? id);
-		const say = (m: string, tone: "info" | "warning" | "error") => {
-			try {
-				ctx?.ui.notify(`pi-roost: ${m}`, tone);
-			} catch {}
-		};
+	async function deliver(id: string, text: string): Promise<SendResult & { tone: "info" | "warning" | "error" }> {
+		const name = oneLine(all.get(id)?.name ?? id);
 		try {
 			const c = client ?? (await DaemonClient.connectOrStart());
 			try {
 				const r = await c.request("reply", { id, text });
-				if (r.stopped) say(`${name} is stopped: open it (↵ twice) to start it, then send again`, "warning");
-				else if (r.delivered) say(`sent · ${name}`, "info");
-				else if (r.respawned) say(`sent · starting ${name} again`, "info");
-				else if (r.saved) say(`saved for ${name}; it is sent when it starts${r.error ? ` (${r.error})` : ""}`, "warning");
-				else say(`not delivered: ${name} is not running`, "error");
-				return !!(r.delivered || r.respawned || r.saved);
+				if (r.stopped) return { ok: false, tone: "warning", message: `${name} is stopped: open it (→ twice) to start it, then send again` };
+				if (r.delivered) return { ok: true, tone: "info", message: `sent · ${name}` };
+				if (r.respawned) return { ok: true, tone: "info", message: `sent · starting ${name} again` };
+				if (r.saved) return { ok: true, tone: "warning", message: `saved for ${name}; it is sent when it starts${r.error ? ` (${r.error})` : ""}` };
+				return { ok: false, tone: "error", message: `not delivered: ${name} is not running` };
 			} finally {
 				if (c !== client) c.close();
 			}
 		} catch (err) {
-			say(`could not send to ${name}: ${(err as Error).message}`, "error");
-			return false;
+			return { ok: false, tone: "error", message: `could not send to ${name}: ${(err as Error).message}` };
 		}
 	}
 
+	async function sendMessage(id: string, text: string): Promise<boolean> {
+		const r = await deliver(id, text);
+		try {
+			ctx?.ui.notify(`pi-roost: ${r.message}`, r.tone);
+		} catch {}
+		return r.ok;
+	}
+
+	/** M19: the transcript of a subagent, full screen over the conversation, until Esc or Ctrl+O. */
+	async function view(row: JobRow): Promise<void> {
+		const c = ctx;
+		const main = session();
+		if (!c || !main || viewing) return;
+		viewing = true;
+		composer = undefined;
+		let result: { attach?: JobRow } | undefined;
+		try {
+			result = await c.ui.custom<{ attach?: JobRow } | undefined>(
+				(t, th, _kb, done) =>
+					((viewDone = done),
+					(viewComp = new TranscriptView({
+						tui: t,
+						theme: { fg: (col, s) => th.fg(col as never, s), bold: (s) => th.bold(s) },
+						main,
+						rows: () => [...all.values()],
+						start: row.id,
+						send: (id, text) => deliver(id, text),
+						done,
+					}))),
+				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 }, onHandle: (h) => (viewHandle = h) },
+			);
+		} catch (err) {
+			try {
+				c.ui.notify(`pi-roost: could not show ${oneLine(row.name)}: ${(err as Error).message}`, "error");
+			} catch {}
+		} finally {
+			viewing = false;
+			viewHandle = undefined;
+			viewComp = undefined;
+			viewDone = undefined;
+		}
+		if (ctx !== c) return; // the session changed meanwhile
+		recompute();
+		tui?.requestRender();
+		// the view asked twice already for an ended one
+		const target = result?.attach;
+		if (target) void enter(all.get(target.id) ?? target);
+	}
+
 	function onInput(data: string): { consume?: boolean; data?: string } | undefined {
-		if (!enabled || attached || rows.length === 0) return undefined;
+		if (!enabled || attached || viewing || rows.length === 0) return undefined;
 		if (composer && focused) {
 			// everything goes to the message being written (Enter sends, Esc cancels)
 			if (!rows.some((r) => r.id === composer!.id)) composer = undefined;
@@ -652,6 +719,11 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 				unfocus();
 				recompute();
 				break;
+			case "view": {
+				const row = rows[sel];
+				if (row) void view(row);
+				break;
+			}
 			case "open": {
 				const row = rows[sel];
 				// an ended child starts again only on a second press (a reaped one just wakes up)

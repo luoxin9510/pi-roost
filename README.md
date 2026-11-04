@@ -171,8 +171,12 @@ closed once its report is out (a message starts it again).
 
 **Your subagents below the prompt.** While a session has children, a panel under its
 prompt lists them, one row each: state, name, time, what it is doing or its result, its
-branch. On an empty prompt **↓** selects a row (↑↓ move), **Enter** or **→** opens that
-child's full pi screen (an ended one asks for Enter again, then starts), and the child's own detach keys
+branch. On an empty prompt **↓** selects a row (↑↓ move). **Enter** shows that child's
+transcript over the conversation, as in Claude Code: its messages and tool calls as they
+happen, the path back to `main`, its siblings and direct children (↑↓ and Enter move
+through the tree, **Esc** goes up a level and finally back to your prompt, PgUp/PgDn
+scroll). Typing there sends the child a message, which resumes it; **Ctrl+O** goes into it.
+**→** opens that child's full pi screen (an ended one asks for → again, then starts), and the child's own detach keys
 (← on its empty prompt, Ctrl+Z, `/exit`) bring you back. **x** twice stops a running child, and on
 a stopped one hides its row; **m** writes a message to the selected child (Enter sends it, as if you had typed it in
 that session; Esc cancels), **K** twice stops every running child. **Esc**, **←** or typing
@@ -183,7 +187,7 @@ As in Claude Code, a child that finishes leaves the panel at once and the footer
 `/subagents all` lists every subagent the session had. Nested subagents show as a tree,
 with `(+N)` on a row that has rows below it.
 
-**提示符下方的子 agent 面板。** 会话有子会话时，提示符下方会出现一个面板，每个子会话一行：状态、名字、耗时、正在做什么或最终结果、所在分支。在空提示符上按 **↓** 选中一行（↑↓ 移动），按 **回车** 或 **→** 进入那个子会话的完整 pi 界面（已结束的要再按一次回车，确认后重启），在子会话里用它自己的退出键（空提示符按 ←、Ctrl+Z、`/exit`）就回到原会话。连按两次 **x** 停止运行中的子会话；对已停止的按 **x** 会把它从面板隐藏；按 **m** 给选中的子会话写一条消息（回车发送，相当于你在那个会话里打字；Esc 取消）；连按两次 **K** 停止全部运行中的子会话。按 **Esc**、**←** 或直接打字就回到提示符。也可以用 `/subagents` 选中面板，`/subagents stop` 停止全部子会话。进入一个后台会话后，它的面板同样可用。
+**提示符下方的子 agent 面板。** 会话有子会话时，提示符下方会出现一个面板，每个子会话一行：状态、名字、耗时、正在做什么或最终结果、所在分支。在空提示符上按 **↓** 选中一行（↑↓ 移动），按 **回车** 在对话上方显示那个子会话的 transcript（与 Claude Code 一致）：实时显示它的消息和工具调用、回到 `main` 的路径、它的兄弟和直接子会话（↑↓ 加回车在树里移动，**Esc** 回上一级、最后回到提示符，PgUp/PgDn 滚动）；在里面打字就是给它发消息，会让它继续工作；**Ctrl+O** 进入它。按 **→** 进入那个子会话的完整 pi 界面（已结束的要再按一次 →，确认后重启），在子会话里用它自己的退出键（空提示符按 ←、Ctrl+Z、`/exit`）就回到原会话。连按两次 **x** 停止运行中的子会话；对已停止的按 **x** 会把它从面板隐藏；按 **m** 给选中的子会话写一条消息（回车发送，相当于你在那个会话里打字；Esc 取消）；连按两次 **K** 停止全部运行中的子会话。按 **Esc**、**←** 或直接打字就回到提示符。也可以用 `/subagents` 选中面板，`/subagents stop` 停止全部子会话。进入一个后台会话后，它的面板同样可用。
 与 Claude Code 一致：子会话成功完成后立刻从面板消失，底部提示 `/subagents to see subagents` 30 秒；失败或被停止的保留 30 秒（按 **x** 可提前清掉）。`/subagents` 还会列出最近 30 秒内完成的子会话；`/subagents all` 列出这个会话的全部子会话。嵌套的子 agent 以树形显示，下面还有行的会标 `(+N)`。
 
 How it behaves · 运行方式：

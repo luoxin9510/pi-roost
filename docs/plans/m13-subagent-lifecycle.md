@@ -23,9 +23,7 @@ Code does none of that. This milestone ports its documented behaviour
 
 ## Not ported
 
-- Claude's in-session transcript view ("open a row to see siblings and direct children
-  with a path back to main"): Enter attaches to the child, whose own panel shows its
-  children.
+- (Ported in M19: the in-session transcript view, docs/plans/m19-transcript-view.md.)
 - Deleting subagent transcripts after `cleanupPeriodDays`: records stay until `rm`.
 - `/tasks` hiding failed and stopped rows while the panel keeps them: pi-roost has one
   panel, so `/subagents` keeps them for their 30 s too.
