@@ -168,7 +168,7 @@ function rowOf(id: string): JobRow | undefined {
 	if (!rec || !st) return undefined;
 	const live = roster.has(id);
 	// M22: shown as the job that took the session (while that one is there)
-	if (!live && str(st.supersededBy) && recs.has(st.supersededBy)) return undefined;
+	if (!live && hidden(st)) return undefined;
 	const text = (v: unknown) => (typeof v === "string" && v.length > 0 ? v : null);
 	return {
 		id,
@@ -664,7 +664,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	while (recs.has(id)) id = newJobId();
 	const base = str(a.name) ? a.name : id;
 	// M22: a job this one takes the session from gives up its name (one row per session)
-	const taken = new Set([...recs.values()].filter((r) => !(!shell && foldsInto(r, a.sessionFile)) && !readState(r.id)?.supersededBy).map((r) => r.name));
+	const taken = new Set([...recs.values()].filter((r) => !(!shell && foldsInto(r, a.sessionFile)) && !hiddenJob(r.id)).map((r) => r.name));
 	let name = base;
 	for (let n = 2; taken.has(name); n++) name = `${base} (${n})`;
 
@@ -707,6 +707,16 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	return { id, name };
 }
 
+/** M22: a job whose session another job took over (while that one is there). */
+function hidden(st: JobState): boolean {
+	return str(st.supersededBy) && recs.has(st.supersededBy);
+}
+function hiddenJob(id: string): boolean {
+	if (roster.has(id)) return false;
+	const st = readState(id);
+	return st ? hidden(st) : false;
+}
+
 /** M22: an ended pi job on this session (it gives way to the job that runs it now). */
 function foldsInto(r: JobRecord, session: string | undefined): boolean {
 	return !!session && r.kind !== "shell" && r.sessionFile === session && !roster.has(r.id);
@@ -724,7 +734,7 @@ function supersedeOthers(id: string): void {
 	for (const r of recs.values()) {
 		if (r.id === id || !foldsInto(r, rec.sessionFile)) continue;
 		const st = readState(r.id);
-		if (!st || st.supersededBy) continue;
+		if (!st || hidden(st)) continue;
 		if (st.pinned === true) pinned = true;
 		updateState(r.id, { supersededBy: id });
 		push({ event: "removed", id: r.id });
@@ -745,7 +755,7 @@ function continuedElsewhere(session: string): void {
 	for (const r of recs.values()) {
 		if (!foldsInto(r, session)) continue;
 		const st = readState(r.id);
-		if (!st || st.supersededBy || (st.state !== "blocked" && st.state !== "failed")) continue;
+		if (!st || hidden(st) || (st.state !== "blocked" && st.state !== "failed")) continue;
 		updateState(r.id, {
 			state: "done",
 			waitingFor: null,
@@ -977,10 +987,15 @@ async function reapIdle(): Promise<void> {
 function resolve(query: unknown): string {
 	if (!str(query)) throw new OpError("bad_request", "query required");
 	if (recs.has(query)) return query;
-	const byPrefix = [...recs.keys()].filter((id) => id.startsWith(query));
+	// M22: jobs folded into another one's row are matched only when nothing listed is
+	const shown = (ids: string[]) => {
+		const v = ids.filter((id) => !hiddenJob(id));
+		return v.length > 0 ? v : ids;
+	};
+	const byPrefix = shown([...recs.keys()].filter((id) => id.startsWith(query)));
 	if (byPrefix.length === 1) return byPrefix[0]!;
 	const q = query.toLowerCase();
-	const matches = byPrefix.length > 1 ? byPrefix : [...recs.values()].filter((r) => r.name.toLowerCase().includes(q)).map((r) => r.id);
+	const matches = byPrefix.length > 1 ? byPrefix : shown([...recs.values()].filter((r) => r.name.toLowerCase().includes(q)).map((r) => r.id));
 	if (matches.length === 1) return matches[0]!;
 	if (matches.length === 0) throw new OpError("not_found", `no job matches "${query}"`);
 	const list = matches.map((id) => `${id} · ${recs.get(id)!.name}`).join(", ");
