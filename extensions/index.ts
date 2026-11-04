@@ -1,4 +1,4 @@
-import { discoverAgents } from "../lib/agents.ts";
+import { discoverAgents, findAgent } from "../lib/agents.ts";
 import { setJobEventBus } from "../lib/job-events.ts";
 import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
@@ -133,7 +133,7 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 
 	// M18: --agent, else the user's dispatchAgent
 	const agentName = (typeof pi.getFlag("agent") === "string" && (pi.getFlag("agent") as string).trim()) || loadConfig(ctx.cwd).dispatchAgent;
-	const agent = agentName ? discoverAgents(ctx.cwd).get(agentName) : undefined;
+	const agent = agentName ? findAgent(discoverAgents(ctx.cwd), agentName) : undefined;
 	if (agentName && !agent) {
 		iso.discard();
 		return fail(`no agent named ${agentName} (pi-subagents definitions in ~/.pi/agent/agents, .pi/agents)`);

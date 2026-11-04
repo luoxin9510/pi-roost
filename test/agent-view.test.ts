@@ -164,6 +164,12 @@ describe("AgentView render", () => {
 		await sleep(20);
 		expect(launches).toHaveLength(0);
 		expect(bad.view.render(120).join("\n")).toContain("dispatchAgent ghost is not an agent here");
+		// commands still work
+		for (let i = 0; i < 20; i++) bad.view.handleInput("\x7f");
+		type(bad.view, "!ls");
+		bad.view.handleInput("\r");
+		await sleep(20);
+		expect(bad.view.render(120).join("\n")).not.toContain("dispatchAgent ghost");
 	});
 
 	it("M16: a session with a pull request to review is Ready for review; #N filters to it; peek lists it", async () => {

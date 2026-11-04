@@ -1,7 +1,7 @@
 // M9: tools an agent uses to talk to other pi sessions (roost_agents, roost_send,
 // roost_spawn) and the renderer for the messages it receives.
 import { existsSync, statSync } from "node:fs";
-import { discoverAgents } from "../lib/agents.ts";
+import { discoverAgents, findAgent } from "../lib/agents.ts";
 import { resolve } from "node:path";
 import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -110,8 +110,9 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 			const name = params.name?.trim() || fallbackName(task);
 			const config = loadConfig(cwd);
 			const agentName = params.agent?.trim();
-			const agent = agentName ? discoverAgents(cwd).get(agentName) : undefined;
-			if (agentName && !agent) throw new Error(`no agent named ${agentName}; known: ${[...discoverAgents(cwd).keys()].join(", ") || "none"}`);
+			const known = agentName ? discoverAgents(cwd) : undefined;
+			const agent = agentName && known ? findAgent(known, agentName) : undefined;
+			if (agentName && !agent) throw new Error(`no agent named ${agentName}; known: ${[...(known?.keys() ?? [])].join(", ") || "none"}`);
 			// M10: a worktree when asked, or by the user's default (which falls back outside a repository)
 			const iso = prepareIsolation(cwd, name, params.worktree ?? isolationDefault(config.worktreeIsolation, true), params.worktree === true);
 			const sessionFile = SessionManager.create(iso.cwd).getSessionFile();

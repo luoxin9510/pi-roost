@@ -13,7 +13,7 @@ import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
 import { TaskEditor } from "./task-editor.ts";
-import { type AgentDef, pickAgent } from "../lib/agents.ts";
+import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
@@ -872,11 +872,10 @@ export class AgentView implements Component {
 		const typed = this.input.getValue();
 		const base = this.dispatchCwd();
 		// M18 (Claude Code): a first word or `@name` naming an agent runs the task as it
-		const agents = !/^[!/]/.test(typed.trim()) ? this.o.agents?.() : undefined;
-		const picked = agents ? pickAgent(typed, new Set(agents.keys())) : undefined;
-		const agentName = picked?.agent ?? this.o.defaultAgent;
-		const agent = agentName ? agents?.get(agentName) ?? this.o.agents?.().get(agentName) : undefined;
-		if (agentName && !agent && !picked) return this.say(`dispatchAgent ${agentName} is not an agent here`, "warning");
+		// (read once per Enter: it scans the agent folders)
+		let found: ReadonlyMap<string, AgentDef> | undefined;
+		const agents = () => (found ??= this.o.agents?.() ?? new Map());
+		const picked = this.o.agents && !/^[!/]/.test(typed.trim()) ? pickAgent(typed, agents()) : undefined;
 		const parsed = parseInput(picked ? picked.task : typed, base);
 		if (parsed.kind === "command") {
 			const handled = this.command(parsed.name, parsed.arg);
@@ -886,12 +885,16 @@ export class AgentView implements Component {
 		let args: LaunchRequest;
 		if (parsed.kind === "shell") {
 			if (!parsed.command) return this.say("! needs a command", "warning");
+			if (picked) return this.say(`${picked.agent.name} runs a task, not a ! command`, "warning");
 			if (!this.o.launchShell) return this.say("shell jobs are not available here", "warning");
 			args = this.o.launchShell(parsed.command, parsed.cwd ?? base);
 		} else {
-			const task = parsed.kind === "task" ? parsed.task : typed.trim();
+			const task = parsed.kind === "task" ? parsed.task : (picked ? picked.task : typed).trim();
 			if (task.length < MIN_TASK) return this.say("Too short", "warning");
 			const cwd = parsed.kind === "task" ? (parsed.cwd ?? base) : base;
+			const fallback = this.o.defaultAgent;
+			const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
+			if (fallback && !agent) return this.say(`dispatchAgent ${fallback} is not an agent here`, "warning");
 			try {
 				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree, ...(agent ? { agent } : {}) });
 			} catch (err) {

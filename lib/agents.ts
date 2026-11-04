@@ -11,6 +11,10 @@ export interface AgentDef {
 	model?: string;
 	thinking?: string;
 	tools?: string[];
+	excludeTools?: string[];
+	aliases?: string[];
+	/** Where it was found: a project's agents are picked by `@name` only (they come with the repository). */
+	source?: "builtin" | "package" | "user" | "project";
 	/** pi-subagents' default is replace: the agent's prompt is the whole system prompt. */
 	systemPromptMode: "replace" | "append";
 	prompt: string;
@@ -68,6 +72,8 @@ export function readAgent(file: string): AgentDef | undefined {
 	// a command or another CLI (codex, claude) is not a pi session
 	if (Object.keys(d).some((k) => k === "runner" || k.startsWith("runner."))) return undefined;
 	if (d.disabled === "true") return undefined;
+	// pi-subagents needs a description too
+	if (typeof d.description !== "string" || !d.description.trim()) return undefined;
 	const str = (k: string) => (typeof d[k] === "string" && d[k] ? (d[k] as string) : undefined);
 	return {
 		name,
@@ -75,6 +81,8 @@ export function readAgent(file: string): AgentDef | undefined {
 		...(str("model") ? { model: str("model") } : {}),
 		...(str("thinking") ? { thinking: str("thinking") } : {}),
 		...(list(d.tools) ? { tools: list(d.tools) } : {}),
+		...(list(d.excludeTools) ? { excludeTools: list(d.excludeTools) } : {}),
+		...(list(d.aliases)?.filter((a) => NAME.test(a)).length ? { aliases: list(d.aliases)!.filter((a) => NAME.test(a)) } : {}),
 		systemPromptMode: d.systemPromptMode === "append" ? "append" : "replace",
 		prompt: fm.body,
 		file,
@@ -108,78 +116,118 @@ export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
 	return env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 }
 
-/** Agent folders that installed packages declare (`pi-subagents.agents` / `pi.subagents.agents`). */
-function packageAgentDirs(root: string): string[] {
+/** pi-subagents' builtins and the agent folders installed packages declare (`pi-subagents.agents` / `pi.subagents.agents`). */
+function packageAgentDirs(root: string): { builtin: string[]; packages: string[] } {
 	const nm = join(root, "npm", "node_modules");
-	const out: string[] = [];
-	let names: string[] = [];
-	try {
-		names = readdirSync(nm).flatMap((n) => (n.startsWith("@") ? readdirSync(join(nm, n)).map((m) => `${n}/${m}`) : [n]));
-	} catch {
-		return [];
+	const out = { builtin: [] as string[], packages: [] as string[] };
+	const names: string[] = [];
+	const ls = (d: string) => {
+		try {
+			return readdirSync(d).sort();
+		} catch {
+			return [];
+		}
+	};
+	for (const n of ls(nm)) {
+		if (n.startsWith("@")) for (const m of ls(join(nm, n))) names.push(`${n}/${m}`);
+		else names.push(n);
 	}
 	for (const n of names) {
 		const pkgDir = join(nm, n);
+		if (n === "pi-subagents") out.builtin.push(join(pkgDir, "agents"));
 		try {
 			const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as Record<string, unknown>;
 			const decl = (pkg["pi-subagents"] as { agents?: unknown } | undefined)?.agents ?? (pkg.pi as { subagents?: { agents?: unknown } } | undefined)?.subagents?.agents;
-			if (Array.isArray(decl)) for (const d of decl) if (typeof d === "string") out.push(resolve(pkgDir, d));
-			// pi-subagents' own builtins
-			if (n === "pi-subagents") out.unshift(join(pkgDir, "agents"));
+			if (Array.isArray(decl)) for (const d of decl) if (typeof d === "string") out.packages.push(resolve(pkgDir, d));
 		} catch {}
 	}
 	return out;
 }
 
-/** Project folders from `cwd` up to the repository (or filesystem) root, nearest last. */
-function projectDirs(cwd: string): string[] {
-	const dirs: string[] = [];
+/**
+ * Project folders from the repository root down to `cwd`, nearest last; outside a
+ * repository only `cwd`'s own. The home folder is never a project (`~/.pi`, `~/.agents`
+ * are the user's).
+ */
+function projectDirs(cwd: string, home: string): string[] {
+	const chain: string[] = [];
 	let d = resolve(cwd);
-	for (let i = 0; i < 20; i++) {
-		dirs.unshift(join(d, ".agents"), join(d, ".pi", "agents"));
-		if (existsSync(join(d, ".git"))) break;
+	let root: string | undefined;
+	for (let i = 0; i < 40; i++) {
+		chain.unshift(d);
+		if (existsSync(join(d, ".git"))) {
+			root = d;
+			break;
+		}
 		const up = dirname(d);
 		if (up === d) break;
 		d = up;
 	}
-	return dirs;
+	const dirs = root ? chain : [resolve(cwd)];
+	return dirs.filter((x) => x !== resolve(home)).flatMap((x) => [join(x, ".agents"), join(x, ".pi", "agents")]);
 }
 
 /**
- * Agents by name, lowest priority first as pi-subagents loads them: builtins and
- * packages, then the user's (`~/.pi/agent/agents`), then the project's (`.pi/agents`,
- * legacy `.agents`); a later one with the same name wins.
+ * Agents by name, as pi-subagents loads them, lowest priority first: builtins, then
+ * packages (the first one with a name keeps it), then the user's
+ * (`~/.pi/agent/agents`, then `~/.agents`), then the project's (`.agents`, `.pi/agents`);
+ * a later one with the same name wins.
  */
 export function discoverAgents(cwd: string, env: NodeJS.ProcessEnv = process.env): Map<string, AgentDef> {
 	const root = agentDir(env);
-	const dirs = [...packageAgentDirs(root), join(root, "agents"), ...projectDirs(cwd)];
+	const home = env.HOME || homedir();
+	const { builtin, packages } = packageAgentDirs(root);
 	const out = new Map<string, AgentDef>();
-	for (const dir of dirs) for (const f of mdFiles(dir)) {
-		const a = readAgent(f);
-		if (a) out.set(a.name, a);
-	}
+	const load = (dirs: string[], source: NonNullable<AgentDef["source"]>, firstWins = false) => {
+		for (const dir of dirs)
+			for (const f of mdFiles(dir)) {
+				const a = readAgent(f);
+				if (!a || (firstWins && out.has(a.name) && out.get(a.name)!.source === source)) continue;
+				out.set(a.name, { ...a, source });
+			}
+	};
+	load(builtin, "builtin");
+	load(packages, "package", true);
+	load([join(root, "agents"), join(home, ".agents")], "user");
+	load(projectDirs(cwd, home), "project");
 	return out;
+}
+
+/** An agent by its name or one of its aliases. */
+export function findAgent(agents: ReadonlyMap<string, AgentDef>, name: string): AgentDef | undefined {
+	const direct = agents.get(name);
+	if (direct) return direct;
+	const byAlias = [...agents.values()].filter((a) => a.aliases?.includes(name));
+	return byAlias.length === 1 ? byAlias[0] : undefined;
 }
 
 /**
  * pi flags that make the agent the session's main agent. pi-roost's own tools stay on
  * (`roost_*`): a child reports and talks through them.
  */
-export function agentArgs(a: AgentDef, opts: { model?: boolean } = {}): string[] {
+export function agentArgs(a: AgentDef, opts: { model?: boolean; thinking?: boolean } = {}): string[] {
 	const args: string[] = [];
 	if (a.model && opts.model !== false) args.push("--model", a.model);
-	if (a.thinking) args.push("--thinking", a.thinking);
-	if (a.tools) args.push("--tools", [...a.tools, "roost_*"].join(","));
+	if (a.thinking && opts.thinking !== false) args.push("--thinking", a.thinking);
+	if (a.tools) {
+		// `+x`/`-x` change the defaults (pi-roost's tools stay on); names are an allowlist
+		const modifiers = a.tools.some((t) => /^[+-]/.test(t));
+		args.push("--tools", (modifiers ? a.tools : [...a.tools, "roost_*"]).join(","));
+	}
+	if (a.excludeTools) args.push("--exclude-tools", a.excludeTools.filter((t) => !/^roost_/.test(t)).join(","));
 	if (a.prompt) args.push(a.systemPromptMode === "append" ? "--append-system-prompt" : "--system-prompt", a.prompt);
 	return args;
 }
 
 /**
  * Claude Code: a first word, or `@name`, that names an agent selects it. The rest is
- * the task; a lone name is not a task.
+ * the task; a lone name is not a task. A project's agent (it came with the repository)
+ * needs `@name`: a first word that happens to be its name is just a word.
  */
-export function pickAgent(task: string, names: ReadonlySet<string>): { agent: string; task: string } | undefined {
-	const m = /^@?([A-Za-z0-9][A-Za-z0-9_.-]*)\s+([\s\S]+)$/.exec(task.trim());
-	if (!m || !names.has(m[1]!)) return undefined;
-	return { agent: m[1]!, task: m[2]!.trim() };
+export function pickAgent(task: string, agents: ReadonlyMap<string, AgentDef>): { agent: AgentDef; task: string } | undefined {
+	const m = /^(@?)([A-Za-z0-9][A-Za-z0-9_.-]*)\s+([\s\S]+)$/.exec(task.trim());
+	if (!m) return undefined;
+	const agent = findAgent(agents, m[2]!);
+	if (!agent || (agent.source === "project" && !m[1])) return undefined;
+	return { agent, task: m[3]!.trim() };
 }

@@ -89,11 +89,14 @@ export function buildLaunch(input: LaunchInput) {
 	// override them. Explicit choices below still win.
 	let args = input.origin === "adopt" || input.origin === "fork" ? withoutFlags(pass, SESSION_RESTORED_FLAGS, 0) : pass;
 	// M18: the agent's frontmatter over this pi's own flags; an explicit choice still wins
+	// (`--bg` reads the user's own command line: a --model or --thinking typed there wins)
+	const typed = (f: string) => input.origin === "bg" && args.some((x) => x === f || x.startsWith(`${f}=`));
+	const keepModel = typed("--model");
+	const keepThinking = typed("--thinking");
 	if (input.agent) {
-		for (const f of ["--model", "--thinking", "--tools", "--system-prompt", "--append-system-prompt"]) {
-			if (agentArgs(input.agent).includes(f)) args = withoutFlag(args, f);
-		}
-		args = [...args, ...agentArgs(input.agent)];
+		const extra = agentArgs(input.agent, { model: !keepModel, thinking: !keepThinking });
+		for (const f of ["--model", "--thinking"]) if (extra.includes(f)) args = withoutFlag(args, f);
+		args = [...args, ...extra];
 	}
 	if (input.model) args = [...withoutFlag(args, "--model"), "--model", input.model];
 	if (input.thinking) args = [...withoutFlag(args, "--thinking"), "--thinking", input.thinking];
@@ -116,8 +119,8 @@ export function buildLaunch(input: LaunchInput) {
 		...(input.model ? { model: input.model } : {}),
 		...(input.thinking ? { thinking: input.thinking } : {}),
 		...(input.agent ? { agent: input.agent.name } : {}),
-		...(input.agent?.model && !input.model ? { model: input.agent.model } : {}),
-		...(input.agent?.thinking && !input.thinking ? { thinking: input.agent.thinking } : {}),
+		...(input.agent?.model && !input.model && !keepModel ? { model: input.agent.model } : {}),
+		...(input.agent?.thinking && !input.thinking && !keepThinking ? { thinking: input.agent.thinking } : {}),
 		...(input.piVersion ? { piVersion: input.piVersion } : {}),
 		...(input.worktree ? { worktree: input.worktree } : {}),
 	};
