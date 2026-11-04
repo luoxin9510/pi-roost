@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { DaemonClient } from "../lib/client.ts";
-import { loadConfig } from "../lib/config.ts";
+import { envPolicy, loadConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName, isolationDefault, prepareIsolation, refusedByDaemon } from "../lib/dispatch.ts";
 
 // M11: pi-mobile (phone remote) integration, over pi's event bus only: neither package
@@ -44,6 +44,8 @@ export async function startForMobile(req: MobileStartRequest, connect = () => Da
 		argv: process.argv,
 		execPath: process.execPath,
 		env: { ...process.env, ...env },
+		...envPolicy(config),
+		// the phone's own variables always go (envAllowList names pass the deny list too)
 		extraEnv: [...config.envAllowList, ...Object.keys(env)],
 		piVersion: VERSION,
 		model: config.dispatchModel,

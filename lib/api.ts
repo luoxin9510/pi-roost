@@ -9,6 +9,7 @@ import { attachToHost, type DetachReason } from "./attach.ts";
 import { join } from "node:path";
 import { DaemonClient, packageRoot } from "./client.ts";
 import { buildLaunch, fallbackName, prepareIsolation, refusedByDaemon } from "./dispatch.ts";
+import { envPolicy, loadConfig } from "./config.ts";
 import { hostSocketPath } from "./paths.ts";
 import type { JobRow } from "./protocol.ts";
 import { ensureLive } from "./resume.ts";
@@ -23,7 +24,7 @@ export interface SpawnOptions {
 	/** "provider/id" */
 	model?: string;
 	thinking?: string;
-	/** Environment variable names to carry into the worker besides the defaults. */
+	/** Names always carried into the worker (M20: it inherits this process's environment anyway; these pass envDenyList). */
 	env?: string[];
 	/** The pi to run: defaults to the one running this code (process.argv[1]). */
 	piCli?: string;
@@ -79,7 +80,11 @@ export async function spawn(opts: SpawnOptions): Promise<{ id: string; name: str
 					argv,
 					execPath: process.execPath,
 					env: process.env,
-					extraEnv: opts.env,
+					// the user's environment settings; opts.env names always go
+					...(() => {
+						const p = envPolicy(loadConfig(iso.cwd));
+						return { ...p, extraEnv: [...p.extraEnv, ...(opts.env ?? [])] };
+					})(),
 					model: opts.model,
 					thinking: opts.thinking,
 					worktree: iso.worktree,

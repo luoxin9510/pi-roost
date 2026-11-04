@@ -17,6 +17,12 @@ export interface RoostConfig {
 	/** M18: the agent a dispatch runs as when the task names none (Claude Code's --agent). */
 	dispatchAgent?: string;
 	envAllowList: string[];
+	/** M20: workers start with the launching shell's environment (false: envAllowList only). */
+	inheritEnv: boolean;
+	/** M20: names (or `PREFIX*`) never carried. */
+	envDenyList: string[];
+	/** M20: the workspace's environment on top: its shell's cd hooks (direnv, mise, fnm), direnv only, or off. */
+	workspaceEnv: "shell" | "direnv" | "off";
 	groupBy: "state" | "directory";
 	/** The agent view covers the whole terminal (false: below the conversation, like the editor). */
 	fullscreen: boolean;
@@ -47,6 +53,9 @@ export interface RoostConfig {
 /** Keys a project's .pi/roost.json may not set. */
 const USER_ONLY = [
 	"envAllowList",
+	"inheritEnv",
+	"envDenyList",
+	"workspaceEnv",
 	"summaryModel",
 	"agentExternalMessages",
 	"agentMaxDepth",
@@ -61,6 +70,9 @@ export const DEFAULTS: RoostConfig = {
 	reapIdleMinutes: 60,
 	cleanupDays: 30,
 	envAllowList: [],
+	inheritEnv: true,
+	envDenyList: [],
+	workspaceEnv: "shell",
 	groupBy: "state",
 	fullscreen: true,
 	rowDetails: true,
@@ -90,6 +102,9 @@ function pick(raw: unknown): Partial<RoostConfig> {
 		if (typeof r[k] === "string" && r[k]) out[k] = r[k] as string;
 	}
 	if (Array.isArray(r.envAllowList)) out.envAllowList = r.envAllowList.filter((v): v is string => typeof v === "string");
+	if (typeof r.inheritEnv === "boolean") out.inheritEnv = r.inheritEnv;
+	if (r.workspaceEnv === "shell" || r.workspaceEnv === "direnv" || r.workspaceEnv === "off") out.workspaceEnv = r.workspaceEnv;
+	if (Array.isArray(r.envDenyList)) out.envDenyList = r.envDenyList.filter((v): v is string => typeof v === "string" && v !== "");
 	if (typeof r.fullscreen === "boolean") out.fullscreen = r.fullscreen;
 	if (typeof r.rowDetails === "boolean") out.rowDetails = r.rowDetails;
 	if (r.groupBy === "state" || r.groupBy === "directory") out.groupBy = r.groupBy;
@@ -136,4 +151,14 @@ export function saveUserConfig(patch: Partial<RoostConfig>): void {
 /** Settings that belong to the user, not a project (the daemon has no project). */
 export function loadUserConfig(): RoostConfig {
 	return { ...DEFAULTS, ...pick(readJson(userConfigPath())) };
+}
+
+/** M20: the environment settings, as buildLaunch takes them. */
+export function envPolicy(config: Pick<RoostConfig, "envAllowList" | "inheritEnv" | "envDenyList" | "workspaceEnv">): {
+	extraEnv: string[];
+	inheritEnv: boolean;
+	envDenyList: string[];
+	workspaceEnv: "shell" | "direnv" | "off";
+} {
+	return { extraEnv: config.envAllowList, inheritEnv: config.inheritEnv, envDenyList: config.envDenyList, workspaceEnv: config.inheritEnv ? config.workspaceEnv : "off" };
 }

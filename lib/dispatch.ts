@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { DaemonError } from "./client.ts";
 import { SESSION_RESTORED_FLAGS, taskArg, withoutFlags } from "./store.ts";
 import { type AgentDef, agentArgs } from "./agents.ts";
+import { envKept, type WorkspaceEnvMode } from "./workspace-env.ts";
 import { createWorktree, discardWorktree, type WorktreeInfo, WorktreeError } from "./worktree.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
@@ -30,7 +31,35 @@ export function passthroughArgs(argv: string[], cwd: string): string[] {
 const ENV_ALLOW = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "COLORTERM", "TMPDIR"];
 const ENV_ALLOW_ANY_CASE = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];
 
-/** Environment carried into a worker (PRD envAllowList defaults plus login basics). */
+export interface EnvPolicy {
+	/** M20: the workspace's own environment on top (default shell; off with inheritEnv off). */
+	workspaceEnv?: WorkspaceEnvMode;
+	/** M20 (default): the launching shell's whole environment, less ENV_NEVER and the deny list. */
+	inheritEnv?: boolean;
+	/** Settings envAllowList: names carried when inheritEnv is off; when it is on, names carried despite the deny list. */
+	extraEnv?: string[];
+	/** Settings envDenyList: names (`*` at the end matches a prefix) left out when inheriting. */
+	envDenyList?: string[];
+}
+
+/** The environment a worker starts with. */
+export function workerEnv(env: NodeJS.ProcessEnv, policy: EnvPolicy = {}): Record<string, string> {
+	if (policy.inheritEnv === false) {
+		const out = allowListedEnv(env, policy.extraEnv);
+		for (const k of Object.keys(out)) if (!envKept(k)) delete out[k];
+		return out;
+	}
+	const out: Record<string, string> = {};
+	// envAllowList names are carried even when the deny list matches them
+	const forced = new Set(policy.extraEnv ?? []);
+	for (const [k, v] of Object.entries(env)) {
+		if (v === undefined || v.includes("\0") || !envKept(k, forced.has(k) ? [] : policy.envDenyList)) continue;
+		out[k] = v;
+	}
+	return out;
+}
+
+/** Environment carried into a worker with inheritEnv off (PRD envAllowList defaults plus login basics). */
 export function allowListedEnv(env: NodeJS.ProcessEnv, extra: string[] = []): Record<string, string> {
 	const out: Record<string, string> = {};
 	const keep = (key: string) =>
@@ -62,8 +91,12 @@ export interface LaunchInput {
 	execPath: string;
 	env: NodeJS.ProcessEnv;
 	piVersion?: string;
-	/** Extra variable names to carry (settings envAllowList). */
+	/** Extra variable names to carry (settings envAllowList, with inheritEnv off). */
 	extraEnv?: string[];
+	/** M20: carry the whole environment (default), less envDenyList; then the workspace's. */
+	inheritEnv?: boolean;
+	envDenyList?: string[];
+	workspaceEnv?: WorkspaceEnvMode;
 	/** Overrides from the agent view's /model and /thinking (DI-4). */
 	model?: string;
 	thinking?: string;
@@ -113,7 +146,10 @@ export function buildLaunch(input: LaunchInput) {
 			...args,
 			...(input.task ? ["--", taskArg(input.task)] : []),
 		],
-		env: allowListedEnv(input.env, input.extraEnv),
+		env: workerEnv(input.env, input),
+		// M20: the host evaluates the workspace's environment each time the worker starts
+		...(input.inheritEnv !== false && (input.workspaceEnv ?? "shell") !== "off" ? { workspaceEnv: input.workspaceEnv ?? "shell" } : {}),
+		...(input.envDenyList?.length ? { envDeny: input.envDenyList, ...(input.extraEnv?.length ? { envForce: input.extraEnv } : {}) } : {}),
 		name: input.name,
 		origin: input.origin,
 		...(input.model ? { model: input.model } : {}),

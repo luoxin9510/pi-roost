@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Background sessions see what your shell sees: they inherit the launching shell's whole environment (less a job's identity, the launching terminal's own variables and `envDenyList`), then take on their workspace's environment each time they start: your shell's cd hooks run in the session's folder (direnv, mise, fnm, nvm), so a hub opened in one folder starts sessions in others with the right `.envrc` and tool versions (`workspaceEnv`: `"shell"`, `"direnv"`, `"off"`). `inheritEnv: false` brings back the allowlist (`envAllowList`).
 - Subagent transcripts (as in Claude Code): Enter on a panel row shows the subagent's conversation over yours, live, with the path back to main, its siblings and direct children; typing there sends it a message; Ctrl+O goes into it; → still attaches.
 - Agent presets (as in Claude Code): a task that starts with an agent's name or `@name` runs as that pi-subagents definition (model, thinking, tools, system prompt); `--agent` with `--bg`, `roost_spawn`'s `agent`, `dispatchAgent`, the `a:` filter.
 - Subagents behave as in Claude Code (docs/plans/m13-subagent-lifecycle.md):

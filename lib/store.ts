@@ -9,7 +9,13 @@ export interface JobRecord {
 	cwd: string;
 	sessionFile: string; // may not exist yet: pi writes lazily
 	command: string[]; // full argv: [execPath, piCli, ...args]
-	env: Record<string, string>; // allow-listed env captured at dispatch
+	env: Record<string, string>; // env captured at dispatch (M20: the whole env unless inheritEnv is off)
+	/** M20: how the worker's environment follows its workspace (absent: as carried). */
+	workspaceEnv?: "shell" | "direnv" | "off";
+	/** M20: names (or `PREFIX*`) a workspace's environment may not set. */
+	envDeny?: string[];
+	/** M20: names that pass envDeny (envAllowList). */
+	envForce?: string[];
 	model?: string;
 	thinking?: string;
 	/** M18: the agent it runs as. */

@@ -11,6 +11,7 @@ import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload
 import { REPAINT_MARKER } from "../lib/attach.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
+import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
 
 const { Terminal } = xterm;
 
@@ -70,8 +71,24 @@ const identity: Record<string, string> =
 				PI_DAEMON_SOCK: daemonSocketPath(),
 				PI_JOB_DIR: jobDir(id),
 			};
+// M20: the workspace's own environment (direnv, mise, fnm ...), evaluated at every start.
+// Told to stop meanwhile: the probe goes, and the job ends as one that never ran.
+const earlyStop = () => {
+	killProbes();
+	writeExit(id, { code: null, signal: "SIGTERM", at: Date.now() });
+	process.exit(0);
+};
+process.once("SIGTERM", earlyStop);
+process.once("SIGHUP", earlyStop);
+const workspace = job.workspaceEnv
+	? await workspaceEnv(job.cwd, job.env, job.workspaceEnv, (k) => envKept(k, job.envForce?.includes(k) ? [] : job.envDeny))
+	: { env: job.env, via: "none" as const };
+if (job.workspaceEnv) log("workspace env", { mode: job.workspaceEnv, via: workspace.via });
+process.off("SIGTERM", earlyStop);
+process.off("SIGHUP", earlyStop);
 const env: Record<string, string> = {
-	...job.env,
+	...workspace.env,
+	PWD: job.cwd,
 	TERM: "xterm-256color",
 	...identity,
 	// respawned with nothing new to do: the worker shows where the session left off

@@ -1,7 +1,7 @@
 import { discoverAgents } from "../lib/agents.ts";
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { loadConfig, saveUserConfig } from "../lib/config.ts";
-import { allowListedEnv, buildLaunch, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
+import { envPolicy, loadConfig, saveUserConfig } from "../lib/config.ts";
+import { buildLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import { readWriterLock } from "../lib/locks.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
@@ -73,7 +73,7 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						argv: process.argv,
 						execPath: process.execPath,
 						env: process.env,
-						extraEnv: config.envAllowList,
+						...envPolicy(config),
 						piVersion: VERSION,
 						// a resumed session keeps its own model unless the view chose one
 						// (an agent's own model and thinking level over the configured defaults)
@@ -90,7 +90,9 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 					cwd,
 					sessionFile: "",
 					command: [process.env.SHELL || "/bin/sh", "-lc", command],
-					env: allowListedEnv(process.env, config.envAllowList),
+					env: workerEnv(process.env, envPolicy(config)),
+					...(config.inheritEnv && config.workspaceEnv !== "off" ? { workspaceEnv: config.workspaceEnv } : {}),
+					...(config.envDenyList.length ? { envDeny: config.envDenyList, ...(config.envAllowList.length ? { envForce: config.envAllowList } : {}) } : {}),
 					name: `! ${fallbackName(command)}`,
 					origin: "dispatch" as const,
 				}),
