@@ -211,10 +211,12 @@ export function agentArgs(a: AgentDef, opts: { model?: boolean; thinking?: boole
 	if (a.thinking && opts.thinking !== false) args.push("--thinking", a.thinking);
 	if (a.tools) {
 		// `+x`/`-x` change the defaults (pi-roost's tools stay on); names are an allowlist
-		const modifiers = a.tools.some((t) => /^[+-]/.test(t));
-		args.push("--tools", (modifiers ? a.tools : [...a.tools, "roost_*"]).join(","));
+		// (pi refuses a list mixing the two: then the names count, as an allowlist)
+		const names = a.tools.filter((t) => !/^[+-]/.test(t));
+		args.push("--tools", (names.length === 0 ? a.tools : [...names, "roost_*"]).join(","));
 	}
-	if (a.excludeTools) args.push("--exclude-tools", a.excludeTools.filter((t) => !/^roost_/.test(t)).join(","));
+	const excluded = a.excludeTools?.filter((t) => !/^roost_/.test(t)) ?? [];
+	if (excluded.length > 0) args.push("--exclude-tools", excluded.join(","));
 	if (a.prompt) args.push(a.systemPromptMode === "append" ? "--append-system-prompt" : "--system-prompt", a.prompt);
 	return args;
 }

@@ -599,6 +599,12 @@ export class AgentView implements Component {
 	// ---- in-view commands (DI-4) -----------------------------------------
 
 	/** Returns true when the command was handled here (and the input consumed). */
+	/** M18: not a skill or prompt template (those can be an agent's first prompt). */
+	private isViewCommand(name: string): boolean {
+		if (name.startsWith("skill:")) return false;
+		return !(this.o.commands?.() ?? []).some((c) => c.name === name && (c.source === "prompt" || c.source === "skill"));
+	}
+
 	private command(name: string, arg: string): boolean {
 		const done = () => {
 			this.input.setValue("");
@@ -878,6 +884,7 @@ export class AgentView implements Component {
 		const picked = this.o.agents && !/^[!/]/.test(typed.trim()) ? pickAgent(typed, agents()) : undefined;
 		const parsed = parseInput(picked ? picked.task : typed, base);
 		if (parsed.kind === "command") {
+			if (picked && this.isViewCommand(parsed.name)) return this.say(`${picked.agent.name} runs a task, not /${parsed.name}`, "warning");
 			const handled = this.command(parsed.name, parsed.arg);
 			if (handled) return;
 			// DI-5: skills and prompt templates run as the job's first prompt

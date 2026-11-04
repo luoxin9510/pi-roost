@@ -51,4 +51,6 @@ The record keeps the agent's name (`JobRow.agent`): the peek shows it and `a:` m
 - pi-subagents' `chains`, `skills`, `extensions`, `inheritProjectContext`,
   `inheritSkills` and runner options; `package:`-scoped names; packages listed in pi's
   `settings.json` by path (only `npm/node_modules` is read).
+- `pi --session <written file> --bg --agent x`: the agent's model and thinking level
+  replace the ones the session had (asking for the agent is asking for its model).
 - The agents of an `@dir` target: agents are found from the view's directory.

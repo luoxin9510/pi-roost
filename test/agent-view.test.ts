@@ -138,6 +138,17 @@ describe("AgentView render", () => {
 			["and the tests", "reviewer"],
 			["reviewers are people too", undefined],
 		]);
+		type(view, "reviewer /model a/one");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("reviewer runs a task, not /model");
+		for (let i = 0; i < 30; i++) view.handleInput("\x7f");
+		type(view, "reviewer /review the diff");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(launches.at(-1)).toMatchObject({ task: "/review the diff" });
+		expect((launches.at(-1)!.opts as { agent?: AgentDef }).agent?.name).toBe("reviewer");
+		launches.length = 3;
 		type(view, "a:reviewer");
 		const text = view.render(120).join("\n");
 		expect(text).toContain("check pr");

@@ -92,6 +92,7 @@ describe("M18: agent definitions (pi-subagents files)", () => {
 		expect(agentArgs({ ...base, prompt: "" })).toEqual([]);
 		// modifiers keep the defaults (roost tools among them); excludes never drop roost tools
 		expect(agentArgs({ ...base, prompt: "", tools: ["+codemode", "-write"], excludeTools: ["bash", "roost_send"] })).toEqual(["--tools", "+codemode,-write", "--exclude-tools", "bash"]);
+		expect(agentArgs({ ...base, prompt: "", tools: ["read", "+bash"], excludeTools: ["roost_send"] })).toEqual(["--tools", "read,roost_*"]);
 	});
 
 	it("buildLaunch: the agent's model over the pi's own; an explicit choice still wins", () => {
