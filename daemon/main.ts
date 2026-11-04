@@ -111,6 +111,9 @@ const starting = new Set<string>();
 const stopping = new Set<string>();
 /** DM-4: being stopped for idleness; the row keeps its state. */
 const reaping = new Set<string>();
+/** M13: closing finished subagents (scheduleAutoClose). */
+const AUTO_CLOSE_MS = Number(process.env.PI_ROOST_AUTO_CLOSE_MS) || 3000;
+const closeTimers = new Map<string, NodeJS.Timeout>();
 const respawning = new Set<string>();
 const conns = new Set<Conn>();
 /** The connection each live worker reports on; replies are pushed down it. */
@@ -219,10 +222,14 @@ function pushJob(id: string): void {
 	if (job) push({ event: "job", job });
 }
 
-/** M13: a foreground pi holds the session, or a job is recorded for it (attach reaches its children). */
+/**
+ * M13: a running pi holds the session (a foreground pi, or a live job): its subagent panel
+ * shows the children and their reports reach it. A parent job that ended or was reaped
+ * does not count, so a child that waits for an answer is listed in the agent view.
+ */
 function parentOpen(key: string): boolean {
 	for (const c of fgPeers.values()) if (c.peer?.kind === "fg" && (c.peer.session ?? `peer:${c.peer.id}`) === key && !c.sock.destroyed) return true;
-	for (const r of recs.values()) if (r.kind !== "shell" && r.sessionFile === key) return true;
+	for (const r of recs.values()) if (r.kind !== "shell" && r.sessionFile === key && roster.has(r.id)) return true;
 	return false;
 }
 
@@ -234,6 +241,12 @@ function pushChildrenOf(key: string | undefined): void {
 
 function finalize(id: string, why: string, opts: { startup?: boolean } = {}): void {
 	roster.delete(id);
+	clearTimeout(closeTimers.get(id));
+	closeTimers.delete(id);
+	pushChildrenOf(recs.get(id)?.sessionFile); // M13: its children's parent is gone
+	// M13: a parent that waited for this child to end may close now
+	const parentKey = recs.get(id)?.parentSession;
+	if (parentKey) for (const r of recs.values()) if (r.sessionFile === parentKey && roster.has(r.id)) scheduleAutoClose(r.id);
 	workerConns.delete(id);
 	starting.delete(id);
 	const st = readState(id);
@@ -499,6 +512,7 @@ async function startHost(rec: JobRecord): Promise<void> {
 	}
 	const ref: HostRef = { hostPid, hostToken: "" };
 	roster.set(id, ref);
+	pushChildrenOf(rec.sessionFile); // M13: its children's parent runs again
 	for (let i = 0; i < 25 && !ref.hostToken; i++) {
 		ref.hostToken = processStartToken(hostPid) ?? "";
 		if (!ref.hostToken) await sleep(20);
@@ -835,6 +849,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	});
 	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
 	pushJob(id);
+	// M13: a subagent that finished closes (each report while done and idle starts the wait again)
+	if (r.state === "done" && r.status === "idle" && recs.get(id)?.parentSession) scheduleAutoClose(id);
 }
 
 /** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
@@ -1132,12 +1148,11 @@ async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Pr
 	const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.slice(0, max) : null);
 	const body = reportBody({ state, result: text(args?.result, 6000), question: text(args?.question, 2000), error: text(args?.error, 1000) });
 	const routed = await routeReport(peer.id, await withWorktreeLine(peer.id, body));
-	// M13: a finished child's report is routed or held on its record either way
+	// M13: the report is routed or held on the record: the worker may go
 	if (state === "done") scheduleAutoClose(peer.id);
 	return { routed };
 }
 
-const AUTO_CLOSE_MS = Number(process.env.PI_ROOST_AUTO_CLOSE_MS) || 3000;
 
 /**
  * M13: stop the worker of a child that finished, as a subagent ends in Claude Code. The
@@ -1146,9 +1161,14 @@ const AUTO_CLOSE_MS = Number(process.env.PI_ROOST_AUTO_CLOSE_MS) || 3000;
  * or waiting child alone, and one with replies still queued.
  */
 function scheduleAutoClose(id: string): void {
-	if (!loadUserConfig().subagentAutoClose) return;
-	const t = setTimeout(() => void autoClose(id), AUTO_CLOSE_MS);
+	if (!recs.get(id)?.parentSession || !loadUserConfig().subagentAutoClose) return;
+	clearTimeout(closeTimers.get(id));
+	const t = setTimeout(() => {
+		closeTimers.delete(id);
+		void autoClose(id);
+	}, AUTO_CLOSE_MS);
 	t.unref?.();
+	closeTimers.set(id, t);
 }
 
 function closable(id: string): boolean {
@@ -1156,6 +1176,8 @@ function closable(id: string): boolean {
 	const st = readState(id);
 	if (!st || st.pinned === true || st.state !== "done") return false;
 	if (st.status !== "idle" || st.waitingFor) return false;
+	// done for a moment: its report goes out right after the turn settles
+	if (Date.now() - (typeof st.stateSince === "number" ? st.stateSince : 0) < AUTO_CLOSE_MS / 2) return false;
 	// its own children still run and report to it: it would only be started again
 	const file = recs.get(id)?.sessionFile;
 	if (file && [...recs.values()].some((r) => r.parentSession === file && roster.has(r.id))) return false;

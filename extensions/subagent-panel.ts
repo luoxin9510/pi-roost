@@ -304,6 +304,11 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		expiryTimer.unref?.();
 	}
 
+	/** M13: stopping all reaches the whole tree the panel shows, not only direct children. */
+	function nestedLive(): boolean {
+		return tree.some((t) => t.depth > 0 && t.row.pid !== null);
+	}
+
 	/** A subagent of this session, at any depth. */
 	function isMine(job: JobRow): boolean {
 		const me = session();
@@ -365,7 +370,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		if (!armed || Date.now() - armed.at > ARM_MS) return undefined;
 		if (armed.key === "stopAll") {
 			const n = armed.count ?? 0;
-			return `K again stops ${n} running subagent${n === 1 ? "" : "s"}`;
+			return `K again stops ${n} running subagent${n === 1 ? "" : "s"}${nestedLive() ? ", nested ones included" : ""}`;
 		}
 		const row = rows.find((r) => r.id === armed!.id);
 		if (!row) return undefined;
@@ -749,7 +754,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			if (arg === "stop") {
 				const n = rows.filter((r) => r.pid !== null).length;
 				if (n === 0) return c.ui.notify("pi-roost: no subagent is running", "info");
-				if (!(await c.ui.confirm("Stop subagents", `Stop ${n} running subagent${n === 1 ? "" : "s"} of this session?`))) return;
+				if (!(await c.ui.confirm("Stop subagents", `Stop ${n} running subagent${n === 1 ? "" : "s"} of this session${nestedLive() ? ", nested ones included" : ""}?`))) return;
 				try {
 					return c.ui.notify(`pi-roost: ${await stopAll()}`, "info");
 				} catch (err) {
