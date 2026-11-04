@@ -1,5 +1,5 @@
 import { discoverAgents } from "../lib/agents.ts";
-import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
+import { type ExtensionContext, type SessionInfo, SessionManager, SessionSelectorComponent, VERSION } from "@earendil-works/pi-coding-agent";
 import { envPolicy, loadConfig, saveUserConfig } from "../lib/config.ts";
 import { buildLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import { readWriterLock } from "../lib/locks.ts";
@@ -112,6 +112,54 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						cwd: s.cwd,
 						modified: s.modified.getTime(),
 					})),
+				// M23: pi's own /resume list: search, this directory or all of them, sort
+				sessionSelector: ({ cwd, onSelect, onCancel, requestRender, busy }) => {
+					const seen = new Map<string, SessionInfo>();
+					const keep = (list: SessionInfo[]) => {
+						for (const s of list) seen.set(s.path, s);
+						return list;
+					};
+					const selector = new SessionSelectorComponent(
+						(onProgress, signal) => SessionManager.list(cwd, undefined, onProgress, signal).then(keep),
+						(onProgress, signal) => SessionManager.listAll(onProgress, signal).then(keep),
+						(path) => {
+							const s = seen.get(path);
+							onSelect({
+								path,
+								name: s?.name || fallbackName(s?.firstMessage || "session"),
+								cwd: s?.cwd || cwd,
+								modified: s ? s.modified.getTime() : Date.now(),
+							});
+						},
+						onCancel,
+						onCancel,
+						requestRender,
+						undefined,
+						ctx.sessionManager.getSessionFile(),
+					);
+					// a session a background job or another pi is writing is never deleted from here
+					const list = selector.getSessionList() as unknown as {
+						onDeleteSession?: (path: string) => Promise<void>;
+						onError?: (message: string) => void;
+					};
+					const remove = list.onDeleteSession;
+					list.onDeleteSession = async (path) => {
+						if (busy(path) || readWriterLock(path)) {
+							list.onError?.("in use by a running session: stop it first");
+							return;
+						}
+						await remove?.(path);
+					};
+					return selector;
+				},
+				defaultModel: () => config.dispatchModel ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined),
+				scopedModels: () => {
+					try {
+						return ctx.scopedModels.map((m) => `${m.model.provider}/${m.model.id}`);
+					} catch {
+						return [];
+					}
+				},
 				setTitle: (title) => ctx.ui.setTitle(title),
 				groupBy: config.groupBy,
 				onGroupBy: (groupBy) => saveUserConfig({ groupBy }),

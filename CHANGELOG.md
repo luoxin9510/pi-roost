@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- `/resume` in the agent view is pi's own session list: search, this directory or all of them (Tab), sort; the session you pick opens at once, started in the background (its row is reused when it has one). Sessions a running job or another pi is writing cannot be deleted from it.
+- Choose the model for new sessions as in pi: Ctrl+L (a list you can search; Tab switches between the enabled models and all of them), Ctrl+P / Shift+Ctrl+P cycle the enabled models, Shift+Tab cycles the thinking level; the line under the header always says what a new session runs. In a peek, Ctrl+L switches that session's model.
+
 ## [0.1.10] - 2026-11-04
 
 - Sessions no longer freeze after switching: a Ctrl+Z that reached a background pi (typed with other keys, batched by a multiplexer such as herdr, or encoded with Caps/Num Lock on) made pi stop its screen and wait for a resume that never came, while the session kept running. Ctrl+Z is now found anywhere in the input and in every encoding, a background pi detaches on it instead of suspending, and entering a session resumes one that is stuck this way.

@@ -1,7 +1,7 @@
 import type { AgentDef } from "../lib/agents.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { AgentView } from "../extensions/agent-view.ts";
+import { AgentView, type AgentViewOptions } from "../extensions/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 
@@ -90,7 +90,10 @@ class FakeClient {
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
 const launches: { task: string; opts: unknown }[] = [];
-function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string) => void; switchCheckMs?: number; agents?: Map<string, AgentDef>; defaultAgent?: string } = {}) {
+function setup(
+	rows: JobRow[],
+	opts: { rowsHigh?: number; onGroupBy?: (g: string) => void; switchCheckMs?: number; agents?: Map<string, AgentDef>; defaultAgent?: string; extra?: Partial<AgentViewOptions> } = {},
+) {
 	const client = new FakeClient(rows);
 	let renders = 0;
 	let doneCalls = 0;
@@ -122,6 +125,7 @@ function setup(rows: JobRow[], opts: { rowsHigh?: number; onGroupBy?: (g: string
 		switchCheckMs: opts.switchCheckMs,
 		...(opts.agents ? { agents: () => opts.agents! } : {}),
 		...(opts.defaultAgent ? { defaultAgent: opts.defaultAgent } : {}),
+		...opts.extra,
 	});
 	return { view, client, renders: () => renders, done: () => doneCalls };
 }
@@ -762,5 +766,120 @@ describe("Ctrl+G", () => {
 		view.dispose();
 		if (saved.v === undefined) delete process.env.VISUAL;
 		else process.env.VISUAL = saved.v;
+	});
+});
+
+describe("M23: /resume and models in the hub", () => {
+	it("the model picker searches, shows the enabled models with Tab for all, and says what new sessions run", async () => {
+		launches.length = 0;
+		const { view } = setup([row()], {
+			extra: { models: () => ["anthropic/claude-haiku-5-5", "anthropic/claude-opus-5-5", "openai/gpt-5"], scopedModels: () => ["anthropic/claude-opus-5-5", "openai/gpt-5"], defaultModel: () => "anthropic/claude-opus-5-5" },
+		});
+		await view.start();
+		expect(view.render(100).join("\n")).toContain("new sessions: model anthropic/claude-opus-5-5 (default)");
+		view.handleInput("\x0c"); // Ctrl+L
+		let screen = view.render(100).join("\n");
+		expect(screen).toContain("Model for new sessions · enabled models");
+		expect(screen).not.toContain("claude-haiku");
+		view.handleInput("\t"); // all models
+		expect(view.render(100).join("\n")).toContain("· all models");
+		type(view, "hai");
+		screen = view.render(100).join("\n");
+		expect(screen).toContain("search: hai");
+		expect(screen).toContain("anthropic/claude-haiku-5-5");
+		expect(screen).not.toContain("openai/gpt-5");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("new sessions: model anthropic/claude-haiku-5-5");
+		type(view, "summarise the log");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(launches.at(-1)).toMatchObject({ opts: { model: "anthropic/claude-haiku-5-5" } });
+		view.dispose();
+	});
+
+	it("Ctrl+P and Shift+Ctrl+P cycle the enabled models; Shift+Tab the thinking level", async () => {
+		const { view } = setup([row()], { extra: { scopedModels: () => ["a/one", "b/two"] } });
+		await view.start();
+		view.handleInput("\x10"); // Ctrl+P
+		expect(view.render(100).join("\n")).toContain("new sessions: model a/one");
+		view.handleInput("\x10");
+		expect(view.render(100).join("\n")).toContain("new sessions: model b/two");
+		view.handleInput("\x10");
+		expect(view.render(100).join("\n")).toContain("new sessions: model a/one");
+		view.handleInput("\x1b[112;6u"); // Shift+Ctrl+P (kitty)
+		expect(view.render(100).join("\n")).toContain("new sessions: model b/two");
+		view.handleInput("\x1b[Z"); // Shift+Tab
+		expect(view.render(100).join("\n")).toContain("thinking off");
+		view.dispose();
+	});
+
+	it("/resume shows pi's session list; picking one with no row starts it in the background and enters it", async () => {
+		launches.length = 0;
+		let keys = "";
+		let picked: ((s: { path: string; name: string; cwd: string; modified: number }) => void) | undefined;
+		const { view, client } = setup([row()], {
+			extra: {
+				sessionSelector: (o) => {
+					picked = o.onSelect;
+					return { render: () => ["PI SESSION LIST", "keys: enter select"], handleInput: (d) => (keys += d) };
+				},
+			},
+		});
+		await view.start();
+		type(view, "/resume");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("PI SESSION LIST");
+		type(view, "abc");
+		expect(keys).toBe("abc"); // its keys go to it
+		picked!({ path: "/s/old.jsonl", name: "old work", cwd: "/w/app", modified: Date.now() });
+		await sleep(20);
+		expect(view.render(100).join("\n")).not.toContain("PI SESSION LIST");
+		expect(launches.at(-1)).toMatchObject({ task: "", opts: { sessionFile: "/s/old.jsonl", cwd: "/w/app", origin: "adopt" } });
+		expect(client.requests.some((r) => r.op === "dispatch")).toBe(true);
+		expect(view.render(100).join("\n")).toContain("resuming");
+		view.dispose();
+	});
+
+	it("/resume falls back to the view's own list when pi's cannot be built; an Esc closes pi's", async () => {
+		const { view } = setup([row()], {
+			extra: {
+				sessionSelector: () => {
+					throw new Error("no such export");
+				},
+				resumable: async () => [{ path: "/s/a.jsonl", name: "alpha", cwd: "/w", modified: Date.now() }],
+			},
+		});
+		await view.start();
+		type(view, "/resume");
+		view.handleInput("\r");
+		await sleep(20);
+		const screen = view.render(100).join("\n");
+		// the view's own list (its warning gives way to the list's own notices)
+		expect(screen).toContain("Resume a session in the background");
+		expect(screen).toContain("alpha");
+		view.dispose();
+		let cancel: (() => void) | undefined;
+		const two = setup([row()], { extra: { sessionSelector: (o) => ((cancel = o.onCancel), { render: () => ["PI SESSION LIST"] }) } });
+		await two.view.start();
+		type(two.view, "/resume");
+		two.view.handleInput("\r");
+		cancel!();
+		expect(two.view.render(100).join("\n")).not.toContain("PI SESSION LIST");
+		two.view.dispose();
+	});
+
+	it("/resume on a session that has a row enters that row (no second job)", async () => {
+		const listed = row({ name: "listed one", sessionFile: "/s/listed.jsonl", pid: null, endedAt: Date.now() - 1000, state: "done" });
+		let picked: ((s: { path: string; name: string; cwd: string; modified: number }) => void) | undefined;
+		const { view, client } = setup([listed], { extra: { sessionSelector: (o) => ((picked = o.onSelect), { render: () => ["LIST"] }) } });
+		await view.start();
+		type(view, "/resume");
+		view.handleInput("\r");
+		picked!({ path: "/s/listed.jsonl", name: "listed one", cwd: "/w", modified: Date.now() });
+		await sleep(30);
+		expect(client.requests.some((r) => r.op === "dispatch")).toBe(false);
+		// started again for the attach (an ended row asks no "Enter again" when chosen here)
+		expect(client.requests.some((r) => r.op === "respawn")).toBe(true);
+		view.dispose();
 	});
 });

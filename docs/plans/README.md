@@ -30,5 +30,6 @@ Claude Code's documented behaviour.
 | M20 | [your shell's environment, per workspace](m20-shell-environment.md) | 0.1.7 |
 | M21 | [an attach starts from the host's screen](m21-attach-replay.md) | 0.1.9 |
 | M22 | [many pi windows, frequent switching](m22-multi-window.md) | 0.1.10 |
+| M23 | [/resume and models in the hub](m23-resume-model.md) | next |
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).
