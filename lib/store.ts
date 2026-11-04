@@ -12,6 +12,8 @@ export interface JobRecord {
 	env: Record<string, string>; // allow-listed env captured at dispatch
 	model?: string;
 	thinking?: string;
+	/** M18: the agent it runs as. */
+	agent?: string;
 	origin: "bg" | "dispatch" | "adopt" | "fork";
 	/** DI-6: a shell command instead of pi; absent means pi. */
 	kind?: "pi" | "shell";

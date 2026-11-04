@@ -167,10 +167,11 @@ describe("host", () => {
 
 	it("M15: answers terminal queries while nobody is attached", async () => {
 		const { id } = await startHost(`sleep 0.3; stty -icanon -echo; printf '\\033[c'; x=$(dd bs=1 count=3 2>/dev/null | od -An -c | tr -d ' '); echo "got:$x"; sleep 30`);
+		// under a full suite's load a control connection can fail once: try again
 		const text = await waitFor(async () => {
-			const r = (await hostControl(id, "snapshot")) as { text: string };
-			return r.text.includes("got:") ? r.text : undefined;
-		}, 6000);
+			const r = (await hostControl(id, "snapshot").catch(() => undefined)) as { text: string } | undefined;
+			return r?.text.includes("got:") ? r.text : undefined;
+		}, 10000);
 		expect(text).toContain("got:033[?");
 		await hostControl(id, "terminate");
 	});

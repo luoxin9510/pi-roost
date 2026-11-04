@@ -14,6 +14,8 @@ export interface RoostConfig {
 	summaryModel?: string;
 	dispatchModel?: string;
 	dispatchThinking?: string;
+	/** M18: the agent a dispatch runs as when the task names none (Claude Code's --agent). */
+	dispatchAgent?: string;
 	envAllowList: string[];
 	groupBy: "state" | "directory";
 	/** The agent view covers the whole terminal (false: below the conversation, like the editor). */
@@ -84,7 +86,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (typeof r.defaultToAgentsView === "boolean") out.defaultToAgentsView = r.defaultToAgentsView;
 	if (typeof r.reapIdleMinutes === "number" && r.reapIdleMinutes > 0) out.reapIdleMinutes = r.reapIdleMinutes;
 	if (typeof r.cleanupDays === "number" && r.cleanupDays >= 0 && r.cleanupDays <= 3650) out.cleanupDays = r.cleanupDays;
-	for (const k of ["summaryModel", "dispatchModel", "dispatchThinking"] as const) {
+	for (const k of ["summaryModel", "dispatchModel", "dispatchThinking", "dispatchAgent"] as const) {
 		if (typeof r[k] === "string" && r[k]) out[k] = r[k] as string;
 	}
 	if (Array.isArray(r.envAllowList)) out.envAllowList = r.envAllowList.filter((v): v is string => typeof v === "string");

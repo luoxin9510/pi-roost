@@ -2,6 +2,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { DaemonError } from "./client.ts";
 import { SESSION_RESTORED_FLAGS, taskArg, withoutFlags } from "./store.ts";
+import { type AgentDef, agentArgs } from "./agents.ts";
 import { createWorktree, discardWorktree, type WorktreeInfo, WorktreeError } from "./worktree.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
@@ -68,6 +69,8 @@ export interface LaunchInput {
 	thinking?: string;
 	/** M10: the worktree made for it (prepareIsolation); cwd is inside it. */
 	worktree?: WorktreeInfo;
+	/** M18: run as this agent (its model, thinking, tools and system prompt). */
+	agent?: AgentDef;
 }
 
 /** The daemon dispatch request for a new background pi running `task`. */
@@ -85,6 +88,16 @@ export function buildLaunch(input: LaunchInput) {
 	// model and thinking level (maybe switched since this pi started): its own flags would
 	// override them. Explicit choices below still win.
 	let args = input.origin === "adopt" || input.origin === "fork" ? withoutFlags(pass, SESSION_RESTORED_FLAGS, 0) : pass;
+	// M18: the agent's frontmatter over this pi's own flags; an explicit choice still wins
+	// (`--bg` reads the user's own command line: a --model or --thinking typed there wins)
+	const typed = (f: string) => input.origin === "bg" && args.some((x) => x === f || x.startsWith(`${f}=`));
+	const keepModel = typed("--model");
+	const keepThinking = typed("--thinking");
+	if (input.agent) {
+		const extra = agentArgs(input.agent, { model: !keepModel, thinking: !keepThinking });
+		for (const f of ["--model", "--thinking"]) if (extra.includes(f)) args = withoutFlag(args, f);
+		args = [...args, ...extra];
+	}
 	if (input.model) args = [...withoutFlag(args, "--model"), "--model", input.model];
 	if (input.thinking) args = [...withoutFlag(args, "--thinking"), "--thinking", input.thinking];
 	return {
@@ -105,6 +118,9 @@ export function buildLaunch(input: LaunchInput) {
 		origin: input.origin,
 		...(input.model ? { model: input.model } : {}),
 		...(input.thinking ? { thinking: input.thinking } : {}),
+		...(input.agent ? { agent: input.agent.name } : {}),
+		...(input.agent?.model && !input.model && !keepModel ? { model: input.agent.model } : {}),
+		...(input.agent?.thinking && !input.thinking && !keepThinking ? { thinking: input.agent.thinking } : {}),
 		...(input.piVersion ? { piVersion: input.piVersion } : {}),
 		...(input.worktree ? { worktree: input.worktree } : {}),
 	};

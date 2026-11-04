@@ -1,3 +1,4 @@
+import { discoverAgents } from "../lib/agents.ts";
 import { type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveUserConfig } from "../lib/config.ts";
 import { allowListedEnv, buildLaunch, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
@@ -75,11 +76,15 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						extraEnv: config.envAllowList,
 						piVersion: VERSION,
 						// a resumed session keeps its own model unless the view chose one
-						model: o.model ?? (o.origin === "adopt" ? undefined : config.dispatchModel),
-						thinking: o.thinking ?? (o.origin === "adopt" ? undefined : config.dispatchThinking),
+						// (an agent's own model and thinking level over the configured defaults)
+						model: o.model ?? (o.origin === "adopt" || o.agent?.model ? undefined : config.dispatchModel),
+						thinking: o.thinking ?? (o.origin === "adopt" || o.agent?.thinking ? undefined : config.dispatchThinking),
+						...(o.agent ? { agent: o.agent } : {}),
 					});
 					return { ...launch, ...(iso.worktree ? { worktree: iso.worktree, discard: iso.discard } : {}), ...(iso.note ? { note: iso.note } : {}) };
 				},
+				agents: () => discoverAgents(dispatchCwd),
+				...(config.dispatchAgent ? { defaultAgent: config.dispatchAgent } : {}),
 				launchShell: (command, cwd) => ({
 					kind: "shell" as const,
 					cwd,

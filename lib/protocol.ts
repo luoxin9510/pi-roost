@@ -52,6 +52,8 @@ export interface JobRow {
 	rootSession?: string | null;
 	/** M13: someone holds the parent session now (a foreground pi, or a job recorded for it). */
 	parentOpen?: boolean;
+	/** M18: the agent it runs as. */
+	agent?: string | null;
 	/** M16: the session's pull requests as gh last reported them. */
 	prs?: PrInfo[];
 	/** M10: the session's own git worktree. */
@@ -126,6 +128,8 @@ export interface DispatchArgs {
 	name: string;
 	model?: string;
 	thinking?: string;
+	/** M18: the agent (pi-subagents definition) the session runs as. */
+	agent?: string;
 	origin: DispatchOrigin;
 	piVersion?: string;
 	/** M10: the worktree the dispatching side made for this session (cwd is inside it). */

@@ -8,13 +8,15 @@ export interface Filter {
 	/** M16: `#1234` or a pull request URL: the session working on it. */
 	pr?: { number: number; url?: string };
 	states: string[];
+	/** M18: a:<agent> */
+	agents?: string[];
 	names: string[];
 	outputs: string[];
 	/** bare o: */
 	hasOutput: boolean;
 }
 
-const TOKEN = /^(s|n|o):(.*)$/i;
+const TOKEN = /^(s|n|o|a):(.*)$/i;
 
 /** The filter in the input, or undefined when the text is a task to dispatch. */
 export function parseFilter(text: string): Filter | undefined {
@@ -32,6 +34,8 @@ export function parseFilter(text: string): Filter | undefined {
 			if (value) f.states.push(value);
 		} else if (kind === "n") {
 			if (value) f.names.push(value);
+		} else if (kind === "a") {
+			if (value) f.agents = [...(f.agents ?? []), value];
 		} else if (value) f.outputs.push(value);
 		else f.hasOutput = true;
 	}
@@ -67,6 +71,7 @@ const resultOf = (r: JobRow) => [r.summary, r.question, r.error].filter(Boolean)
 export function matches(row: JobRow, f: Filter): boolean {
 	if (f.pr && !rowHasPr(row.prs, f.pr)) return false;
 	if (f.states.length > 0 && !f.states.some((s) => stateMatches(row, s))) return false;
+	if (f.agents?.length && !f.agents.some((a) => (row.agent ?? "").toLowerCase() === a)) return false;
 	const name = row.name.toLowerCase();
 	if (f.names.length > 0 && !f.names.some((n) => name.includes(n))) return false;
 	const result = resultOf(row);
