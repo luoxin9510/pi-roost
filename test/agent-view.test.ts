@@ -621,6 +621,50 @@ describe("AgentView model and context (M8)", () => {
 	});
 });
 
+describe("M17: the task input is pi's editor", () => {
+	it("Shift+Enter adds a line, ↑↓ move in the text, a long paste folds and dispatches in full", async () => {
+		launches.length = 0;
+		const a = row({ name: "first job" });
+		const b = row({ name: "second job" });
+		const { view } = setup([a, b]);
+		await view.start();
+		type(view, "line one");
+		view.handleInput("\x1b[13;2u"); // Shift+Enter (kitty)
+		type(view, "line two");
+		let text = view.render(80).join("\n");
+		expect(text).toContain("line one");
+		expect(text).toContain("line two");
+		// ↑ on the second line stays in the text; the selection does not move
+		const sel = () => view.render(80).find((l) => l.startsWith("›") && l.includes(" job"));
+		const before = sel();
+		view.handleInput("\x1b[A");
+		expect(sel()).toBe(before);
+		view.handleInput("\r");
+		await sleep(20);
+		expect(launches.at(-1)?.task).toBe("line one\nline two");
+		// a long paste: a marker on screen, the whole text dispatched
+		const long = Array.from({ length: 30 }, (_, i) => `pasted ${i}`).join("\n");
+		view.handleInput(`\x1b[200~${long}\x1b[201~`);
+		text = view.render(80).join("\n");
+		expect(text).not.toContain("pasted 29");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(launches.at(-1)?.task).toBe(long);
+		// Ctrl+J as a bare LF adds a line; a paste in pieces is not taken as keys
+		type(view, "one");
+		view.handleInput("\n");
+		type(view, "two");
+		view.handleInput("\x1b[200~");
+		view.handleInput("\r");
+		view.handleInput(" ?x");
+		view.handleInput("\x1b[201~");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(launches.at(-1)?.task).toBe("one\ntwo\n ?x");
+		view.dispose();
+	});
+});
+
 describe("Ctrl+G", () => {
 	it("writes the task in $EDITOR and dispatches all of its lines", async () => {
 		launches.length = 0;
@@ -630,7 +674,10 @@ describe("Ctrl+G", () => {
 		await view.start();
 		view.handleInput("\x07"); // Ctrl+G
 		await sleep(300);
-		expect(view.render(80).join("\n")).toContain("first line [+1 lines]");
+		// M17: the editor shows every line
+		const shown = view.render(80).join("\n");
+		expect(shown).toContain("first line");
+		expect(shown).toContain("second line");
 		view.handleInput("\r");
 		await sleep(20);
 		expect(launches.at(-1)?.task).toBe("first line\nsecond line");

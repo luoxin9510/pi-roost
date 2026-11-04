@@ -8,6 +8,7 @@
   - the panel drops a finished child at once and the footer says `/subagents to see subagents` for 30 s; failed and stopped rows stay 30 s;
   - `/subagents` also lists the ones finished in the last 30 s, and `/subagents all` lists every one;
   - nested subagents show as a tree with `(+N)` counts.
+- The agent view's task input is pi's editor: several lines (Shift+Enter), long pastes folded into a marker and sent in full, ↑↓ move within a task of several lines.
 - Pull requests (as in Claude Code): a session's pull request shows as `#N` at the row's right edge, coloured by checks and review and linked; sessions whose pull request needs review or has failing checks are grouped as **Ready for review**; `#N` or a pull request URL selects the session working on it; `s:ready`. Needs `gh`.
 - `.worktreeinclude` (as in Claude Code): ignored files it names are copied into new worktrees; `rm` does not count them as work unless changed.
 - `pi-roost list` (`ls`): a table of sessions as the agent view lists them (`--subagents` adds those).
