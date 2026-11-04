@@ -17,7 +17,7 @@ function outputText(result: unknown): string {
 /** The branch's open pull request in `cwd`, if gh knows one. */
 function lookupBranch(cwd: string): Promise<string | undefined> {
 	return new Promise((done) => {
-		execFile("gh", ["pr", "view", "--json", "url", "--jq", ".url"], { cwd, timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } }, (err, out) =>
+		execFile(process.env.PI_ROOST_GH || "gh", ["pr", "view", "--json", "url", "--jq", ".url"], { cwd, timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } }, (err, out) =>
 			done(err ? undefined : prUrlsIn(String(out))[0]),
 		);
 	});
@@ -44,8 +44,9 @@ export function registerPrLinks(pi: ExtensionAPI, changed: () => void, lookup: (
 		if (grew) changed();
 		return grew;
 	};
-	const look = async () => {
-		if (looking) return;
+	/** False when a lookup is already running (a retry then does not count). */
+	const look = async (): Promise<boolean> => {
+		if (looking) return false;
 		looking = true;
 		try {
 			const url = await lookup(cwd);
@@ -56,6 +57,7 @@ export function registerPrLinks(pi: ExtensionAPI, changed: () => void, lookup: (
 		} finally {
 			looking = false;
 		}
+		return true;
 	};
 	pi.on("session_start", (_e, ctx) => {
 		cwd = ctx.cwd;
@@ -75,7 +77,7 @@ export function registerPrLinks(pi: ExtensionAPI, changed: () => void, lookup: (
 			// the pull request may not exist yet: try again after later commands
 			retries = LOOKUP_RETRIES;
 			void look();
-		} else if (step.retry && retries > 0) {
+		} else if (step.retry && retries > 0 && !looking) {
 			retries--;
 			void look();
 		}

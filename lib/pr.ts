@@ -12,12 +12,15 @@ export interface PrInfo {
 	title?: string;
 }
 
-const PR_URL = /https?:\/\/[A-Za-z0-9.-]+(?::\d+)?\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/(\d+)/g;
+const PR_URL = /https?:\/\/([A-Za-z0-9.-]+)(?::\d+)?\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/(\d+)(?![A-Za-z0-9_])/g;
+
+/** Not a forge: gh is never pointed at this machine or a bare address. */
+const LOCAL_HOST = /^(localhost|[\d.]+|.*\.local|.*\.internal)$/i;
 
 /** Pull request URLs in a text, each once, without a trailing path (`/files`, `#…`). */
 export function prUrlsIn(text: string): string[] {
 	const out = new Set<string>();
-	for (const m of text.matchAll(PR_URL)) out.add(m[0]);
+	for (const m of text.matchAll(PR_URL)) if (!LOCAL_HOST.test(m[1]!)) out.add(m[0]);
 	return [...out];
 }
 
@@ -74,8 +77,9 @@ export interface GhPr {
 	title?: string;
 }
 
-const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
-const DONE_OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+// a run cancelled (a newer push, by hand) is not a failure of the change
+const DONE_OK = new Set(["SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED"]);
 
 /** Checks of `gh pr view --json statusCheckRollup`: check runs carry conclusion, statuses state. */
 export function checksOf(rollup: GhCheck[] | null | undefined): "none" | "pending" | "failing" | "passing" {
@@ -144,10 +148,15 @@ export function prQuery(text: string): { number: number; url?: string } | undefi
 	const t = text.trim();
 	const m = /^#(\d+)$/.exec(t);
 	if (m) return { number: Number(m[1]) };
-	if (isPrUrl(t)) return { number: prNumber(t)!, url: t };
+	// a URL from the browser may go on (`/files`, `#discussion…`, `?w=1`)
+	const url = /^\S+$/.test(t) ? prUrlsIn(t)[0] : undefined;
+	if (url && t.startsWith(url)) return { number: prNumber(url)!, url };
 	return undefined;
 }
 
+/** host/owner/repo/number, whatever the scheme or case. */
+const prKey = (url: string) => url.replace(/^https?:\/\//i, "").toLowerCase();
+
 export function rowHasPr(prs: PrInfo[] | undefined, q: { number: number; url?: string }): boolean {
-	return !!prs?.some((p) => (q.url ? p.url === q.url : p.number === q.number));
+	return !!prs?.some((p) => (q.url ? prKey(p.url) === prKey(q.url) : p.number === q.number));
 }
