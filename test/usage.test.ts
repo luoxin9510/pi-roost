@@ -20,19 +20,29 @@ describe("M24 usage", () => {
 			msg(0.25, now - 1000),
 			msg(0.1, now - 500, "openai/gpt-5"),
 			{ type: "message", message: { role: "user", usage: { input: 999, cost: { total: 9 } } } },
-			{ type: "usage", timestamp: new Date(now - 100).toISOString(), usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.05 } } },
+			{ type: "usage", provider: "openai", model: "gpt-5", timestamp: new Date(now - 100).toISOString(), usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.05 } } },
+			{ type: "usage", timestamp: new Date(now - 100).toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } },
+			// as pi's footer: tool results, compactions and branch summaries count too
+			{ type: "message", message: { role: "toolResult", timestamp: now - 90, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } } } },
+			{ type: "compaction", timestamp: new Date(now - 80).toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.03 } } },
+			{ type: "branch_summary", timestamp: new Date(now - 70).toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.04 } } },
+			{ type: "compaction", timestamp: new Date(now - 60).toISOString() },
+			// the model that answered, when the provider says so
+			{ ...msg(0.2, now - 50, "openrouter/auto"), message: { ...msg(0.2, now - 50, "openrouter/auto").message, responseModel: "x/y" } },
 		];
 		const u = sessionUsage(entries, now, false);
-		expect(u.cost).toBeCloseTo(1.9);
-		expect(u.today).toBeCloseTo(0.4);
-		expect(u.input).toBe(310);
+		expect(u.cost).toBeCloseTo(2.2);
+		expect(u.today).toBeCloseTo(0.7);
+		expect(u.input).toBe(410);
 		expect(u.models["anthropic/claude-opus-5-5"]).toEqual({ cost: 1.75, tokens: 400 });
-		expect(u.models["openai/gpt-5"]!.cost).toBeCloseTo(0.1);
-		expect(u.models.other!.cost).toBeCloseTo(0.05);
+		expect(u.models["openai/gpt-5"]!.cost).toBeCloseTo(0.15);
+		expect(u.models["Tools/summaries"]!.cost).toBeCloseTo(0.09);
+		expect(u.models["openrouter/x/y"]!.cost).toBeCloseTo(0.2);
+		expect(u.models.other!.cost).toBeCloseTo(0.01);
 		expect(u.day).toBe(localMidnight(now));
 		// a day later, today's share is gone
 		expect(todayOf(u, now + 24 * 3600_000)).toBe(0);
-		expect(todayOf(u, now)).toBeCloseTo(0.4);
+		expect(todayOf(u, now)).toBeCloseTo(0.7);
 	});
 
 	it("keeps the largest models and sums the rest; takes nothing malformed", () => {
@@ -47,6 +57,8 @@ describe("M24 usage", () => {
 			input: 0,
 			models: { "a/b": { cost: 2, tokens: 0 } },
 		});
+		const hostile = usageFrom(JSON.parse('{"models":{"__proto__":{"cost":5},"constructor":{"cost":1}}}'));
+		expect(Object.keys(hostile!.models)).toEqual(["constructor"]);
 		expect(usageFrom(null)).toBeNull();
 	});
 

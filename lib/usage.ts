@@ -1,5 +1,5 @@
 // M24: what a session spent, as pi's own footer counts it (every assistant message's usage
-// and every usage entry, compactions included), with today's share and a split by model.
+// and usage entry, tool results, compactions and branch summaries), with today's share and a split by model.
 // Computed in the worker from its session, reported with the row, summed by the view.
 
 export interface UsageInfo {
@@ -34,8 +34,13 @@ interface EntryLike {
 	type?: unknown;
 	timestamp?: unknown;
 	usage?: UsageLike;
-	message?: { role?: unknown; usage?: UsageLike; provider?: unknown; model?: unknown; timestamp?: unknown };
+	provider?: unknown;
+	model?: unknown;
+	message?: { role?: unknown; usage?: UsageLike; provider?: unknown; model?: unknown; responseModel?: unknown; timestamp?: unknown };
 }
+
+/** pi's bucket for usage no model is named for (tool results, summaries). */
+export const SUMMARIES = "Tools/summaries";
 
 const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
 
@@ -64,10 +69,20 @@ export function sessionUsage(entries: readonly unknown[], now: number, sub: bool
 		const e = raw as EntryLike;
 		let usage: UsageLike | undefined;
 		let model = "other";
-		if (e?.type === "usage") usage = e.usage;
-		else if (e?.type === "message" && e.message?.role === "assistant") {
+		// the same entries and keys as pi's getUsageCostBreakdown
+		if (e?.type === "usage") {
+			usage = e.usage;
+			if (typeof e.provider === "string" && typeof e.model === "string") model = `${e.provider}/${e.model}`;
+		} else if (e?.type === "message" && e.message?.role === "assistant") {
 			usage = e.message.usage;
-			if (typeof e.message.provider === "string" && typeof e.message.model === "string") model = `${e.message.provider}/${e.message.model}`;
+			const id = typeof e.message.responseModel === "string" ? e.message.responseModel : e.message.model;
+			if (typeof e.message.provider === "string" && typeof id === "string") model = `${e.message.provider}/${id}`;
+		} else if (e?.type === "message" && e.message?.role === "toolResult" && e.message.usage) {
+			usage = e.message.usage;
+			model = SUMMARIES;
+		} else if ((e?.type === "compaction" || e?.type === "branch_summary") && e.usage) {
+			usage = e.usage;
+			model = SUMMARIES;
 		}
 		if (!usage) continue;
 		const cost = n((usage.cost as { total?: unknown } | undefined)?.total);
@@ -103,10 +118,10 @@ function topModels(models: Record<string, { cost: number; tokens: number }>): Re
 export function usageFrom(v: unknown): UsageInfo | null {
 	if (!v || typeof v !== "object") return null;
 	const o = v as Record<string, unknown>;
-	const models: Record<string, { cost: number; tokens: number }> = {};
+	const models: Record<string, { cost: number; tokens: number }> = Object.create(null);
 	if (o.models && typeof o.models === "object") {
 		for (const [k, m] of Object.entries(o.models as Record<string, unknown>).slice(0, USAGE_MODELS + 1)) {
-			if (!k || k.length > 200 || !m || typeof m !== "object") continue;
+			if (!k || k.length > 200 || k === "__proto__" || !m || typeof m !== "object") continue;
 			const mm = m as Record<string, unknown>;
 			models[k] = { cost: n(mm.cost), tokens: n(mm.tokens) };
 		}

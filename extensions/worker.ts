@@ -495,7 +495,10 @@ export class ReplyQueue {
 export function usageOf(ctx: ExtensionContext, now = Date.now()): UsageInfo | null {
 	try {
 		const m = ctx.model;
-		const sub = m ? m.provider === "kimi-coding" || ctx.modelRegistry.isUsingOAuth(m) : false;
+		// pi's footer: OAuth to a provider that marks its OAuth a subscription (isUsingSubscription)
+		const sub = m
+			? m.provider === "kimi-coding" || (ctx.modelRegistry.isUsingOAuth(m) && ctx.modelRegistry.getProvider(m.provider)?.auth?.oauth?.isSubscription === true)
+			: false;
 		return sessionUsage(ctx.sessionManager.getEntries(), now, sub);
 	} catch {
 		return null; // a stale ctx after a session switch

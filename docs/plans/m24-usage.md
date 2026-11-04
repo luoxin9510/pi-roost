@@ -3,9 +3,9 @@
 What the sessions spend, where they are managed.
 
 - The worker counts its session as pi's footer does (`lib/usage.ts` `sessionUsage`):
-  every assistant message's usage and every usage entry (compactions); the share since
+  assistant messages, usage entries, tool results, compactions and branch summaries, keyed as pi keys them; the share since
   local midnight; cost and tokens per model (the largest eight, the rest as `other`). A
-  subscription (`isUsingOAuth`, kimi-coding) marks it notional (`sub`).
+  subscription (OAuth to a provider marked `isSubscription`, kimi-coding) marks it notional (`sub`).
 - Counted at each start and after each reply; sent with the row text's pace (a change
   of usage alone waits the summary interval), stored by the daemon (`usageFrom`
   validates it), kept when a report has none (older workers).
