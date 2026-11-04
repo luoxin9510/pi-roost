@@ -142,11 +142,11 @@ its context window is (`claude-opus-5-5 · 43%`, yellow from 80%, red from 95%);
 adds the thinking level and the token counts (`ctx 86k / 200k`). In a peek, `/model` and
 `/thinking` switch that session (bare: pick from a list). The view says when the session
 shows the switch, or that it did not (for a model, usually no credentials in the
-background session: see `envAllowList`). A turn in progress finishes its current model
+background session: see [environment](#environment--环境变量)). A turn in progress finishes its current model
 request, and the next request uses the new model. The switch is saved in
 the session, so a session that is restarted later keeps it.
 
-**查看并切换每个会话的模型。** 每一行都显示这个会话用的模型，以及上下文窗口用了多少（`claude-opus-5-5 · 43%`，80% 起变黄，95% 起变红）。偷看时还会显示 thinking 级别和 token 数（`ctx 86k / 200k`）。在偷看里输入 `/model`、`/thinking`，就能切换这个会话的模型和 thinking 级别（不带参数则从列表里选）。会话真正切换后，视图会提示；没切换成功也会提示（模型切换失败通常是后台会话里没有对应的凭据，见 `envAllowList`）。正在执行的一轮会先跑完当前这次模型请求，下一次请求就用新模型。切换会记录在会话里，会话之后重启也会保留。
+**查看并切换每个会话的模型。** 每一行都显示这个会话用的模型，以及上下文窗口用了多少（`claude-opus-5-5 · 43%`，80% 起变黄，95% 起变红）。偷看时还会显示 thinking 级别和 token 数（`ctx 86k / 200k`）。在偷看里输入 `/model`、`/thinking`，就能切换这个会话的模型和 thinking 级别（不带参数则从列表里选）。会话真正切换后，视图会提示；没切换成功也会提示（模型切换失败通常是后台会话里没有对应的凭据，见[环境变量](#environment--环境变量)）。正在执行的一轮会先跑完当前这次模型请求，下一次请求就用新模型。切换会记录在会话里，会话之后重启也会保留。
 
 ## Agents talking to each other · agent 之间通信
 
@@ -317,9 +317,9 @@ also keeps pi-mobile's hub up after you close the terminal.
   idle hour starts from the last time the phone used it.<br>
   **用着的不会被回收：** 在手机上打开或操作过的会话不会被回收，空闲一小时从手机最后一次使用时算起。
 - Answering its questions and switching its model on the phone show in the agent view as
-  usual. For pi-mobile's voice features in background sessions, add `OPENAI_API_KEY` to
-  `envAllowList` (or sign in with `/login`).<br>
-  在手机上回答问题、切换模型，agent 视图里照常同步。想在后台会话里用 pi-mobile 的语音功能，把 `OPENAI_API_KEY` 加进 `envAllowList`（或用 `/login` 登录）。
+  usual. pi-mobile's voice features in background sessions use your shell's
+  `OPENAI_API_KEY` (or sign in with `/login`).<br>
+  在手机上回答问题、切换模型，agent 视图里照常同步。后台会话里的 pi-mobile 语音功能用的是你 shell 里的 `OPENAI_API_KEY`（或用 `/login` 登录）。
 
 The two packages talk over pi's event bus only (`pi-mobile:starters`, `pi-mobile:activity`);
 neither imports the other.
@@ -367,7 +367,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
   "notify": "auto",
   "leftArrowOpensAgents": true,
   "defaultToAgentsView": false,
-  "envAllowList": ["GITHUB_TOKEN"]
+  "envDenyList": ["AWS_SECRET_ACCESS_KEY"]
 }
 ```
 
@@ -384,7 +384,10 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `notify` | `"auto"` | `"osc9"`, `"osc777"`, `"bell"` or `"off"` | 通知方式：`"osc9"`、`"osc777"`、`"bell"` 或 `"off"` |
 | `leftArrowOpensAgents` | `true` | ← on an empty prompt moves the conversation to the background | 空提示符下按 ← 把对话转到后台 |
 | `defaultToAgentsView` | `false` | plain `pi` opens the agent view | 直接运行 `pi` 时打开 agent 视图 |
-| `envAllowList` | `[]` | extra environment variables for background sessions | 额外传给后台会话的环境变量 |
+| `inheritEnv` | `true` | background sessions start with the launching shell's environment ([environment](#environment--环境变量)) | 后台会话继承启动它的 shell 的环境变量（见[环境变量](#environment--环境变量)） |
+| `workspaceEnv` | `"shell"` | each session gets its workspace's environment, as a shell that `cd`'d there: `"shell"` runs your shell's cd hooks (direnv, mise, fnm …), `"direnv"` runs `direnv export` only, `"off"` | 每个会话拿到它所在 workspace 的环境，就像 shell `cd` 进去那样：`"shell"` 运行你 shell 的 cd hook（direnv、mise、fnm 等），`"direnv"` 只跑 `direnv export`，`"off"` 关闭 |
+| `envDenyList` | `[]` | names never passed (`AWS_*` matches a prefix) | 永远不传的变量名（`AWS_*` 按前缀匹配） |
+| `envAllowList` | `[]` | with `inheritEnv: false`: extra variables on top of the basics | `inheritEnv: false` 时，在基础变量之外额外传的变量 |
 | `subagentPanel`, `subagentPanelRows` | `true`, `5` | the panel of this session's subagents below the prompt, and how many rows it shows (1–10) | 提示符下方的子 agent 面板，以及最多显示几行（1–10） |
 | `subagentAutoClose` | `true` | close a subagent's process once it finished and reported; a message starts it again | 子 agent 完成并汇报后关闭其进程；再发消息会重新启动 |
 | `agentViewSubagents` | `"hide"` | `"inline"`: subagents are rows of the agent view again | `"inline"`：子 agent 重新作为 agent 视图里的行显示 |
@@ -393,11 +396,37 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
 | `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal` | `3`, `8`, `16`, `32` | spawn limits | 派发子会话的数量限制 |
 
-Background sessions get a small environment (`PATH`, `HOME`, `SHELL`, `LANG`, `TERM`,
-proxy variables and a few more) plus `envAllowList`. A project's `.pi/roost.json` cannot
-set `envAllowList`, `summaryModel` or the `agent*` reach and limit keys.
+A project's `.pi/roost.json` cannot set the environment keys, `summaryModel` or the
+`agent*` reach and limit keys.
 
-后台会话只拿到一小组环境变量（`PATH`、`HOME`、`SHELL`、`LANG`、`TERM`、代理变量等少数几个），外加 `envAllowList` 里列出的。项目的 `.pi/roost.json` 不能设置 `envAllowList`、`summaryModel` 以及 `agent*` 开头的通信范围和数量限制，这样别人克隆来的仓库没法决定你的环境变量和会话记录发往哪里，也没法放宽 agent 的通信范围。
+项目的 `.pi/roost.json` 不能设置环境变量相关的配置项、`summaryModel` 以及 `agent*` 开头的通信范围和数量限制，这样别人克隆来的仓库没法决定你的环境变量和会话记录发往哪里，也没法放宽 agent 的通信范围。
+
+### Environment · 环境变量
+
+A background session sees what your shell sees. It starts with the environment of the
+shell that launched it (the agent view's pi, `pi --bg`, a parent session), less a job's
+identity and the variables that name the launching terminal (`TMUX`, `TERM_PROGRAM`,
+`ITERM_SESSION_ID`, `PWD` …), and less `envDenyList`.
+
+后台会话看到的环境和你的 shell 一样：它从启动它的 shell（agent 视图所在的 pi、`pi --bg`、父会话）继承全部环境变量，只去掉任务身份变量、描述启动终端的变量（`TMUX`、`TERM_PROGRAM`、`ITERM_SESSION_ID`、`PWD` 等）和 `envDenyList` 里的。
+
+Then it gets its own workspace's environment, so a hub opened in one folder starts
+sessions in others correctly. Each time a session's process starts (also when it starts
+again later), pi-roost runs your shell (`$SHELL -i`: zsh, bash, fish, or tcsh/csh with your
+`.cshrc`) in the session's folder and runs the hooks a `cd` would: direnv unloads the hub folder's `.envrc` and loads
+the workspace's, and mise, fnm or nvm pick its tool versions. Their own trust rules
+apply (`direnv allow`, `mise trust`). Without a supported shell, or when that fails,
+`direnv export json` is used; when that fails too, the session keeps the environment it
+was launched with. A slow shell is cut off after 8 seconds.
+
+然后它再拿到自己 workspace 的环境，所以在一个中央目录打开的 hub 把会话派到其他目录时，环境也是对的。每次会话进程启动（包括之后被重新拉起），pi-roost 会在会话所在目录运行你的 shell（`$SHELL -i`，支持 zsh、bash、fish，以及读 `.cshrc` 的 tcsh/csh），并执行 `cd` 时会跑的那些 hook：direnv 先卸载 hub 目录的 `.envrc` 再加载 workspace 的，mise、fnm、nvm 会切到这个项目的工具版本。它们自己的信任机制照常生效（`direnv allow`、`mise trust`）。不支持的 shell 或这一步失败时，改用 `direnv export json`；也失败的话，会话沿用启动时带来的环境。shell 启动超过 8 秒会被中止。
+
+The environment is saved with the session's record (`job.json`, readable by you only),
+so secrets in it are on disk as they are in your shell's files. `inheritEnv: false` goes
+back to a small environment (`PATH`, `HOME`, `SHELL`, `LANG`, `TERM`, proxy variables and
+a few more) plus `envAllowList`, and turns `workspaceEnv` off.
+
+环境变量会随会话记录（`job.json`，只有你自己可读）保存到磁盘，和你 shell 配置文件里的密钥一样落盘。`inheritEnv: false` 回到只带一小组变量的模式（`PATH`、`HOME`、`SHELL`、`LANG`、`TERM`、代理变量等少数几个）外加 `envAllowList`，同时关闭 `workspaceEnv`。
 
 ## CLI · 命令行
 

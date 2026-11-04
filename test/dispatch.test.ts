@@ -40,7 +40,9 @@ describe("buildLaunch", () => {
 		expect(launch.command).toEqual([
 			"/bin/node", "/pi/cli.js", "--session", "/s/a.jsonl", "-e", "/x/roost.ts", "--model", "c/d", "--thinking", "high", "--", "fix the flaky test",
 		]);
-		expect(launch.env).toEqual({ PATH: "/bin" });
+		// M20: the whole environment by default; the allowlist only with inheritEnv off
+		expect(launch.env).toEqual({ PATH: "/bin", SECRET: "s" });
+		expect(launch).toMatchObject({ workspaceEnv: "shell" });
 		expect(launch).toMatchObject({ model: "c/d", thinking: "high", origin: "dispatch" });
 	});
 });

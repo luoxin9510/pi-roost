@@ -7,7 +7,7 @@ import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-c
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../lib/comms.ts";
-import { loadConfig } from "../lib/config.ts";
+import { envPolicy, loadConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName, isolationDefault, prepareIsolation, refusedByDaemon } from "../lib/dispatch.ts";
 import type { ArgsOf, Op, PeerRow, ResultOf, SendResult } from "../lib/protocol.ts";
 
@@ -131,7 +131,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 					argv: process.argv,
 					execPath: process.execPath,
 					env: process.env,
-					extraEnv: config.envAllowList,
+					...envPolicy(config),
 					piVersion: VERSION,
 					// an agent's own model and thinking level unless the call names them
 					model: params.model?.trim() || (agent?.model ? undefined : current),

@@ -130,6 +130,10 @@ export interface DispatchArgs {
 	thinking?: string;
 	/** M18: the agent (pi-subagents definition) the session runs as. */
 	agent?: string;
+	/** M20: how the worker's environment follows its workspace (absent: as carried). */
+	workspaceEnv?: "shell" | "direnv" | "off";
+	/** M20: names (or `PREFIX*`) a workspace's environment may not set. */
+	envDeny?: string[];
 	origin: DispatchOrigin;
 	piVersion?: string;
 	/** M10: the worktree the dispatching side made for this session (cwd is inside it). */

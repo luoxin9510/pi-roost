@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, Key, matchesKey, type TUI } from "@earendil-works/pi-tui";
 import { DaemonClient } from "../lib/client.ts";
-import { loadConfig } from "../lib/config.ts";
+import { envPolicy, loadConfig } from "../lib/config.ts";
 import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
 import { messageText } from "../lib/heuristics.ts";
 import { observeJob } from "../lib/job-events.ts";
@@ -258,7 +258,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 					argv: process.argv,
 					execPath: process.execPath,
 					env: process.env,
-					extraEnv: h.config.envAllowList,
+					...envPolicy(h.config),
 					piVersion: VERSION,
 					...h.live,
 				}),
@@ -311,7 +311,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 						argv: process.argv,
 						execPath: process.execPath,
 						env: process.env,
-						extraEnv: config.envAllowList,
+						...envPolicy(config),
 						piVersion: VERSION,
 						...liveSettings(ctx),
 					}),
@@ -419,7 +419,7 @@ export function registerForeground(pi: ExtensionAPI): void {
 							argv,
 							execPath: process.execPath,
 							env: process.env,
-							extraEnv: config.envAllowList,
+							...envPolicy(config),
 							piVersion: VERSION,
 							...live,
 						}),

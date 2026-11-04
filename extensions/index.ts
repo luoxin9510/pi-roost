@@ -5,7 +5,7 @@ import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } fro
 import { DaemonClient } from "../lib/client.ts";
 import { existsSync } from "node:fs";
 import { buildLaunch, fallbackName, type Isolation, isolationDefault, prepareIsolation, refusedByDaemon } from "../lib/dispatch.ts";
-import { loadConfig } from "../lib/config.ts";
+import { envPolicy, loadConfig } from "../lib/config.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isScratchSession } from "../lib/paths.ts";
 import { registerForeground } from "./foreground.ts";
@@ -154,6 +154,7 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 				argv: process.argv,
 				execPath: process.execPath,
 				env: process.env,
+				...envPolicy(loadConfig(ctx.cwd)),
 				piVersion: VERSION,
 			}),
 		);

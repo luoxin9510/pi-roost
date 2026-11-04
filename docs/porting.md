@@ -384,12 +384,13 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | `leftArrowOpensAgents` | `true` | |
 | `defaultToAgentsView` | `false` | |
 | `envAllowList` | `[]` | ✔ |
+| `inheritEnv`, `workspaceEnv`, `envDenyList` | `true`, `"shell"`, `[]` | ✔（M20） |
 | `agentTools` / `agentExternalMessages` | `true` / `false` | ✔ |
 | `agentMaxDepth/Children/Tree/Total` | 3 / 8 / 16 / 32 | ✔ |
 
 "仅用户级"的原因：别人克隆来的仓库不能决定**你的环境变量**流向哪里、**会话记录**发给哪个模型、agent 能扩散多远。移植时保留这条规则。
 
-**后台环境白名单**（`lib/dispatch.ts` `allowListedEnv()`）：`PATH HOME USER LOGNAME SHELL LANG LC_* TERM COLORTERM TMPDIR` + 代理变量（大小写都认）+ `envAllowList`。**在派发那一刻**快照进 `job.json`，respawn 沿用。公司环境通常要加 API key 变量和 `NODE_EXTRA_CA_CERTS`。
+**后台环境**（M20 起，`lib/dispatch.ts` `workerEnv()`）：默认继承派发方的全部环境，去掉任务身份和启动终端相关的变量（`lib/workspace-env.ts` `ENV_NEVER`）以及 `envDenyList`；宿主每次启动 worker 时再在会话目录里跑一遍 shell 的 cd hook（direnv/mise/fnm），见 `docs/plans/m20-shell-environment.md`。`inheritEnv: false` 时用旧的白名单（`allowListedEnv()`）：`PATH HOME USER LOGNAME SHELL LANG LC_* TERM COLORTERM TMPDIR` + 代理变量（大小写都认）+ `envAllowList`。**在派发那一刻**快照进 `job.json`，respawn 沿用。公司环境通常要加 API key 变量和 `NODE_EXTRA_CA_CERTS`。
 
 ---
 

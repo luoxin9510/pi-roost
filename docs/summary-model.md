@@ -75,7 +75,9 @@ pi -p --no-session --model corp/qwen3-8b-instruct --thinking off \
 
 ## 第 4 步：后台会话的环境变量（最常见的坑）
 
-后台 worker **不会继承你终端里的全部环境变量**。它只拿到一个白名单，并且是在**派发那一刻**记录进 `job.json` 的：
+从 0.1.7 起，后台 worker **默认继承你 shell 里的全部环境变量**，并在会话所在目录套用 direnv、mise 等的项目环境（见 README 的“环境变量”一节）。所以只要前台能用，后台通常也能用，这一步一般不用做什么。
+
+如果你设了 `inheritEnv: false`，worker 只拿到一个白名单，并且是在**派发那一刻**记录进 `job.json` 的：
 
 - 默认带上：`PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`COLORTERM`、`TMPDIR`，以及 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`、`ALL_PROXY`（大小写都认）。
 - 其他变量都要显式加到 `envAllowList`：
@@ -97,7 +99,7 @@ pi -p --no-session --model corp/qwen3-8b-instruct --thinking off \
 
 注意几点：
 
-- `envAllowList` 只对**之后新派发**的会话生效。已有会话的环境是派发时记录的，`respawn` 也沿用原来的记录。改完后要新开会话验证。
+- 继承来的环境和 `envAllowList` 都只对**之后新派发**的会话生效。已有会话的环境是派发时记录的，`respawn` 也沿用原来的记录（workspace 的 direnv/mise 环境则在每次启动时重新计算）。改完后要新开会话验证。
 - 用 `/login` 存进 `~/.pi/agent/auth.json` 的凭据**不受**环境变量白名单影响。能用这种方式的话最省事。
 - `!命令` 形式的 key 在 worker 进程里执行，同样只能看到白名单里的环境变量。
 
