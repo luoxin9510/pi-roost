@@ -20,7 +20,7 @@ Reported with pi run in several herdr panes, switching between background sessio
   `HERDR_SOCKET_PATH` and `HERDR_PANE_ID` included: herdr's pi integration in a background
   worker reported that session's state into the pane the hub ran in.
 - **One session, several jobs.** A session moved to the background again (from a pi in
-  another window) got a new job beside its old, ended one (`rif-diff`, `rif-diff (2)`);
+  another window) got a new job beside its old, ended one (`fix-login`, `fix-login (2)`);
   the old row kept its last state, "needs input" included. A session reopened in another
   pi window left its ended job asking for input.
 - **No push before the first report.** A pi row was pushed on reports only: until the

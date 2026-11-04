@@ -1,6 +1,6 @@
 # M21: an attach starts from the host's screen
 
-Status: implemented (2026-11-04). Reported from a port of pi-roost: entering a session
+Status: implemented (2026-11-04). Reported by a user: entering a session
 sometimes showed an old screen, leftovers in the wrong place, or a flash, until the
 worker redrew; and M14's host test failed on Linux every time.
 

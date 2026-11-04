@@ -775,15 +775,15 @@ describe("M22: one row per session", () => {
 	it("a job that runs an ended job's session again takes its row, name and pin", async () => {
 		const { client } = await startDaemon();
 		const sessionFile = join(work, "same.jsonl");
-		const a = await client.request("dispatch", args("true", { sessionFile, name: "rif-diff" }));
+		const a = await client.request("dispatch", args("true", { sessionFile, name: "fix-login" }));
 		await waitFor(async () => (await find(client, a.id))?.endedAt);
 		await client.request("pin", { id: a.id, pinned: true });
 		const events: Event[] = [];
 		client.onEvent((e) => events.push(e));
 		await client.request("subscribe", {});
 		// moved to the background again from another pi window
-		const b = await client.request("dispatch", args("sleep 30", { sessionFile, name: "rif-diff", origin: "adopt" }));
-		expect(b.name).toBe("rif-diff");
+		const b = await client.request("dispatch", args("sleep 30", { sessionFile, name: "fix-login", origin: "adopt" }));
+		expect(b.name).toBe("fix-login");
 		await waitFor(() => events.some((e) => e.event === "removed" && e.id === a.id));
 		const rows = (await client.request("list", {})).jobs;
 		expect(rows.map((r) => r.id)).toEqual([b.id]);
@@ -793,7 +793,7 @@ describe("M22: one row per session", () => {
 		// the job that took it over goes: the old row is back, and the next one takes it again
 		await client.request("rm", { id: b.id });
 		await waitFor(async () => (await client.request("list", {})).jobs.some((r) => r.id === a.id));
-		const c = await client.request("dispatch", args("sleep 30", { sessionFile, name: "rif-diff", origin: "adopt" }));
+		const c = await client.request("dispatch", args("sleep 30", { sessionFile, name: "fix-login", origin: "adopt" }));
 		await waitFor(async () => {
 			const ids = (await client.request("list", {})).jobs.map((r) => r.id);
 			return ids.length === 1 && ids[0] === c.id;
