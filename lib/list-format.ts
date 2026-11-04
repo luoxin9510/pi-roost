@@ -3,7 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { JobRow } from "./protocol.ts";
 import { ageOf, groupOf, listed, sentenceOf, shortPath } from "./view-model.ts";
 
-const ORDER = { ready: 0, "needs-input": 1, working: 2, pinned: 3, completed: 4 } as const;
+const ORDER = { pinned: 0, ready: 1, "needs-input": 2, working: 3, completed: 4 } as const;
 const oneLine = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
 
 export interface ListOptions {
