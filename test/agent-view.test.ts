@@ -1253,6 +1253,48 @@ describe("AgentView fan-out (M26)", () => {
 		view.dispose();
 	});
 
+	it("M26 review: k in kitty encoding; pinned ones stay; marked rows cannot be kept; no escapes from replies", async () => {
+		const rows = [
+			row({ id: "a", name: "t · one", model: "a/one", fanout: "f1", state: "done", summary: "ok\x1b]0;pwned\x07\tdone\x1b[2J" }),
+			row({ id: "b", name: "t · two", model: "b/two", fanout: "f1", state: "done", pinned: true }),
+			row({ id: "c", name: "t · three", model: "c/three", fanout: "f1", state: "done", pid: null }),
+		];
+		const { view, client } = setup(rows, { extra: { worktreeChange: async () => undefined } });
+		await view.start();
+		view.handleInput("\x1b[1;3B"); // the next group (Completed), then its first row
+		view.handleInput("\x1b[B");
+		type(view, "/compare");
+		view.handleInput("\r");
+		const out = view.render(120).join("\n");
+		expect(out).toContain("Compare · t · 3 sessions");
+		expect(out).not.toMatch(/\x1b\]|\x07|\x1b\[2J|\t/);
+		expect(out).toContain("ok  done");
+		// columns by name: one, three, two; keep "three": "two" is pinned and stays, "one" goes
+		view.handleInput("\x1b[C");
+		view.handleInput("\x1b[107u");
+		view.handleInput("\x1b[107;1:3u"); // its release changes nothing
+		view.handleInput("\x1b[107u");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "rm").map((r) => (r.args as { id: string }).id)).toEqual(["a"]);
+		expect(view.render(120).join("\n")).toContain("1 pinned kept");
+		view.dispose();
+
+		// marked rows (not one fan-out): k deletes nothing
+		const other = [row({ id: "x", name: "x", state: "done" }), row({ id: "y", name: "y", state: "done" })];
+		const s2 = setup(other);
+		await s2.view.start();
+		s2.view.handleInput("\x0f");
+		s2.view.handleInput("\x0f");
+		type(s2.view, "/compare");
+		s2.view.handleInput("\r");
+		expect(s2.view.render(120).join("\n")).not.toContain("k keep");
+		s2.view.handleInput("k");
+		s2.view.handleInput("k");
+		await sleep(10);
+		expect(s2.client.requests.some((r) => r.op === "rm" || r.op === "stop")).toBe(false);
+		s2.view.dispose();
+	});
+
 	it("/compare needs a fan-out or marked rows", async () => {
 		const { view } = setup([row({ id: "a" }), row({ id: "b" })]);
 		await view.start();

@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, stripTerminalSequences, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
@@ -1298,7 +1298,7 @@ export class AgentView implements Component {
 			const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
 			if (fallback && !agent) return this.say(`dispatchAgent ${fallback} is not an agent here`, "warning");
 			// M26: one session per model
-			if (this.fanout) return this.dispatchFanout(task, cwd, agent, typed);
+			if (this.fanout) return this.dispatchFanout(task, cwd, agent, typed, attach);
 			try {
 				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree, ...(agent ? { agent } : {}) });
 			} catch (err) {
@@ -1483,7 +1483,7 @@ export class AgentView implements Component {
 		if (p.other) p.other.items = p.other.items.map(mark);
 	}
 
-	private async dispatchFanout(task: string, cwd: string, agent: AgentDef | undefined, typed: string): Promise<void> {
+	private async dispatchFanout(task: string, cwd: string, agent: AgentDef | undefined, typed: string, attach = false): Promise<void> {
 		const models = this.fanout ?? [];
 		if (models.length < 2) return this.say("a fan-out needs two models at least (/fanout)", "warning");
 		if (!this.client) return this.say("background service unavailable", "error");
@@ -1509,8 +1509,10 @@ export class AgentView implements Component {
 					started.push(id);
 					if (note) notes.add(note);
 				} catch (err) {
-					if (refusedByDaemon(err)) discard?.();
-					failed.push(`${shortModel(model)}: ${oneLine((err as Error).message)}`);
+					const refused = refusedByDaemon(err);
+					if (refused) discard?.();
+					// an unanswered dispatch may still run: its worktree stays (as for one task)
+					failed.push(`${shortModel(model)}: ${oneLine((err as Error).message)}${!refused && request.worktree ? ` (worktree ${request.worktree.branch} kept)` : ""}`);
 				}
 			}
 		} finally {
@@ -1522,7 +1524,7 @@ export class AgentView implements Component {
 		}
 		this.fanout = undefined; // once
 		this.cursor = { kind: "row", id: started[0]! };
-		const extra = [...notes, ...(failed.length ? [`not started: ${failed.join(", ")}`] : [])];
+		const extra = [...notes, ...(failed.length ? [`not started: ${failed.join(", ")}`] : []), ...(attach ? ["Ctrl+Enter opens a single task, not a fan-out"] : [])];
 		this.say(`started ${started.length} sessions, one per model · /compare on one of them${extra.length ? ` · ${extra.join(" · ")}` : ""}`, extra.length ? "warning" : "success");
 	}
 
@@ -1540,6 +1542,7 @@ export class AgentView implements Component {
 		const first = this.compareRows();
 		if (first.length < 2) return this.say("/compare works on a row of a fan-out (/fanout), or on two or more marked rows", "warning");
 		const ids = first.map((r) => r.id);
+		const fanoutId = first[0]!.fanout && first.every((r) => r.fanout === first[0]!.fanout) ? first[0]!.fanout : undefined;
 		const changes = new Map<string, string>();
 		const view = this;
 		let index = Math.max(0, ids.indexOf(this.selectedRow()?.id ?? ""));
@@ -1554,11 +1557,11 @@ export class AgentView implements Component {
 					continue;
 				}
 				void change(wt.path, wt.base)
-					.then((c) => {
-						changes.set(id, c ? changeText(c) : "worktree gone");
+					.then((c) => changes.set(id, c ? changeText(c) : existsSync(wt.path) ? "no diff (its base is gone?)" : "worktree gone"))
+					.catch(() => changes.set(id, "?"))
+					.finally(() => {
 						if (!closed) this.o.tui.requestRender();
-					})
-					.catch(() => changes.set(id, "?"));
+					});
 			}
 		};
 		load();
@@ -1571,17 +1574,23 @@ export class AgentView implements Component {
 				}
 				index = Math.min(index, rows.length - 1);
 				const room = Math.max(6, (view.o.tui.terminal.rows || 30) - 7);
-				const keys = keepArmed && Date.now() - keepArmed < DOUBLE_PRESS_MS ? "k again: keep this one, delete the others" : "← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close";
-				return [...view.compareLines(rows, index, changes, width, room), "", view.o.theme.fg(keepArmed ? "warning" : "dim", truncateToWidth(keys, width))];
+				const armed = keepArmed > 0 && Date.now() - keepArmed < DOUBLE_PRESS_MS;
+				const keys = armed
+					? "k again: keep this one, delete the others (pinned ones stay)"
+					: `← → choose · Enter open${fanoutId ? " · k keep this one (deletes the others)" : ""} · r refresh · Esc close`;
+				return [...view.compareLines(rows, index, changes, width, room), "", view.o.theme.fg(armed ? "warning" : "dim", truncateToWidth(keys, width))];
 			},
 			handleInput(data: string) {
+				if (isKeyRelease(data)) return;
 				const key = parseKey(data);
+				// a letter as typed, also when the terminal encodes it (kitty CSI u)
+				const ch = decodeKittyPrintable(data) ?? data;
 				const count = ids.filter((id) => view.rows.has(id)).length;
-				if (key !== "k" && data !== "k") keepArmed = 0;
-				if (key === "escape" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				if (ch !== "k") keepArmed = 0;
+				if (key === "escape" || key === "ctrl+c" || ch === "q") view.closeOverlay();
 				else if (key === "left") index = Math.max(0, index - 1);
 				else if (key === "right" || key === "tab") index = Math.min(count - 1, index + 1);
-				else if (data === "r") load();
+				else if (ch === "r") load();
 				else if (key === "enter") {
 					const row = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined)[index];
 					view.closeOverlay();
@@ -1589,10 +1598,16 @@ export class AgentView implements Component {
 						view.cursor = { kind: "row", id: row.id };
 						void view.attachTo(row.id).catch((err: unknown) => view.say(String(err), "error"));
 					}
-				} else if (data === "k") {
+				} else if (ch === "k") {
+					// keeping one deletes the others: only among the sessions of one fan-out
+					if (!fanoutId) return view.say("k keeps one of a fan-out; for marked rows use Ctrl+X", "warning");
 					const now = Date.now();
 					if (!keepArmed || now - keepArmed > DOUBLE_PRESS_MS) {
 						keepArmed = now;
+						// the prompt goes back when the double press runs out
+						setTimeout(() => {
+							if (!closed) view.o.tui.requestRender();
+						}, DOUBLE_PRESS_MS + 50).unref?.();
 						return;
 					}
 					keepArmed = 0;
@@ -1629,7 +1644,9 @@ export class AgentView implements Component {
 				"",
 			];
 			const text = r.question ?? r.summary ?? r.error ?? "";
-			const body = wrapTextWithAnsi(text.replace(/\r/g, ""), Math.max(4, w - 2)).map((l) => `  ${l}`);
+			// a model's text: no escape sequences or tabs reach the terminal (lines stay)
+			const clean = stripTerminalSequences(text).replace(/\t/g, "  ").replace(CONTROL, "");
+			const body = wrapTextWithAnsi(clean, Math.max(4, w - 2)).map((l) => `  ${l}`);
 			return [...lines, ...body].map((l) => truncateToWidth(l, w));
 		};
 		const gap = 2;
@@ -1663,7 +1680,9 @@ export class AgentView implements Component {
 		const kept: string[] = [];
 		let deleted = 0;
 		const failed: string[] = [];
+		const pinned = others.filter((r) => r.pinned);
 		for (const r of others) {
+			if (r.pinned) continue; // pinned on purpose: never deleted by a batch
 			try {
 				if (r.pid !== null) await this.client.request("stop", { id: r.id });
 				const res = await this.client.request("rm", { id: r.id });
@@ -1676,6 +1695,7 @@ export class AgentView implements Component {
 		}
 		this.cursor = { kind: "row", id: keep.id };
 		const parts = [`kept ${oneLine(rowName(keep))} · deleted ${deleted}`];
+		if (pinned.length) parts.push(`${pinned.length} pinned kept`);
 		if (kept.length) parts.push(kept.join(" · "));
 		if (failed.length) parts.push(`not deleted: ${failed.join(", ")}`);
 		this.say(parts.join(" · "), kept.length || failed.length ? "warning" : "success");

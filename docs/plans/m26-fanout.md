@@ -15,5 +15,8 @@ Run the same task with several models side by side, compare what each did, keep 
   insertions, deletions against its base, uncommitted work included), and its last
   reply. ← → choose, Enter opens the session, `k` twice keeps it: the others are
   deleted (their worktrees removed when clean, else kept and said so).
+- Keeping one is offered only within one fan-out (marked rows of different tasks use
+  Ctrl+X); pinned sessions are never deleted by it. The panel's letters work in kitty's
+  encoding; a reply's escape sequences and tabs never reach the terminal.
 - Checked: unit (parsing, one-shot, names, ids through the daemon, panel layout, keep
   flow), and a real pi: two models on a small task in a scratch repo.
