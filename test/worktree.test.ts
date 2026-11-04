@@ -178,6 +178,31 @@ describe("worktree", () => {
 		expect(existsSync(w4.path)).toBe(false);
 	});
 
+	it("M15: any file name; a new file in an included folder is work; the worktree's own list does not count", async () => {
+		const r = repo();
+		writeFileSync(join(r, ".gitignore"), "*.local\nconfig/\n");
+		writeFileSync(join(r, ".worktreeinclude"), "*.local\nconfig/\n");
+		git(r, "add", ".");
+		git(r, "commit", "-q", "-m", "include");
+		writeFileSync(join(r, "é 名字.local"), "u\n");
+		mkdirSync(join(r, "config"));
+		writeFileSync(join(r, "config", "a.json"), "{}\n");
+		const w = createWorktree(r, "uni", rand);
+		expect(w.included.sort()).toEqual(["config/", "é 名字.local"]);
+		expect((await worktreeStatus(w)).ignored).toBe(false);
+		// a file the session added to an included folder
+		writeFileSync(join(w.path, "config", "b.json"), "{}\n");
+		expect((await worktreeStatus(w)).ignored).toBe(true);
+		expect(await cleanupWorktree(w, false)).toMatchObject({ removed: false });
+		// widening its own .worktreeinclude does not make its files disposable
+		const w2 = createWorktree(r, "own", rand);
+		writeFileSync(join(w2.path, ".worktreeinclude"), "*.local\nconfig/\n*.mine\n");
+		writeFileSync(join(w2.path, ".gitignore"), "*.local\nconfig/\n*.mine\n");
+		git(w2.path, "commit", "-q", "-am", "widen");
+		writeFileSync(join(w2.path, "notes.mine"), "work\n");
+		expect((await worktreeStatus(w2)).ignored).toBe(true);
+	});
+
 	it("keeps a worktree that switched branches", async () => {
 		const r = repo();
 		const w = createWorktree(r, "x", rand);

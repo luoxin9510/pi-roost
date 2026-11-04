@@ -97,7 +97,8 @@ const term = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true
 // M15: while nobody is attached the program's terminal queries (device attributes, cursor
 // position) are answered here, as a terminal would; attached, the user's terminal answers
 term.onData((reply) => {
-	if (attached || !workerAlive) return;
+	// while the attach waits for the repaint (M14) the user's terminal does not see the queries
+	if ((attached && !attached.hold) || !workerAlive) return;
 	try {
 		proc.write(reply);
 	} catch {}
