@@ -23,6 +23,10 @@ describe("M20: the shell's environment", () => {
 		expect(workerEnv(env, { envDenyList: ["AWS_*", "MY_TOKEN"] })).toEqual({ PATH: "/bin", NODE_OPTIONS: "--x" });
 		expect(workerEnv(env, { inheritEnv: false, extraEnv: ["MY_TOKEN"] })).toEqual({ PATH: "/bin", MY_TOKEN: "t" });
 		expect(envKept("PI_DAEMON_SOCK")).toBe(false);
+		// M22: a herdr pane's identity (its pi integration would report into that pane)
+		expect(envKept("HERDR_PANE_ID")).toBe(false);
+		expect(envKept("HERDR_SOCKET_PATH")).toBe(false);
+		expect(envKept("HERDR_ENV")).toBe(false);
 		expect(envKept("X", ["X*"])).toBe(false);
 		expect(envKept("GPG_TTY")).toBe(false);
 		expect(envKept("VSCODE_GIT_IPC_HANDLE")).toBe(false);

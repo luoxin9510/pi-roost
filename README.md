@@ -434,10 +434,11 @@ A project's `.pi/roost.json` cannot set the environment keys, `summaryModel` or 
 
 A background session sees what your shell sees. It starts with the environment of the
 shell that launched it (the agent view's pi, `pi --bg`, a parent session), less a job's
-identity and the variables that name the launching terminal (`TMUX`, `TERM_PROGRAM`,
-`ITERM_SESSION_ID`, `PWD` …), and less `envDenyList`.
+identity and the variables that name the launching terminal or multiplexer pane (`TMUX`,
+`TERM_PROGRAM`, `ITERM_SESSION_ID`, `HERDR_PANE_ID`, `PWD` …), and less `envDenyList`. (A
+session started from a herdr pane does not report itself into that pane.)
 
-后台会话看到的环境和你的 shell 一样：它从启动它的 shell（agent 视图所在的 pi、`pi --bg`、父会话）继承全部环境变量，只去掉任务身份变量、描述启动终端的变量（`TMUX`、`TERM_PROGRAM`、`ITERM_SESSION_ID`、`PWD` 等）和 `envDenyList` 里的。
+后台会话看到的环境和你的 shell 一样：它从启动它的 shell（agent 视图所在的 pi、`pi --bg`、父会话）继承全部环境变量，只去掉任务身份变量、描述启动终端或多路复用窗格的变量（`TMUX`、`TERM_PROGRAM`、`ITERM_SESSION_ID`、`HERDR_PANE_ID`、`PWD` 等）和 `envDenyList` 里的。（从 herdr 窗格启动的会话不会把自己的状态报给那个窗格。）
 
 Then it gets its own workspace's environment, so a hub opened in one folder starts
 sessions in others correctly. Each time a session's process starts (also when it starts
