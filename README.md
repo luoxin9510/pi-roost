@@ -352,12 +352,13 @@ neither imports the other.
 | Ctrl+X | stop; again within 2 s to delete | 停止；2 秒内再按一次删除 |
 | Ctrl+S | group by state / directory | 按状态 / 目录分组 |
 | Ctrl+T | pin / unpin | 置顶 / 取消置顶 |
+| Ctrl+O | mark the row (on a header: the group); with rows marked, the typed text, `/model`, `/thinking`, Ctrl+X and Ctrl+T act on all of them; Esc unmarks | 标记这一行（在分组标题上：整组）；有标记时，输入的文字、`/model`、`/thinking`、Ctrl+X、Ctrl+T 作用于所有被标记的会话；Esc 取消标记 |
 | Ctrl+R | rename | 改名 |
 | Shift+↑ Shift+↓ | move the row within its group | 在分组内移动这一行 |
 | Alt+↑ Alt+↓ | previous / next group | 上一个 / 下一个分组 |
 | Alt+1…9 | open row N of this directory | 进入当前目录的第 N 行 |
 | Ctrl+F | find by name | 按名字查找 |
-| Esc | close the peek · clear the input · leave | 关闭偷看 · 清空输入 · 离开 |
+| Esc | close the peek · clear the input · unmark · leave | 关闭偷看 · 清空输入 · 取消标记 · 离开 |
 
 Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the list.
 

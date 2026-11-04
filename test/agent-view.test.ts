@@ -988,3 +988,119 @@ describe("M24: usage in the hub", () => {
 		two.view.dispose();
 	});
 });
+
+describe("AgentView batch (M25)", () => {
+	const ctrlO = "\x0f";
+	it("Ctrl+O marks rows and moves on; the typed text goes to each marked session", async () => {
+		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" }), row({ id: "c", name: "three" }), row({ id: "s", name: "! make", kind: "shell" })];
+		const { view, client } = setup(rows);
+		await view.start();
+		view.handleInput(ctrlO); // one, cursor to two
+		view.handleInput(ctrlO); // two
+		let out = view.render(100);
+		expect(out.find((l) => l.includes("one"))).toMatch(/^ ✓/);
+		expect(out.find((l) => l.includes("two"))).toMatch(/^ ✓/);
+		expect(out.find((l) => l.includes("three"))).toMatch(/^› /);
+		expect(out.join("\n")).toContain("2 marked");
+		type(view, "rebase on main");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([
+			{ id: "a", text: "rebase on main" },
+			{ id: "b", text: "rebase on main" },
+		]);
+		expect(client.requests.some((r) => r.op === "dispatch")).toBe(false);
+		out = view.render(100);
+		expect(out.join("\n")).toContain("sent to 2 of 2 sessions");
+		// the marks stay for the next batch; a mark again on a row unmarks it
+		view.handleInput("\x1b[A"); // up to two
+		view.handleInput(ctrlO);
+		expect(view.render(100).find((l) => l.includes("two"))).not.toMatch(/^.✓/);
+		// a shell job is skipped
+		view.handleInput("\x1b[B"); // s? cursor moved on to three; go to the shell row
+		view.handleInput(ctrlO);
+		type(view, "status?");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => (r.args as { id: string }).id).slice(2)).toEqual(["a"]);
+		expect(view.render(100).join("\n")).toContain("1 shell jobs skipped");
+		view.dispose();
+	});
+
+	it("/model and /thinking switch every marked session; bare /model picks once for all", async () => {
+		const rows = [row({ id: "a", name: "one", model: "a/one" }), row({ id: "b", name: "two", model: "a/one" })];
+		const { view, client } = setup(rows, { switchCheckMs: 10_000 });
+		await view.start();
+		view.handleInput(ctrlO);
+		view.handleInput(ctrlO);
+		type(view, "/model b/two");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([
+			{ id: "a", text: "/model b/two" },
+			{ id: "b", text: "/model b/two" },
+		]);
+		expect(view.render(100).join("\n")).toContain("asked 2 of 2 sessions to use model b/two");
+		type(view, "/thinking nope");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("thinking is one of");
+		view.handleInput("\u0003");
+		type(view, "/model");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("Model for 2 marked sessions");
+		view.handleInput("\x1b");
+		view.handleInput("\u0003");
+		type(view, "/worktree on");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("only /model and /thinking act on marked sessions");
+		view.dispose();
+	});
+
+	it("Ctrl+O on a header marks the group; Ctrl+T pins all; Ctrl+X stops then deletes all; Esc unmarks first", async () => {
+		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" }), row({ id: "c", name: "three" })];
+		const { view, client, done } = setup(rows);
+		await view.start();
+		view.handleInput("\x1b[1;3A"); // Alt+↑: the group header
+		view.handleInput(ctrlO);
+		expect(view.render(100).join("\n")).toContain("3 marked");
+		view.handleInput("\x14"); // Ctrl+T: pin all (unpin only when all are pinned)
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "pin").map((r) => r.args)).toEqual([
+			{ id: "a", pinned: true },
+			{ id: "b", pinned: true },
+			{ id: "c", pinned: true },
+		]);
+		view.handleInput("\x18"); // Ctrl+X: stop the running ones
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "stop")).toHaveLength(3);
+		view.handleInput("\x18"); // again: delete
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "rm").map((r) => (r.args as { id: string }).id)).toEqual(["a", "b", "c"]);
+		expect(view.render(100).join("\n")).not.toContain("marked");
+		// Esc: marks before leaving
+		view.handleInput("\x1b[B");
+		view.handleInput(ctrlO);
+		view.handleInput("\x1b");
+		expect(done()).toBe(0);
+		expect(view.render(100).join("\n")).toContain("marks cleared");
+		view.handleInput("\x1b");
+		expect(done()).toBe(1);
+		view.dispose();
+	});
+
+	it("a removed row drops out of the marks", async () => {
+		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" })];
+		const { view, client } = setup(rows);
+		await view.start();
+		view.handleInput(ctrlO);
+		view.handleInput(ctrlO);
+		client.emit({ event: "removed", id: "a" });
+		expect(view.render(100).join("\n")).toContain("1 marked");
+		// all marked are pinned: Ctrl+T unpins them
+		client.emit({ event: "job", job: { ...rows[1]!, pinned: true } });
+		view.handleInput("\x14");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "pin").map((r) => r.args)).toEqual([{ id: "b", pinned: false }]);
+		view.dispose();
+	});
+});

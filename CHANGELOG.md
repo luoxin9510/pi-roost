@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Act on many sessions at once: Ctrl+O marks rows (on a group header, the whole group); with rows marked, the typed text goes to all of them, `/model` and `/thinking` switch all of them, Ctrl+X stops and then deletes them, Ctrl+T pins them. Esc clears the marks.
 - What sessions spend: each row shows its session's cost, the header today's and all of it, and `/usage` lists it by model and by session. Counted as pi's footer counts it (every reply and compaction); subscription use is priced per token and marked `(sub)`.
 
 - `/resume` in the agent view is pi's own session list: search, this directory or all of them (Tab), sort; the session you pick opens at once, started in the background (its row is reused when it has one). Sessions a running job or another pi is writing cannot be deleted from it.
