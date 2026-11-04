@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- What sessions spend: each row shows its session's cost, the header today's and all of it, and `/usage` lists it by model and by session. Counted as pi's footer counts it (every reply and compaction); subscription use is priced per token and marked `(sub)`.
+
 - `/resume` in the agent view is pi's own session list: search, this directory or all of them (Tab), sort; the session you pick opens at once, started in the background (its row is reused when it has one). Sessions a running job or another pi is writing cannot be deleted from it.
 - Choose the model for new sessions as in pi: Ctrl+L (a list you can search; Tab switches between the enabled models and all of them), Ctrl+P / Shift+Ctrl+P cycle the enabled models, Shift+Tab cycles the thinking level; the line under the header always says what a new session runs. In a peek, Ctrl+L switches that session's model.
 

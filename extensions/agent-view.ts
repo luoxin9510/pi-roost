@@ -12,6 +12,7 @@ import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
+import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
 import { TaskEditor } from "./task-editor.ts";
 import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
@@ -26,6 +27,7 @@ import {
 	modelFacts,
 	fitTail,
 	rowDetailsOf,
+	formatTokens,
 	shortModel,
 	type Item,
 	items,
@@ -179,6 +181,8 @@ interface Columns {
 	modelW: number;
 	shareW: number;
 	ageW: number;
+	/** M24: the cost column ("$1.20"), when there is room for it. */
+	costW: number;
 }
 
 interface Switch {
@@ -234,7 +238,7 @@ export class AgentView implements Component {
 	private connectError: string | undefined;
 	private nameWidth = 16;
 	/** M8: the model / context column, the same for every row of a render so it lines up. */
-	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0 };
+	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0, costW: 0 };
 	/** M8: switches sent to live sessions, until their reports show them (or do not). */
 	private switches = new Map<string, Switch>();
 	private dispatching = false;
@@ -793,6 +797,9 @@ export class AgentView implements Component {
 			case "resume":
 				this.resume();
 				return done();
+			case "usage":
+				this.showUsage();
+				return done();
 		}
 		const known = this.o.commands?.().find((c) => c.name === name);
 		if (known && (known.source === "prompt" || known.source === "skill")) return false;
@@ -878,6 +885,62 @@ export class AgentView implements Component {
 			}
 		}
 		void this.resumePicker();
+	}
+
+	/** M24 /usage: what the sessions spent, by model and by session; Esc closes, ↑↓ scroll. */
+	private showUsage(): void {
+		let top = 0;
+		const view = this;
+		this.overlay = {
+			render(width: number) {
+				const lines = view.usageLines(width);
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				top = Math.max(0, Math.min(top, lines.length - room));
+				const keys = view.o.theme.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width));
+				return [...lines.slice(top, top + room), "", keys];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
+				else if (key === "pageUp") top = Math.max(0, top - 10);
+				else if (key === "pageDown") top += 10;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	private usageLines(width: number): string[] {
+		const t = this.o.theme;
+		const now = Date.now();
+		const rows = [...this.rows.values()].filter((r) => r.usage && (r.usage.cost > 0 || r.usage.input + r.usage.output > 0));
+		const tot = totalUsage(rows, now);
+		const fit = (s: string) => truncateToWidth(s, width);
+		const out = [t.bold(fit("Usage · sessions in this view")), ""];
+		if (rows.length === 0) return [...out, t.fg("dim", fit("  nothing spent yet (sessions report what they spend as they work)"))];
+		const sub = tot.subCost > 0 ? ` · ${formatCost(tot.subCost)} of it on a subscription (as if billed per token)` : "";
+		out.push(fit(`  today ${formatCost(tot.today)} · all ${formatCost(tot.cost)} · ${formatTokens(tot.tokens)} tokens${sub}`), "");
+		const col = (s: string, n: number) => (visibleWidth(s) >= n ? truncateToWidth(s, n) : s + " ".repeat(n - visibleWidth(s)));
+		const nameW = Math.max(12, Math.min(40, Math.floor(width / 2.5)));
+		out.push(t.bold(fit("  By model")));
+		const models = Object.entries(tot.models).sort((a, b) => b[1].cost - a[1].cost || b[1].tokens - a[1].tokens);
+		for (const [m, v] of models) {
+			out.push(fit(`  ${col(shortModel(m), nameW)}  ${formatCost(v.cost).padStart(8)}  ${formatTokens(v.tokens).padStart(6)} tok  ${v.sessions} session${v.sessions === 1 ? "" : "s"}`));
+		}
+		out.push("", t.bold(fit("  By session")));
+		const sorted = rows.sort((a, b) => b.usage!.cost - a.usage!.cost);
+		for (const r of sorted) {
+			const u = r.usage!;
+			const tokens = u.input + u.output + u.cacheRead + u.cacheWrite;
+			const today = todayOf(u, now);
+			out.push(
+				fit(
+					`  ${col(oneLine(r.name), nameW)}  ${formatCost(u.cost).padStart(8)}  ${formatTokens(tokens).padStart(6)} tok${today > 0 ? `  ${formatCost(today)} today` : ""}${u.sub ? t.fg("dim", "  (sub)") : ""}  ${t.fg("dim", r.model ? shortModel(r.model) : "")}`,
+				),
+			);
+		}
+		return out;
 	}
 
 	private closeOverlay(): void {
@@ -1447,7 +1510,10 @@ export class AgentView implements Component {
 		const out: string[] = [];
 		const short = (this.o.tui.terminal.rows || 30) < 18;
 
-		out.push(truncateToWidth(t.bold("pi agents") + t.fg("dim", `  ${headerText(c)}`), w));
+		// M24: what the sessions spent (all of them, subagents included)
+		const spent = totalUsage([...this.rows.values()], now);
+		const money = spent.cost > 0 ? ` · ${formatCost(spent.today)} today · ${formatCost(spent.cost)} all` : "";
+		out.push(truncateToWidth(t.bold("pi agents") + t.fg("dim", `  ${headerText(c)}${money}`), w));
 		if (!short) out.push(t.fg("border", "─".repeat(w)));
 		this.headLines = out.length;
 		if (this.connectError) out.push(t.fg("error", truncateToWidth(`background service: ${oneLine(this.connectError)}`, w)));
@@ -1545,10 +1611,14 @@ export class AgentView implements Component {
 		const head = `${t.fg(icon.tone, icon.glyph)} ${styled}${pad}  `;
 		const detail = this.detailText(row);
 		const ageCol = t.fg("dim", age.padStart(this.columns.ageW));
+		// M24: what it spent (dim when billed to a subscription: notional)
+		const cw = this.columns.costW;
+		const costText = cw > 0 && row.usage && row.usage.cost > 0 ? formatCost(row.usage.cost) : "";
+		const costCol = cw > 0 ? `${t.fg(row.usage?.sub ? "dim" : "muted", costText.padStart(cw))}  ` : "";
 		// M16: Claude Code's `#N` at the right edge, coloured by status, linked to the pull request
 		const pr = prLabel(row.prs);
 		const prCol = pr ? `  ${hyperlink(t.fg(pr.tone, pr.text), pr.url)}` : "";
-		const tail = `${detail ? `${detail}  ${ageCol}` : ageCol}${prCol}`;
+		const tail = `${detail ? `${detail}  ` : ""}${costCol}${ageCol}${prCol}`;
 		const room = width - visibleWidth(head) - visibleWidth(tail) - 2;
 		const summary = room > 4 ? t.fg(row.pid === null ? "dim" : "muted", truncateToWidth(oneLine(sentenceOf(row)), room)) : "";
 		const gap = Math.max(1, width - visibleWidth(head) - visibleWidth(summary) - visibleWidth(tail));
@@ -1561,19 +1631,32 @@ export class AgentView implements Component {
 	 */
 	private columnsFor(rows: JobRow[], width: number, now: number): Columns {
 		const ageW = Math.max(0, ...rows.map((r) => ageOf(r, now).length));
-		const none: Columns = { mode: "none", modelW: 0, shareW: 0, ageW };
+		const none: Columns = { mode: "none", modelW: 0, shareW: 0, ageW, costW: 0 };
 		if (this.o.rowDetails === false) return none;
+		const base = this.layoutColumns(rows, width, ageW, 0);
+		// M24: what each session spent, when that still leaves the summary its room
+		const costW = Math.max(0, ...rows.map((r) => (r.usage && r.usage.cost > 0 ? formatCost(r.usage.cost).length : 0)));
+		if (costW > 0) {
+			const withCost = this.layoutColumns(rows, width, ageW, costW + 2);
+			if (withCost.mode === base.mode && withCost.costW === 0) return { ...withCost, costW };
+		}
+		return base;
+	}
+
+	private layoutColumns(rows: JobRow[], width: number, ageW: number, extra: number): Columns {
+		const none: Columns = { mode: "none", modelW: 0, shareW: 0, ageW, costW: 0 };
 		const ds = rows.map(rowDetailsOf).filter((d): d is NonNullable<typeof d> => d !== null);
 		const modelW = Math.min(MODEL_COL, Math.max(0, ...ds.map((d) => (d.model ? visibleWidth(oneLine(d.model)) : 0))));
 		const shareW = Math.max(0, ...ds.map((d) => d.context?.length ?? 0));
 		// what the summary keeps: the row minus icon, name, the column, the age and the gaps
 		// M16: the `#N` label at the right edge takes its room too
 		const prW = Math.max(0, ...rows.map((r) => (prLabel(r.prs)?.text.length ?? -2) + 2));
-		const room = (col: number) => width - (2 + this.nameWidth + 2) - col - 2 - ageW - 2 - prW;
+		const room = (col: number) => width - (2 + this.nameWidth + 2) - col - 2 - ageW - 2 - prW - extra;
 		const full = modelW + (modelW && shareW ? 3 : 0) + shareW;
-		if (full > 0 && room(full) >= MIN_SUMMARY) return { mode: "full", modelW, shareW, ageW };
-		if (shareW > 0 && room(shareW) >= MIN_SUMMARY) return { mode: "share", modelW: 0, shareW, ageW };
-		return none;
+		if (full > 0 && room(full) >= MIN_SUMMARY) return { mode: "full", modelW, shareW, ageW, costW: 0 };
+		if (shareW > 0 && room(shareW) >= MIN_SUMMARY) return { mode: "share", modelW: 0, shareW, ageW, costW: 0 };
+		// M24: no room even for `extra` alone: say so (the cost column is left out)
+		return extra > 0 && room(0) < MIN_SUMMARY ? { ...none, costW: -1 } : none;
 	}
 
 	/** M8: "claude-opus-5-5 · 43%", padded to the column (blank for a row without them). */
@@ -1692,6 +1775,7 @@ export class AgentView implements Component {
 			["/worktree", "new sessions in their own git worktree and branch (toggle)"],
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "open a past session (search; Tab: this directory or all)"],
+			["/usage", "what the sessions spent: today, all, by model, by session"],
 			["Esc", "close peek · clear input · exit"],
 			["Ctrl+C", "clear input; twice to exit"],
 			["in a session", "← on an empty prompt, /exit or Ctrl+Z detaches"],

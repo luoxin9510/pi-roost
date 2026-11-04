@@ -929,3 +929,62 @@ describe("M23 review", () => {
 		expect(disposed).toBe(1);
 	});
 });
+
+describe("M24: usage in the hub", () => {
+	const usage = (cost: number, today: number, sub = false) => ({
+		input: 1000,
+		output: 500,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost,
+		today,
+		day: (() => {
+			const d = new Date();
+			d.setHours(0, 0, 0, 0);
+			return d.getTime();
+		})(),
+		sub,
+		models: { "anthropic/claude-opus-5-5": { cost, tokens: 1500 } },
+	});
+
+	it("rows show what each session spent, the header today's and all; /usage lists by model and session", async () => {
+		const a = row({ name: "big job", model: "anthropic/claude-opus-5-5", usage: usage(12.5, 2) });
+		const b = row({ name: "small job", model: "anthropic/claude-opus-5-5", usage: usage(0.3, 0.3, true) });
+		const { view } = setup([a, b]);
+		await view.start();
+		const screen = view.render(140).join("\n");
+		expect(screen).toContain("$12.50");
+		expect(screen).toContain("$0.30");
+		expect(screen).toContain("$2.30 today · $12.80 all");
+		type(view, "/usage");
+		view.handleInput("\r");
+		const panel = view.render(140).join("\n");
+		expect(panel).toContain("Usage · sessions in this view");
+		expect(panel).toContain("By model");
+		expect(panel).toContain("claude-opus-5-5");
+		expect(panel).toContain("2 sessions");
+		expect(panel.indexOf("big job")).toBeLessThan(panel.indexOf("small job"));
+		expect(panel).toContain("(sub)");
+		expect(panel).toContain("on a subscription");
+		view.handleInput("\x1b");
+		expect(view.render(140).join("\n")).not.toContain("By model");
+		view.dispose();
+	});
+
+	it("no cost column or totals before anything is spent; a narrow screen drops the column first", async () => {
+		const { view } = setup([row({ name: "fresh" })]);
+		await view.start();
+		const screen = view.render(140).join("\n");
+		expect(screen).not.toContain("today ·");
+		expect(screen).not.toMatch(/\$\d/);
+		view.dispose();
+		const two = setup([row({ name: "spent", summary: "a long summary of what it is doing right now", model: "anthropic/claude-opus-5-5", usage: usage(3, 0) })]);
+		await two.view.start();
+		// the model column and the share go first, then the cost: the summary keeps its room
+		const line = two.view.render(48).find((l) => l.includes("spent")) ?? "";
+		expect(line).toContain("a long");
+		expect(line).not.toContain("$3.00");
+		expect(two.view.render(160).find((l) => l.includes("spent"))).toContain("$3.00");
+		two.view.dispose();
+	});
+});
