@@ -385,6 +385,33 @@ describe("agent messaging through the daemon", () => {
 		await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === kid)?.parentOpen === false);
 	});
 
+	it("M16: linked pull requests are looked up with gh and shown on the row", async () => {
+		const fake = join(home, "gh");
+		writeFileSync(
+			fake,
+			`#!/bin/sh\ncase "$*" in *"pr view https://github.com/o/r/pull/12"*) echo '{"number":12,"url":"https://github.com/o/r/pull/12","state":"OPEN","isDraft":false,"reviewDecision":"","statusCheckRollup":[{"conclusion":"FAILURE"}],"title":"Fix it"}';; *) exit 1;; esac\n`,
+			{ mode: 0o755 },
+		);
+		process.env.PI_ROOST_GH = fake;
+		process.env.PI_ROOST_PR_POLL_MS = "50";
+		process.env.PI_ROOST_REAP_CHECK_MS = "100";
+		try {
+			await startDaemon();
+			const { c } = await connect();
+			const { id } = await c.request("dispatch", launch("sleep 30", "prjob"));
+			await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === id)?.pid);
+			const w = await worker(id);
+			await w.c.request("report", { id, token: w.token, report: report({ state: "done", status: "idle", prLinks: ["https://github.com/o/r/pull/12", "not a url"] }) });
+			const row = await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === id && j.prs?.length));
+			expect(row.prs).toEqual([{ number: 12, url: "https://github.com/o/r/pull/12", status: "failing", needsReview: true, title: "Fix it" }]);
+			// links only grow: a later report without them keeps them
+			await w.c.request("report", { id, token: w.token, report: report({ state: "done", status: "idle" }) });
+			expect(readState(id)?.prLinks).toEqual(["https://github.com/o/r/pull/12"]);
+		} finally {
+			for (const k of ["PI_ROOST_GH", "PI_ROOST_PR_POLL_MS", "PI_ROOST_REAP_CHECK_MS"]) delete process.env[k];
+		}
+	});
+
 	it("removing a live child tells its parent once", async () => {
 		await startDaemon();
 		const p = await foreground("rmparent");

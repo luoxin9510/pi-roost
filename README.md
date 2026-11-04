@@ -248,6 +248,15 @@ each other.
   `.pi/worktrees/` is added to the repository's `info/exclude`.<br>
   会话从第一条提示词起就在 worktree 里，不会中途搬进去（否则 pi 会弹窗询问目录变了）。主仓库的 `git status` 不受影响：`.pi/worktrees/` 已加入仓库的 `info/exclude`。
 
+**Pull requests · PR 状态.** As in Claude Code, a session's pull request shows as `#N` at
+the right edge of its row (yellow: checks running, failed or review pending; green: ready
+to merge; purple: merged; grey: draft or closed), and sessions whose pull request needs
+review or has failing checks move to a **Ready for review** group. Type `#N` or paste a
+pull request URL to jump to the session working on it. pi-roost finds pull requests from
+`gh pr …` output, by looking the branch up after a push, and for worktree sessions by
+their branch; it needs `gh` (logged in).<br>
+**PR 状态。** 和 Claude Code 一样，会话的 PR 会以 `#N` 显示在行尾（黄：检查进行中、失败或等审核；绿：可以合并；紫：已合并；灰：草稿或已关闭）。PR 需要审核或检查失败的会话会移到 **Ready for review** 分组。输入 `#N` 或粘贴 PR 链接，就能定位到对应的会话。pi-roost 从 `gh pr …` 的输出、push 后按分支查找、以及 worktree 会话的分支来发现 PR，需要已登录的 `gh`。
+
 Design notes: [`docs/plans/m10-worktree-isolation.md`](docs/plans/m10-worktree-isolation.md).
 
 设计说明：[`docs/plans/m10-worktree-isolation.md`](docs/plans/m10-worktree-isolation.md)。
