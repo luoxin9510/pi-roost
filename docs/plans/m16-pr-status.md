@@ -24,3 +24,16 @@ deferred in M7: "needs a forge integration"; M10 gave sessions their own branche
   changed result is stored as `state.prs` and pushed as the row's `prs`.
 - No `gh`, or not authenticated: no labels, nothing else changes (checked again after
   10 minutes).
+
+## Review decisions
+
+- A poll round runs at most a minute and goes on where the last one stopped; state is
+  read again after each gh call, and the poll writes only its own fields.
+- Merged and closed pull requests are asked about once an hour (per URL).
+- A worktree branch is looked up at most every 10 minutes while it has no link.
+- `#N` matches by number; a URL by host, owner, repository and number, whatever the
+  scheme, case or trailing path (`/files`, `#discussion…`).
+- Links to `localhost`, bare addresses and `.local` / `.internal` hosts are ignored.
+- A cancelled check run is not a failure.
+- Limits: the branch lookup runs in the session's directory, so a `cd elsewhere && git
+  push` is looked up there; codemode's nested `bash` calls are seen, other shell tools are not.

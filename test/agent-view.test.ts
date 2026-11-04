@@ -128,6 +128,7 @@ describe("AgentView render", () => {
 		expect(text).toMatch(/Ready for review[\s\S]*jump physics[\s\S]*Working[\s\S]*Completed[\s\S]*old work/);
 		expect(text).toContain("#2048");
 		expect(text).toContain("#7");
+		for (const w of [30, 45, 60]) for (const l of view.render(w)) expect(visibleWidth(l)).toBeLessThanOrEqual(w);
 		type(view, "#2048");
 		const filtered = view.render(120).join("\n");
 		expect(filtered).toContain("jump physics");

@@ -30,7 +30,7 @@ describe("pull requests", () => {
 		expect(prFromGh({ url: U })).toBeUndefined();
 	});
 
-	it("labels, colours, links, readiness, queries", () => {
+	it("labels, colours, links, readiness, queries", async () => {
 		const a = { number: 7, url: U, status: "merged" as const, needsReview: false };
 		const b = { number: 9, url: "https://github.com/o/r/pull/9", status: "failing" as const, needsReview: true };
 		expect(prLabel([a])).toEqual({ text: "#7", tone: "accent", url: U });
@@ -43,6 +43,13 @@ describe("pull requests", () => {
 		expect(prQuery("#12")).toEqual({ number: 12 });
 		expect(prQuery(U)).toEqual({ number: 12, url: U });
 		expect(prQuery("fix #12")).toBeUndefined();
+		expect(prQuery(`${U}/files`)).toEqual({ number: 12, url: U });
+		expect(prQuery(`${U}#discussion_r1`)).toEqual({ number: 12, url: U });
+		expect(prUrlsIn("https://github.com/o/r/pull/12abc http://localhost/o/r/pull/3 http://10.0.0.1/o/r/pull/4")).toEqual([]);
+		const { rowHasPr } = await import("../lib/pr.ts");
+		expect(rowHasPr([{ number: 12, url: U, status: "passing", needsReview: false }], { number: 12, url: "http://GitHub.com/o/r/pull/12" })).toBe(true);
+		expect(checksOf([{ conclusion: "CANCELLED" }])).toBe("passing");
+		expect(checksOf([{ state: "PENDING" }])).toBe("pending");
 	});
 
 	it("the worker links what gh prints and looks the branch up after a push, retrying", async () => {

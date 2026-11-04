@@ -1251,7 +1251,9 @@ export class AgentView implements Component {
 		const modelW = Math.min(MODEL_COL, Math.max(0, ...ds.map((d) => (d.model ? visibleWidth(oneLine(d.model)) : 0))));
 		const shareW = Math.max(0, ...ds.map((d) => d.context?.length ?? 0));
 		// what the summary keeps: the row minus icon, name, the column, the age and the gaps
-		const room = (col: number) => width - (2 + this.nameWidth + 2) - col - 2 - ageW - 2;
+		// M16: the `#N` label at the right edge takes its room too
+		const prW = Math.max(0, ...rows.map((r) => (prLabel(r.prs)?.text.length ?? -2) + 2));
+		const room = (col: number) => width - (2 + this.nameWidth + 2) - col - 2 - ageW - 2 - prW;
 		const full = modelW + (modelW && shareW ? 3 : 0) + shareW;
 		if (full > 0 && room(full) >= MIN_SUMMARY) return { mode: "full", modelW, shareW, ageW };
 		if (shareW > 0 && room(shareW) >= MIN_SUMMARY) return { mode: "share", modelW: 0, shareW, ageW };

@@ -231,53 +231,73 @@ function gh(cwd: string, args: string[]): Promise<string | undefined> {
 	});
 }
 
-/** Look up linked pull requests (and a worktree branch's), store how they stand, push changed rows. */
+const PR_LIST_MS = 10 * 60_000;
+const PR_POLL_BUDGET_MS = 60_000;
+let prCursor = 0;
+
+/**
+ * Look up linked pull requests (and a worktree branch's), store how they stand, push
+ * changed rows. One gh call at a time, at most a minute a round; the next round starts
+ * where this one stopped. State is read again after every await.
+ */
 async function pollPrs(): Promise<void> {
-	const now = Date.now();
-	if (prPolling || now - lastPrPoll < PR_POLL_MS || now < ghMissingUntil) return;
+	const start = Date.now();
+	if (prPolling || start - lastPrPoll < PR_POLL_MS || start < ghMissingUntil) return;
 	prPolling = true;
-	lastPrPoll = now;
+	lastPrPoll = start;
 	try {
-		for (const [id, rec] of [...recs]) {
-			if (rec.kind === "shell") continue;
-			const st = readState(id);
-			if (!st) continue;
-			const active = Math.max(st.startedAt, typeof st.stateSince === "number" ? st.stateSince : 0, st.endedAt ?? 0);
-			if (now - active > PR_ACTIVE_MS && !roster.has(id)) continue;
-			let links = mergeLinks(st.prLinks, []);
-			// a worktree's branch is the session's own: its pull request is the session's
-			if (rec.worktree && links.length === 0) {
-				const out = await gh(rec.worktree.repo, ["pr", "list", "--head", rec.worktree.branch, "--state", "all", "--json", "url", "--jq", ".[].url"]);
-				if (out) links = mergeLinks(links, prUrlsIn(out));
-				if (links.length > 0 && recs.has(id)) updateState(id, { prLinks: links });
-			}
-			if (links.length === 0) continue;
-			const before = Array.isArray(st.prs) ? (st.prs as PrInfo[]) : [];
-			const next: PrInfo[] = [];
-			for (const url of links) {
-				const known = before.find((p) => p.url === url);
-				// merged and closed ones do not change back often: once an hour
-				if (known && (known.status === "merged" || known.status === "closed") && now - (Number(st.prsAt) || 0) < 60 * 60_000) {
-					next.push(known);
-					continue;
-				}
-				const out = await gh(rec.cwd, ["pr", "view", url, "--json", PR_FIELDS]);
-				let info: PrInfo | undefined;
-				try {
-					info = out ? prFromGh(JSON.parse(out) as GhPr) : undefined;
-				} catch {}
-				const kept = info ?? known;
-				if (kept) next.push(kept);
-			}
-			if (!recs.has(id)) continue;
-			if (JSON.stringify(next) !== JSON.stringify(before)) {
-				updateState(id, { prs: next, prsAt: Date.now() });
-				pushJob(id);
-			}
+		const ids = [...recs.keys()];
+		for (let n = 0; n < ids.length; n++) {
+			if (Date.now() - start > PR_POLL_BUDGET_MS || Date.now() < ghMissingUntil) break;
+			const id = ids[(prCursor + n) % ids.length]!;
+			prCursor = (prCursor + n + 1) % Math.max(1, ids.length);
+			await pollJobPrs(id);
 		}
 	} finally {
 		prPolling = false;
 	}
+}
+
+async function pollJobPrs(id: string): Promise<void> {
+	const rec = recs.get(id);
+	const st = readState(id);
+	if (!rec || !st || rec.kind === "shell") return;
+	const now = Date.now();
+	const active = Math.max(st.startedAt, typeof st.stateSince === "number" ? st.stateSince : 0, st.endedAt ?? 0);
+	if (now - active > PR_ACTIVE_MS && !roster.has(id)) return;
+	// a worktree's branch is the session's own: its pull request is the session's
+	if (rec.worktree && mergeLinks(st.prLinks, []).length === 0 && now - (Number(st.prListAt) || 0) > PR_LIST_MS) {
+		const out = await gh(rec.worktree.repo, ["pr", "list", `--head=${rec.worktree.branch}`, "--state", "all", "--limit", "5", "--json", "url", "--jq", ".[].url"]);
+		const fresh = readState(id);
+		if (!recs.has(id) || !fresh) return;
+		updateState(id, { prListAt: Date.now(), ...(out ? { prLinks: mergeLinks(fresh.prLinks, prUrlsIn(out)) } : {}) });
+	}
+	const links = mergeLinks(readState(id)?.prLinks, []);
+	if (links.length === 0) return;
+	const before = Array.isArray(st.prs) ? (st.prs as PrInfo[]) : [];
+	const next: PrInfo[] = [];
+	const checked: Record<string, number> = st.prChecked && typeof st.prChecked === "object" ? { ...(st.prChecked as Record<string, number>) } : {};
+	for (const url of links) {
+		const known = before.find((p) => p.url === url);
+		// merged and closed ones do not change back often: once an hour
+		if (known && (known.status === "merged" || known.status === "closed") && now - (checked[url] ?? 0) < 60 * 60_000) {
+			next.push(known);
+			continue;
+		}
+		const out = await gh(rec.cwd, ["pr", "view", url, "--json", PR_FIELDS]);
+		checked[url] = Date.now();
+		let info: PrInfo | undefined;
+		try {
+			info = out ? prFromGh(JSON.parse(out) as GhPr) : undefined;
+		} catch {}
+		const kept = info ?? known;
+		if (kept) next.push(kept);
+	}
+	if (!recs.has(id)) return;
+	const changed = JSON.stringify(next) !== JSON.stringify(before);
+	// only its own fields: the worker's reports may have come in meanwhile
+	updateState(id, { prs: next, prChecked: checked });
+	if (changed) pushJob(id);
 }
 
 /** M10: a child's report ends with where its work is. */
