@@ -5,7 +5,7 @@
 import { statSync } from "node:fs";
 import { type Component, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { JobRow } from "../lib/protocol.ts";
-import { neighboursOf, pathOf, readTail, type TranscriptItem, transcriptItems } from "../lib/transcript.ts";
+import { clean, neighboursOf, pathOf, readTail, type TranscriptItem, transcriptItems } from "../lib/transcript.ts";
 import { ageOf, iconOf, sentenceOf } from "../lib/view-model.ts";
 
 export interface TranscriptTheme {
@@ -41,13 +41,19 @@ const NAV_MAX = 8;
 const NOTICE_MS = 4000;
 const RESULT_LINES = 3;
 
-const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+// names, summaries and errors come from models and processes: no escapes reach the terminal
+const oneLine = (s: string) => clean(s).replace(/\s+/g, " ").trim();
+const ARM_MS = 2500;
 
 export class TranscriptView implements Component {
 	private o: TranscriptViewOptions;
 	private id: string;
 	private scroll = 0;
 	private sel = 0;
+	/** The selected tree row (by id, so a new row does not move the selection). */
+	private selKey: string | undefined;
+	/** Ctrl+O on an ended subagent: a second press starts it. */
+	private armedAt = 0;
 	private input = new Input({ prompt: "" });
 	private items: TranscriptItem[] = [];
 	private seen: { file: string; size: number; mtimeMs: number } | undefined;
@@ -64,7 +70,7 @@ export class TranscriptView implements Component {
 		this.id = o.start;
 		this.input.focused = true;
 		this.load();
-		this.sel = this.navIndexOfCurrent();
+		this.select(this.navIndexOfCurrent());
 		this.timer = setInterval(() => {
 			if (this.load()) o.tui.requestRender();
 		}, o.pollMs ?? 500);
@@ -87,7 +93,13 @@ export class TranscriptView implements Component {
 	private load(): boolean {
 		const row = this.row();
 		const file = row?.sessionFile;
-		if (!file) return false;
+		if (!file) {
+			const was = this.failure;
+			this.items = [];
+			this.seen = undefined;
+			this.failure = "no transcript (not a pi session)";
+			return was !== this.failure;
+		}
 		try {
 			const st = statSync(file);
 			if (this.seen && this.seen.file === file && this.seen.size === st.size && this.seen.mtimeMs === st.mtimeMs) return false;
@@ -118,6 +130,23 @@ export class TranscriptView implements Component {
 		];
 	}
 
+	private keyOfNav(n: NavItem | undefined): string | undefined {
+		return n ? (n.kind === "back" ? "back" : n.row.id) : undefined;
+	}
+
+	private select(i: number): void {
+		const nav = this.nav();
+		this.sel = Math.max(0, Math.min(i, nav.length - 1));
+		this.selKey = this.keyOfNav(nav[this.sel]);
+	}
+
+	/** The selection after the tree changed: the same row where it is now. */
+	private resolveSel(nav: NavItem[]): void {
+		const at = this.selKey ? nav.findIndex((n) => this.keyOfNav(n) === this.selKey) : -1;
+		this.sel = at >= 0 ? at : Math.max(0, Math.min(this.sel, nav.length - 1));
+		this.selKey = this.keyOfNav(nav[this.sel]);
+	}
+
 	private navIndexOfCurrent(): number {
 		const i = this.nav().findIndex((n) => n.kind === "row" && n.depth === 0 && n.row.id === this.id);
 		return i >= 0 ? i : 0;
@@ -130,8 +159,9 @@ export class TranscriptView implements Component {
 		this.scroll = 0;
 		this.seen = undefined;
 		this.lines = undefined;
+		this.armedAt = 0;
 		this.load();
-		this.sel = this.navIndexOfCurrent();
+		this.select(this.navIndexOfCurrent());
 	}
 
 	/** One level up: the parent's transcript, or the conversation when the parent is main. */
@@ -151,19 +181,24 @@ export class TranscriptView implements Component {
 	private submit(): void {
 		const text = this.input.getValue().trim();
 		const row = this.row();
-		if (!text || !row || this.sending) return;
+		if (!text || !row) return;
+		if (this.sending) return this.say("still sending the last message…", "dim");
 		this.sending = true;
 		this.input.setValue("");
+		const to = row.id;
+		// not sent: the text comes back to be sent again or copied, if that subagent is still shown
+		const giveBack = () => {
+			if (this.id === to && this.input.getValue() === "") this.input.setValue(text);
+		};
 		void this.o
-			.send(row.id, text)
+			.send(to, text)
 			.then((r) => {
 				this.say(r.message, r.ok ? "dim" : "warning");
-				// not sent: the text comes back to be sent again or copied
-				if (!r.ok && this.input.getValue() === "") this.input.setValue(text);
+				if (!r.ok) giveBack();
 			})
 			.catch((err: unknown) => {
 				this.say(`could not send: ${(err as Error).message}`, "error");
-				if (this.input.getValue() === "") this.input.setValue(text);
+				giveBack();
 			})
 			.finally(() => {
 				this.sending = false;
@@ -179,16 +214,31 @@ export class TranscriptView implements Component {
 			else this.back();
 		} else if (matchesKey(data, Key.ctrl("o"))) {
 			const row = this.row();
-			if (row) this.o.done({ attach: row });
+			if (!row) {
+				// nothing
+			} else if (this.input.getValue().trim() !== "") this.say("send the message or clear it (Esc) first", "warning");
+			else if (row.pid !== null || row.reaped || Date.now() - this.armedAt <= ARM_MS) this.o.done({ attach: row });
+			else {
+				// an ended subagent starts again: press twice, as → in the panel
+				this.armedAt = Date.now();
+				this.say(`${oneLine(row.name)} is ${row.state} · Ctrl+O again starts it`, "warning");
+			}
 		} else if (matchesKey(data, Key.enter)) {
 			if (this.input.getValue().trim() !== "") this.submit();
 			else {
-				const n = this.nav()[this.sel];
+				const nav = this.nav();
+				this.resolveSel(nav);
+				const n = nav[this.sel];
 				if (n?.kind === "back") this.back();
 				else if (n && n.row.id !== this.id) this.go(n.row);
 			}
-		} else if (matchesKey(data, Key.up)) this.sel = Math.max(0, this.sel - 1);
-		else if (matchesKey(data, Key.down)) this.sel = Math.min(this.nav().length - 1, this.sel + 1);
+		} else if (matchesKey(data, Key.up)) {
+			this.resolveSel(this.nav());
+			this.select(this.sel - 1);
+		} else if (matchesKey(data, Key.down)) {
+			this.resolveSel(this.nav());
+			this.select(this.sel + 1);
+		}
 		else if (matchesKey(data, Key.pageUp)) this.scroll += page;
 		else if (matchesKey(data, Key.pageDown)) this.scroll = Math.max(0, this.scroll - page);
 		else this.input.handleInput(data);
@@ -196,10 +246,12 @@ export class TranscriptView implements Component {
 	}
 
 	private height(): number {
-		return Math.max(6, this.o.tui.terminal.rows || 30);
+		return Math.max(1, this.o.tui.terminal.rows || 30);
 	}
 
 	private navHeight(n: number): number {
+		// a short terminal keeps the transcript and the message box; the tree goes first
+		if (this.height() < 10) return 0;
 		return Math.min(n, NAV_MAX, Math.max(1, Math.floor(this.height() / 3)));
 	}
 
@@ -268,10 +320,10 @@ export class TranscriptView implements Component {
 		out.push(...shown);
 		// the tree around it: back, siblings, children
 		const nav = this.nav();
-		this.sel = Math.min(this.sel, nav.length - 1);
+		this.resolveSel(nav);
 		const nh = this.navHeight(nav.length);
 		const from = Math.max(0, Math.min(this.sel - Math.floor(nh / 2), nav.length - nh));
-		out.push(fg("dim", fit(`─── ${this.scroll > 0 ? `↑ ${this.scroll} lines up · PgDn ` : ""}${"─".repeat(Math.max(0, width))}`)));
+		out.push(fg("dim", fit(this.scroll > 0 ? `─── ↑ ${this.scroll} lines up · PgDn ${"─".repeat(Math.max(0, width))}` : "─".repeat(Math.max(0, width)))));
 		nav.slice(from, from + nh).forEach((n, k) => {
 			const selected = from + k === this.sel;
 			const lead = selected ? fg("accent", "› ") : "  ";
@@ -293,9 +345,17 @@ export class TranscriptView implements Component {
 		const notice = this.notice && Date.now() < this.notice.until ? this.notice : undefined;
 		const keys = notice
 			? fg(notice.tone, oneLine(notice.text))
-			: fg("dim", this.input.getValue() ? "↵ send · Esc clear" : "type to message · ↑↓ select · ↵ open · Esc back · PgUp/PgDn scroll · Ctrl+O attach");
+			: fg(
+					"dim",
+					this.input.getValue()
+						? "↵ send · Esc clear"
+						: width >= 100
+							? "type to message · ↑↓ select · ↵ open · Esc back · PgUp/PgDn scroll · Ctrl+O attach"
+							: "type to message · ↑↓ ↵ · Esc back · Ctrl+O attach · PgUp/PgDn",
+				);
 		out.push(fit(` ${keys}`));
-		return out.slice(0, H);
+		// a tiny terminal: the message box and the keys stay, the transcript gives way
+		return out.length > H ? [...out.slice(0, Math.max(0, H - 2)), ...out.slice(-2)].slice(-H) : out;
 	}
 
 	invalidate(): void {

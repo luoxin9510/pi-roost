@@ -45,10 +45,9 @@ function brief(args: unknown): string {
 }
 
 /** The current branch of a session file's entries (the last entry and its parents). */
-export function branchOf(text: string, truncated = false): Entry[] {
+export function branchOf(text: string): Entry[] {
 	const entries: Entry[] = [];
 	const lines = text.split("\n");
-	if (truncated) lines.shift(); // the first line is cut
 	for (const line of lines) {
 		if (!line.trim()) continue;
 		try {
@@ -76,7 +75,7 @@ export function transcriptItems(text: string, truncated = false): TranscriptItem
 	const items: TranscriptItem[] = [];
 	const calls = new Map<string, Extract<TranscriptItem, { kind: "tool" }>>();
 	if (truncated) items.push({ kind: "note", text: "earlier messages are not shown" });
-	for (const e of branchOf(text, truncated)) {
+	for (const e of branchOf(text)) {
 		if (e.type === "compaction") {
 			items.push({ kind: "note", text: "compacted" });
 			continue;
@@ -123,10 +122,17 @@ export function readTail(file: string): { text: string; truncated: boolean; size
 	const fd = openSync(file, "r");
 	try {
 		const st = fstatSync(fd);
-		const len = Math.min(st.size, READ_MAX);
+		const truncated = st.size > READ_MAX;
+		// one byte before the tail too: whether its first line is whole
+		const len = truncated ? READ_MAX + 1 : st.size;
 		const buf = Buffer.alloc(len);
 		readSync(fd, buf, 0, len, st.size - len);
-		return { text: buf.toString("utf8"), truncated: st.size > len, size: st.size, mtimeMs: st.mtimeMs };
+		let text = buf.toString("utf8");
+		if (truncated) {
+			const nl = text.indexOf("\n");
+			text = nl === -1 ? "" : text.slice(nl + 1); // the line cut in two goes
+		}
+		return { text, truncated, size: st.size, mtimeMs: st.mtimeMs };
 	} finally {
 		closeSync(fd);
 	}

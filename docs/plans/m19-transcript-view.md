@@ -15,9 +15,9 @@ to resume it yourself". Until now Enter on a panel row attached to the child's P
 |---|---|
 | typing, Enter | a message to the shown subagent (the daemon's `reply`: delivered, or it starts again); a message that did not go comes back to the box |
 | ↑/↓, Enter (empty box) | select and open a row of the tree: `← parent`, the siblings (the shown one marked), its direct children |
-| Esc | clear the box; else up one level (the parent's transcript), and from a top child back to the conversation |
+| Esc | clear the box; else up one level (the parent's transcript, not the row seen before), and from a top child back to the conversation |
 | PgUp/PgDn | scroll; it follows the end otherwise |
-| Ctrl+O | leave and attach to the shown subagent |
+| Ctrl+O | leave and attach to the shown subagent (an ended one asks for Ctrl+O again, then starts; not with a message in the box) |
 
 The header is the path: `main › parent › child`, with the state and age.
 
@@ -33,7 +33,19 @@ characters are removed before anything reaches the terminal. The view polls the 
 
 Nothing is attached: the child keeps running, its PTY is untouched.
 
+## Review decisions
+
+- Names, summaries, questions and errors are cleaned like the transcript (no escapes).
+- A row without a session file (a shell job) says so instead of keeping the last one's text.
+- A message that did not go comes back only while the same subagent is shown.
+- The tree's selection follows the row, not its index, when rows come and go.
+- On a terminal under 10 rows the tree is left out; the message box and keys stay.
+- A transcript open when the session changes or pi shuts down is closed.
+- A cut tail drops its first line only when that line is really cut.
+
 ## Not ported
 
 - Claude's in-place transcript (pi-roost draws it as a full-screen overlay).
-- Expanding a tool call's whole output: three lines and a count; → attaches for more.
+- Expanding a tool call's whole output: three lines and a count; Ctrl+O attaches for more.
+- `context_edit` entries are not applied, and messages before a compaction still show
+  (the view shows what happened, not the model's context).

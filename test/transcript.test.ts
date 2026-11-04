@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { JobRow } from "../lib/protocol.ts";
-import { branchOf, clean, neighboursOf, pathOf, transcriptItems } from "../lib/transcript.ts";
+import { branchOf, clean, neighboursOf, pathOf, READ_MAX, readTail, transcriptItems } from "../lib/transcript.ts";
 import { TranscriptView } from "../extensions/transcript-view.ts";
 
 const line = (o: object) => `${JSON.stringify(o)}\n`;
@@ -118,6 +118,66 @@ describe("M19: transcripts", () => {
 			expect(results).toHaveLength(2);
 			screen = v.render(20);
 			for (const l of screen) expect(visibleWidth(l)).toBeLessThanOrEqual(20);
+		} finally {
+			v.dispose();
+		}
+	});
+
+	it("reads a long file's tail from a whole line", () => {
+		const dir = mkdtempSync(join(tmpdir(), "roost-tail-"));
+		const f = join(dir, "s.jsonl");
+		const pad = line({ type: "message", id: "p", parentId: null, message: { role: "user", content: "x".repeat(1000) } });
+		const body = session();
+		// the tail starts exactly at a line's start: that line is kept
+		writeFileSync(f, "y".repeat(10) + "\n" + pad.repeat(Math.ceil(READ_MAX / pad.length)) + body);
+		const t = readTail(f);
+		expect(t.truncated).toBe(true);
+		expect(t.text.endsWith(body)).toBe(true);
+		expect(t.text.startsWith("{")).toBe(true);
+	});
+
+	it("the view: escapes in names never reach the screen; a row without a file; Ctrl+O twice on an ended one; a short terminal", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "roost-tr2-"));
+		const a = row({ name: "evil\u001b]0;pwn\u0007name", summary: "x\u001b[2Jy", sessionFile: join(dir, "a.jsonl"), state: "done", pid: null, reaped: false });
+		const sh = row({ name: "shell", kind: "shell", sessionFile: "" });
+		writeFileSync(a.sessionFile, session());
+		const tui = { terminal: { rows: 24, columns: 80 }, requestRender: () => {} };
+		const results: unknown[] = [];
+		let release: (r: { ok: boolean; message: string }) => void = () => {};
+		const v = new TranscriptView({
+			tui: tui as never, theme: { fg: (_c: string, t: string) => t, bold: (t: string) => t }, main: "/s/main.jsonl", rows: () => [a, sh], start: a.id,
+			send: () => new Promise((r) => (release = r)), done: (r) => results.push(r), pollMs: 1000,
+		});
+		try {
+			// (pi-tui's own cursor marker aside)
+			const text = v.render(80).join("\n").replace(/\u001b_pi:[^\u0007]*\u0007/g, "");
+			expect(text).not.toContain("\u001b");
+			expect(text).toContain("main › evilname"); // the OSC removed whole
+			// a failed send comes back only to the subagent it was for
+			for (const ch of "hello") v.handleInput(ch);
+			v.handleInput("\r");
+			v.handleInput("\x1b[B");
+			v.handleInput("\x1b[B");
+			v.handleInput("\r");
+			expect(v.row()?.id).toBe(sh.id);
+			expect(v.render(80).join("\n")).toContain("no transcript (not a pi session)");
+			expect(v.render(80).join("\n")).not.toContain("fix the test");
+			release({ ok: false, message: "not delivered" });
+			await new Promise((r) => setTimeout(r, 10));
+			expect(v.render(80).join("\n")).not.toContain("› hello");
+			// back on the ended one: Ctrl+O asks again
+			v.go(a);
+			v.handleInput("\x0f");
+			expect(results).toEqual([]);
+			expect(v.render(80).join("\n")).toContain("Ctrl+O again starts it");
+			v.handleInput("\x0f");
+			expect(results).toEqual([{ attach: a }]);
+			for (const rows of [3, 5, 8]) {
+				tui.terminal.rows = rows;
+				const out = v.render(80);
+				expect(out.length).toBeLessThanOrEqual(rows);
+				expect(out.at(-2) ?? out[0]).toMatch(/message|type to/);
+			}
 		} finally {
 			v.dispose();
 		}

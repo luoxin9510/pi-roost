@@ -230,6 +230,8 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	let attached = false;
 	/** M19: a transcript is on screen (it has the keys). */
 	let viewing = false;
+	let viewHandle: { hide(): void } | undefined;
+	let viewComp: TranscriptView | undefined;
 	let dialogs = 0;
 	let frame = 0;
 	let spin: NodeJS.Timeout | undefined;
@@ -467,7 +469,19 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		backoff = Math.min(backoff * 2, 30_000);
 	}
 
+	/** M19: a transcript open over a session that goes away goes too. */
+	function closeView(): void {
+		try {
+			viewHandle?.hide();
+		} catch {}
+		viewHandle = undefined;
+		viewComp?.dispose();
+		viewComp = undefined;
+		viewing = false;
+	}
+
 	function unwatch(): void {
+		closeView();
 		gen++;
 		watching = false;
 		armed = undefined;
@@ -632,7 +646,7 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 		try {
 			result = await c.ui.custom<{ attach?: JobRow } | undefined>(
 				(t, th, _kb, done) =>
-					new TranscriptView({
+					(viewComp = new TranscriptView({
 						tui: t,
 						theme: { fg: (col, s) => th.fg(col as never, s), bold: (s) => th.bold(s) },
 						main,
@@ -640,8 +654,8 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 						start: row.id,
 						send: (id, text) => deliver(id, text),
 						done,
-					}),
-				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 } },
+					})),
+				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0 }, onHandle: (h) => (viewHandle = h) },
 			);
 		} catch (err) {
 			try {
@@ -649,16 +663,15 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 			} catch {}
 		} finally {
 			viewing = false;
+			viewHandle = undefined;
+			viewComp = undefined;
 		}
+		if (ctx !== c) return; // the session changed meanwhile
 		recompute();
 		tui?.requestRender();
+		// the view asked twice already for an ended one
 		const target = result?.attach;
-		if (target) {
-			const live = all.get(target.id) ?? target;
-			// an ended child starts again only on a second press, as from the panel
-			if (live.pid !== null || live.reaped || confirmed(live, "open")) void enter(live);
-			else requestRender();
-		}
+		if (target) void enter(all.get(target.id) ?? target);
 	}
 
 	function onInput(data: string): { consume?: boolean; data?: string } | undefined {
