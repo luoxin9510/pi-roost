@@ -748,8 +748,15 @@ function isDir(p: string): boolean {
 	}
 }
 
+/** M36: a request id: what a client may send to make a resend safe. */
+const requestIdOf = (v: unknown): string | undefined => (typeof v === "string" && /^[A-Za-z0-9_.:-]{1,64}$/.test(v) ? v : undefined);
+
 async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promise<{ id: string; name: string }> {
 	if (!a || typeof a !== "object") throw new OpError("bad_request", "missing args");
+	// M36: the same request again (its answer was lost): the job it made, not a second one
+	const rid = requestIdOf(a.requestId);
+	if (a.requestId !== undefined && !rid) throw new OpError("bad_request", "requestId: 1-64 of A-Z a-z 0-9 _ . : -");
+	if (rid) for (const r of recs.values()) if (r.requestId === rid) return { id: r.id, name: r.name };
 	if (!str(a.cwd) || !isAbsolute(a.cwd) || !isDir(a.cwd)) throw new OpError("bad_request", `cwd is not a directory: ${a.cwd}`);
 	if (!Array.isArray(a.command) || a.command.length === 0 || !a.command.every(str)) {
 		throw new OpError("bad_request", "command must be a non-empty array of strings");
@@ -785,6 +792,9 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		}
 	}
 
+	// M36: checked again after the awaits above (a worktree check): the same request on
+	// another connection may have made its job meanwhile
+	if (rid) for (const r of recs.values()) if (r.requestId === rid) return { id: r.id, name: r.name };
 	let id = newJobId();
 	while (recs.has(id)) id = newJobId();
 	const base = str(a.name) ? a.name : id;
@@ -816,6 +826,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		...(str(a.piVersion) ? { piVersion: a.piVersion } : {}),
 		roostVersion: ROOST_VERSION,
 		...(worktree ? { worktree } : {}),
+		...(rid ? { requestId: rid } : {}),
 		...extra,
 	};
 	createJob(rec, {
@@ -1327,18 +1338,35 @@ function deliverEvent(id: string, r: PendingReply): Event {
 
 async function reply(
 	args: { id?: unknown; text?: unknown; mode?: unknown } | undefined,
-): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string }> {
+): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string; duplicate?: boolean }> {
 	const id = requireJob(args);
 	const text = typeof args?.text === "string" ? args.text.trim() : "";
 	const steer = args?.mode === "steer";
 	if (!text) throw new OpError("bad_request", "empty reply");
+	// M36: a resend of a reply the daemon took (its answer was lost) is not taken twice
+	const rawRid = (args as { requestId?: unknown } | undefined)?.requestId;
+	const rid = requestIdOf(rawRid);
+	if (rawRid !== undefined && !rid) throw new OpError("bad_request", "requestId: 1-64 of A-Z a-z 0-9 _ . : -");
+	if (rid && seenRequest(id, rid)) {
+		// taken before; an ended job it was to start (the daemon died in between) starts now
+		if (!roster.has(id) && !starting.has(id) && !respawning.has(id) && pendingReplies(id).length > 0) {
+			const r = await respawn(id).catch((err: unknown) => ({ error: (err as Error).message }));
+			return { delivered: false, saved: true, duplicate: true, ...("error" in r ? { error: r.error } : { respawned: r.started }) };
+		}
+		return { delivered: false, saved: true, duplicate: true };
+	}
 	const live = roster.has(id);
 	if (text === "/stop") {
 		if (live) await terminateHost(id);
 		return { delivered: live, saved: false, stopped: live };
 	}
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
-	if (isTermJob(recs.get(id))) return replyToProfile(id, text, live);
+	if (isTermJob(recs.get(id))) {
+		const r = await replyToProfile(id, text, live);
+		// typed in first, then kept: a crash in between types it again on a resend (not atomic)
+		if (rid && (r.delivered || r.saved) && readState(id)) updateState(id, { requestIds: withRequest(readState(id), rid) });
+		return r;
+	}
 	if (recs.get(id)?.kind === "shell" && !isProtocolJob(recs.get(id))) throw new OpError("unsupported", "a shell job takes no replies; attach to type into it");
 	const conn = workerConns.get(id);
 	const connected = live && !!conn && !conn.sock.destroyed;
@@ -1352,7 +1380,8 @@ async function reply(
 	const st = readState(id);
 	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
 	const item: PendingReply = { seq, text, ...(steer ? { mode: "steer" as const } : {}) };
-	updateState(id, { replySeq: seq, pendingReplies: [...pending, item] });
+	// the request id goes in the same write as the reply: both are kept, or neither
+	updateState(id, { replySeq: seq, pendingReplies: [...pending, item], ...(rid ? { requestIds: withRequest(st, rid) } : {}) });
 	replyIn(id, seq);
 	if (connected) {
 		send(conn!, deliverEvent(id, item));
@@ -1412,6 +1441,17 @@ function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabili
 	const caps = Array.isArray(args.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
 	conn.hello = { name, version: str(a.version) ? a.version.slice(0, 40) : null, capabilities: caps };
 	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: DAEMON_CAPABILITIES };
+}
+
+/** M36: request ids a job's replies came with, the last 100 (a resend comes soon after). */
+const MAX_REQUEST_IDS = 100;
+function seenRequest(id: string, rid: string): boolean {
+	const ids = readState(id)?.requestIds;
+	return Array.isArray(ids) && ids.includes(rid);
+}
+function withRequest(st: JobState | undefined, rid: string): string[] {
+	const ids = Array.isArray(st?.requestIds) ? (st.requestIds as unknown[]).filter((x): x is string => typeof x === "string") : [];
+	return [...ids, rid].slice(-MAX_REQUEST_IDS);
 }
 
 function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?: Partial<WorkerReport> } | undefined): void {

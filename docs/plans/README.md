@@ -41,6 +41,7 @@ Claude Code's documented behaviour.
 | M31 | [the agent protocol, TypeScript and Python clients](m31-protocol.md) | next |
 | M34 | [telemetry](evals.md) (first of: telemetry, stress, evals) | next |
 | M35 | [the stress run, and what it found](m35-stress.md) | next |
+| M36 | request ids: a resent reply or dispatch is taken once ([protocol](../protocol.md#request-ids-for-the-clients-that-send-replies-and-start-jobs)) | next |
 
 Next: [measuring roost](evals.md) (telemetry, stress tests, evals), then the rest of [any agent](any-agent.md) (M32–M33).
 

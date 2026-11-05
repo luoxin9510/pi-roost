@@ -190,7 +190,8 @@ async function rows(client: DaemonClient): Promise<Map<string, JobRow>> {
 async function reply(c: () => DaemonClient, id: string, text: string): Promise<void> {
 	for (let tries = 0; ; tries++) {
 		try {
-			await c().request("reply", { id, text });
+			// M36: the same request id on every try: a resend is taken once
+			await c().request("reply", { id, text, requestId: `${id}.${text}` });
 			sent.get(id)!.push(text);
 			return;
 		} catch (err) {
@@ -359,7 +360,8 @@ async function main(): Promise<void> {
 		await drained(client, ids, BUDGET.storm);
 		const check = checkReplies(ids);
 		results.chaos = { ms: Date.now() - s0, daemonKilled: true, hostsKilled: killedHosts.length, restartedByReply: victims.length, resentAfterError: [...unsure.values()].reduce((n, s) => n + s.size, 0), ...check };
-		if (check.duplicates > 0) notes.push(`chaos: ${check.duplicates} reply handled twice after a lost response (resent by the client: needs request ids)`);
+		// M36: with request ids a resend after a lost answer is taken once: no duplicate is allowed
+		if (check.duplicates > 0) failures.push(`chaos: ${check.duplicates} replies handled twice despite request ids`);
 	}
 
 	if (scenarios.includes("soak")) {

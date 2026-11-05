@@ -44,7 +44,8 @@ real daemon and real hosts in an isolated home, fake agents on the TypeScript cl
    skip what it covers.
 4. **Replies resent after a lost response are handled twice** (46 of 2050 in a chaos
    run): the daemon took the request, its answer was lost with the daemon, the client sent
-   it again. Not fixable without request ids: the next item of the plan.
+   it again. Fixed in M36 by request ids: with them, a chaos run's 50 resends are taken
+   once each (no duplicate).
 
 After review: a failed background sync no longer poisons the ones after it (each batch
 answers for itself, at most 32 files open at once, failures logged); a state file that a
