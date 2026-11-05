@@ -46,5 +46,10 @@ real daemon and real hosts in an isolated home, fake agents on the TypeScript cl
    run): the daemon took the request, its answer was lost with the daemon, the client sent
    it again. Not fixable without request ids: the next item of the plan.
 
+After review: a failed background sync no longer poisons the ones after it (each batch
+answers for itself, at most 32 files open at once, failures logged); a state file that a
+machine crash left empty (reports are written without fsync) is rebuilt at start from
+the job's record, failed and startable, instead of the job disappearing.
+
 Checked by: the stress run itself (green at the default size), unit tests for group
 commit, a daemon test for a restart after a lost ack, the suite.

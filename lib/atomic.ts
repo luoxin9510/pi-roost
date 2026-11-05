@@ -24,8 +24,21 @@ function fsyncDir(dir: string): void {
  * once every write made so far is on disk. The daemon answers a request only after it.
  */
 let deferred: { files: Set<string>; dirs: Set<string> } | undefined;
+/** The last batch; it never rejects (a batch's error goes to its own callers only). */
 let syncing: Promise<void> = Promise.resolve();
 let queued = false;
+let onSyncError: (err: unknown) => void = () => {};
+
+/** Where a failed background sync is reported (the daemon logs it). */
+export function setSyncErrorHandler(fn: (err: unknown) => void): void {
+	onSyncError = fn;
+}
+
+/** At most this many files open at once for syncing (descriptors are limited). */
+const SYNC_PARALLEL = 32;
+async function syncAll(paths: string[]): Promise<void> {
+	for (let i = 0; i < paths.length; i += SYNC_PARALLEL) await Promise.all(paths.slice(i, i + SYNC_PARALLEL).map(syncPath));
+}
 
 export function deferDurability(on: boolean): void {
 	deferred = on ? (deferred ?? { files: new Set(), dirs: new Set() }) : undefined;
@@ -57,12 +70,14 @@ function syncDeferred(): Promise<void> {
 	const dirs = [...d.dirs];
 	d.files.clear();
 	d.dirs.clear();
-	// files first, then the directories that name them (as the synchronous path does)
-	syncing = syncing.then(async () => {
-		await Promise.all(files.map(syncPath));
-		await Promise.all(dirs.map(syncPath));
+	// files first, then the directories that name them (as the synchronous path does);
+	// after the batches before it, whatever became of them
+	const batch = syncing.then(async () => {
+		await syncAll(files);
+		await syncAll(dirs);
 	});
-	return syncing;
+	syncing = batch.catch(() => {});
+	return batch;
 }
 
 /**
@@ -92,7 +107,7 @@ export function writeFileAtomic(path: string, data: string | Uint8Array, mode = 
 		queued = true;
 		setImmediate(() => {
 			queued = false;
-			void syncDeferred().catch(() => {});
+			void syncDeferred().catch((err) => onSyncError(err));
 		});
 	}
 }

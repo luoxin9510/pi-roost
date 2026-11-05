@@ -62,7 +62,7 @@ export interface ExitRecord {
 }
 
 const jobFile = (id: string) => join(jobDir(id), "job.json");
-const stateFile = (id: string) => join(jobDir(id), "state.json");
+export const stateFile = (id: string) => join(jobDir(id), "state.json");
 export const screenPath = (id: string) => join(jobDir(id), "screen.txt");
 export const exitPath = (id: string) => join(jobDir(id), "exit.json");
 /** M30: a level 0 agent's terminal signals, written by its host. */

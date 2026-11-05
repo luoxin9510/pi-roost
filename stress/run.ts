@@ -263,6 +263,8 @@ function checkReplies(ids: string[]): { jobs: number; replies: number; duplicate
 			duplicates += n - 1;
 			if (!maybe.has(t)) failures.push(`${id}: "${t}" handled ${n} times`);
 		}
+		const wanted = new Set(want);
+		for (const t of seen.keys()) if (!wanted.has(t)) failures.push(`${id}: "${t}" handled, never sent`);
 		for (const t of want) if (!seen.has(t)) {
 			missing++;
 			failures.push(`${id}: "${t}" sent, never handled`);
@@ -466,6 +468,19 @@ function cleanup(): void {
 	try {
 		if (daemon?.pid && alive(daemon.pid)) process.kill(daemon.pid, "SIGKILL");
 	} catch {}
+	// a run that stopped half way leaves hosts (and their agents): they go with it
+	for (const id of sent.keys()) {
+		const pid = readState(id)?.hostPid;
+		if (typeof pid === "number" && alive(pid)) {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {}
+			}
+		}
+	}
 	if (!KEEP) {
 		rmSync(home, { recursive: true, force: true });
 		rmSync(work, { recursive: true, force: true });

@@ -5,7 +5,7 @@ import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSy
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
-import { deferDurability, durable, readJson, writeJsonAtomic } from "../lib/atomic.ts";
+import { deferDurability, durable, readJson, setSyncErrorHandler, writeJsonAtomic } from "../lib/atomic.ts";
 import { hostEntry } from "../lib/client.ts";
 import {
 	type AgentKind,
@@ -62,6 +62,7 @@ import {
 	isTermJob,
 	respawnCommand,
 	screenPath,
+	stateFile,
 	termPath,
 	updateState,
 } from "../lib/store.ts";
@@ -90,6 +91,7 @@ class OpError extends Error {
 
 // M35: durable writes are synced in groups, off the loop; answers wait for them (onLine)
 deferDurability(true);
+setSyncErrorHandler((err) => log("error", "sync failed", { error: String(err) }));
 
 // M34: spans and metrics where the daemon's time goes (ROOST_TELEMETRY=path; off by default)
 const telemetry = telemetryFromEnv("daemon");
@@ -159,7 +161,7 @@ try {
 interface HostRef {
 	hostPid: number;
 	hostToken: string; // "" until the start token could be read
-	/** M35: when the pid was last checked to still be this host (not persisted). */
+	/** M35: when the pid was last checked to still be this host (in memory only). */
 	verifiedAt?: number;
 }
 
@@ -206,7 +208,7 @@ const spawnLimiter = new RateLimiter(SPAWNS_PER_MINUTE);
 
 function persistRoster(): void {
 	const obj: Record<string, HostRef> = {};
-	for (const [id, ref] of roster) obj[id] = ref;
+	for (const [id, ref] of roster) obj[id] = { hostPid: ref.hostPid, hostToken: ref.hostToken };
 	try {
 		writeJsonAtomic(rosterPath(), obj);
 	} catch (err) {
@@ -666,7 +668,20 @@ function loadJobs(): void {
 		} else finalize(id, "host gone at startup", { startup: true });
 	}
 	for (const id of recs.keys()) {
-		const st = readState(id);
+		let st = readState(id);
+		// M35: a state file a machine crash left empty or cut (reports are written without
+		// fsync): the job is not lost with it; it shows as failed, to be started again
+		if (!st) {
+			const rec = recs.get(id)!;
+			const now = Date.now();
+			try {
+				writeJsonAtomic(stateFile(id), { state: "failed", startedAt: rec.createdAt, updatedAt: now, endedAt: now, stateSince: now, jobToken: newToken(), error: "its state was lost in a crash; reply or press Enter twice to start it again" });
+				st = readState(id);
+				log("warn", "state recovered", { id });
+			} catch (err) {
+				log("error", "state recovery failed", { id, error: String(err) });
+			}
+		}
 		if (st && st.endedAt === undefined && !roster.has(id)) finalize(id, "orphaned", { startup: true });
 	}
 	persistRoster();

@@ -1090,3 +1090,18 @@ describe("M35 an agent restarted after a lost ack", () => {
 		await client.request("stop", { id });
 	}, 40000);
 });
+
+describe("M35 a state file lost in a crash", () => {
+	it("leaves the job listed, failed and startable, after a restart", async () => {
+		const first = await startDaemon();
+		const { id } = await first.client.request("dispatch", args("exit 0"));
+		await waitFor(async () => (await find(first.client, id))?.endedAt);
+		await first.client.request("shutdown", {});
+		await waitFor(() => exited(first.proc));
+		writeFileSync(join(jobDir(id), "state.json"), "");
+		const second = await startDaemon();
+		const row = await find(second.client, id);
+		expect(row).toMatchObject({ state: "failed" });
+		expect(row?.error).toMatch(/lost in a crash/);
+	});
+});
