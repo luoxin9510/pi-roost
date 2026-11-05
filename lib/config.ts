@@ -1,7 +1,7 @@
 // pi-roost settings (PRD §8.1): ~/.pi/agent/roost.json, overridden per project
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
 import { roostEnv } from "./identity.ts";
@@ -195,7 +195,9 @@ function pick(raw: unknown): Partial<RoostConfig> {
 export function userConfigPath(): string {
 	const dir = roostEnv("CONFIG_DIR");
 	if (dir) return join(dir, "roost.json");
-	const neutral = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "roost", "roost.json");
+	// XDG: a relative XDG_CONFIG_HOME is ignored (it would resolve against each process's cwd).
+	const xdg = process.env.XDG_CONFIG_HOME;
+	const neutral = join(xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".config"), "roost", "roost.json");
 	return existsSync(neutral) ? neutral : join(homedir(), ".pi", "agent", "roost.json");
 }
 

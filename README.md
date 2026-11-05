@@ -385,9 +385,9 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 
 ## Configuration · 配置
 
-`~/.pi/agent/roost.json`, or `~/.config/roost/roost.json` when that exists (a project can override some keys in `.pi/roost.json` or `.roost/roost.json`; the environment variables `ROOST_CONFIG_DIR`, `ROOST_HOME` and `ROOST_RUNTIME_DIR` move them, and their older `PI_ROOST_*` names still work):
+`~/.pi/agent/roost.json`, or `~/.config/roost/roost.json` when that exists (a project can override some keys in `.pi/roost.json` or `.roost/roost.json`; the environment variables `ROOST_CONFIG_DIR`, `ROOST_HOME` and `ROOST_RUNTIME_DIR` move them, and their older `PI_ROOST_*` names still work). One file is read, never both: once `~/.config/roost/roost.json` (or `.roost/roost.json`) exists it is used instead of the older one, not merged with it:
 
-配置文件是 `~/.pi/agent/roost.json`，如果存在 `~/.config/roost/roost.json` 则用它（项目可以在 `.pi/roost.json` 或 `.roost/roost.json` 里覆盖部分配置项；环境变量 `ROOST_CONFIG_DIR`、`ROOST_HOME`、`ROOST_RUNTIME_DIR` 可以改位置，旧的 `PI_ROOST_*` 名字仍然有效）：
+配置文件是 `~/.pi/agent/roost.json`，如果存在 `~/.config/roost/roost.json` 则用它（项目可以在 `.pi/roost.json` 或 `.roost/roost.json` 里覆盖部分配置项；环境变量 `ROOST_CONFIG_DIR`、`ROOST_HOME`、`ROOST_RUNTIME_DIR` 可以改位置，旧的 `PI_ROOST_*` 名字仍然有效）。只读一个文件，不合并：一旦 `~/.config/roost/roost.json`（或 `.roost/roost.json`）存在，就用它代替旧文件：
 
 ```json
 {

@@ -18,7 +18,7 @@ import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
-import { type Preset, presetFrom } from "../lib/config.ts";
+import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
 	counts,
@@ -1549,7 +1549,7 @@ export class AgentView implements Component {
 				return false;
 			}
 			if (verb === "rm" && !(this.o.userPreset?.(name) ?? has(name))) {
-				this.say(has(name) ? `${name} is a project's preset (.pi/roost.json)` : `no preset ${name}`, "warning");
+				this.say(has(name) ? `${name} is a project's preset (${relative(this.o.cwd, projectConfigPath(this.o.cwd))})` : `no preset ${name}`, "warning");
 				return false;
 			}
 			const p: Preset = {
