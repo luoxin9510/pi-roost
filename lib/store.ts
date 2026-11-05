@@ -40,6 +40,8 @@ export interface JobRecord {
 	agentProtocol?: boolean;
 	/** M36: the request id it was dispatched with (a resend finds this job). */
 	requestId?: string;
+	/** M44: the hub's own agent. */
+	role?: "concierge";
 	createdAt: number; // ms epoch
 	piVersion?: string;
 	roostVersion: string;

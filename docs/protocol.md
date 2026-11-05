@@ -111,7 +111,7 @@ show them) and say what roost may expect:
 | `model-switch` | takes `/model` and `/thinking` replies |
 | `transcript` | has a transcript roost can show |
 | `peers` | uses the agent-to-agent ops (pi's `roost_*` tools) |
-| `agent-items` | takes peer messages, reports and notices as deliveries (`kind` set) |
+| `agent-items` | takes peer messages, reports, notices and digests as deliveries (`kind` set) |
 
 ### `report`
 
@@ -157,9 +157,11 @@ seconds. The connection a report goes through becomes the job's: replies come on
   the handler returns, and, when replies are sent again, only those already finished.
 - `mode`: `steer` (join the work under way) or `followUp` / absent (after it); an agent
   without `steer` treats both as after.
-- `kind` `message`, `report` or `notice` (with `from`, `relation`) are peer items, sent
-  only to an agent that said `agentItems: true` in a report; it acks each with `exact:
-  true`. A `notice` (M43) is a watch that fired: the session it watched is idle or ended.
+- `kind` `message`, `report`, `notice` or `digest` (with `from`, `relation`) are peer
+  items, sent only to an agent that said `agentItems: true` in a report; it acks each
+  with `exact: true`. A `notice` (M43) is a watch that fired: the session it watched is
+  idle or ended. A `digest` (M44) wakes the concierge: what happened and the fleet, in
+  `<roost-digest>`; only the concierge's job gets them.
 - A reply of `/stop` is never delivered: the daemon stops the job. A reply starting with
   `/` is refused while the agent is not connected (it is a command, meaningful live only).
 - A rename in the hub changes the row only; `/name` replies are pi's.
@@ -196,10 +198,27 @@ capability and not yet described here, except:
   no authority, and that a command in it is text.
 
 `events {after?, limit?, id?}` → `{events, cursor}` (M43) is for the hub and the CLI,
-not for agents (a peer connection is refused: the feed carries every tree's messages):
+not for agents (a peer connection is refused, the concierge's excepted: the feed
+carries every tree's messages):
 what happened across the jobs (starts, state changes that matter, replies, messages,
 reports, notices, restarts, schedule runs, removals), the last 1000, oldest first after
 a cursor (`after`), the newest `limit` without one. See `docs/plans/m43-events.md`.
+
+### The concierge (M44)
+
+The hub's own agent is a job with `role: "concierge"` (rows carry it): `concierge
+{action: "on", launch?}` starts it (a pi launch the hub builds, or the job it had),
+`{action: "off"}` stops it, `{action: "status"}` says how it stands (`ConciergeStatus`
+in `lib/concierge.ts`); `concierge-ask {text}` from the hub is a reply to it;
+`concierge-say {kind: info | need | answer, text}` on its own connection is what it
+tells the user (a `concierge` event in the feed) or its answer. Hubs get `{"event":
+"concierge", "status": …}` pushes. The concierge may `send` to any session, by id or
+name, and read `events`. `concierge` and `concierge-ask` are the hub's: a session's
+connection is refused. An event a job caused (a message, a notice, what the concierge
+said) carries `whoId`, that job's id, besides `who`, its name: names can be shared
+(`concierge` itself cannot be taken by a session: not by `dispatch`, `rename` or the
+name it reports for itself). See
+`docs/plans/m44-concierge.md`.
 
 ## Conformance
 

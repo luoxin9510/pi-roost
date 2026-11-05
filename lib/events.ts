@@ -21,7 +21,9 @@ export type EventKind =
 	/** A schedule started a run (M39). */
 	| "schedule"
 	/** A job's record was removed. */
-	| "removed";
+	| "removed"
+	/** M44: the concierge told the user something (why: info | need), or answered a question (why: answer). */
+	| "concierge";
 
 export interface RoostEvent {
 	seq: number;
@@ -38,6 +40,8 @@ export interface RoostEvent {
 	text?: string | null;
 	/** Who caused it: a session's name, "user", a schedule's name. */
 	who?: string | null;
+	/** The job that caused it, when a job did (names can be shared; ids cannot). */
+	whoId?: string | null;
 	why?: string | null;
 }
 
@@ -191,6 +195,8 @@ export function eventLine(e: RoostEvent): string {
 			return `schedule ${e.who ?? "?"} started ${e.name}${e.why ? ` (${e.why})` : ""}`;
 		case "removed":
 			return `${e.name} removed`;
+		case "concierge":
+			return `concierge${e.why === "need" ? " needs you" : e.why === "answer" ? " answered" : ""}: ${e.text ?? ""}`;
 		default:
 			return `${e.kind} ${e.name}`;
 	}

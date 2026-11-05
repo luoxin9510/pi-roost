@@ -39,6 +39,8 @@ export type Item = { kind: "header"; section: Section } | { kind: "row"; row: Jo
  * holds any more and that still works or waits is listed, so live work never goes unseen.
  */
 export function listed(row: JobRow, subagents: "hide" | "inline" = "hide"): boolean {
+	// M44: the concierge is the hub's own: its status line, not a row
+	if (row.role === "concierge") return false;
 	if (subagents === "inline" || !row.parentSession) return true;
 	return row.parentOpen !== true && (row.state === "working" || row.state === "blocked");
 }

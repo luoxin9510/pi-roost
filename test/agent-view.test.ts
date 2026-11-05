@@ -7,6 +7,7 @@ import { AgentView, type AgentViewOptions } from "../hub/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import type { RoostEvent } from "../lib/events.ts";
+import type { ConciergeStatus } from "../lib/concierge.ts";
 import { modelFacts, rowDetailsOf, takesReplies } from "../lib/view-model.ts";
 
 let n = 0;
@@ -51,6 +52,8 @@ class FakeClient {
 	replyResult: unknown = { delivered: true, saved: false };
 	/** M43: what /log shows. */
 	log: RoostEvent[] = [];
+	/** M44: the concierge as the daemon says it stands. */
+	concierge: ConciergeStatus = { on: false, id: null, state: null, live: false, model: null, wakesLastHour: 0, lastWakeAt: null, behind: 0, costToday: 0, budget: 1, overBudget: false, notice: null, answer: null };
 	constructor(rows: JobRow[]) {
 		this.rows = rows;
 	}
@@ -91,6 +94,13 @@ class FakeClient {
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		if (op === "schedule-add") return { ...(args as object), paused: false, nextAt: Date.now() + 3600_000 };
 		if (op === "events") return { events: this.log, cursor: this.log.length };
+		if (op === "concierge") {
+			const a = args as { action: string };
+			if (a.action === "on") this.concierge = { ...this.concierge, on: true, id: "c1", state: "working", live: true, model: "anthropic/claude-haiku-5-5" };
+			if (a.action === "off") this.concierge = { ...this.concierge, on: false };
+			return this.concierge;
+		}
+		if (op === "concierge-ask") return { id: "c1" };
 		return {};
 	}
 }
@@ -935,6 +945,60 @@ describe("M23 review", () => {
 		view.handleInput("\r");
 		view.dispose();
 		expect(disposed).toBe(1);
+	});
+});
+
+describe("M44: the concierge in the hub", () => {
+	it("/concierge on starts it with its launch; its line sits under the header; ? asks it and the answer opens; its row is not listed; off", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: { ROOST_ROLE: "concierge" }, name: "concierge", origin: "dispatch" as const };
+		const { view, client } = setup([row({ name: "fix tests" })], { extra: { conciergeLaunch: () => launch } });
+		await view.start();
+		expect(view.render(120).join("\n")).not.toContain("concierge ·");
+		// ? with it off: help
+		view.handleInput("?");
+		expect(view.render(120).join("\n")).toContain("/concierge on|off|log");
+		view.handleInput("\x1b");
+		type(view, "/concierge on");
+		view.handleInput("\r");
+		await sleep(20);
+		const on = client.requests.find((r) => r.op === "concierge" && (r.args as { action: string }).action === "on");
+		expect((on?.args as { launch: typeof launch }).launch).toEqual(launch);
+		let screen = view.render(120).join("\n");
+		expect(screen).toContain("concierge on (anthropic/claude-haiku-5-5)");
+		expect(screen).toContain("concierge · quiet");
+		// a notice from it, pushed by the daemon
+		const at = Date.now() - 60_000;
+		client.emit({ event: "concierge", status: { ...client.concierge, notice: { kind: "need", text: "fix tests asks which branch", at }, costToday: 0.02 } });
+		screen = view.render(120).join("\n");
+		expect(screen).toContain("concierge · needs you: fix tests asks which branch (1m ago) · $0.02 today");
+		// ? on an empty input starts a question; Enter asks; the answer opens when it comes
+		view.handleInput("?");
+		type(view, "what is blocked");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.find((r) => r.op === "concierge-ask")?.args).toEqual({ text: "what is blocked" });
+		expect(view.render(120).join("\n")).toContain("asked the concierge");
+		client.emit({ event: "concierge", status: { ...client.concierge, answer: { text: "fix tests waits for a branch name.", at: Date.now() } } });
+		screen = view.render(120).join("\n");
+		expect(screen).toContain("Concierge");
+		expect(screen).toContain("fix tests waits for a branch name.");
+		view.handleInput("\x1b");
+		expect(view.render(120).join("\n")).not.toContain("fix tests waits for a branch name.");
+		// its own job is a line under the header, never a row
+		client.emit({ event: "job", job: row({ id: "c1", name: "concierge", role: "concierge" }) });
+		screen = view.render(120).join("\n");
+		expect(screen).toContain("0 needs input · 1 working · 0 completed");
+		expect(screen.split("\n").filter((l) => /concierge\s+(working|done|blocked|failed|stopped)/.test(l))).toEqual([]);
+		// /ask works too; off takes the line away
+		type(view, "/ask anything new?");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "concierge-ask")).toHaveLength(2);
+		type(view, "/concierge off");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).not.toContain("concierge ·");
+		view.dispose();
 	});
 });
 

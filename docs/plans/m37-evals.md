@@ -116,6 +116,25 @@ the fan-out's is two sessions'. The terminal agent's 25 s are mostly settling: i
 is read from the screen, so each turn ends with 2.5 s of a still screen, and a resume
 starts pi over.
 
+## M44: the concierge
+
+`evals/concierge.eval.ts`: a case says `concierge: true` (started before its sessions,
+on the case's model, no thinking, a 2 s coalesce) and `extra` sessions (a pi task each,
+or a command) besides its own; a step may `ask` the concierge. The outcome adds
+`extra` (each one's end state and last answer) and `concierge` (its notices, answers
+and sends from the feed, its wakes and cost, its transcript). Two cases: three sessions
+(one finishes, one asks which branch to use, one is a command that fails) and the
+checks that it reported each, the question as needing the user, said no more than one
+thing per thing, sent nothing to the asking session and left it waiting; and a finding
+(a port number) relayed to another session on request, taken up there, with an answer
+to the user. The harness waits for the concierge to catch up (`behind` 0, not at
+work) before it grades. First runs (2026-11-05, haiku): relays 0.80 (the answer was
+not handed back: the turn's user message is seen at `message_end`, not in the branch
+at `agent_start`; fixed); reports flaky 1/3 (a finished run went unreported when it
+came in the same digest as a question and a failure: the prompt now asks for one line
+per session that ended, and one per open question); then 3/3 and 3/3, under a cent
+each.
+
 ## Next cases
 
 A question answered by a reply (`blocked` → reply → done), once a case makes pi ask

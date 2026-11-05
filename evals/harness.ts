@@ -40,6 +40,8 @@ export interface Step {
 	reply?: string;
 	kill?: "worker";
 	stop?: true;
+	/** M44: a question to the concierge (`? …` in the hub). */
+	ask?: string;
 	mode?: ReplyMode;
 	afterMs?: number;
 }
@@ -59,6 +61,10 @@ export interface RoostCase {
 	agent?: "pi" | "term" | "protocol";
 	/** M41: one task on these models, each in its own worktree (needs `git`). */
 	fanout?: string[];
+	/** M44: other sessions started with the case's (a pi task, or a command), by name. */
+	extra?: { name: string; task?: string; command?: string[] }[];
+	/** M44: the concierge on (its model: the case's) before the sessions start. */
+	concierge?: boolean;
 }
 
 export interface RoostOutcome {
@@ -89,6 +95,17 @@ export interface RoostOutcome {
 	tokens: number | null;
 	ms: number;
 	ackP50: number | null;
+	/** M44: the extra sessions as they ended, and what the concierge did (null: it was off). */
+	extra: { name: string; state: string; summary: string | null; answer: string }[];
+	concierge: {
+		notices: { kind: string; text: string }[];
+		answers: string[];
+		/** Messages it sent, by the recipient's name. */
+		sent: { to: string; text: string }[];
+		wakes: number;
+		costUsd: number;
+		transcript: { kind: string; text: string }[];
+	} | null;
 }
 
 export const DEFAULT_MODEL = "anthropic/claude-haiku-5-5";
@@ -149,6 +166,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 	const agentDir = join(root, "agent");
 	const telemetry = join(root, "telemetry.jsonl");
 	const sessionFile = join(root, "session.jsonl");
+	const conciergeSession = join(root, "concierge.jsonl");
 	const saved = { ...process.env };
 	const t0 = Date.now();
 	const deadline = t0 + (c.timeoutMs ?? 180_000);
@@ -192,6 +210,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			PI_ROOST_HOST_ENTRY: join(ROOT, "host", "main.ts"),
 			ROOST_TELEMETRY: telemetry,
 			PI_CODING_AGENT_DIR: agentDir,
+			// M44: a burst is one wake, soon (the default 5 s would do; a case is short)
+			PI_ROOST_CONCIERGE_COALESCE_MS: "2000",
 		});
 		daemon = spawn(process.execPath, [join(ROOT, "daemon", "main.ts")], { stdio: "ignore", env: process.env, detached: true });
 		daemon.unref();
@@ -245,6 +265,23 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				model: m,
 				thinking,
 			});
+		// M44: the concierge first, so the sessions' starts are its first digest
+		if (c.concierge) {
+			writeFileSync(join(home, "roost.json"), JSON.stringify({ concierge: { model, thinking: "off" } }));
+			const launch = buildLaunch({
+				task: "",
+				cwd: work,
+				sessionFile: conciergeSession,
+				name: "concierge",
+				origin: "dispatch",
+				argv: [process.execPath, pi, "-ne", "-e", EXT],
+				execPath: process.execPath,
+				env: process.env,
+				model,
+				thinking: "off",
+			});
+			await within(cl.request("concierge", { action: "on", launch: { ...launch, env: { ...launch.env, ROOST_ROLE: "concierge" } } }), left(), "concierge on");
+		}
 		const launches: DispatchArgs[] = [];
 		if (c.fanout) {
 			// M26: one task per model, each in its own worktree, the sessions sharing a fan-out id
@@ -280,6 +317,16 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			};
 			launches.push(buildProfileLaunch({ name: label, profile: "pi-print", def, task: c.task, cwd: work, env: process.env, model, thinking }));
 		} else launches.push(piLaunch(model, work, sessionFile));
+		// M44: the other sessions of the case, each a pi task in its own session, or a command
+		for (const [i, x] of (c.extra ?? []).entries()) {
+			if (x.command) launches.push({ kind: "shell", cwd: work, sessionFile: "", command: x.command, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, name: x.name, origin: "dispatch" });
+			else {
+				const base = piLaunch(model, work, join(sessionsDir, `extra-${i}.jsonl`));
+				// the same pi command line, this session's own task after the "--"
+				const at = base.command.lastIndexOf("--");
+				launches.push({ ...base, name: x.name, command: at >= 0 ? [...base.command.slice(0, at + 1), x.task ?? ""] : base.command });
+			}
+		}
 		for (const l of launches) {
 			const r = (await within(cl.request("dispatch", l), left(), "dispatch")) as { id: string };
 			ids.push(r.id);
@@ -336,6 +383,14 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 						workingSince = 0;
 						continue;
 					}
+					if (next.ask) {
+						// M44: a question to the concierge; the case settles once it has answered
+						states().push("ask");
+						await within(cl.request("concierge-ask", { text: next.ask }), left(), "concierge-ask");
+						workingSince = 0;
+						settledAt = 0;
+						continue;
+					}
 					// before the request: the row may move before its answer comes
 					states().push(`reply${next.mode === "steer" ? " (steer)" : ""}`);
 					await within(
@@ -365,6 +420,14 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				settledAt = 0;
 				continue;
 			}
+			// M44: the concierge too: nothing it has not been woken with, and it not at work
+			if (c.concierge) {
+				const s = await within(cl.request("concierge", { action: "status" }), left(), "concierge status");
+				if (s.on && (s.behind > 0 || s.state === "working")) {
+					settledAt = 0;
+					continue;
+				}
+			}
 			settledAt ||= Date.now();
 			if (Date.now() - settledAt >= 3000) break;
 		}
@@ -392,6 +455,34 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 		} catch {}
 		const answer = [...transcript].reverse().find((t) => t.kind === "assistant")?.text ?? "";
 		const row = jobId ? rows.get(jobId) : undefined;
+		// M44: the extra sessions, and the concierge's doings (the feed is its audit)
+		const extra = (c.extra ?? []).map((x) => {
+			const r = [...rows.values()].find((j) => j.name === x.name);
+			let last = "";
+			try {
+				if (r?.sessionFile) last = [...transcriptItems(readFileSync(r.sessionFile, "utf8"))].reverse().find((t) => t.kind === "assistant")?.text ?? "";
+			} catch {}
+			return { name: x.name, state: r?.state ?? "?", summary: r?.summary ?? null, answer: last };
+		});
+		let concierge: RoostOutcome["concierge"] = null;
+		if (c.concierge && client) {
+			try {
+				const feed = (await within(client.request("events", { limit: 1000 }), 5000, "events")).events;
+				const status = await within(client.request("concierge", { action: "status" }), 5000, "concierge status");
+				let ct: { kind: string; text: string }[] = [];
+				try {
+					ct = transcriptItems(readFileSync(conciergeSession, "utf8")).map((i) => (i.kind === "tool" ? { kind: "tool", text: `${i.name} ${i.args}` } : { kind: i.kind, text: i.text }));
+				} catch {}
+				concierge = {
+					notices: feed.filter((e) => e.kind === "concierge" && e.why !== "answer").map((e) => ({ kind: e.why ?? "info", text: e.text ?? "" })),
+					answers: feed.filter((e) => e.kind === "concierge" && e.why === "answer").map((e) => e.text ?? ""),
+					sent: feed.filter((e) => e.kind === "message" && !!status.id && e.whoId === status.id).map((e) => ({ to: e.name, text: e.text ?? "" })),
+					wakes: status.wakesLastHour,
+					costUsd: status.costToday,
+					transcript: ct,
+				};
+			} catch {}
+		}
 		const children = [...rows.values()].filter((j) => j.parentSession === sessionFile).map((j) => ({ name: j.name, state: j.state, summary: j.summary }));
 		let ackP50: number | null = null;
 		try {
@@ -473,6 +564,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			tokens: used.length ? used.reduce((a, u) => a + u.input + u.output + u.cacheRead + u.cacheWrite, 0) : null,
 			ms: Date.now() - t0,
 			ackP50,
+			extra,
+			concierge,
 		};
 	} finally {
 		await teardown(client, daemon, rows);
@@ -551,7 +644,7 @@ export function checks(name: string, list: Record<string, (o: RoostOutcome) => b
 			if (dir) {
 				appendFileSync(
 					join(dir, "observations.jsonl"),
-					`${JSON.stringify({ case: name, score, failed, error: output.error, states: output.states, costUsd: output.costUsd, tokens: output.tokens, ms: output.ms, ackP50: output.ackP50, answer: output.answer.slice(0, 500) })}\n`,
+					`${JSON.stringify({ case: name, score, failed, error: output.error, states: output.states, costUsd: output.costUsd, tokens: output.tokens, ms: output.ms, ackP50: output.ackP50, answer: output.answer.slice(0, 500), ...(output.concierge ? { concierge: { wakes: output.concierge.wakes, notices: output.concierge.notices.map((n) => `${n.kind}: ${n.text.slice(0, 300)}`), sent: output.concierge.sent.map((m) => `→ ${m.to}: ${m.text.slice(0, 200)}`), answers: output.concierge.answers.map((a) => a.slice(0, 300)) } } : {}) })}\n`,
 				);
 			}
 			return { score, metadata: { rationale: failed.length ? `failed: ${failed.join(", ")}${output.error ? ` (${output.error})` : ""}` : "all checks pass" } };

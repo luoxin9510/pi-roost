@@ -15,9 +15,9 @@ export const WATCH_TTL_MS = 12 * 60 * 60 * 1000;
 export const MAX_WATCHES = 20;
 
 export type Relation = "parent" | "child" | "sibling" | "tree" | "external";
-/** message: roost_send; report: a child's hand-back; notice (M43): a watch fired. */
-export type AgentKind = "message" | "report" | "notice";
-export const isAgentKind = (k: unknown): k is AgentKind => k === "message" || k === "report" || k === "notice";
+/** message: roost_send; report: a child's hand-back; notice (M43): a watch fired; digest (M44): the concierge's wake. */
+export type AgentKind = "message" | "report" | "notice" | "digest";
+export const isAgentKind = (k: unknown): k is AgentKind => k === "message" || k === "report" || k === "notice" || k === "digest";
 
 /** Where a session sits in a spawn tree (keys are session files, or `peer:<id>` without one). */
 export interface TreeNode {

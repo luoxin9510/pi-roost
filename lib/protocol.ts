@@ -1,3 +1,4 @@
+import type { ConciergeStatus } from "./concierge.ts";
 import type { RoostEvent } from "./events.ts";
 import type { PrInfo } from "./pr.ts";
 import type { UsageInfo } from "./usage.ts";
@@ -71,6 +72,8 @@ export interface JobRow {
 	schedule?: string | null;
 	/** M31: what its agent said it can do in its hello (absent: it never said). */
 	capabilities?: string[];
+	/** M44: the hub's own agent (not listed as a session; the hub shows its status line). */
+	role?: "concierge" | null;
 }
 
 /** M9: a session an agent may message (roost_agents). */
@@ -266,6 +269,12 @@ export interface OpArgs {
 	events: { after?: number; limit?: number; id?: string };
 	/** M43, on a peer connection: tell me once when that session is next idle (done, or waiting for an answer) or has ended. */
 	watch: { id: string; when: "idle" | "ended" };
+	/** M44: the concierge: start it (a pi launch the hub built), stop it, or ask how it stands. */
+	concierge: { action: "on"; launch?: DispatchArgs } | { action: "off" } | { action: "status" };
+	/** M44, from the hub: a question for the concierge (`? …`); its answer comes as a `concierge` event. */
+	"concierge-ask": { text: string };
+	/** M44, on the concierge's own connection: what it tells the user (hub_notify), or its answer to a question. */
+	"concierge-say": { kind: "info" | "need" | "answer"; text: string };
 }
 
 export interface OpResults {
@@ -302,6 +311,9 @@ export interface OpResults {
 	events: { events: RoostEvent[]; cursor: number };
 	/** fired: it was already so; the notice went out at once. */
 	watch: { id: string; name: string; when: "idle" | "ended"; fired: boolean };
+	concierge: ConciergeStatus;
+	"concierge-ask": { id: string };
+	"concierge-say": {};
 }
 
 export type Op = keyof OpArgs;
@@ -318,14 +330,16 @@ export type Response<O extends Op = Op> = OkResponse<O> | ErrResponse;
 export type Event =
 	| { event: "job"; job: JobRow }
 	| { event: "removed"; id: string }
+	/** M44: the concierge's status changed (on, off, a notice, an answer, its budget). */
+	| { event: "concierge"; status: ConciergeStatus }
 	/** Daemon → worker, on the connection the worker reports on. */
 	| {
 			event: "deliver";
 			id: string;
 			seq: number;
 			text: string;
-			/** M9: absent for user replies; agent items carry an envelope as text (M43: a notice is a watch that fired). */
-			kind?: "reply" | "message" | "report" | "notice";
+			/** M9: absent for user replies; agent items carry an envelope as text (M43: a notice is a watch that fired; M44: a digest wakes the concierge). */
+			kind?: "reply" | "message" | "report" | "notice" | "digest";
 			from?: string;
 			relation?: string;
 			/** M9: a report to a foreground peer, acknowledged with peer_ack. */

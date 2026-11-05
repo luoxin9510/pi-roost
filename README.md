@@ -121,6 +121,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | Ctrl+L · Ctrl+P · Shift+Tab | as in pi: pick the model for new sessions (type to search, Tab: enabled or all models), cycle the enabled models (`enabledModels`), cycle the thinking level; the line under the header always says what a new session runs | 和 pi 一样：给新会话选模型（打字搜索，Tab 切换"已启用 / 全部"模型）、在已启用的模型（`enabledModels`）间轮换、轮换 thinking 级别；标题下面一行始终显示新会话会用什么 |
 | `/usage` | what the sessions spent: today and all in the header, per row, and here by model and by session (subscription use counted as if billed per token, marked `(sub)`) | 各会话的花费：标题行显示今天和全部合计，每行显示自己的，这里按模型、按会话列出（订阅额度按 token 计价折算，标 `(sub)`） |
 | `/log` | what happened lately across the sessions, newest first: tasks started, questions, results, failures, messages between sessions, replies (`r` reloads) | 最近各会话发生了什么，最新在前：启动的任务、提问、结果、失败、会话之间的消息、回复（按 `r` 刷新） |
+| `/concierge on\|off\|log` · `? question` | the hub's own agent ([below](#the-concierge--值班-agent)): it watches the sessions, tells you what needs you, relays between them; `?` asks it | hub 自己的值班 agent（[见下文](#the-concierge--值班-agent)）：盯着各会话，告诉你哪些需要你处理，在会话之间传话；`?` 向它提问 |
 | `/fanout a/x b/y`, `/compare` | the next task runs once per model, each in its own git worktree (bare `/fanout`: pick the models; `off` cancels); `/compare` on one of them puts them side by side (state, cost, the change in each worktree, the last reply): ← → choose, Enter open, `k` twice keeps one and deletes the others | 下一个任务按每个模型各跑一份，各自在独立的 git worktree 里（不带参数的 `/fanout` 从列表选模型，`off` 取消）；在其中一行上用 `/compare` 并排对比（状态、花费、各自 worktree 的改动、最后的回复）：← → 选择，Enter 进入，`k` 按两次保留这一个并删除其余 |
 | `/preset [name]` | launch presets: model, thinking, worktree, agent, directory and fan-out together; bare: pick one; `save name` keeps what new sessions use now, `rm name`, `off` | 启动预设：模型、thinking、worktree、agent、目录和多模型并跑一起切换；不带参数则从列表里选；`save name` 把当前新会话的设置存成预设，另有 `rm name`、`off` |
 | `/profile [name]` | new sessions run one of your [other agents](#other-agents--其他-agent) (`pi` goes back); bare: pick one | 新会话改用你的某个[其他 agent](#other-agents--其他-agent)（`pi` 换回）；不带参数则从列表里选 |
@@ -295,6 +296,32 @@ pi-roost 也能运行它没有专门代码的终端 agent（Claude Code、Codex�
 `profile`）。它的行状态从终端读出（标题、通知、响铃、屏幕是否还在动，以及你给的正则）；回复会被
 打进它的终端；进入、停止、删除、worktree 和预设都和 pi 一样。它的模型、上下文、花费和记录无从得知。
 详见 [docs/profiles.md](docs/profiles.md)。你自己写的 agent 也可以改讲 [roost agent 协议](docs/protocol.md)（TypeScript 用 `pi-roost/agent`，Python 用 `sdk/python/roost_agent.py`），这样它自己上报状态、直接接收回复。
+
+## The concierge · 值班 agent
+
+`/concierge on` in the agent view starts the hub's own agent: a pi session on a cheap
+model (`anthropic/claude-haiku-5-5`, no thinking, by default) that roost wakes with
+what happened across the sessions (a session started, finished, failed, asked a
+question; a message between sessions; your reply) and the fleet as it stands. It tells
+you what needs you, in one line under the header (`concierge · needs you: api-fix asks
+which schema to use (2m ago) · $0.02 today`), relays a finding from one session to
+another when you ask, and answers questions about the fleet: `?` on an empty input
+starts one (`? what is blocked and why`; `?` then a space, so `?foo` is still a task);
+its answer opens over the list. `/concierge on` wakes it at once with the fleet as it
+stands, so a session that already waits for you is reported right away. It never
+answers a session's question in your place, cannot start, stop or remove sessions, and
+has no shell or file tools. `/concierge off` stops it (its session stays; `on` starts the
+same one again), `/concierge log` shows what it said and sent, `/concierge attach` opens
+its session. It is woken at most 60 times an hour, at least every 15 minutes (a
+heartbeat, so a stuck fleet is noticed), and not at all once it has spent its budget for
+the day (`$1`). Design notes: [docs/plans/m44-concierge.md](docs/plans/m44-concierge.md).
+
+在 agent 视图里 `/concierge on` 启动 hub 自己的值班 agent：一个跑在便宜模型上的 pi 会话（默认
+`anthropic/claude-haiku-5-5`、不思考），roost 会把各会话发生的事（启动、完成、失败、提问、会话之间的消息、你的回复）和当前所有会话的状态喂给它。它在标题下方用一行告诉你哪些需要你处理（`concierge · needs you: api-fix asks which schema to use (2m ago) · $0.02 today`），你要求时把一个会话的发现传给另一个会话，并回答关于这些会话的问题：输入框为空时按 `?` 开始提问（`? what is blocked and why`），答案会覆盖在列表上方。它从不替你回答会话的提问，不能启动、停止或删除会话，也没有 shell 和文件工具。`/concierge off` 停掉它（会话保留，`on` 会重新启动同一个），`/concierge log` 看它说过什么、发过什么，`/concierge attach` 进入它的会话。它每小时最多被唤醒 60 次，至少每 15 分钟一次（心跳，这样卡住的会话也会被发现），当天花费达到预算（`$1`）后就不再唤醒。设计说明：[docs/plans/m44-concierge.md](docs/plans/m44-concierge.md)。
+
+```json
+"concierge": { "model": "anthropic/claude-haiku-5-5", "thinking": "off", "wakesPerHour": 60, "heartbeat": "every 15m", "dailyBudgetUsd": 1 }
+```
 
 ## Scheduled tasks · 定时任务
 
@@ -483,6 +510,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `agentTools` | `true` | the `roost_*` tools in every session | 在每个会话里提供 `roost_*` 工具 |
 | `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
 | `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal` | `3`, `8`, `16`, `32` | spawn limits | 派发子会话的数量限制 |
+| `concierge` | see [the concierge](#the-concierge--值班-agent) | `{ "model", "thinking", "wakesPerHour", "heartbeat", "dailyBudgetUsd" }` (your file only; what one leaves out is the default) | `{ "model", "thinking", "wakesPerHour", "heartbeat", "dailyBudgetUsd" }`（只能写在你自己的配置文件里；省略的项用默认值） |
 
 A project's `.pi/roost.json` cannot set the environment keys, `summaryModel`, the
 `agent*` reach and limit keys or `agentProfiles` (a command roost would run).

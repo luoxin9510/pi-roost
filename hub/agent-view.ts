@@ -20,6 +20,7 @@ import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
+import type { ConciergeStatus } from "../lib/concierge.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -151,6 +152,8 @@ export interface AgentViewOptions {
 	userPreset?: (name: string) => boolean;
 	/** M26: what a session changed in its worktree (tests may replace git). */
 	worktreeChange?: (path: string, base: string) => Promise<WorktreeChange | undefined>;
+	/** M44: the launch of the concierge's pi session (its model and thinking level from roost.json). */
+	conciergeLaunch?: () => LaunchRequest;
 	done: () => void;
 }
 
@@ -261,6 +264,12 @@ export class AgentView implements Component {
 	private attached = false;
 	private closed = false;
 	private connectError: string | undefined;
+	/** M44: the concierge as the daemon last said; asking: a `? …` whose answer is awaited (two minutes at most). */
+	private concierge: ConciergeStatus | undefined;
+	private asking = false;
+	private askTimer: NodeJS.Timeout | undefined;
+	/** An answer that came while another overlay was open: shown once it closes. */
+	private pendingAnswer: string | undefined;
 	private nameWidth = 16;
 	/** M8: the model / context column, the same for every row of a render so it lines up. */
 	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0, costW: 0 };
@@ -315,6 +324,8 @@ export class AgentView implements Component {
 		this.closed = true;
 		clearInterval(this.spinner);
 		clearInterval(this.resync);
+		this.pendingAnswer = undefined;
+		this.asked(false);
 		this.closeOverlay();
 		for (const s of this.switches.values()) clearTimeout(s.timer);
 		this.switches.clear();
@@ -337,6 +348,8 @@ export class AgentView implements Component {
 			for (const e of after) this.applyRow(e);
 			for (const j of jobs) observeJob(j); // what is already there is not news
 			for (const j of jobs) this.checkSwitch(j); // a switch shown while we were away
+			// M44: a daemon from before the concierge has no such op: then there is none
+			this.concierge = await client.request("concierge", { action: "status" }).catch(() => undefined);
 			this.client = client;
 			this.connectError = undefined;
 			// AV-8: pushed events only; reconnect when the daemon goes away.
@@ -349,6 +362,7 @@ export class AgentView implements Component {
 				if (this.client !== live) return;
 				clearInterval(this.resync);
 				this.client = undefined;
+				this.asked(false);
 				this.connectError = "reconnecting…";
 				this.render0();
 				setTimeout(() => void this.connect(), 500).unref?.();
@@ -433,6 +447,20 @@ export class AgentView implements Component {
 		} else if (e.event === "removed") {
 			this.rows.delete(e.id);
 			forgetJob(e.id);
+		} else if (e.event === "concierge") {
+			const prev = this.concierge;
+			this.concierge = e.status;
+			const s = e.status;
+			if (!s.on) this.asked(false);
+			if (this.asking && s.answer && s.answer.at !== prev?.answer?.at) {
+				this.asked(false);
+				// not over what is open (a confirm, a picker): after it
+				if (this.overlay) {
+					this.pendingAnswer = s.answer.text;
+					this.say(`concierge answered: ${oneLine(s.answer.text).slice(0, 80)} (opens when this closes)`, "muted");
+				} else this.showAnswer(s.answer.text);
+			}
+			if (s.notice && s.notice.at !== prev?.notice?.at && s.notice.kind === "need") this.say(`concierge: ${s.notice.text}`, "warning");
 		}
 		this.render0();
 	}
@@ -630,6 +658,12 @@ export class AgentView implements Component {
 				break;
 			case "?":
 				if (!text) {
+					// M44: with the concierge on, ? starts a question to it (help: /help)
+					if (this.concierge?.on) {
+						this.input.setValue("? ");
+						this.o.tui.requestRender();
+						return;
+					}
 					this.help = true;
 					this.o.tui.requestRender();
 					return;
@@ -859,6 +893,12 @@ export class AgentView implements Component {
 			case "log":
 			case "events":
 				void this.showLog();
+				return done();
+			case "concierge":
+				void this.conciergeCommand(arg);
+				return done();
+			case "ask":
+				void this.ask(arg);
 				return done();
 			case "schedule":
 			case "schedules":
@@ -1119,22 +1159,23 @@ export class AgentView implements Component {
 	}
 
 	/** M43 /log: what happened lately across the sessions (newest first); r reloads, Esc closes. */
-	private async showLog(): Promise<void> {
+	private async showLog(only?: (e: RoostEvent) => boolean, title = "Log · what happened lately (newest first)"): Promise<void> {
 		const client = this.client;
 		if (!client) return this.say("background service unavailable", "error");
 		let events: RoostEvent[];
+		const fetch = async () => (await client.request("events", { limit: 500 })).events.filter((e) => !only || only(e)).slice(-200);
 		try {
-			events = (await client.request("events", { limit: 200 })).events;
+			events = await fetch();
 		} catch (err) {
 			return this.say((err as Error).message, "error");
 		}
-		if (events.length === 0) return this.say("nothing happened yet (the log starts with the next task, reply or message)");
+		if (events.length === 0) return this.say(only ? "nothing from the concierge yet" : "nothing happened yet (the log starts with the next task, reply or message)");
 		let top = 0;
 		const view = this;
 		const lines = (width: number): string[] => {
 			const t = view.o.theme;
 			const now = Date.now();
-			const out = [t.bold(truncateToWidth("Log · what happened lately (newest first)", width)), ""];
+			const out = [t.bold(truncateToWidth(title, width)), ""];
 			for (const e of [...events].reverse()) {
 				const tone =
 					e.kind === "state" && e.state === "failed"
@@ -1162,10 +1203,9 @@ export class AgentView implements Component {
 				const key = parseKey(data);
 				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
 				else if (data === "r") {
-					void client
-						.request("events", { limit: 200 })
+					void fetch()
 						.then((r) => {
-							events = r.events;
+							events = r;
 							view.o.tui.requestRender();
 						})
 						.catch(() => {});
@@ -1173,6 +1213,112 @@ export class AgentView implements Component {
 				else if (key === "down") top++;
 				else if (key === "pageUp") top = Math.max(0, top - 10);
 				else if (key === "pageDown") top += 10;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	/** M44 /concierge on|off|status|log|attach|ask …: the hub's resident agent. */
+	private async conciergeCommand(arg: string): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		const [verb = "status", ...rest] = arg.trim().split(/\s+/).filter(Boolean);
+		try {
+			if (verb === "on") {
+				if (this.concierge?.on) return this.say(this.conciergeLine(), "muted");
+				// the job it had is started again; a first start needs a launch
+				if (this.concierge?.id) this.concierge = await client.request("concierge", { action: "on" });
+				else {
+					if (!this.o.conciergeLaunch) return this.say("the concierge is not available here", "warning");
+					const { discard: _d, note: _n, ...launch } = this.o.conciergeLaunch();
+					this.concierge = await client.request("concierge", { action: "on", launch });
+				}
+				return this.say(`concierge on (${this.concierge.model ?? "its model"}) · ? asks it · /concierge off stops it`, "success");
+			}
+			if (verb === "off") {
+				this.concierge = await client.request("concierge", { action: "off" });
+				this.asked(false);
+				return this.say("concierge off", "muted");
+			}
+			if (verb === "status") {
+				this.concierge = await client.request("concierge", { action: "status" });
+				return this.say(this.concierge.on ? this.conciergeLine() : "concierge off · /concierge on starts it", "muted");
+			}
+			if (verb === "log") return await this.showLog((e) => e.kind === "concierge" || (!!this.concierge?.id && (e.whoId === this.concierge.id || e.id === this.concierge.id)), "Concierge · what it did and said (newest first)");
+			if (verb === "attach") {
+				if (!this.concierge?.id) return this.say("no concierge session yet (/concierge on)", "warning");
+				return await this.attachTo(this.concierge.id);
+			}
+			if (verb === "ask") return await this.ask(rest.join(" "));
+			this.say("/concierge on | off | status | log | attach | ask <question>", "warning");
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	/** M44: the status line under the header. */
+	private conciergeLine(): string {
+		const c = this.concierge;
+		if (!c?.on) return "";
+		const now = Date.now();
+		const parts = ["concierge"];
+		if (c.overBudget) parts.push(`over its budget for today (${formatCost(c.budget)}): not woken`);
+		else if (c.notice) parts.push(`${c.notice.kind === "need" ? "needs you: " : ""}${oneLine(c.notice.text)} (${eventAgo(c.notice.at, now)} ago)`);
+		else parts.push(c.lastWakeAt ? `quiet · last wake ${eventAgo(c.lastWakeAt, now)} ago` : "quiet");
+		if (c.behind > 0 && !c.overBudget) parts.push(`${c.behind} new`);
+		if (c.costToday > 0) parts.push(`${formatCost(c.costToday)} today`);
+		return parts.join(" · ");
+	}
+
+	/** M44: `? …`: a question to the concierge; its answer opens in an overlay. */
+	private async ask(question: string): Promise<void> {
+		const q = question.trim();
+		if (!q) return this.say("? needs a question, e.g. ? what is blocked and why", "warning");
+		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.concierge?.on) return this.say("the concierge is off: /concierge on starts it", "warning");
+		try {
+			await this.client.request("concierge-ask", { text: q });
+			this.asked(true);
+			this.input.setValue("");
+			this.say("asked the concierge; its answer opens here", "muted");
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	/** A question is awaited, or not (an answer came; it went off; two minutes passed). */
+	private asked(on: boolean): void {
+		clearTimeout(this.askTimer);
+		this.askTimer = undefined;
+		this.asking = on;
+		if (!on) return;
+		this.askTimer = setTimeout(() => {
+			this.askTimer = undefined;
+			if (!this.asking) return;
+			this.asking = false;
+			this.say("the concierge has not answered (/concierge attach to see why)", "warning");
+		}, 120_000);
+		this.askTimer.unref?.();
+	}
+
+	private showAnswer(answer: string): void {
+		let top = 0;
+		const view = this;
+		this.overlay = {
+			render(width: number) {
+				const t = view.o.theme;
+				const clean = stripTerminalSequences(answer).replace(/\t/g, "  ").replace(CONTROL, "");
+				const body = wrapTextWithAnsi(clean, Math.max(4, width - 2)).map((l) => `  ${l}`);
+				const all = [t.bold(truncateToWidth("Concierge", width)), "", ...body];
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				top = Math.max(0, Math.min(top, all.length - room));
+				return [...all.slice(top, top + room), "", t.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
 			},
 		};
 		this.o.tui.requestRender();
@@ -1215,6 +1361,13 @@ export class AgentView implements Component {
 			this.overlay?.dispose?.();
 		} catch {}
 		this.overlay = undefined;
+		// M44: the concierge's answer that waited for this to close
+		if (this.pendingAnswer !== undefined) {
+			const answer = this.pendingAnswer;
+			this.pendingAnswer = undefined;
+			this.showAnswer(answer);
+			return;
+		}
 		this.o.tui.requestRender();
 	}
 
@@ -1487,6 +1640,8 @@ export class AgentView implements Component {
 		if (this.dispatching) return;
 		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
 		const typed = this.input.getValue();
+		// M44: `? …` is a question for the concierge, not a task (`?foo` is a task)
+		if (typed.trim() === "?" || typed.trimStart().startsWith("? ")) return this.ask(typed.trim().slice(1).trim());
 		const base = this.dispatchCwd();
 		// M18 (Claude Code): a first word or `@name` naming an agent runs the task as it
 		// (read once per Enter: it scans the agent folders)
@@ -2326,6 +2481,8 @@ export class AgentView implements Component {
 				.join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
 		}
+		// M44: the concierge's line
+		if (this.concierge?.on) out.push(t.fg(this.concierge.notice?.kind === "need" && !this.concierge.overBudget ? "warning" : "dim", truncateToWidth(this.conciergeLine(), w)));
 		if (this.fanout) {
 			const n = this.fanout.length;
 			const list = this.fanout.map(shortModel).join(", ");
@@ -2597,6 +2754,8 @@ export class AgentView implements Component {
 			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["/usage", "what the sessions spent: today, all, by model, by session"],
 			["/log", "what happened lately: tasks, questions, results, messages (newest first)"],
+			["/concierge on|off|log", "the hub's own agent: watches the sessions, tells you what needs you, relays between them"],
+			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],
 			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
 			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],

@@ -673,6 +673,233 @@ describe("M43: the event feed, watches and message rules", () => {
 	});
 });
 
+describe("M44: the concierge", () => {
+	const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
+	const digests = (events: Event[]) => delivered(events, "digest");
+	const conciergeLaunch = () => ({ ...launch("sleep 30", "concierge"), env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge" } });
+	/** The hub turns it on; its (fake) worker reports on a connection of its own. */
+	async function conciergeOn(hub: DaemonClient) {
+		const st = await hub.request("concierge", { action: "on", launch: conciergeLaunch() });
+		expect(st.on).toBe(true);
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === st.id)?.pid);
+		const w = await worker(st.id!);
+		return { id: st.id!, w };
+	}
+	const env = (over: Record<string, string>) => {
+		for (const [k, v] of Object.entries(over)) process.env[k] = v;
+		return () => {
+			for (const k of Object.keys(over)) delete process.env[k];
+		};
+	};
+
+	it("on: a pi job of its own (a role, not a row), its status pushed to hubs; off stops it; on again starts the same job", async () => {
+		await startDaemon();
+		const { c: hub, events } = await connect();
+		await hub.request("subscribe", {});
+		expect(await hub.request("concierge", { action: "status" })).toMatchObject({ on: false, id: null, state: null, live: false });
+		await expect(hub.request("concierge", { action: "on" })).rejects.toMatchObject({ code: "bad_request" });
+		const { id } = await conciergeOn(hub);
+		const row = (await hub.request("list", {})).jobs.find((j) => j.id === id)!;
+		expect(row).toMatchObject({ name: "concierge", role: "concierge", kind: "pi" });
+		expect(await hub.request("concierge", { action: "status" })).toMatchObject({ on: true, id, live: true, state: "working" });
+		expect(events.filter((e) => e.event === "concierge")).not.toHaveLength(0);
+		// off: stopped, and said so
+		const off = await hub.request("concierge", { action: "off" });
+		expect(off).toMatchObject({ on: false, id });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.state === "stopped");
+		// on again: the job it had (its session is its memory), no launch needed
+		const again = await hub.request("concierge", { action: "on" });
+		expect(again).toMatchObject({ on: true, id });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.pid);
+		// the daemon keeps it across a restart; removing its job is off
+		daemons[0]!.kill("SIGKILL");
+		await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
+		const c2 = await startDaemon();
+		expect(await c2.request("concierge", { action: "status" })).toMatchObject({ on: true, id });
+		await c2.request("rm", { id });
+		expect(await c2.request("concierge", { action: "status" })).toMatchObject({ on: false, id: null });
+	});
+
+	it("is woken with a digest of what happened, a burst at once, its own doings left out, the cursor moving on", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "150" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { id, w: wc } = await conciergeOn(hub);
+			const p = await foreground("lead");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			const w = await worker(childId);
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Which branch?" }) });
+			// its first digest (at on) is the fleet as it stood: empty; the second, what happened
+			const first = await waitFor(() => digests(wc.events)[0]);
+			expect(first.text).toContain('<roost-digest why="heartbeat">');
+			expect(first.text).toContain("- none");
+			const d = await waitFor(() => digests(wc.events)[1]);
+			expect(d.from).toBe("roost");
+			expect(d.text).toContain('<roost-digest why="events">');
+			expect(d.text).toContain("started worker ← lead");
+			expect(d.text).toContain("worker asks: Which branch?");
+			expect(d.text).toContain("The fleet (1 session):");
+			expect(d.text).toContain("worker  waits for question");
+			expect(d.text).not.toContain("concierge");
+			await wc.c.request("ack", { id, token: wc.token, seq: d.seq, exact: true });
+			await waitFor(async () => (await hub.request("concierge", { action: "status" })).wakesLastHour === 2);
+			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ wakesLastHour: 2, behind: 0 });
+			// it reaches every session, by name; what it does is not news to it (not behind on it)
+			expect(await wc.c.request("send", { to: "worker", message: "lead's finding: use main" })).toMatchObject({ outcome: "delivered", relation: "external" });
+			expect((await hub.request("concierge", { action: "status" })).behind).toBe(0);
+			const got = await waitFor(() => delivered(w.events, "message")[0]);
+			expect(got.from).toBe("concierge");
+			await wc.c.request("report", { id, token: wc.token, report: report({ state: "done", status: "idle", summary: "nothing to report" }) });
+			await settle(500);
+			expect(digests(wc.events)).toHaveLength(2);
+			// the feed is its to read; a foreground pi still may not
+			expect((await wc.c.request("events", { id: childId })).events.map((e) => e.kind)).toEqual(["dispatch", "state", "message"]);
+			expect((await wc.c.request("events", { id: childId })).events[2]).toMatchObject({ who: "concierge", whoId: id });
+			await expect(p.c.request("events", {})).rejects.toMatchObject({ code: "unsupported" });
+			// the next thing that happens is a third digest, with that alone
+			await p.c.request("reply", { id: childId, text: "main" });
+			const d2 = await waitFor(() => digests(wc.events)[2]);
+			expect(d2.text).toContain("user → worker: main");
+			expect(d2.text).not.toContain("started worker");
+			expect(d2.text).toContain("since your last wake");
+		} finally {
+			restore();
+		}
+	});
+
+	it("tells the hub what it says (a notice, an answer); a question from the hub reaches it as the user's words", async () => {
+		await startDaemon();
+		const { c: hub, events } = await connect();
+		await hub.request("subscribe", {});
+		await expect(hub.request("concierge-ask", { text: "anyone there?" })).rejects.toMatchObject({ code: "unavailable" });
+		const { id, w: wc } = await conciergeOn(hub);
+		const p = await foreground("lead");
+		await expect(p.c.request("concierge-say", { kind: "info", text: "x" })).rejects.toMatchObject({ code: "unsupported" });
+		await wc.c.request("concierge-say", { kind: "need", text: "worker asks which branch to use" });
+		const pushed = await waitFor(() => events.find((e): e is Extract<Event, { event: "concierge" }> => e.event === "concierge" && e.status.notice?.kind === "need"));
+		expect(pushed.status.notice).toMatchObject({ kind: "need", text: "worker asks which branch to use" });
+		expect((await hub.request("events", { id })).events.filter((e) => e.kind === "concierge")).toEqual([expect.objectContaining({ who: "concierge", why: "need", text: "worker asks which branch to use" })]);
+		await hub.request("concierge-ask", { text: "what is blocked?" });
+		const q = await waitFor(() => wc.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.kind === undefined));
+		expect(q.text).toBe("what is blocked?");
+		await wc.c.request("concierge-say", { kind: "answer", text: "worker waits for a branch name." });
+		expect(await hub.request("concierge", { action: "status" })).toMatchObject({ answer: { text: "worker waits for a branch name." } });
+		await expect(wc.c.request("concierge-say", { kind: "shout" as "info", text: "x" })).rejects.toMatchObject({ code: "bad_request" });
+	});
+
+	it("a heartbeat wakes it when nothing happened for a while", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_HEARTBEAT_MS: "300", PI_ROOST_CONCIERGE_TICK_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { w: wc } = await conciergeOn(hub);
+			// at on: the fleet; then nothing happens, and the heartbeat says so
+			const first = await waitFor(() => digests(wc.events)[0]);
+			expect(first.text).toContain('why="heartbeat"');
+			expect(first.text).not.toContain("since your last wake");
+			const hb = await waitFor(() => digests(wc.events)[1], 5000);
+			expect(hb.text).toContain('why="heartbeat"');
+			expect(hb.text).toContain("Nothing happened since.");
+			expect(hb.text).toContain("since your last wake");
+		} finally {
+			restore();
+		}
+	});
+
+	it("the hub's alone: a session cannot start, stop or ask it; its name is its own; what a namesake does is news", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const p = await foreground("lead");
+			await expect(p.c.request("concierge", { action: "status" })).rejects.toMatchObject({ code: "unsupported" });
+			await expect(p.c.request("concierge-ask", { text: "hi" })).rejects.toMatchObject({ code: "unsupported" });
+			// a session asking for the name gets the next one; renaming to it is refused
+			const { id: fake } = await p.c.request("spawn", { launch: launch("sleep 30", "concierge") });
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === fake)?.name).toBe("concierge (2)");
+			await expect(hub.request("rename", { id: fake, name: "concierge" })).rejects.toMatchObject({ code: "bad_request" });
+			const { id, w: wc } = await conciergeOn(hub);
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === id)?.name).toBe("concierge");
+			await waitFor(() => digests(wc.events)[0]);
+			// the namesake's doings are not the concierge's: they wake it
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === fake)?.pid);
+			const w = await worker(fake);
+			await w.c.request("report", { id: fake, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Who am I?" }) });
+			const d = await waitFor(() => digests(wc.events)[1]);
+			expect(d.text).toContain("concierge (2) asks: Who am I?");
+		} finally {
+			restore();
+		}
+	});
+
+	it("on after off: what happened meanwhile is not its concern; its first wake is the fleet as it stands, at once", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { id, w: wc } = await conciergeOn(hub);
+			const d0 = await waitFor(() => digests(wc.events)[0]);
+			await wc.c.request("ack", { id, token: wc.token, seq: d0.seq, exact: true });
+			await hub.request("concierge", { action: "off" });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.state === "stopped");
+			const p = await foreground("lead");
+			const { id: a } = await p.c.request("spawn", { launch: launch("sleep 30", "a") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === a)?.pid);
+			await settle(300);
+			expect(await hub.request("concierge", { action: "on" })).toMatchObject({ on: true, id, behind: 0 });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.pid);
+			const wc2 = await worker(id);
+			const d = await waitFor(() => digests(wc2.events)[0]);
+			expect(d.text).toContain('why="heartbeat"');
+			expect(d.text).toContain("The fleet (1 session):");
+			expect(d.text).toContain("- " + a + "  a  working");
+			expect(d.text).not.toContain("started a");
+			expect(digests(wc.events)).toHaveLength(1);
+			// on while on and running: as it is (no wake spent, no backlog dropped)
+			await p.c.request("spawn", { launch: launch("sleep 30", "b") });
+			await waitFor(() => digests(wc2.events)[1]);
+			const before = await hub.request("concierge", { action: "status" });
+			expect(await hub.request("concierge", { action: "on" })).toMatchObject({ on: true, id, wakesLastHour: before.wakesLastHour, lastWakeAt: before.lastWakeAt });
+			await settle(300);
+			expect(digests(wc2.events)).toHaveLength(2);
+		} finally {
+			restore();
+		}
+	});
+
+	it("wakes over the hourly cap wait; over its budget it is not woken", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100", PI_ROOST_CONCIERGE_TICK_MS: "100", PI_ROOST_CONCIERGE_RETRY_MS: "200" });
+		try {
+			writeFileSync(join(home, "roost.json"), JSON.stringify({ concierge: { wakesPerHour: 2, dailyBudgetUsd: 0.05 } }));
+			await startDaemon();
+			const { c: hub, events } = await connect();
+			await hub.request("subscribe", {});
+			const { id, w: wc } = await conciergeOn(hub);
+			await waitFor(() => digests(wc.events)[0]);
+			// a second wake (an event) is the last the cap allows; a third waits
+			const p = await foreground("lead");
+			await p.c.request("spawn", { launch: launch("sleep 30", "a") });
+			const d = await waitFor(() => digests(wc.events)[1]);
+			expect(d.text).toContain("started a");
+			await p.c.request("spawn", { launch: launch("sleep 30", "b") });
+			await settle(700);
+			expect(digests(wc.events)).toHaveLength(2);
+			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ wakesLastHour: 2, overBudget: false, behind: 1 });
+			// over its budget for the day: not woken, and the hub is told
+			const midnight = new Date();
+			midnight.setHours(0, 0, 0, 0);
+			const usage = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, cost: 0.06, today: 0.06, day: midnight.getTime(), sub: false, models: {} };
+			await wc.c.request("report", { id, token: wc.token, report: report({ usage }) });
+			await waitFor(() => events.some((e) => e.event === "concierge" && e.status.overBudget));
+			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ overBudget: true, costToday: 0.06, budget: 0.05 });
+		} finally {
+			restore();
+		}
+	});
+});
+
 describe("worktrees through the daemon (M10)", () => {
 	const git = (cwd: string, ...args: string[]) =>
 		execFileSync("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
