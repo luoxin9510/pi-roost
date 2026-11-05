@@ -174,6 +174,23 @@ start sessions: please start it yourself", and the check wanted the word `act`, 
 check takes "can't", "cannot", "not allowed" and the like with `#1`. Then 2/2, 2/2, 2/2;
 the policy and concierge cases again 1/1 each; under a cent a run.
 
+## M47: the task board
+
+`evals/tasks.eval.ts`: the case takes `tasks` (put on the board through `task add`
+before the sessions start; `after` by position among them) and the outcome adds
+`board` (every task as the case ended: state, owner, result, who handed it over) and
+`taskEvents` (who did what on it, in order). Two cases: "a session works the board"
+(two tasks, `beta.txt` after `alpha.txt`; one session told to take open tasks one at a
+time and mark each done; checks: both done, both claimed then finished, `#2` claimed
+only after `#1` was done, the files written, the run finished with its word); "the
+concierge leads" (one task, one idle session told to wait for a hand-over, the
+concierge on; checks: an `assign` event by the concierge to that session, the
+session's claim and the task done, no claim by the concierge, the file written; a
+`waitMs` step of 90 s gives the digest, the hand-over and the work their time). First
+runs (2026-11-05, haiku): 2/2 and 2/2 at once (the worker case 15–18 s, the concierge
+case 95 s: the idle worker's first digest, the hand-over, the claim); the orders and
+concierge cases again 1/1 and 2/2; under a cent a run.
+
 ## Next cases
 
 A question answered by a reply (`blocked` → reply → done), once a case makes pi ask

@@ -70,7 +70,7 @@ export function summaryLine(s: BoardSummary): string {
  */
 export function taskLine(t: BoardTask, all: Iterable<BoardTask>, now = Date.now()): string {
 	const title = t.title;
-	if (t.state === "done") return `#${t.id} done ${t.doneAt ? `${eventAgo(t.doneAt, now)} ago` : ""}${t.owner ? ` by ${t.owner.name}` : ""} · ${title}${t.result ? ` → ${t.result}` : ""}`;
+	if (t.state === "done") return `#${t.id} done${t.doneAt ? ` ${eventAgo(t.doneAt, now)} ago` : ""}${t.owner ? ` by ${t.owner.name}` : ""} · ${title}${t.result ? ` → ${t.result}` : ""}`;
 	if (t.state === "dropped") return `#${t.id} dropped · ${title}`;
 	if (t.state === "claimed") return `#${t.id} claimed by ${t.owner?.name ?? "?"}${t.claimedAt ? ` (${eventAgo(t.claimedAt, now)})` : ""} · ${title}`;
 	const waits = blockedOn(t, all);
@@ -79,13 +79,18 @@ export function taskLine(t: BoardTask, all: Iterable<BoardTask>, now = Date.now(
 	return `#${t.id} open · ${title}${to}`;
 }
 
-/** The board for a digest: the summary line, then every task that is not done or dropped (blocked, open, claimed). */
+/** Open (claimable) first, then blocked, then claimed: the order the digest and the hub list live tasks in. */
+export function liveOrder(t: BoardTask, all: BoardTask[]): number {
+	return t.state === "claimed" ? 2 : blockedOn(t, all).length > 0 ? 1 : 0;
+}
+
+/** The board for a digest: the summary line, then every task that is not done or dropped (open, blocked, claimed). */
 export function boardLines(all: BoardTask[], now = Date.now()): string[] {
 	const s = boardSummary(all);
 	const out = [`The board (${summaryLine(s)}):`];
 	const live = all.filter((t) => t.state === "open" || t.state === "claimed");
 	if (live.length === 0) out.push(s.done > 0 ? "- every task is done" : "- empty");
-	const order = (t: BoardTask) => (t.state === "claimed" ? 2 : blockedOn(t, all).length > 0 ? 0 : 1);
+	const order = (t: BoardTask) => liveOrder(t, all);
 	for (const t of [...live].sort((a, b) => order(a) - order(b) || a.id - b.id)) out.push(`- ${taskLine(t, all, now)}`);
 	return out;
 }

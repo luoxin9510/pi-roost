@@ -37,7 +37,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { screenPath } from "../lib/store.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
-import { type BoardSummary, type BoardTask, blockedOn, boardSummary, summaryLine, taskLine } from "../lib/board.ts";
+import { type BoardSummary, type BoardTask, boardSummary, liveOrder, summaryLine, taskLine } from "../lib/board.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -2014,7 +2014,8 @@ export class AgentView implements Component {
 				let title = (dash >= 0 ? text.slice(0, dash) : text).trim();
 				const detail = dash >= 0 ? text.slice(dash + 4).trim() : "";
 				const after: number[] = [];
-				const m = /\s+after\s+((?:#?\d+[\s,]*)+)$/i.exec(title);
+				// `after #2 #3` (the first with a #: "retry after 3" is a title); no nested quantifier (no backtracking blow-up)
+				const m = /\s+after\s+(#\d+(?:[\s,]+#?\d+)*)[\s,]*$/i.exec(title);
 				if (m) {
 					for (const x of m[1]!.split(/[\s,]+/).filter(Boolean)) {
 						const n = idOf(x);
@@ -2064,7 +2065,7 @@ export class AgentView implements Component {
 			const now = Date.now();
 			const out = [t.bold(truncateToWidth(`Task board · ${summaryLine(boardSummary(tasks))}`, width)), ""];
 			const live = tasks.filter((x) => x.state === "open" || x.state === "claimed");
-			const group = (x: BoardTask) => (x.state === "claimed" ? 2 : blockedOn(x, tasks).length > 0 ? 1 : 0);
+			const group = (x: BoardTask) => liveOrder(x, tasks);
 			for (const x of [...live].sort((a, b) => group(a) - group(b) || a.id - b.id)) {
 				const g = group(x);
 				const line = oneLine(taskLine(x, tasks, now));
@@ -2078,7 +2079,7 @@ export class AgentView implements Component {
 				for (const x of done.slice(0, 30)) out.push(truncateToWidth(`  ${t.fg("dim", oneLine(taskLine(x, tasks, now)))}`, width));
 				if (done.length > 30) out.push(t.fg("dim", `  … ${done.length - 30} more done`));
 			}
-			out.push("", t.fg("dim", truncateToWidth("/tasks add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id>", width)));
+			out.push("", t.fg("dim", truncateToWidth("/tasks add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id> · release <id>", width)));
 			return out;
 		};
 		this.overlay = {
@@ -3385,7 +3386,7 @@ export class AgentView implements Component {
 			["/concierge on|off|log", "the hub's own agent: watches the sessions, tells you what needs you, relays between them"],
 			["/concierge answer|act|undo", "may it answer routine questions itself (never|routine|always), start/stop sessions (on|off); withdraw its last answer"],
 			["/concierge orders [add|rm]", "the standing orders it keeps (rules in your words, some on a clock); add one, drop one"],
-			["/tasks [add|assign|done|rm]", "the shared task board: sessions claim tasks (roost_task_*), the concierge hands them out; add <title> [after #n] [-- detail], assign <id> <session>, done <id> [result], rm <id>"],
+			["/tasks [add|assign|done|rm|release]", "the shared task board: sessions claim tasks (roost_task_*), the concierge hands them out; add <title> [after #n] [-- detail], assign <id> <session>, done <id> [result], rm <id>, release <id>"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
 			["Ctrl+Y · Ctrl+E", "send the concierge's suggested answer to the session that waits · edit it first (the banner under the header)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],

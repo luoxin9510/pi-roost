@@ -58,10 +58,15 @@ go first, oldest first, when it is full (`full` otherwise). Ids never reused (`n
 | `list` | all | `{tasks}`, oldest first, every state |
 | `add {title, detail?, after?}` | all | one more, `open`; `after` ids must be on the board and not dropped (`bad_request`); `full` at 200 |
 | `claim {id}` | a session (the hub and the concierge: `unsupported`) | `open` → `claimed` by it; `conflict` while another live session holds it (named); a holder that is gone (its job not in the roster, its foreground pi disconnected) is released and the task taken over; `blocked` while a task in `after` is neither done nor dropped; `bad_request` when done or dropped; its own claim again: fine |
-| `release {id}` | its owner, the hub, the concierge | `claimed` → `open`; `unsupported` for another session, `bad_request` when not claimed |
+| `release {id}` | its owner, the hub, the concierge | `claimed` → `open`; `unsupported` for another session, `bad_request` when not claimed; the holder is told when the hub or the concierge took it back |
 | `done {id, result?}` | its owner, the hub, the concierge | → `done` with the result; tasks that waited on it are claimable now |
-| `drop {id}` | the hub, the concierge | → `dropped`; a claim on it goes with it; a dropped task holds nothing that waited on it |
-| `assign {id, to}` | the hub, the concierge | an open task only; `to` is a session id or a unique name (`not_found`; a command is `unsupported`); a `message` delivery to it with the task, its detail and how to claim it (or what it waits on); `assigned` set; `sent` is the delivery's outcome |
+| `drop {id}` | the hub, the concierge | open or claimed → `dropped` (a done one: `bad_request`); a claim on it goes with it and the holder is told; a dropped task holds nothing that waited on it |
+| `assign {id, to}` | the hub, the concierge | an open task only; `to` is a session id or a unique name (`not_found`; a command is `unsupported`); a `message` delivery to it with the task, its detail and how to claim it (or what it waits on); `assigned` set and the event recorded only when the message reached it (`sent`: delivered, queued or started) and the task is still open; `bad_request` while a hand-over of it is on its way |
+
+An `id` is a positive integer or a string of digits (`taskId()`), nothing else. The
+actor is read from the connection (`boardActor()`): a connection that said `hello` or
+`report` but has no accepted report (its job ended, or it is early) is refused
+(`unauthorized`), never taken for the hub.
 
 The result is `{tasks, task?, sent?}`. Events: `kind: "task"`, `why: add | claim |
 release | done | drop | assign`, `text: "#id title"` (done: `: result`; assign: `: to
@@ -72,11 +77,18 @@ digest, `/log` shows them (`api claimed task #1 the schema`). Every change pushe
 ### A claim goes with its session
 
 A job that fails or is stopped, or is removed: its claims are released (`why:
-"release"`, `#1 one: a stopped`, `#2 two: b removed`), so the work is not stuck. A
-foreground pi that disconnected is released when another session claims the task (`its
-session is gone`), and at a restart of the service (its record is not a job's). A
-session restarted by roost (M38) keeps its claims (the same job id). A job that finished
-(`done`) keeps its claim until it is removed: its result may still be on the way.
+"release"`, `#1 one: a stopped`, `#2 two: b removed`), so the work is not stuck; at a
+restart of the service the same goes for a claim whose job record is gone or whose
+state is failed or stopped. A foreground pi that disconnected holds its claims five
+seconds more (`FG_CLAIM_GRACE_MS`, `PI_ROOST_FG_CLAIM_GRACE_MS`): a pi re-opened on the
+session comes back under the same id; otherwise they are released (`other
+disconnected`). A holder that is gone without any of that (a job that finished and
+left the roster, a foreground pi whose id changed) is released when another session
+claims the task (`its session is gone`), which then takes it over. A session restarted
+by roost (M38) keeps its claims (the same job id). A job that finished (`done`) keeps
+its claim while it lives: its result may still be on the way. When the hub or the
+concierge takes a task from its holder (`release`, `drop`), the holder is told in a
+message.
 
 ### In every digest
 
@@ -139,3 +151,7 @@ The concierge's tool list (`test/concierge.test.ts`).
 - Per-project boards (one board per roost home).
 - The concierge dispatching sessions for tasks (that is `act`, M45; it may already).
 - A row saying a session takes work from the board.
+- A cap per session on `add`: any session may fill the board up to 200 open tasks
+  (only done and dropped ones are swept); a runaway session is stopped by the user.
+- The `/tasks` overlay refreshing by itself: it is the board as of its opening (Esc,
+  `/tasks` again); the header's counts are live.

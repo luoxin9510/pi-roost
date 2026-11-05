@@ -231,6 +231,8 @@ interface Conn {
 	agentItems?: boolean;
 	/** M31: what the agent on this connection said in its hello. */
 	hello?: { name: string; version: string | null; capabilities: string[] };
+	/** M47: an agent's connection (it said hello or reported): never the hub's, even before its peer is set. */
+	agentSide?: boolean;
 }
 
 /** M9: connected foreground pi sessions, by peer id. */
@@ -818,7 +820,7 @@ function ordersDue(now: number): StandingOrder[] {
 /** `concierge-order`: keep, drop, list, mark applied. */
 function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: unknown; id?: unknown } | undefined): { orders: StandingOrder[]; order?: StandingOrder } {
 	const peer = conn.peer;
-	if (peer && !isConciergePeer(peer)) throw new OpError("unsupported", "standing orders are the hub's and the concierge's");
+	if ((peer && !isConciergePeer(peer)) || (!peer && conn.agentSide)) throw new OpError("unsupported", "standing orders are the hub's and the concierge's");
 	const by: StandingOrder["by"] = peer ? "concierge" : "user";
 	const action = args?.action;
 	const all = () => [...orders.values()].sort((a, b) => a.id - b.id);
@@ -908,8 +910,20 @@ function loadTasks(): void {
 	}
 	const kept = Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
 	taskNext = Math.max(kept, Math.max(0, ...tasks.keys()) + 1);
-	// a claim held by a session that is gone (its record removed while the service was down) is released
-	for (const t of tasks.values()) if (t.state === "claimed" && t.owner && !recs.has(t.owner.id)) releaseTask(t, "its session is gone");
+	for (const t of tasks.values()) {
+		// a claim without a holder (a file edited or cut short) is no claim; an open task holds nobody
+		if (t.state === "claimed" && !t.owner) t.state = "open";
+		if (t.state === "open") {
+			t.owner = null;
+			t.claimedAt = null;
+		}
+		if (t.state !== "claimed" || !t.owner) continue;
+		// a claim held by a session that is gone (its record removed while the service was down), or that failed or was stopped, is released
+		const rec = recs.get(t.owner.id);
+		const st = rec ? readState(t.owner.id) : undefined;
+		if (!rec) releaseTask(t, "its session is gone");
+		else if (st && (st.state === "failed" || st.state === "stopped")) releaseTask(t, `${t.owner.name} ${st.state}`);
+	}
 }
 
 function saveTasks(): void {
@@ -934,12 +948,31 @@ function sweepTasks(): void {
 /** Who acts on the board: the hub ("user"), the concierge, or a session (a job by its id, a foreground pi by its peer id). */
 function boardActor(conn: Conn): { who: string; whoId: string | null; sessionId: string | null; concierge: boolean } {
 	const peer = conn.peer;
-	if (!peer) return { who: "user", whoId: null, sessionId: null, concierge: false };
+	if (!peer) {
+		// an agent's connection before its report is accepted (or for a job that ended) is not the hub's
+		if (conn.agentSide) throw new OpError("unauthorized", "a session acts on the board after its report is accepted");
+		return { who: "user", whoId: null, sessionId: null, concierge: false };
+	}
 	if (isConciergePeer(peer)) return { who: CONCIERGE_NAME, whoId: peer.id, sessionId: null, concierge: true };
 	return { who: peerName(peer), whoId: peer.kind === "job" ? peer.id : null, sessionId: peer.id, concierge: false };
 }
 
 const taskText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, " ").trim().slice(0, max) : "");
+/** A task id as the op takes it: a positive integer, or a string of digits; nothing else. */
+const taskId = (v: unknown): number | undefined => (typeof v === "number" && Number.isInteger(v) && v > 0 ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : undefined);
+/** Tasks a hand-over is on its way for (two at once would send two messages). */
+const assigning = new Set<number>();
+/** A foreground pi that disconnected holds its claims this long (a pi re-opened on the session comes back under the same id). */
+const FG_CLAIM_GRACE_MS = Number(process.env.PI_ROOST_FG_CLAIM_GRACE_MS) || 5000;
+
+/** The session that holds a task is told when the hub or the concierge takes it from it. */
+function tellOwner(owner: { id: string; name: string }, from: string, body: string): void {
+	const p = fgPeers.get(owner.id)?.peer;
+	const key = recs.get(owner.id)?.sessionFile ?? (p?.kind === "fg" ? p.session : undefined);
+	if (!key) return;
+	const text = envelope({ from, id: from, relation: "external", kind: "message", body });
+	void deliverAgent(key, "message", text, { from, relation: "external" }).catch(() => {});
+}
 
 function taskEvent(a: ReturnType<typeof boardActor>, why: string, t: BoardTask, extra?: string): void {
 	record({ kind: "task", id: a.whoId ?? "", name: a.who, who: a.who, whoId: a.whoId, why, text: clipText(`#${t.id} ${t.title}${extra ? `: ${extra}` : ""}`) });
@@ -984,9 +1017,9 @@ async function taskOp(
 		if (args?.after !== undefined) {
 			if (!Array.isArray(args.after)) throw new OpError("bad_request", "after must be a list of task ids");
 			for (const x of args.after) {
-				const dep = Number(x);
-				const d = Number.isInteger(dep) ? tasks.get(dep) : undefined;
-				if (!d || d.state === "dropped") throw new OpError("bad_request", `after: no task #${String(x)} to wait on`);
+				const dep = taskId(x);
+				const d = dep !== undefined ? tasks.get(dep) : undefined;
+				if (dep === undefined || !d || d.state === "dropped") throw new OpError("bad_request", `after: no task #${String(x)} to wait on`);
 				if (!after.includes(dep)) after.push(dep);
 			}
 		}
@@ -1013,8 +1046,8 @@ async function taskOp(
 		return { tasks: all(), task: t };
 	}
 	if (action !== "claim" && action !== "release" && action !== "done" && action !== "drop" && action !== "assign") throw new OpError("bad_request", "action must be list, add, claim, release, done, drop or assign");
-	const id = typeof args?.id === "number" ? args.id : Number(args?.id);
-	const t = Number.isInteger(id) ? tasks.get(id) : undefined;
+	const id = taskId(args?.id);
+	const t = id !== undefined ? tasks.get(id) : undefined;
 	if (!t) throw new OpError("not_found", `no task #${String(args?.id)}`);
 	const mine = a.sessionId !== null && t.owner?.id === a.sessionId;
 	const lead = a.sessionId === null; // the hub, the concierge
@@ -1041,14 +1074,17 @@ async function taskOp(
 			}
 			return { tasks: all(), task: t };
 		}
-		case "release":
-			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours"}`);
+		case "release": {
 			if (t.state !== "claimed") throw new OpError("bad_request", `#${t.id} is ${t.state}, not claimed`);
+			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours"}`);
+			const held = t.owner;
 			releaseTask(t, a.sessionId !== null ? "given back" : `released by ${a.who}`, a);
+			if (lead && held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was taken back by ${a.who}: stop working on it; it is open on the board again.`);
 			return { tasks: all(), task: t };
+		}
 		case "done":
-			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours: claim it first"}`);
 			if (t.state === "done" || t.state === "dropped") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
+			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours: claim it first"}`);
 			t.state = "done";
 			t.doneAt = Date.now();
 			t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
@@ -1057,16 +1093,20 @@ async function taskOp(
 			taskEvent(a, "done", t, t.result ?? undefined);
 			pushBoard();
 			return { tasks: all(), task: t };
-		case "drop":
+		case "drop": {
 			if (!lead) throw new OpError("unsupported", "the hub and the concierge drop tasks; a session gives its back (roost_task_release)");
-			if (t.state === "dropped") throw new OpError("bad_request", `#${t.id} is dropped already`);
+			if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
+			const held = t.state === "claimed" ? t.owner : null;
 			t.state = "dropped";
 			t.owner = null;
 			t.claimedAt = null;
+			t.assigned = null;
 			saveTasks();
 			taskEvent(a, "drop", t);
 			pushBoard();
+			if (held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was dropped by ${a.who}: stop working on it.`);
 			return { tasks: all(), task: t };
+		}
 		case "assign": {
 			if (!lead) throw new OpError("unsupported", "the hub and the concierge hand tasks over; a session claims one (roost_task_claim)");
 			if (t.state !== "open") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
@@ -1089,11 +1129,21 @@ async function taskOp(
 				.filter(Boolean)
 				.join("\n");
 			const text = envelope({ from: a.who, id: a.whoId ?? a.who, relation: "external", kind: "message", body });
-			const r = await deliverAgent(rec.sessionFile, "message", text, { from: a.who, relation: "external" });
-			t.assigned = { id: target.id, name: target.name, at: Date.now() };
-			saveTasks();
-			taskEvent(a, "assign", t, `to ${target.name}`);
-			pushBoard();
+			if (assigning.has(t.id)) throw new OpError("bad_request", `#${t.id} is being handed over already`);
+			assigning.add(t.id);
+			let r: Awaited<ReturnType<typeof deliverAgent>>;
+			try {
+				r = await deliverAgent(rec.sessionFile, "message", text, { from: a.who, relation: "external" });
+			} finally {
+				assigning.delete(t.id);
+			}
+			// handed over only when the message reached it, and the task is still open (the wait was real)
+			if (reached(r.outcome) && t.state === "open") {
+				t.assigned = { id: target.id, name: target.name, at: Date.now() };
+				saveTasks();
+				taskEvent(a, "assign", t, `to ${target.name}`);
+				pushBoard();
+			}
 			return { tasks: all(), task: t, sent: r.outcome };
 		}
 	}
@@ -3450,6 +3500,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { name: s.name, id: await runSchedule(s, Date.now(), "now") };
 		}
 		case "hello":
+			conn.agentSide = true;
 			return hello(conn, args);
 		case "list":
 			return { jobs: list(args) };
@@ -3523,6 +3574,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return {};
 		}
 		case "report":
+			conn.agentSide = true;
 			acceptReport(conn, args);
 			return {};
 		case "reply":
@@ -3644,6 +3696,11 @@ server = createServer((sock) => {
 		if (conn.peer?.kind === "fg" && fgPeers.get(conn.peer.id) === conn) {
 			fgPeers.delete(conn.peer.id);
 			pushChildrenOf(conn.peer.session);
+			// M47: its claims go a moment later, unless a pi re-opened on the session is back under the same id
+			const { id, name } = conn.peer;
+			setTimeout(() => {
+				if (!ownerLive(id)) releaseClaimsOf(id, `${name} disconnected`);
+			}, FG_CLAIM_GRACE_MS).unref();
 		}
 	});
 });

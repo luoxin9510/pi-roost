@@ -124,7 +124,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `/concierge on\|off\|log` · `? question` | the hub's own agent ([below](#the-concierge--值班-agent)): it watches the sessions, tells you what needs you, relays between them; `?` asks it | hub 自己的值班 agent（[见下文](#the-concierge--值班-agent)）：盯着各会话，告诉你哪些需要你处理，在会话之间传话；`?` 向它提问 |
 | `/concierge answer never\|routine\|always` · `act on\|off` · `undo` · `Ctrl+Y` / `Ctrl+E` | may it answer routine questions itself, start/stop sessions; withdraw its last answer; send / edit its suggested answer for the session that waits (the banner) | 它能否自行回答常规提问、启停会话；撤回它上一个回答；把它为等待中会话建议的答案发出 / 先编辑（标题下的横幅） |
 | `/concierge orders [add <rule> \| rm <id>]` · `? remember …` | the standing orders it keeps: rules in your words ("when build ends, tell deploy its result", "every evening say what is blocked"), in every digest; the ones on a clock wake it when due | 它记着的常备指令：用你的话写的规则（"build 结束就把结果告诉 deploy"、"每晚说一下哪些卡住了"），每次唤醒都会带上；带时钟的到点就唤醒它 |
-| `/tasks [add <title> [after #n] [-- detail] \| assign <id> <session> \| done <id> [result] \| rm <id>]` | the shared task board ([below](#shared-task-board--共享任务板)): tasks any session can take (`roost_task_*`), with what they wait on; the concierge hands them to idle sessions; the header counts what is on it | 共享任务板（[见下文](#shared-task-board--共享任务板)）：任何会话都能认领的任务（`roost_task_*`），可写明依赖；值班 agent 把它们分给空闲的会话；标题行显示板上的数量 |
+| `/tasks [add <title> [after #n] [-- detail] \| assign <id> <session> \| done <id> [result] \| rm <id> \| release <id>]` | the shared task board ([below](#shared-task-board--共享任务板)): tasks any session can take (`roost_task_*`), with what they wait on; the concierge hands them to idle sessions; the header counts what is on it | 共享任务板（[见下文](#shared-task-board--共享任务板)）：任何会话都能认领的任务（`roost_task_*`），可写明依赖；值班 agent 把它们分给空闲的会话；标题行显示板上的数量 |
 | `/fanout a/x b/y`, `/compare` | the next task runs once per model, each in its own git worktree (bare `/fanout`: pick the models; `off` cancels); `/compare` on one of them puts them side by side (state, cost, the change in each worktree, the last reply): ← → choose, Enter open, `k` twice keeps one and deletes the others | 下一个任务按每个模型各跑一份，各自在独立的 git worktree 里（不带参数的 `/fanout` 从列表选模型，`off` 取消）；在其中一行上用 `/compare` 并排对比（状态、花费、各自 worktree 的改动、最后的回复）：← → 选择，Enter 进入，`k` 按两次保留这一个并删除其余 |
 | `/preset [name]` | launch presets: model, thinking, worktree, agent, directory and fan-out together; bare: pick one; `save name` keeps what new sessions use now, `rm name`, `off` | 启动预设：模型、thinking、worktree、agent、目录和多模型并跑一起切换；不带参数则从列表里选；`save name` 把当前新会话的设置存成预设，另有 `rm name`、`off` |
 | `/profile [name]` | new sessions run one of your [other agents](#other-agents--其他-agent) (`pi` goes back); bare: pick one | 新会话改用你的某个[其他 agent](#other-agents--其他-agent)（`pi` 换回）；不带参数则从列表里选 |
@@ -387,9 +387,11 @@ tasks it waits on after `after`, the detail after `--`); a session takes it with
 `roost_task_claim` (refused while another live session holds it, or while a task it
 waits on is not done), does it, and marks it done with `roost_task_done` and a result, or
 gives it back with `roost_task_release`; a session that fails, is stopped or removed holds
-nothing. A session may put follow-up work on the board itself (`roost_task_add`). The hub
-hands a task to a session (`/tasks assign <id> <session>`: a message with the task), marks
-one done or drops it (`/tasks done <id> [result]`, `/tasks rm <id>`); `/tasks` shows the
+nothing (a foreground pi's claims go a few seconds after it disconnected). A session may
+put follow-up work on the board itself (`roost_task_add`). The hub hands a task to a
+session (`/tasks assign <id> <session>`: a message with the task), marks one done, takes
+one back or drops it (`/tasks done <id> [result]`, `/tasks release <id>`, `/tasks rm
+<id>`; the session that held it is told); `/tasks` shows the
 board (open, blocked and on what, claimed by whom and for how long, done with the result),
 and the header counts what is on it while something is. With the concierge on, every
 digest carries the board and it works it as the lead: it hands open tasks to idle sessions

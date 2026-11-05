@@ -152,7 +152,9 @@ class RoostAgent:
 
     def request(self, op, args=None, timeout=15.0):
         """Any op of the protocol (docs/protocol.md), as this job: its result (a dict), or
-        RoostError when the daemon refuses it; TimeoutError when no answer comes in time."""
+        RoostError when the daemon refuses it (code `disconnected` when the connection was
+        lost meanwhile); TimeoutError when no answer comes in time. The connection is made
+        for the first report(): before it, or while reconnecting, ConnectionError."""
         event = threading.Event()
         box = {}
         self._send(op, args or {}, waiter=(event, box))
@@ -210,8 +212,14 @@ class RoostAgent:
             raise ConnectionError("not connected")
         line = (json.dumps({"id": rid, "op": op, "args": args}) + "\n").encode()
         # three threads send (reports, acks from the reader and the reply thread): one line at a time
-        with self._send_lock:
-            sock.sendall(line)
+        try:
+            with self._send_lock:
+                sock.sendall(line)
+        except (OSError, ConnectionError):
+            if waiter is not None:
+                with self._lock:
+                    self._waiters.pop(rid, None)
+            raise
         return rid
 
     def _drop(self):

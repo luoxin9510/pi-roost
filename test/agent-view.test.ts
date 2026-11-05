@@ -1943,6 +1943,18 @@ describe("M47: the task board in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		expect(view.render(120).join("\n")).toContain("no task #9");
+		// a title that ends in a number is a title (`after` wants a #); a long run of digits does not stall; several ids
+		const before = client.requests.length;
+		for (const t of ["/tasks add retry after 3", "/tasks add x after 1111111111111111111111111111111111111z", "/tasks add a after #1, #2 -- d"]) {
+			type(view, t);
+			view.handleInput("\r");
+			await sleep(20);
+		}
+		expect(client.requests.slice(before).map((r) => r.args)).toEqual([
+			{ action: "add", title: "retry after 3", detail: undefined, after: undefined },
+			{ action: "add", title: "x after 1111111111111111111111111111111111111z", detail: undefined, after: undefined },
+			{ action: "add", title: "a", detail: "d", after: [1, 2] },
+		]);
 	});
 });
 
