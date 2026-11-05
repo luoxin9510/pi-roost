@@ -58,5 +58,12 @@ Reported with pi run in several herdr panes, switching between background sessio
   reads; detach/attach bursts; one PTY switching between two sessions with Ctrl+Z, keys
   typed before and with it (40, 300 with `STRESS=1`); a worker that suspends itself as pi
   does is resumed by the next attach (fails without the host's SIGCONT).
+  - M42: that last test failed now and then under a full `npm test`. The fake worker
+    dropped keys while "stopped", and the host's SIGCONT and the keys typed right after
+    the attach reach a node process through the same event loop in no fixed order; pi
+    stops reading its terminal instead, so keys typed meanwhile wait in the terminal.
+    The fake worker now does the same (pauses stdin until SIGCONT), the test waits for
+    the ticks to stop rather than a fixed 300 ms, and a timeout on a PTY's output says
+    what the terminal showed last.
 - daemon: rows taken over, continued elsewhere, pid pushed before a report.
 - reporter back-off, client stream order, detach key encodings, model names, herdr env.

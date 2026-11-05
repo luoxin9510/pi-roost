@@ -64,14 +64,15 @@ setInterval(() => { if (!stopped) process.stdout.write("tick " + (n++) + "\\r\\n
 process.stdin.setRawMode?.(true); // as pi: keys arrive as bytes
 let buf = "";
 process.stdin.on("data", (d) => {
-	// as pi on Ctrl+Z: stop the UI, SIGTSTP the group (discarded: an orphaned group), wait for SIGCONT
+	// as pi on Ctrl+Z: stop the UI (no reading: keys typed meanwhile wait in the terminal),
+	// SIGTSTP the group (discarded: an orphaned group), wait for SIGCONT
 	if (d.includes(0x1a)) {
 		stopped = true;
-		process.once("SIGCONT", () => { stopped = false; });
+		process.stdin.pause();
+		process.once("SIGCONT", () => { stopped = false; process.stdin.resume(); });
 		try { process.kill(0, "SIGTSTP"); } catch {}
 		return;
 	}
-	if (stopped) return;
 	buf += d.toString();
 	let i;
 	while ((i = buf.search(/[\\r\\n]/)) >= 0) {
@@ -146,6 +147,31 @@ async function responsive(c: Client, tag: string): Promise<void> {
 }
 
 const rnd = (n: number) => Math.floor(Math.random() * n);
+
+/** The session's output stops: nothing new for `ms` (within `timeout`). */
+async function still(c: Client, ms: number, timeout: number): Promise<void> {
+	const start = Date.now();
+	let at = c.text().length;
+	let since = Date.now();
+	for (;;) {
+		await new Promise((r) => setTimeout(r, 20));
+		const n = c.text().length;
+		if (n !== at) {
+			at = n;
+			since = Date.now();
+		} else if (Date.now() - since >= ms) return;
+		if (Date.now() - start > timeout) throw new Error("the output never stopped");
+	}
+}
+
+/** As waitFor on a terminal's output; a timeout says what the terminal showed last (M42). */
+async function waitForOut(out: () => string, fn: () => boolean, timeout: number, what: string): Promise<void> {
+	try {
+		await waitFor(fn, timeout, what);
+	} catch (err) {
+		throw new Error(`${(err as Error).message}; the terminal's last output: ${JSON.stringify(out().slice(-800))}`);
+	}
+}
 
 describe("M22 stress: attach/detach", () => {
 	it(
@@ -255,19 +281,19 @@ describe("M22 stress: switching sessions from one terminal", () => {
 				const rounds = process.env.STRESS === "1" ? 300 : 40;
 				for (let i = 0; i < rounds; i++) {
 					const id = i % 2 ? b.id : a.id;
-					await waitFor(() => out.includes(`[attach ${id} #${i}]`), 5000, `attach #${i}`);
+					await waitForOut(() => out, () => out.includes(`[attach ${id} #${i}]`), 5000, `attach #${i}`);
 					// type right away: keys may arrive before the host's greeting
 					const tag = `k${i}`;
 					term.write(`${tag}\r`);
 					// (keys typed into this session before its last detach come first on the line)
-					await waitFor(() => out.includes(`${tag} usr2:`), 5000, `echo of ${tag}`);
+					await waitForOut(() => out, () => out.includes(`${tag} usr2:`), 5000, `echo of ${tag}`);
 					if (i % 7 === 3) term.write(`\x1a`);
 					else {
 						// a burst of keys then the detach, all in one go
 						term.write("xyz");
 						term.write("\x1a");
 					}
-					await waitFor(() => out.includes(`[detached local]`) && out.lastIndexOf("[detached local]") > out.lastIndexOf(`${tag} usr2:`), 5000, `detach #${i}`);
+					await waitForOut(() => out, () => out.includes("[detached local]") && out.lastIndexOf("[detached local]") > out.lastIndexOf(`${tag} usr2:`), 5000, `detach #${i}`);
 				}
 			} finally {
 				term.kill();
@@ -286,10 +312,8 @@ describe("M22: a worker that suspended itself", () => {
 		await responsive(c, "before");
 		// a Ctrl+Z that reached the worker (sent past the client's own detach key check)
 		c.sock.write(encodeFrame(FrameType.DATA, "\x1a"));
-		await new Promise((r) => setTimeout(r, 300));
-		const at = c.text().length;
-		await new Promise((r) => setTimeout(r, 300));
-		expect(c.text().length - at).toBeLessThan(40); // stopped: no ticks
+		// stopped: the ticks end (once the worker gets to the key; a loaded machine takes a while)
+		await still(c, 300, 5000);
 		const d = await attach(id);
 		await responsive(d, "after");
 		await hostControl(id, "terminate");
@@ -343,26 +367,26 @@ describe("M22: the detach key across chunks", () => {
 			out += d;
 		});
 		try {
-			await waitFor(() => out.includes("[attach #0]"), 5000, "attach 0");
+			await waitForOut(() => out, () => out.includes("[attach #0]"), 5000, "attach 0");
 			await responsiveTerm("a0");
 			// kitty Ctrl+Z (Num Lock on) in two reads
 			term.write("\x1b[122;");
 			await new Promise((r) => setTimeout(r, 80));
 			term.write("133u");
-			await waitFor(() => out.includes("[detached local #0]"), 5000, "split detach");
-			await waitFor(() => out.includes("[attach #1]"), 5000, "attach 1");
+			await waitForOut(() => out, () => out.includes("[detached local #0]"), 5000, "split detach");
+			await waitForOut(() => out, () => out.includes("[attach #1]"), 5000, "attach 1");
 			// a paste start whose end never comes, then (after a pause) Ctrl+Z
 			term.write("\x1b[200~pasted text");
 			await new Promise((r) => setTimeout(r, 1300));
 			term.write("\x1a");
-			await waitFor(() => out.includes("[detached local #1]"), 5000, "detach after lost paste end");
+			await waitForOut(() => out, () => out.includes("[detached local #1]"), 5000, "detach after lost paste end");
 		} finally {
 			term.kill();
 			await hostControl(id, "terminate").catch(() => {});
 		}
 		async function responsiveTerm(tag: string) {
 			term.write(`${tag}\r`);
-			await waitFor(() => out.includes(`${tag} usr2:`), 5000, `echo ${tag}`);
+			await waitForOut(() => out, () => out.includes(`${tag} usr2:`), 5000, `echo ${tag}`);
 		}
 	}, 30_000);
 });
