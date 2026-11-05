@@ -88,6 +88,12 @@ prompt (or type `/bg`) and it moves to the background, right where it was.
 
 正在一个普通 pi 对话里，任务要跑很久？在空提示符下按 **←**（或输入 `/bg`），它就原样转到后台继续。
 
+Want the view in a terminal of its own, without a pi session around it (a pane kept
+open beside your editor)? `pi-roost hub [dir]` runs the same view on its own; new
+sessions start in `dir` and run the pi on your PATH.
+
+想把视图单独放在一个终端里（比如编辑器旁边常驻一个窗格），不需要外面包着一个 pi 会话？`pi-roost hub [dir]` 单独运行同一个视图；新会话在 `dir` 里启动，用的是 PATH 上的 pi。
+
 A cheap summary model makes the list much more useful: sessions get names and progress
 summaries. Add one to `~/.pi/agent/roost.json`, for example
 `{"summaryModel": "anthropic/claude-haiku-5-5"}`.
@@ -491,6 +497,7 @@ The package installs a `pi-roost` command:
 这个包会安装一个 `pi-roost` 命令：
 
 ```text
+pi-roost hub [dir]                      the agent view on its own          单独运行 agent 视图
 pi-roost list [--all] [--subagents]     list sessions as a table           以表格列出会话
 pi-roost --json [--all] [--cwd <dir>]   list sessions as JSON              以 JSON 列出会话
 pi-roost attach <id|name>               open a session (Ctrl+Z detaches)   进入会话（Ctrl+Z 退出）

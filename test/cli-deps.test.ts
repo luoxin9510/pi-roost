@@ -48,6 +48,13 @@ describe("processes that run without pi", () => {
 				}
 			}
 		}
+		// M33: the hub draws with pi-tui (a terminal library), nothing of pi's agent, no adapter
+		for (const f of readdirSync("hub")) {
+			if (!f.endsWith(".ts")) continue;
+			for (const spec of imports(`hub/${f}`)) {
+				if ((spec.startsWith("@earendil-works/") && spec !== "@earendil-works/pi-tui") || spec.includes("adapters/")) bad.push(`hub/${f} -> ${spec}`);
+			}
+		}
 		// pi's adapter is the only place pi's packages are imported; the old path only points at it
 		expect(readdirSync("extensions")).toEqual(["index.ts"]);
 		expect(imports("extensions/index.ts").filter((i) => !i.startsWith("@earendil-works/"))).toEqual(["../adapters/pi/index.ts"]);

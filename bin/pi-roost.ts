@@ -8,6 +8,7 @@ import { hostControl } from "../lib/hostclient.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
 import { daemonLogPath, hostSocketPath, runtimeDir } from "../lib/paths.ts";
+import { findPiCli, findPiPackage, usePiPackage } from "../lib/pi-resolve.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
@@ -15,6 +16,8 @@ import { ROOST_VERSION } from "../lib/version.ts";
 const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
 
 usage:
+  pi-roost hub [dir]               the agent view in this terminal, without a pi session
+                                   (new sessions start in dir; needs pi on the PATH)
   pi-roost list [--all] [--subagents] [--cwd <dir>]
                                    list background sessions (as the agent view does)
   pi-roost attach <id|name>        open a background session (Ctrl+Z detaches);
@@ -218,6 +221,23 @@ async function cmdDaemon(sub: string | undefined, args: string[]): Promise<void>
 	}
 }
 
+/**
+ * M33: the standalone hub. It is pi's adapter (it launches pi sessions and draws with
+ * pi-tui), loaded by path like the host (the CLI itself imports no pi package): from
+ * dist/ when installed, from the checkout's .ts when run from source.
+ */
+async function cmdHub(rest: string[]): Promise<void> {
+	const cwd = resolvePath(rest[0] ?? process.cwd());
+	if (!existsSync(cwd)) throw new UsageError(`no such directory: ${cwd}`);
+	const piCli = findPiCli();
+	const pkg = findPiPackage(process.env, piCli);
+	if (!piCli || !pkg) throw new Error("the hub needs pi on your PATH: it runs pi sessions and draws with pi's terminal library");
+	usePiPackage(pkg);
+	const entry = new URL(import.meta.url.endsWith(".ts") ? "../adapters/pi/hub-main.ts" : "../adapters/pi/hub-main.js", import.meta.url);
+	const hub = (await import(entry.href)) as { runHub: (o: { cwd: string; piCli: string }) => Promise<void> };
+	await hub.runHub({ cwd, piCli });
+}
+
 async function main(argv: string[]): Promise<number> {
 	const [cmd, ...rest] = argv;
 	try {
@@ -237,6 +257,9 @@ async function main(argv: string[]): Promise<number> {
 				break;
 			case "respawn":
 				await cmdRespawn(rest);
+				break;
+			case "hub":
+				await cmdHub(rest);
 				break;
 			case "list":
 			case "ls":

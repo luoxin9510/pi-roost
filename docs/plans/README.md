@@ -44,7 +44,8 @@ Claude Code's documented behaviour.
 | M36 | request ids: a resent reply or dispatch is taken once ([protocol](../protocol.md#request-ids-for-the-clients-that-send-replies-and-start-jobs)) | next |
 | M37 | [evals with real models](m37-evals.md) | next |
 | M32 | [folders by layer: `adapters/pi/`, package exports](m32-layers.md) | next |
+| M33 | [the hub on its own: `pi-roost hub`](m33-hub.md) | next |
 
-Next: the rest of [any agent](any-agent.md) (M33), each measured by the stress run and the evals.
+Next: the durable-inspired work from [any agent](any-agent.md) (interrupted runs and a crash-loop limit, scheduled tasks), measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

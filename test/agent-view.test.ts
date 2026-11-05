@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { AgentDef } from "../lib/agents.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { AgentView, type AgentViewOptions } from "../adapters/pi/agent-view.ts";
+import { AgentView, type AgentViewOptions } from "../hub/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import { modelFacts, rowDetailsOf, takesReplies } from "../lib/view-model.ts";

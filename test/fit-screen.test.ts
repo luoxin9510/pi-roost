@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitScreen } from "../adapters/pi/agent-view.ts";
+import { fitScreen } from "../hub/agent-view.ts";
 
 const L = (n: number, p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
 
