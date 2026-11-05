@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Much faster under load, found by a new stress run (`npm run stress`: 50 agents, 1000 replies, a hard-killed daemon and hosts): replies are taken in about 8 ms instead of 240, acknowledged in 25 ms instead of a second, and the hub hears of changes in about 25 ms instead of over a second. The background service no longer runs `ps` for every session on each check, writes reports without waiting on the disk, and syncs what must survive a crash in groups, off its main loop. An agent restarted after a crash no longer redoes a reply it had finished.
+
 - Telemetry: `ROOST_TELEMETRY=file.jsonl` makes the background service and its hosts record spans and metrics (requests, reply latency, reports, state changes, events, host start, attach replay) in the shape of pi's `pi-telemetry` contract, without depending on it. Off by default.
 
 - The roost agent protocol, written down ([docs/protocol.md](docs/protocol.md), draft v1): `hello` with protocol version and capabilities, reports, replies and acks. Clients: TypeScript (`pi-roost/agent`, which pi's worker now uses) and Python (`sdk/python/roost_agent.py`, standard library only). A profile with `"protocol": true` runs an agent that speaks it: its reports set the row, replies reach it as protocol replies.

@@ -16,6 +16,7 @@
     "extensions",
     "spikes",
     "lib",
+    "stress",
     "daemon",
     "host",
     "bin",

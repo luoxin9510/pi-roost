@@ -63,6 +63,7 @@
     "build": "tsc -p tsconfig.build.json && node scripts/fix-dts.mjs",
     "check": "tsc --noEmit",
     "test": "vitest run",
+    "stress": "node stress/run.ts",
     "prepare": "npm run build",
     "install:local": "sh scripts/install-local.sh",
     "prepublishOnly": "npm run check && npm test && npm run build"

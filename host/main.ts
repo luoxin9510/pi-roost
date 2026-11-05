@@ -148,7 +148,8 @@ function screenText(): string {
 
 function flushScreen(): void {
 	try {
-		writeFileAtomic(screenPath(id!), screenText());
+		// replaced every few seconds: atomic, not durable (M35)
+		writeFileAtomic(screenPath(id!), screenText(), 0o600, false);
 		dirty = false;
 	} catch (err) {
 		log("screen write failed", { error: String(err) });
@@ -175,7 +176,7 @@ function flushTerm(): void {
 	if (!termChanged) return;
 	termChanged = false;
 	try {
-		writeJsonAtomic(termPath(id!), signals.signals());
+		writeJsonAtomic(termPath(id!), signals.signals(), false);
 	} catch (err) {
 		log("term write failed", { error: String(err) });
 	}

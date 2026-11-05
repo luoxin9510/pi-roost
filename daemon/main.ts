@@ -5,7 +5,7 @@ import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSy
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
-import { readJson, writeJsonAtomic } from "../lib/atomic.ts";
+import { deferDurability, durable, readJson, writeJsonAtomic } from "../lib/atomic.ts";
 import { hostEntry } from "../lib/client.ts";
 import {
 	type AgentKind,
@@ -27,7 +27,7 @@ import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
 import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, rosterPath, runtimeDir } from "../lib/paths.ts";
-import { isAlive, processStartToken, sameProcess } from "../lib/proc.ts";
+import { isAlive, processStartToken, processStartTokenAsync, sameProcess } from "../lib/proc.ts";
 import { JOB_ENV_NAMES } from "../lib/identity.ts";
 import { telemetryFromEnv } from "../lib/telemetry.ts";
 import {
@@ -87,6 +87,9 @@ class OpError extends Error {
 		this.code = code;
 	}
 }
+
+// M35: durable writes are synced in groups, off the loop; answers wait for them (onLine)
+deferDurability(true);
 
 // M34: spans and metrics where the daemon's time goes (ROOST_TELEMETRY=path; off by default)
 const telemetry = telemetryFromEnv("daemon");
@@ -156,7 +159,12 @@ try {
 interface HostRef {
 	hostPid: number;
 	hostToken: string; // "" until the start token could be read
+	/** M35: when the pid was last checked to still be this host (not persisted). */
+	verifiedAt?: number;
 }
+
+/** M35: a live pid is checked to be its host again (one ps) at most this often. */
+const HOST_VERIFY_MS = 30_000;
 
 const recs = new Map<string, JobRecord>();
 const roster = new Map<string, HostRef>();
@@ -208,7 +216,14 @@ function persistRoster(): void {
 
 function hostGone(ref: HostRef): boolean {
 	if (!isAlive(ref.hostPid)) return true;
-	return ref.hostToken ? !sameProcess(ref.hostPid, ref.hostToken) : false;
+	if (!ref.hostToken) return false;
+	// M35: a ps per job on every check blocked the daemon (50 jobs: 50 ps in a row); a
+	// live pid is its host unless a recheck says otherwise (pid reuse is a rare, slow event)
+	const now = Date.now();
+	if (ref.verifiedAt !== undefined && now - ref.verifiedAt < HOST_VERIFY_MS) return false;
+	const same = sameProcess(ref.hostPid, ref.hostToken);
+	if (same) ref.verifiedAt = now;
+	return !same;
 }
 
 // the worker pid each live row was last pushed with: a command that prints nothing, or a
@@ -902,9 +917,10 @@ async function startHostNow(rec: JobRecord): Promise<void> {
 	roster.set(id, ref);
 	pushChildrenOf(rec.sessionFile); // M13: its children's parent runs again
 	for (let i = 0; i < 25 && !ref.hostToken; i++) {
-		ref.hostToken = processStartToken(hostPid) ?? "";
+		ref.hostToken = (await processStartTokenAsync(hostPid)) ?? "";
 		if (!ref.hostToken) await sleep(20);
 	}
+	if (ref.hostToken) ref.verifiedAt = Date.now();
 	try {
 		updateState(id, { hostPid, hostToken: ref.hostToken });
 	} catch {}
@@ -1275,7 +1291,8 @@ function acknowledge(args: { id?: unknown; token?: unknown; seq?: unknown } | un
 	const exact = (args as { exact?: unknown }).exact === true;
 	const before = pendingReplies(id);
 	const after = before.filter((r) => (exact ? r.seq !== acked : r.seq > acked || isAgentItem(r)));
-	updateState(id, { pendingReplies: after });
+	// not durable: an ack lost in a crash means the reply is sent again, and dropped by seq
+	updateState(id, { pendingReplies: after }, false);
 	if (telemetry.enabled) repliesAcked(id, before.filter((r) => !after.includes(r)).map((r) => r.seq));
 }
 
@@ -1460,7 +1477,7 @@ function rename(args: { id?: unknown; name?: unknown } | undefined): { id: strin
 	recs.set(id, next);
 	// M31: only pi takes /name; another agent's row is named by the daemon alone
 	if (rec.kind === "shell") {
-		updateState(id, { displayName: name });
+		updateState(id, { displayName: name }, true);
 		pushJob(id);
 		log("info", "rename", { id, name });
 		return { id, name };
@@ -1885,6 +1902,8 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 		await waitGone(ids, WAIT_MS);
 	}
 	persistRoster();
+	// M35: the last group of durable writes reaches the disk before the process goes
+	await durable().catch(() => {});
 	releaseDaemonLock();
 	server.close();
 	for (const c of conns) c.sock.destroy();
@@ -2023,6 +2042,8 @@ async function onLine(conn: Conn, line: string): Promise<void> {
 				throw err;
 			}),
 		);
+		// M35: what the answer says was saved is on disk before it is sent
+		await durable();
 		send(conn, { id: reqId, ok: true, result });
 	} catch (err) {
 		const e = err as Partial<OpError> & Error;
