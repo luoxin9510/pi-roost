@@ -62,7 +62,7 @@ export interface ExitRecord {
 }
 
 const jobFile = (id: string) => join(jobDir(id), "job.json");
-const stateFile = (id: string) => join(jobDir(id), "state.json");
+export const stateFile = (id: string) => join(jobDir(id), "state.json");
 export const screenPath = (id: string) => join(jobDir(id), "screen.txt");
 export const exitPath = (id: string) => join(jobDir(id), "exit.json");
 /** M30: a level 0 agent's terminal signals, written by its host. */
@@ -144,11 +144,20 @@ export function withoutFlags(argv: string[], flags: string[], keep = 2): string[
 	return out;
 }
 
-export function updateState(id: string, patch: Partial<JobState>): JobState {
+/**
+ * M35: state the daemon may not lose in a machine crash: what the user said and has not
+ * been taken yet, choices the user made, how a job ends or starts again. A worker's
+ * report (state, summary, usage ...) is not: the next report replaces it, and a write
+ * that skips fsync costs the daemon's loop a fraction of a millisecond, not eight.
+ */
+const DURABLE_KEYS = new Set(["pendingReplies", "replySeq", "pinned", "order", "orderKey", "pendingName", "typeTask", "jobToken", "command", "endedAt", "stopRequested", "supersededBy", "restartedAt", "removeAt"]);
+
+/** `durable` overrides the rule above (an ack is not: a lost one only means a resend). */
+export function updateState(id: string, patch: Partial<JobState>, durable?: boolean): JobState {
 	const cur = readState(id);
 	if (!cur) throw new Error(`no state for job ${id}`);
 	const next: JobState = { ...cur, ...patch, updatedAt: Date.now() };
-	writeJsonAtomic(stateFile(id), next);
+	writeJsonAtomic(stateFile(id), next, durable ?? Object.keys(patch).some((k) => DURABLE_KEYS.has(k)));
 	return next;
 }
 

@@ -34,6 +34,7 @@ _ENV = {
     "id": ("ROOST_JOB_ID", "PI_JOB_ID"),
     "token": ("ROOST_JOB_TOKEN", "PI_JOB_TOKEN"),
     "socket": ("ROOST_SOCKET", "PI_DAEMON_SOCK"),
+    "dir": ("ROOST_JOB_DIR", "PI_JOB_DIR"),
 }
 
 _STATUS = {"working": "busy", "blocked": "waiting", "done": "idle", "failed": "idle"}
@@ -56,7 +57,7 @@ def _env(env, which):
 
 
 class RoostAgent:
-    def __init__(self, job_id, token, sock_path, name, version=None, capabilities=(), on_reply=None):
+    def __init__(self, job_id, token, sock_path, name, version=None, capabilities=(), on_reply=None, job_dir=None):
         self.job_id = job_id
         self._token = token
         self._sock_path = sock_path
@@ -75,6 +76,16 @@ class RoostAgent:
         self._handled = 0  # handed to on_reply
         self._completed = 0  # on_reply returned (acked)
         self._send_lock = threading.Lock()
+        # the last finished seq, kept so a restarted agent does not redo a reply whose ack was lost
+        self._mark = os.path.join(job_dir, "agent.json") if job_dir else None
+        if self._mark:
+            try:
+                with open(self._mark) as f:
+                    done = json.load(f).get("handled")
+                if isinstance(done, int) and done > 0:
+                    self._handled = self._completed = done
+            except (OSError, ValueError, AttributeError):
+                pass
         self._closed = False
         self._wake = threading.Event()
         self._replies: List[Reply] = []
@@ -89,7 +100,7 @@ class RoostAgent:
         job_id, token, sock = _env(env, "id"), _env(env, "token"), _env(env, "socket")
         if not (job_id and token and sock):
             return None
-        return cls(job_id, token, sock, name, version, capabilities, on_reply)
+        return cls(job_id, token, sock, name, version, capabilities, on_reply, _env(env, "dir"))
 
     def report(self, state, **fields):
         """Its state now: working, blocked, done or failed; other fields as in docs/protocol.md."""
@@ -252,4 +263,12 @@ class RoostAgent:
             except Exception:  # an agent's handler failing must not stop the client
                 pass
             self._completed = reply.seq
+            if self._mark:  # kept before the ack (see __init__)
+                try:
+                    tmp = self._mark + ".tmp"
+                    with open(tmp, "w") as f:
+                        json.dump({"handled": reply.seq}, f)
+                    os.replace(tmp, self._mark)
+                except OSError:
+                    pass
             self._ack(reply.seq)

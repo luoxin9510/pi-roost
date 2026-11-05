@@ -591,6 +591,7 @@ replay. Nothing leaves your machine; it is off by default. The shape follows pi'
 git clone https://github.com/luoxin9510/pi-roost && cd pi-roost
 npm install
 npm test
+npm run stress                            # 50 fake agents, 1000 replies, chaos; report in stress/.runs/ · 压力测试
 pi -e ./extensions/index.ts --agents      # try the checkout without installing · 不安装直接试用
 npm run install:local                     # or install the checkout as a local pi package · 或作为本地 pi 包安装
 ```

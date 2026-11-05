@@ -5,7 +5,10 @@
  * seq. pi's worker is built on it; so can any agent written in TypeScript. It imports
  * no agent's packages.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { readJobEnv } from "./identity.ts";
+import { writeJsonAtomic } from "./atomic.ts";
 import { DaemonClient } from "./client.ts";
 import { type ArgsOf, type Event, type HelloArgs, type HelloResult, type Op, PROTOCOL_VERSION, type ResultOf, type WorkerReport } from "./protocol.ts";
 import { sameUsage } from "./usage.ts";
@@ -251,8 +254,18 @@ export class RoostAgent {
 	private queue: Promise<void> = Promise.resolve();
 	private onReply: RoostAgentOptions["onReply"];
 
-	private constructor(job: JobIdentity, o: RoostAgentOptions) {
+	/** M35: where the last finished seq is kept, so a restarted agent does not redo a reply whose ack was lost. */
+	private mark: string | undefined;
+
+	private constructor(job: JobIdentity, o: RoostAgentOptions, dir: string | undefined) {
 		this.onReply = o.onReply;
+		this.mark = dir ? join(dir, "agent.json") : undefined;
+		if (this.mark) {
+			try {
+				const done = (JSON.parse(readFileSync(this.mark, "utf8")) as { handled?: unknown }).handled;
+				if (typeof done === "number" && done > 0) this.handled = this.completed = done;
+			} catch {}
+		}
 		const capabilities = [...new Set(["report", "replies", ...(o.capabilities ?? [])])];
 		this.reporter = new Reporter(job, (item) => this.deliver(item), SUMMARY_INTERVAL_MS, {
 			protocol: PROTOCOL_VERSION,
@@ -262,8 +275,9 @@ export class RoostAgent {
 	}
 
 	static fromEnv(o: RoostAgentOptions): RoostAgent | undefined {
-		const job = jobIdentity(o.env ?? process.env);
-		return job ? new RoostAgent(job, o) : undefined;
+		const env = o.env ?? process.env;
+		const job = jobIdentity(env);
+		return job ? new RoostAgent(job, o, readJobEnv(env, "dir")) : undefined;
 	}
 
 	/** Its state now; sent at once when the state changed, the row text at most every few seconds. */
@@ -313,6 +327,13 @@ export class RoostAgent {
 			})
 			.then(() => {
 				this.completed = reply.seq;
+				// kept before the ack: if the ack is lost with this process, the next one skips it
+				if (this.mark) {
+					try {
+						// a process crash is what it guards against: atomic, no fsync
+						writeJsonAtomic(this.mark, { handled: reply.seq }, false);
+					} catch {}
+				}
 				this.reporter.ack(reply.seq);
 			});
 	}

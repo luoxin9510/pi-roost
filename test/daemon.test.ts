@@ -1057,3 +1057,51 @@ describe("M34 the daemon's telemetry", () => {
 		}
 	}, 40000);
 });
+
+describe("M35 an agent restarted after a lost ack", () => {
+	it("skips the replies it finished before (agent.json), and handles the new one once", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", {
+			cwd: work,
+			sessionFile: "",
+			kind: "shell",
+			profile: "scripted",
+			protocol: true,
+			command: [process.execPath, resolve("test/fixtures/agent-ts.ts")],
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			name: "scripted",
+			origin: "dispatch",
+			term: { submit: "\r", settleMs: 600, typeTask: "first" },
+		});
+		await waitFor(async () => (await find(client, id))?.summary === "did first (#1)", 15000);
+		await client.request("reply", { id, text: "second" });
+		await waitFor(async () => (await find(client, id))?.summary === "did second (#2)", 15000);
+		await waitFor(() => JSON.parse(readFileSync(join(jobDir(id), "agent.json"), "utf8")).handled === 2);
+		await client.request("stop", { id });
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		// as if the ack of "second" had been lost with the process
+		const file = join(jobDir(id), "state.json");
+		const st = JSON.parse(readFileSync(file, "utf8"));
+		writeFileSync(file, JSON.stringify({ ...st, pendingReplies: [{ seq: 2, text: "second" }] }));
+		await client.request("reply", { id, text: "third" });
+		// the new process handled one reply: third (second was finished, only acked again)
+		await waitFor(async () => (await find(client, id))?.summary === "did third (#1)", 15000);
+		await waitFor(() => (readState(id)?.pendingReplies as unknown[]).length === 0);
+		await client.request("stop", { id });
+	}, 40000);
+});
+
+describe("M35 a state file lost in a crash", () => {
+	it("leaves the job listed, failed and startable, after a restart", async () => {
+		const first = await startDaemon();
+		const { id } = await first.client.request("dispatch", args("exit 0"));
+		await waitFor(async () => (await find(first.client, id))?.endedAt);
+		await first.client.request("shutdown", {});
+		await waitFor(() => exited(first.proc));
+		writeFileSync(join(jobDir(id), "state.json"), "");
+		const second = await startDaemon();
+		const row = await find(second.client, id);
+		expect(row).toMatchObject({ state: "failed" });
+		expect(row?.error).toMatch(/lost in a crash/);
+	});
+});

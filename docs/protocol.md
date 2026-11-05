@@ -45,7 +45,9 @@ terminal, as a terminal agent's; after that its reports set the row.
 
 Both find the job in the environment, connect on the first report, say hello on every
 connection, resend the latest report after a reconnect, and hand replies over once each,
-in order, one at a time, acking each after its handler returns. Report first: a
+in order, one at a time, acking each after its handler returns. The last finished seq is
+kept in the job's `agent.json` before its ack, so an agent started again after a crash
+skips what it had finished (and only acks it). Report first: a
 connection, and so a reply, starts with a report. `close()` sends the latest report; a
 reply whose handler is still running when it is called is acked only if it finishes
 first (otherwise it comes again on the next start).
@@ -59,7 +61,7 @@ Set by roost in the agent's environment at start, for the job's whole life:
 | `ROOST_JOB_ID` | `PI_JOB_ID` | the job |
 | `ROOST_JOB_TOKEN` | `PI_JOB_TOKEN` | its secret: every request about the job carries it |
 | `ROOST_SOCKET` | `PI_DAEMON_SOCK` | the daemon's unix socket |
-| `ROOST_JOB_DIR` | `PI_JOB_DIR` | the job's directory (roost's; read-only for the agent) |
+| `ROOST_JOB_DIR` | `PI_JOB_DIR` | the job's directory: roost's, except `agent.json`, where the clients keep the last finished reply |
 
 Read the new name first. The agent's children inherit them, so its subprocesses can
 speak for the job; the token is good for that one job only (its reports and its replies).
