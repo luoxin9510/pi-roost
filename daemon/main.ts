@@ -55,10 +55,14 @@ import {
 	readState,
 	readWorkerPid,
 	removeJob,
+	isProfileJob,
 	respawnCommand,
 	screenPath,
+	termPath,
 	updateState,
 } from "../lib/store.ts";
+import { termFrom } from "../lib/profiles.ts";
+import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.ts";
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
@@ -204,7 +208,7 @@ function rowOf(id: string): JobRow | undefined {
 		agent: rec.agent ?? null,
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch, base: rec.worktree.base } : null,
 		fanout: rec.fanout ?? null,
-		profile: rec.kind === "shell" ? "shell" : "pi",
+		profile: rec.profile ?? (rec.kind === "shell" ? "shell" : "pi"),
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
 }
@@ -478,9 +482,22 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 			patch.state = ex && ex.code === 0 ? "done" : "failed";
 			if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
 		}
-		patch.removeAt = now + SHELL_KEEP_MS;
+		// M30: a level 0 agent's row stays, as an agent's does; a command's goes a while later
+		const rec = recs.get(id);
+		if (!isProfileJob(rec)) patch.removeAt = now + SHELL_KEEP_MS;
+		else {
+			patch.waitingFor = null;
+			patch.question = null;
+			patch.typeTask = null;
+			// a reply waiting to be typed in never reached it: say so, not lose it quietly
+			if (str(st.typeTask)) {
+				const t = st.typeTask.length > 60 ? `${st.typeTask.slice(0, 59)}…` : st.typeTask;
+				patch.error = `${patch.error ?? "it ended"} before this was typed in: ${t}`;
+				if (patch.state === "done") patch.state = "failed";
+			}
+		}
 		// the host flushed its screen on exit: the last output line is the result
-		const line = lastScreenLine(id);
+		const line = isProfileJob(rec) ? (readTermSignals(termPath(id))?.title ?? lastScreenLine(id)) : lastScreenLine(id);
 		if (line) patch.summary = line;
 	} else if (reaped) {
 		// DM-4: an idle worker stopped to save resources; the row stays as it was
@@ -640,6 +657,11 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		throw new OpError("bad_request", "command must be a non-empty array of strings");
 	}
 	const shell = a.kind === "shell";
+	// M30: a level 0 agent is a shell job with a profile: its screen says how it is
+	const profile = shell && str(a.profile) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/.test(a.profile) ? a.profile : undefined;
+	if (a.profile !== undefined && !profile) throw new OpError("bad_request", "profile must be a name, on a shell-kind job");
+	const term = profile ? termFrom(a.term ?? {}) : undefined;
+	const resumeCommand = profile && Array.isArray(a.resumeCommand) && a.resumeCommand.length > 0 && a.resumeCommand.every(str) ? a.resumeCommand : undefined;
 	if (!shell && (!str(a.sessionFile) || !isAbsolute(a.sessionFile))) throw new OpError("bad_request", "sessionFile must be an absolute path");
 	const env: Record<string, string> = {};
 	if (a.env && typeof a.env === "object") {
@@ -648,7 +670,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	// before the lock and roster checks: nothing may await between them and recs.set
 	let worktree: WorktreeInfo | undefined;
 	if (a.worktree !== undefined) {
-		if (shell) throw new OpError("bad_request", "shell jobs run without a worktree");
+		if (shell && !profile) throw new OpError("bad_request", "shell jobs run without a worktree");
 		if (!(await validWorktree(a.worktree))) throw new OpError("bad_request", "worktree is not one pi-roost made");
 		const w = a.worktree as WorktreeInfo;
 		if (!isInside(realPath(a.cwd), realPath(w.path))) throw new OpError("bad_request", "cwd must be inside the worktree");
@@ -682,6 +704,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		sessionFile: shell ? "" : a.sessionFile,
 		command: a.command,
 		...(shell ? { kind: "shell" as const } : {}),
+		...(profile ? { profile, term: { ...term!, typeTask: undefined }, ...(resumeCommand ? { resumeCommand } : {}) } : {}),
 		env,
 		...(str(a.model) ? { model: a.model } : {}),
 		...(str(a.thinking) ? { thinking: a.thinking } : {}),
@@ -697,7 +720,15 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		...(worktree ? { worktree } : {}),
 		...extra,
 	};
-	createJob(rec, { state: "working", startedAt: now, updatedAt: now, jobToken: newToken(), ...(shell ? { status: "busy" } : {}) });
+	createJob(rec, {
+		state: "working",
+		startedAt: now,
+		updatedAt: now,
+		jobToken: newToken(),
+		...(shell ? { status: "busy" } : {}),
+		// M30: a task given in argv counts as typed; one typed in waits for the first quiet
+		...(profile ? { termInputAt: now, termTyped: a.taskInArgv === true, ...(term!.typeTask ? { typeTask: term!.typeTask } : {}) } : {}),
+	});
 	recs.set(id, rec);
 	try {
 		await startHost(rec);
@@ -816,6 +847,8 @@ async function respawn(
 	respawning.add(id);
 	try {
 		const shell = rec.kind === "shell";
+		// M30: a level 0 agent takes its prompt typed in, once it is up and quiet
+		const typeTask = isProfileJob(rec) && opts.prompt ? opts.prompt : undefined;
 		let prompt = shell ? undefined : opts.prompt;
 		if (roster.has(id)) {
 			// a running command is never killed to be run again (respawn --all after an upgrade)
@@ -843,7 +876,9 @@ async function respawn(
 		const written = !shell && existsSync(rec.sessionFile);
 		// M8: the model and thinking level it last reported running win over the dispatch's;
 		// before any report, the ones it was dispatched with (a hand-off's live values)
-		const command = respawnCommand(rec, written, prompt, { model: st?.model ?? rec.model, thinking: st?.thinking ?? rec.thinking });
+		const command = isProfileJob(rec)
+			? (rec.resumeCommand ?? rec.command)
+			: respawnCommand(rec, written, prompt, { model: st?.model ?? rec.model, thinking: st?.thinking ?? rec.thinking });
 		const now = Date.now();
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
 		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
@@ -871,6 +906,7 @@ async function respawn(
 			command,
 			restore,
 			crashRestarts: opts.crash ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + 1 : 0,
+			...(isProfileJob(rec) ? { typeTask: typeTask ?? null, termInputAt: now, termTyped: typeTask ? false : st?.termTyped === true } : {}),
 		});
 		await startHost(rec);
 		if (!shell) supersedeOthers(id);
@@ -909,6 +945,10 @@ function shellTick(): void {
 			shellPids.delete(id);
 			continue;
 		}
+		if (isProfileJob(rec)) {
+			profileTick(id, rec, st, now);
+			continue;
+		}
 		const line = lastScreenLine(id);
 		const pid = readWorkerPid(id) ?? null;
 		const changed = Boolean(line && line !== st.summary);
@@ -917,6 +957,72 @@ function shellTick(): void {
 			shellPids.set(id, pid);
 			pushJob(id);
 		}
+	}
+}
+
+/** M30: replies typed into a level 0 agent at once (several could interleave in its input). */
+const typing = new Set<string>();
+
+/**
+ * M30: a level 0 agent's row, from its host's term.json and its screen (inferTermState);
+ * a task waiting to be typed goes in once it is quiet at a prompt.
+ */
+function profileTick(id: string, rec: JobRecord, st: JobState, now: number): void {
+	const term = termFrom(rec.term);
+	if (!term) return;
+	let screen = "";
+	try {
+		screen = readFileSync(screenPath(id), "utf8");
+	} catch {}
+	const inputAt = typeof st.termInputAt === "number" ? st.termInputAt : st.startedAt;
+	const typed = st.termTyped === true;
+	const v = inferTermState(readTermSignals(termPath(id)), screen, term, { now, inputAt, typed });
+	const pid = readWorkerPid(id) ?? null;
+	// quiet at its prompt (a notification asks for input too); never into a dialog
+	if (str(st.typeTask) && v.quiet && v.state !== "working" && v.waitingFor !== "dialog" && !typing.has(id)) {
+		void typeInto(id, st.typeTask, term.submit).then((ok) => {
+			if (ok) updateState(id, { typeTask: null });
+		});
+		return;
+	}
+	const patch: Partial<JobState> = {};
+	if (st.state !== v.state) {
+		patch.state = v.state;
+		patch.stateSince = now;
+	}
+	if (st.status !== v.status) patch.status = v.status;
+	if ((st.waitingFor ?? null) !== v.waitingFor) patch.waitingFor = v.waitingFor;
+	if ((st.question ?? null) !== v.question) patch.question = v.question;
+	if (v.summary && st.summary !== v.summary) patch.summary = v.summary;
+	const moved = Object.keys(patch).length > 0;
+	if (moved) updateState(id, patch);
+	if (moved || shellPids.get(id) !== pid) {
+		shellPids.set(id, pid);
+		pushJob(id);
+	}
+}
+
+/**
+ * M30: text typed into a level 0 agent, then its submit key. Some agents take a burst of
+ * input as a paste and keep a newline in it, so the submit goes a moment after.
+ */
+async function typeInto(id: string, text: string, submit: string): Promise<boolean> {
+	if (typing.has(id)) return false;
+	typing.add(id);
+	try {
+		const a = (await hostControl(id, "input", 3000, { data: text })) as { ok?: boolean } | undefined;
+		if (a?.ok !== true) return false;
+		await new Promise((r) => setTimeout(r, 150));
+		await hostControl(id, "input", 3000, { data: submit });
+		const now = Date.now();
+		updateState(id, { termInputAt: now, termTyped: true, state: "working", status: "busy", waitingFor: null, question: null, stateSince: now });
+		pushJob(id);
+		return true;
+	} catch (err) {
+		log("warn", "typing into agent failed", { id, error: String(err) });
+		return false;
+	} finally {
+		typing.delete(id);
 	}
 }
 
@@ -1079,6 +1185,7 @@ async function reply(
 		return { delivered: live, saved: false, stopped: live };
 	}
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
+	if (isProfileJob(recs.get(id))) return replyToProfile(id, text, live);
 	if (recs.get(id)?.kind === "shell") throw new OpError("unsupported", "a shell job takes no replies; attach to type into it");
 	const conn = workerConns.get(id);
 	const connected = live && !!conn && !conn.sock.destroyed;
@@ -1107,6 +1214,29 @@ async function reply(
 	} catch (err) {
 		log("warn", "respawn for reply failed", { id, error: String(err) });
 		return { delivered: false, saved: true, error: (err as Error).message };
+	}
+}
+
+/**
+ * M30: a reply to a level 0 agent is typed into its terminal (steer or follow-up does not
+ * apply: it goes where its input is). An ended one starts again, by its resume argv when
+ * the profile has one, and the reply is typed in once it is quiet.
+ */
+async function replyToProfile(id: string, text: string, live: boolean): Promise<{ delivered: boolean; saved: boolean; respawned?: boolean; error?: string }> {
+	const term = termFrom(recs.get(id)?.term);
+	if (!term) throw new OpError("unsupported", "this agent takes no replies; attach to type into it");
+	if (live) {
+		if (typing.has(id)) throw new OpError("busy", "still typing the last reply");
+		const ok = await typeInto(id, text, term.submit);
+		if (!ok) throw new OpError("unsupported", "could not type into the agent; attach to type into it");
+		return { delivered: true, saved: false };
+	}
+	try {
+		const { started } = await respawn(id, { prompt: text });
+		return { delivered: false, saved: true, respawned: started || starting.has(id) || roster.has(id) };
+	} catch (err) {
+		log("warn", "respawn for reply failed", { id, error: String(err) });
+		return { delivered: false, saved: false, error: (err as Error).message };
 	}
 }
 

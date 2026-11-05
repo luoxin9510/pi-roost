@@ -1,7 +1,7 @@
 import { discoverAgents } from "../lib/agents.ts";
 import { type ExtensionContext, type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset } from "../lib/config.ts";
-import { buildLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
+import { buildLaunch, buildProfileLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
 import { readWriterLock } from "../lib/locks.ts";
 import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
@@ -81,6 +81,28 @@ export async function openAgentView(ctx: ExtensionContext, opts: OpenViewOptions
 						model: o.model ?? (o.origin === "adopt" || o.agent?.model ? undefined : config.dispatchModel),
 						thinking: o.thinking ?? (o.origin === "adopt" || o.agent?.thinking ? undefined : config.dispatchThinking),
 						...(o.agent ? { agent: o.agent } : {}),
+					});
+					return { ...launch, ...(iso.worktree ? { worktree: iso.worktree, discard: iso.discard } : {}), ...(iso.note ? { note: iso.note } : {}) };
+				},
+				// M30: read again each time (an edited roost.json counts at once)
+				profiles: () => Object.keys(loadConfig(dispatchCwd).agentProfiles ?? {}),
+				launchProfile: (profile, task, o) => {
+					const conf = loadConfig(dispatchCwd);
+					const def = conf.agentProfiles?.[profile];
+					if (!def) throw new Error(`no agent profile ${profile} in your roost.json`);
+					const name = fallbackName(task);
+					const want = o.worktree ?? isolationDefault(conf.worktreeIsolation, false);
+					const iso = prepareIsolation(o.cwd, name, want, o.worktree === true);
+					const launch = buildProfileLaunch({
+						name,
+						profile,
+						def,
+						task,
+						cwd: iso.cwd,
+						env: process.env,
+						...envPolicy(conf),
+						...(o.model ? { model: o.model } : {}),
+						...(o.thinking ? { thinking: o.thinking } : {}),
 					});
 					return { ...launch, ...(iso.worktree ? { worktree: iso.worktree, discard: iso.discard } : {}), ...(iso.note ? { note: iso.note } : {}) };
 				},

@@ -1,5 +1,6 @@
 import type { PrInfo } from "./pr.ts";
 import type { UsageInfo } from "./usage.ts";
+import type { ProfileTerm } from "./profiles.ts";
 import { StringDecoder } from "node:string_decoder";
 
 export type JobStateName = "working" | "blocked" | "done" | "failed" | "stopped";
@@ -63,7 +64,7 @@ export interface JobRow {
 	worktree?: { path: string; branch: string; base?: string } | null;
 	/** M26: the sessions started together for one task with several models share this id. */
 	fanout?: string | null;
-	/** M29: the agent that runs it: "pi" and "shell" today, other agents' profiles later. */
+	/** M29: the agent that runs it: "pi", "shell", or (M30) the name of the user's agent profile. */
 	profile?: string;
 }
 
@@ -151,6 +152,14 @@ export interface DispatchArgs {
 	worktree?: { path: string; branch: string; repo: string; base: string };
 	/** M26: one task, several models: the id the sessions share. */
 	fanout?: string;
+	/** M30: a level 0 agent from this profile (kind "shell"). */
+	profile?: string;
+	/** M30: how its screen is read and how replies are typed into it. */
+	term?: ProfileTerm;
+	/** M30: the argv that reopens it, when the profile has one. */
+	resumeCommand?: string[];
+	/** M30: the first task is in its argv (it has been given something to do). */
+	taskInArgv?: boolean;
 }
 
 export interface DaemonStatus {

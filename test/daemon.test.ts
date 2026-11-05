@@ -868,3 +868,76 @@ describe("M22: one row per session", () => {
 		await waitFor(() => events.some((e) => e.event === "job" && e.job.id === id && e.job.pid !== null), 6000);
 	});
 });
+
+describe("M30 level 0 agents (profiles)", () => {
+	const FAKE = resolve("test/fixtures/fake-agent.mjs");
+	const agent = (over: Record<string, unknown> = {}) => ({
+		cwd: work,
+		sessionFile: "",
+		kind: "shell" as const,
+		profile: "fake",
+		command: [process.execPath, FAKE, "first"],
+		taskInArgv: true,
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		name: "fake",
+		origin: "dispatch" as const,
+		term: { submit: "\r", settleMs: 600, waiting: "proceed\\? \\(y/n\\)" },
+		...over,
+	});
+	const screen = (id: string) => {
+		try {
+			return readFileSync(join(jobDir(id), "screen.txt"), "utf8");
+		} catch {
+			return "";
+		}
+	};
+	const until = (client: DaemonClient, id: string, pred: (r: JobRow) => boolean, timeout = 12000) =>
+		waitFor(async () => {
+			const r = await find(client, id);
+			return r && pred(r) ? r : undefined;
+		}, timeout);
+
+	it("reads its state from the terminal, types replies in, asks with the profile's regex, and stays after it exits", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", agent());
+		expect(await find(client, id)).toMatchObject({ kind: "shell", profile: "fake", state: "working" });
+		// done with its task, it notified: it wants you, with the notification as the question
+		const asked = await until(client, id, (r) => r.state === "blocked");
+		expect(asked).toMatchObject({ waitingFor: "question", question: "finished first", status: "waiting" });
+		await waitFor(() => screen(id).includes("answer: first"));
+		// a reply is typed in and submitted
+		expect(await client.request("reply", { id, text: "second" })).toMatchObject({ delivered: true });
+		await until(client, id, (r) => r.question === "finished second");
+		await waitFor(() => screen(id).includes("answer: second"));
+		// the profile's waiting regex: a dialog, with the line as the question
+		await client.request("reply", { id, text: "ask" });
+		expect(await until(client, id, (r) => r.waitingFor === "dialog")).toMatchObject({ question: "Do you want to proceed? (y/n)" });
+		await client.request("reply", { id, text: "y" });
+		await waitFor(() => screen(id).includes("you said y"));
+		// it exits: the row stays (a command's would go), done
+		process.env.PI_ROOST_SHELL_KEEP_MS = "300";
+		await client.request("reply", { id, text: "quit" });
+		const ended = await until(client, id, (r) => r.endedAt !== null);
+		expect(ended).toMatchObject({ state: "done", waitingFor: null, question: null, summary: "fake agent" });
+		expect(readState(id)?.removeAt).toBeUndefined();
+		// a reply to it once ended starts it again and types the reply in when it is quiet
+		const again = await client.request("reply", { id, text: "back again" });
+		expect(again).toMatchObject({ respawned: true });
+		await waitFor(() => screen(id).includes("answer: back again"), 15000);
+		await client.request("stop", { id });
+	}, 40000);
+
+	it("types a first task in once it is quiet, and a profile job may have a worktree check (no session, no lock)", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", agent({ command: [process.execPath, FAKE], taskInArgv: undefined, term: { submit: "\r", settleMs: 600, typeTask: "typed task" } }));
+		await waitFor(() => screen(id).includes("answer: typed task"), 15000);
+		expect(readState(id)?.typeTask ?? null).toBeNull();
+		await client.request("stop", { id });
+	}, 30000);
+
+	it("checks what it is given", async () => {
+		const { client } = await startDaemon();
+		await expect(client.request("dispatch", { ...agent(), kind: undefined, sessionFile: join(work, "x.jsonl") })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(client.request("dispatch", agent({ profile: "../x" }))).rejects.toMatchObject({ code: "bad_request" });
+	});
+});

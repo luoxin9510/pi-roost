@@ -5,6 +5,8 @@ import { SESSION_RESTORED_FLAGS, taskArg, withoutFlags } from "./store.ts";
 import { type AgentDef, agentArgs } from "./agents.ts";
 import { envKept, type WorkspaceEnvMode } from "./workspace-env.ts";
 import { createWorktree, discardWorktree, type WorktreeInfo, WorktreeError } from "./worktree.ts";
+import { type AgentProfile, profileCommand, profileResume, profileTerm } from "./profiles.ts";
+import type { DispatchArgs } from "./protocol.ts";
 
 const VALUE_FLAGS = new Set(["-e", "--extension", "--model", "--provider", "--thinking", "--session-dir"]);
 const BOOL_FLAGS = new Set(["-ne", "--no-extensions", "--offline"]);
@@ -205,4 +207,46 @@ export function prepareIsolation(cwd: string, name: string, want: boolean, expli
 /** M10: whether a new session gets a worktree by default. */
 export function isolationDefault(setting: "off" | "children" | "all", child: boolean): boolean {
 	return setting === "all" || (setting === "children" && child);
+}
+
+export interface ProfileLaunchInput extends EnvPolicy {
+	name: string;
+	profile: string;
+	def: AgentProfile;
+	task?: string;
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+	model?: string;
+	thinking?: string;
+	origin?: DispatchArgs["origin"];
+}
+
+/**
+ * M30: a level 0 agent's launch: the profile's argv with the task, model and thinking in
+ * it, the environment as any job's plus the profile's own (through the same deny list).
+ */
+export function buildProfileLaunch(i: ProfileLaunchInput): DispatchArgs {
+	const values = { ...(i.task ? { task: i.task } : {}), ...(i.model ? { model: i.model } : {}), ...(i.thinking ? { thinking: i.thinking } : {}) };
+	const env = workerEnv(i.env, i);
+	const forced = new Set(i.extraEnv ?? []);
+	for (const [k, v] of Object.entries(i.def.env ?? {})) if (envKept(k, forced.has(k) ? [] : i.envDenyList)) env[k] = v;
+	const resume = profileResume(i.def, values);
+	const taskInArgv = i.def.task === "argv" && !!i.task;
+	return {
+		kind: "shell",
+		profile: i.profile,
+		cwd: i.cwd,
+		sessionFile: "",
+		command: profileCommand(i.def, values),
+		env,
+		name: i.name,
+		...(i.model && i.def.model ? { model: i.model } : {}),
+		...(i.thinking && i.def.thinking ? { thinking: i.thinking } : {}),
+		...(i.workspaceEnv && i.inheritEnv !== false && i.workspaceEnv !== "off" ? { workspaceEnv: i.workspaceEnv } : {}),
+		...(i.envDenyList?.length ? { envDeny: i.envDenyList, ...(i.extraEnv?.length ? { envForce: i.extraEnv } : {}) } : {}),
+		origin: i.origin ?? "dispatch",
+		term: profileTerm(i.def, i.task),
+		...(resume ? { resumeCommand: resume } : {}),
+		...(taskInArgv ? { taskInArgv } : {}),
+	};
 }
