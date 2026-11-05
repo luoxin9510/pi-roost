@@ -1847,6 +1847,16 @@ describe("AgentView agent profiles (M30)", () => {
 });
 
 describe("M48: the peek, deeper", () => {
+	/** The screen once it says `text` (an overlay or a notice comes after an await), within a second. */
+	const screenWith = async (view: AgentView, text: string, width = 120): Promise<string> => {
+		let screen = "";
+		for (let i = 0; i < 200; i++) {
+			screen = view.render(width).join("\n");
+			if (screen.includes(text)) return screen;
+			await sleep(5);
+		}
+		return screen;
+	};
 	const entry = (id: string, parentId: string | null, message: unknown) => `${JSON.stringify({ type: "message", id, parentId, message })}\n`;
 	/** A pi session file with a prompt, a reply with a tool call, its result and a last reply. */
 	function sessionFile(dir: string): string {
@@ -1919,32 +1929,31 @@ describe("M48: the peek, deeper", () => {
 		const { view, client } = setup([r1, row({ id: "p2", name: "other" })]);
 		await view.start();
 		view.handleInput(" ");
-		const send = async (text: string) => {
+		const send = async (text: string, says: string) => {
 			view.handleInput("\x03"); // a refused command stays in the box to fix: cleared here
 			type(view, text);
 			view.handleInput("\r");
-			await sleep(20);
-			return view.render(120).join("\n");
+			return screenWith(view, says);
 		};
 		const ops = (op: string) => client.requests.filter((r) => r.op === op).map((r) => r.args);
-		expect(await send("/stop")).toContain("stopping · tests");
+		expect(await send("/stop", "stopping · tests")).toContain("stopping · tests");
 		expect(ops("stop")).toEqual([{ id: "p1" }]);
-		expect(await send("/respawn")).toContain("starting tests again");
+		expect(await send("/respawn", "starting tests again")).toContain("starting tests again");
 		expect(ops("respawn")).toEqual([{ id: "p1" }]);
-		expect(await send("/rename api-two")).toContain("renamed · api-two");
+		expect(await send("/rename api-two", "renamed · api-two")).toContain("renamed · api-two");
 		expect(ops("rename")).toEqual([{ id: "p1", name: "api-two" }]);
-		await send("/pin");
+		await send("/pin", "pinned · tests");
 		expect(ops("pin")).toEqual([{ id: "p1", pinned: true }]);
-		expect(await send("/continue")).toContain("sent · tests");
+		expect(await send("/continue", "sent · tests")).toContain("sent · tests");
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "Continue where you left off.", mode: "followUp" });
-		expect(await send("/compact")).toContain("/compact · tests");
+		expect(await send("/compact", "/compact · tests")).toContain("/compact · tests");
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/compact" });
-		expect(await send("/name zed")).toContain("/name · tests");
+		expect(await send("/name zed", "/name · tests")).toContain("/name · tests");
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/name zed" });
 		// not the peek's: the session's (a prompt template, a skill), sent as a reply
-		expect(await send("/review now")).toContain("sent · tests");
+		expect(await send("/review now", "sent · tests")).toContain("sent · tests");
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/review now", mode: "steer" });
-		expect(await send("!ls")).toContain("shell commands are not sent to a session");
+		expect(await send("!ls", "shell commands are not sent to a session")).toContain("shell commands are not sent to a session");
 		expect(ops("reply")).toHaveLength(4);
 		// several lines: Ctrl+J adds one; Enter sends them together
 		view.handleInput("\x03");
@@ -1955,9 +1964,9 @@ describe("M48: the peek, deeper", () => {
 		await sleep(20);
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "line one\nline two", mode: "steer" });
 		// /rm: twice within 2 s; the peek closes with the row
-		expect(await send("/rm")).toContain("/rm again within 2 s to delete tests");
+		expect(await send("/rm", "/rm again within 2 s to delete tests")).toContain("/rm again within 2 s to delete tests");
 		expect(ops("rm")).toEqual([]);
-		expect(await send("/rm")).toContain("deleted · tests");
+		expect(await send("/rm", "deleted · tests")).toContain("deleted · tests");
 		expect(ops("rm")).toEqual([{ id: "p1" }]);
 		expect(view.render(120).join("\n")).not.toContain("/ commands · Esc close");
 	});
@@ -1976,15 +1985,13 @@ describe("M48: the peek, deeper", () => {
 			view.handleInput(" ");
 			type(view, "/log");
 			view.handleInput("\r");
-			await sleep(20);
-			let screen = view.render(120).join("\n");
+			let screen = await screenWith(view, "Log · tests (newest first)");
 			expect(screen).toContain("Log · tests (newest first)");
 			expect(screen).not.toContain("all green");
 			view.handleInput("\x1b");
 			type(view, "/transcript");
 			view.handleInput("\r");
-			await sleep(20);
-			screen = view.render(120).join("\n");
+			screen = await screenWith(view, "Transcript · tests");
 			expect(screen).toContain("Transcript · tests");
 			expect(screen).toContain("› Now the tests.");
 			expect(screen).toContain("→ export const x = 1");
@@ -1996,7 +2003,7 @@ describe("M48: the peek, deeper", () => {
 			for (let i = 0; i < 100 && !reply.autocompleteOpen(); i++) await sleep(5);
 			expect(reply.autocompleteOpen()).toBe(true);
 			view.handleInput("\t");
-			await sleep(30);
+			for (let i = 0; i < 100 && reply.getValue().trim() !== "/transcript"; i++) await sleep(5);
 			expect(reply.getValue().trim()).toBe("/transcript");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -2022,8 +2029,7 @@ describe("M48: the peek, deeper", () => {
 			type(view, "/transcript");
 			expect(await open()).toBe(true);
 			view.handleInput("\r");
-			await sleep(30);
-			expect(view.render(120).join("\n")).toContain("Transcript · tests");
+			expect(await screenWith(view, "Transcript · tests")).toContain("Transcript · tests");
 			expect(reply.getValue()).toBe("");
 			view.handleInput("\x1b");
 			// the menu closed with Esc, Tab opens it again for the prefix (pi's forced completion)
@@ -2044,8 +2050,7 @@ describe("M48: the peek, deeper", () => {
 			for (let i = 0; i < 100 && !input.autocompleteOpen(); i++) await sleep(5);
 			expect(input.autocompleteOpen()).toBe(true);
 			view.handleInput("\r");
-			await sleep(30);
-			expect(view.render(120).join("\n")).toContain("Log · what happened lately");
+			expect(await screenWith(view, "Log · what happened lately")).toContain("Log · what happened lately");
 			expect(client.requests.filter((r) => r.op === "dispatch")).toHaveLength(0);
 			view.handleInput("\x1b");
 			// wide, then narrow: the tail and the task are cut to the width each time
@@ -2055,7 +2060,7 @@ describe("M48: the peek, deeper", () => {
 			type(view, "/transcript");
 			expect(await open()).toBe(true);
 			view.handleInput("\r");
-			await sleep(30);
+			await screenWith(view, "Transcript · tests");
 			expect(view.render(120).some((l) => visibleWidth(l) > 100)).toBe(true);
 			for (const l of view.render(60)) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
 		} finally {
