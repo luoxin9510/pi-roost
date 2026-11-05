@@ -1105,3 +1105,20 @@ describe("M35 a state file lost in a crash", () => {
 		expect(row?.error).toMatch(/lost in a crash/);
 	});
 });
+
+describe("M36 request ids", () => {
+	it("a reply or a dispatch sent again with the same id is taken once", async () => {
+		const { client } = await startDaemon();
+		const a = { ...args("sleep 30"), requestId: "d-1" };
+		const { id } = await client.request("dispatch", a);
+		expect((await client.request("dispatch", a)).id).toBe(id);
+		expect([...(await client.request("list", {})).jobs].filter((j) => j.id === id)).toHaveLength(1);
+		const first = await client.request("reply", { id, text: "hello", requestId: "r-1" });
+		expect(first.duplicate).toBeUndefined();
+		expect(await client.request("reply", { id, text: "hello", requestId: "r-1" })).toMatchObject({ duplicate: true, saved: true });
+		const pending = readState(id)?.pendingReplies as { text: string }[];
+		expect(pending.filter((p) => p.text === "hello")).toHaveLength(1);
+		await expect(client.request("reply", { id, text: "x", requestId: "bad id!" })).rejects.toMatchObject({ code: "bad_request" });
+		await client.request("stop", { id });
+	});
+});

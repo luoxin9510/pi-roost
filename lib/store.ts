@@ -34,6 +34,8 @@ export interface JobRecord {
 	resumeCommand?: string[];
 	/** M31: its agent speaks the roost agent protocol (identity, reports, protocol replies). */
 	agentProtocol?: boolean;
+	/** M36: the request id it was dispatched with (a resend finds this job). */
+	requestId?: string;
 	createdAt: number; // ms epoch
 	piVersion?: string;
 	roostVersion: string;
@@ -150,7 +152,7 @@ export function withoutFlags(argv: string[], flags: string[], keep = 2): string[
  * report (state, summary, usage ...) is not: the next report replaces it, and a write
  * that skips fsync costs the daemon's loop a fraction of a millisecond, not eight.
  */
-const DURABLE_KEYS = new Set(["pendingReplies", "replySeq", "pinned", "order", "orderKey", "pendingName", "typeTask", "jobToken", "command", "endedAt", "stopRequested", "supersededBy", "restartedAt", "removeAt"]);
+const DURABLE_KEYS = new Set(["requestIds", "pendingReplies", "replySeq", "pinned", "order", "orderKey", "pendingName", "typeTask", "jobToken", "command", "endedAt", "stopRequested", "supersededBy", "restartedAt", "removeAt"]);
 
 /** `durable` overrides the rule above (an ack is not: a lost one only means a resend). */
 export function updateState(id: string, patch: Partial<JobState>, durable?: boolean): JobState {

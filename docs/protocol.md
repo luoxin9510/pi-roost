@@ -162,6 +162,16 @@ seconds. The connection a report goes through becomes the job's: replies come on
   `/` is refused while the agent is not connected (it is a command, meaningful live only).
 - A rename in the hub changes the row only; `/name` replies are pi's.
 
+### Request ids (for the clients that send replies and start jobs)
+
+`reply` and `dispatch` (the hub's, the CLI's and any controller's ops, not an agent's) take
+an optional `requestId` (1–64 of `A-Z a-z 0-9 _ . : -`). Sent again with the same id,
+because the answer was lost (the daemon restarted, the connection dropped), the request
+is taken once: a reply answers `{"duplicate": true, "saved": true}` and is not queued
+again; a dispatch answers with the job the first one made. A job remembers its last 200
+reply ids, kept in the same write as the reply itself. Use a new id for each new request
+and the same id for each resend of it.
+
 ### Others
 
 `handback`, `peers`, `send`, `spawn` (the agent-to-agent ops pi's tools use) are on the

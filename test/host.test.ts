@@ -215,7 +215,8 @@ describe("host", () => {
 
 	it("survives garbage from a client", async () => {
 		const { id, child } = await startHost("sleep 0.5; echo ready; sleep 30");
-		const sock = await connectHost(id, { role: "control" });
+		// under load the host may not listen yet: connect when it does
+		const sock = await waitFor(() => connectHost(id, { role: "control" }).catch(() => undefined));
 		socks.push(sock);
 		sock.write(Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3]));
 		await waitFor(() => sock.destroyed);

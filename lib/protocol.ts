@@ -164,6 +164,8 @@ export interface DispatchArgs {
 	taskInArgv?: boolean;
 	/** M31: a profile's agent that speaks the roost agent protocol. */
 	protocol?: boolean;
+	/** M36: a resend with the same id returns the job the first one made. */
+	requestId?: string;
 }
 
 export interface DaemonStatus {
@@ -212,7 +214,8 @@ export interface OpArgs {
 	subscribe: {};
 	report: { id: string; token: string; report: WorkerReport };
 	/** M28: a reply to a working session steers into its current work (pi's Enter) or waits for it to finish (Alt+Enter); absent: waits. */
-	reply: { id: string; text: string; mode?: ReplyMode };
+	/** M36: `requestId` makes a resend safe: the same id is taken once (the first answer is given again). */
+	reply: { id: string; text: string; mode?: ReplyMode; requestId?: string };
 	/** Worker → daemon: the reply with this seq was handed to pi (exact: only that agent item). */
 	ack: { id: string; token: string; seq: number; exact?: boolean };
 	/** Start an ended job again from its session file; `restart` also restarts a live one. */
@@ -247,7 +250,7 @@ export interface OpResults {
 	subscribe: {};
 	report: {};
 	/** delivered: handed to the live worker; saved: kept for its next start (PK-5). */
-	reply: { delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string };
+	reply: { delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string; duplicate?: boolean };
 	ack: {};
 	respawn: { results: { id: string; started: boolean; error?: string }[] };
 	pin: { id: string; pinned: boolean };
