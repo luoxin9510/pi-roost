@@ -45,9 +45,7 @@ that is still meant to go on) and says so ("worker killed by SIGKILL; continuing
 Exits read as crashes now: a non-zero code or a signal (`killed by SIGKILL`); for
 commands and terminal agents too.
 
-pi jobs only. Terminal agents (level 0) and protocol agents are started as commands; a
-restart of theirs would type or send a prompt into an agent roost knows less about, so
-they keep failing as before (a later step).
+pi jobs here; protocol agents and terminal agents with `resume` since [M40](m40-agents-resume.md).
 
 ## Checked
 

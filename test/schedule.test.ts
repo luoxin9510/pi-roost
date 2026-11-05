@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkTemplate, nextCron, nextRun, parseCron, parseScheduleInput, parseWhen, RUN_SLOT, runLaunch, runSlot, untilText } from "../lib/schedule.ts";
+import { checkTemplate, nextCron, nextRun, parseCron, parseScheduleInput, parseWhen, RUN_SLOT, runLaunch, runSlot, templateAgent, untilText } from "../lib/schedule.ts";
 
 const at = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();
 const show = (t: number | null) => {
@@ -70,7 +70,7 @@ describe("M39: schedules", () => {
 		expect(t.sessionFile).toContain(RUN_SLOT);
 		expect(() => checkTemplate(t)).not.toThrow();
 		expect(() => checkTemplate({ ...t, sessionFile: "/s/a.jsonl" })).toThrow(/sessionFile/);
-		expect(() => checkTemplate({ ...t, kind: "shell" })).toThrow(/pi session/);
+		expect(() => checkTemplate({ ...t, kind: "shell" })).toThrow(/no sessionFile/);
 		expect(() => checkTemplate({ ...t, cwd: "rel" })).toThrow(/cwd/);
 	});
 
@@ -125,5 +125,16 @@ describe("M39: schedules", () => {
 		const r = runLaunch(t, "SLOT");
 		expect(r.command).toEqual(["pi", "--session", "/s/SLOT.jsonl", "--", `explain ${RUN_SLOT}`]);
 		expect(() => checkTemplate({ ...t, command: ["pi", "--", "x"] })).toThrow(/name its sessionFile/);
+	});
+
+	it("M40: a command or a terminal agent is a template too, run as it is each time", () => {
+		const cmd = { kind: "shell" as const, cwd: "/w", sessionFile: "", command: ["sh", "-lc", "make"], env: {}, name: "n", origin: "dispatch" as const };
+		expect(() => checkTemplate(cmd)).not.toThrow();
+		expect(runLaunch(cmd, "SLOT")).toEqual(cmd);
+		expect(templateAgent(cmd)).toBe("shell");
+		expect(templateAgent({ ...cmd, profile: "claude" })).toBe("claude");
+		expect(templateAgent({ ...cmd, kind: undefined, sessionFile: `/s/${RUN_SLOT}.jsonl` })).toBe("pi");
+		expect(() => checkTemplate({ ...cmd, sessionFile: "/s/x.jsonl" })).toThrow(/no sessionFile/);
+		expect(() => checkTemplate({ ...cmd, worktree: { path: "/x", branch: "b", repo: "/r", base: "m" } })).toThrow(/worktree/);
 	});
 });

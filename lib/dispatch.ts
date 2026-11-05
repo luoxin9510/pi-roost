@@ -232,7 +232,8 @@ export function buildProfileLaunch(i: ProfileLaunchInput): DispatchArgs {
 	for (const [k, v] of Object.entries(i.def.env ?? {})) if (envKept(k, forced.has(k) ? [] : i.envDenyList)) env[k] = v;
 	// starting again never repeats the first task: its resume argv, else its command without it
 	const { task: _task, ...again } = values;
-	const resume = profileResume(i.def, again) ?? profileCommand(i.def, again);
+	const resumes = profileResume(i.def, again);
+	const resume = resumes ?? profileCommand(i.def, again);
 	const taskInArgv = i.def.task === "argv" && !!i.task;
 	return {
 		kind: "shell",
@@ -249,6 +250,8 @@ export function buildProfileLaunch(i: ProfileLaunchInput): DispatchArgs {
 		origin: i.origin ?? "dispatch",
 		term: profileTerm(i.def, i.task),
 		...(resume.length > 0 ? { resumeCommand: resume } : {}),
+		// M40: it can take its last session up again: a run cut short is restarted by itself
+		...(resumes ? { resumable: true } : {}),
 		...(taskInArgv ? { taskInArgv } : {}),
 		...(i.def.protocol ? { protocol: true } : {}),
 	};

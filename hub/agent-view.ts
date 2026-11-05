@@ -1026,11 +1026,25 @@ export class AgentView implements Component {
 			}
 			const p = parseScheduleInput(arg);
 			if ("error" in p) return this.say(p.error, "warning");
-			if (this.profile) return this.say("schedules run pi sessions (/profile pi first)", "warning");
-			if (!this.o.scheduleLaunch) return this.say("schedules are not available here", "warning");
 			const dir = this.presetDir();
 			if (dir && "error" in dir) return this.say(dir.error, "warning");
-			const { discard: _d, note: _n, ...launch } = this.o.scheduleLaunch(p.task, { cwd: dir?.path ?? this.dispatchCwd(), model: this.model, thinking: this.thinking });
+			const cwd = dir?.path ?? this.dispatchCwd();
+			// M40: what runs: a ! command, the profile's agent, else a pi session (the view's choices)
+			let launch: DispatchArgs;
+			if (p.task.startsWith("!")) {
+				const command = p.task.slice(1).trim();
+				if (!command) return this.say("! needs a command", "warning");
+				if (!this.o.launchShell) return this.say("shell jobs are not available here", "warning");
+				launch = this.o.launchShell(command, cwd);
+			} else if (this.profile) {
+				if (!this.o.launchProfile) return this.say("agent profiles are not available here", "warning");
+				const { discard: _d, note: _n, ...rest } = this.o.launchProfile(this.profile, p.task, { cwd, model: this.model, thinking: this.thinking, worktree: false });
+				launch = rest;
+			} else {
+				if (!this.o.scheduleLaunch) return this.say("schedules are not available here", "warning");
+				const { discard: _d, note: _n, ...rest } = this.o.scheduleLaunch(p.task, { cwd, model: this.model, thinking: this.thinking });
+				launch = rest;
+			}
 			const r = await client.request("schedule-add", { name: p.name, when: p.when, launch, task: p.task });
 			this.say(`schedule ${r.name}: ${r.when} · first run ${r.nextAt === null ? "never" : untilText(r.nextAt)}`, "success");
 		} catch (err) {
@@ -1052,7 +1066,7 @@ export class AgentView implements Component {
 				const next = s.paused ? t.fg("warning", "paused") : s.nextAt === null ? "never" : `next ${untilText(s.nextAt, now)}`;
 				const last = s.lastRunAt ? `last ${agoText(now - s.lastRunAt)} ago` : "not run yet";
 				out.push(truncateToWidth(`${t.fg("accent", s.name)}  ${s.when}  · ${next} · ${last}`, width));
-				out.push(t.fg("dim", truncateToWidth(`  ${oneLine(s.task ?? "")}  · ${s.cwd}${s.model ? ` · ${s.model}` : ""}`, width)));
+				out.push(t.fg("dim", truncateToWidth(`  ${oneLine(s.task ?? "")}  · ${s.agent} · ${s.cwd}${s.model ? ` · ${s.model}` : ""}`, width)));
 				if (s.lastSkip) out.push(t.fg("warning", truncateToWidth(`  skipped ${agoText(now - s.lastSkip.at)} ago: ${oneLine(s.lastSkip.why)}`, width)));
 			}
 			return out;
@@ -2517,7 +2531,7 @@ export class AgentView implements Component {
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["/usage", "what the sessions spent: today, all, by model, by session"],
-			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"); bare: list"],
+			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],
 			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
 			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],
 			["/preset [name]", "saved choices for new sessions (save <name>, rm <name>, off)"],

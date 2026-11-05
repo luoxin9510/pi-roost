@@ -70,6 +70,7 @@ afterEach(() => {
 		["PI_ROOST_CONFIG_DIR", undefined],
 		["PI_ROOST_REAP_MINUTES", undefined],
 		["PI_ROOST_SCHEDULE_TICK_MS", undefined],
+		["PI_ROOST_AUTO_CLOSE_MS", undefined],
 		["PI_ROOST_RESUME_DELAYS_MS", undefined],
 		["PI_ROOST_REAP_CHECK_MS", undefined],
 		["PI_ROOST_SHELL_KEEP_MS", undefined],
@@ -1456,6 +1457,105 @@ describe("M39: scheduled tasks", () => {
 		expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
 		expect(both.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "busy" } });
 		expect((await client.request("list", {})).jobs.filter((j) => j.schedule === "twice")).toHaveLength(1);
+	});
+});
+
+describe("M40: agents cut short carry on; scheduled commands and agents", () => {
+	const FAKE = resolve("test/fixtures/fake-agent.mjs");
+	const TS = resolve("test/fixtures/agent-ts.ts");
+	const fake = (over: Record<string, unknown> = {}) => ({
+		cwd: work,
+		sessionFile: "",
+		kind: "shell" as const,
+		profile: "fake",
+		command: [process.execPath, FAKE, "crash"],
+		taskInArgv: true,
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		name: "fake",
+		origin: "dispatch" as const,
+		term: { submit: "\r", settleMs: 600, waiting: "proceed\\? \\(y/n\\)" },
+		...over,
+	});
+	const screen = (id: string) => {
+		try {
+			return readFileSync(join(jobDir(id), "screen.txt"), "utf8");
+		} catch {
+			return "";
+		}
+	};
+	const until = (client: DaemonClient, id: string, pred: (r: JobRow) => boolean, timeout = 15000) =>
+		waitFor(async () => {
+			const r = await find(client, id);
+			return r && pred(r) ? r : undefined;
+		}, timeout);
+
+	it("a terminal agent with resume that dies mid-work is started again and told to continue", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "100,100,100";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", fake({ resumeCommand: [process.execPath, FAKE, "resumed"], resumable: true }));
+		await waitFor(() => (readState(id)?.crashRestarts === 1 ? true : undefined), 10000);
+		expect(readState(id)?.command).toEqual([process.execPath, FAKE, "resumed"]);
+		await waitFor(() => screen(id).includes("answer: Continue where you left off.") || undefined, 15000);
+		const r = await until(client, id, (x) => x.state !== "working");
+		expect(r.error).toBeNull();
+		expect(readState(id)?.resumeAt).toBeUndefined();
+		await client.request("stop", { id });
+	});
+
+	it("a terminal agent without resume is not started again: it could not carry on", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "100,100,100";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", fake({ resumeCommand: [process.execPath, FAKE] }));
+		const r = await until(client, id, (x) => x.endedAt !== null);
+		expect(r).toMatchObject({ state: "failed", error: "exited with code 3" });
+		await new Promise((res) => setTimeout(res, 500));
+		expect((await find(client, id))?.pid).toBeNull();
+		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
+	});
+
+	it("a protocol agent that dies mid-work is started again and takes \"continue\" as a reply", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "100,100,100";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", {
+			cwd: work,
+			sessionFile: "",
+			kind: "shell",
+			profile: "scripted",
+			protocol: true,
+			command: [process.execPath, TS],
+			resumeCommand: [process.execPath, TS],
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			name: "scripted",
+			origin: "dispatch",
+			term: { submit: "\r", settleMs: 600, typeTask: "crash" },
+		});
+		const r = await until(client, id, (x) => x.summary === "did Continue where you left off. (#1)", 20000);
+		expect(r.state).toBe("done");
+		expect(readState(id)?.crashRestarts).toBe(1);
+		await waitFor(() => (readState(id)?.pendingReplies as unknown[] | undefined)?.length === 0);
+		await client.request("stop", { id });
+	});
+
+	it("a schedule runs a terminal agent, named after it, closed once done; and a plain command", async () => {
+		process.env.PI_ROOST_AUTO_CLOSE_MS = "600";
+		const { client } = await startDaemon();
+		// an agent that just stops when done (one that notifies shows as needing input, and stays)
+		const quiet = fake({ command: [process.execPath, FAKE, "task"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", FAKE_QUIET: "1" } });
+		const row = await client.request("schedule-add", { name: "term", when: "daily 03:00", launch: quiet, task: "task" });
+		expect(row.agent).toBe("fake");
+		const { id } = await client.request("schedule-run", { name: "term" });
+		expect(await find(client, id)).toMatchObject({ name: "term", schedule: "term", profile: "fake", state: "working" });
+		await waitFor(() => screen(id).includes("answer: task") || undefined, 15000);
+		// done and nobody attached: its process goes, the row stays
+		const closed = await until(client, id, (x) => x.pid === null, 15000);
+		expect(closed.state).toBe("done");
+		// a command
+		const cmd = await client.request("schedule-add", { name: "cmd", when: "daily 03:00", launch: { ...args("echo scheduled"), kind: "shell", sessionFile: "" }, task: "! echo scheduled" });
+		expect(cmd.agent).toBe("shell");
+		const run = await client.request("schedule-run", { name: "cmd" });
+		const done = await until(client, run.id, (x) => x.endedAt !== null);
+		expect(done).toMatchObject({ state: "done", schedule: "cmd", profile: "shell" });
+		await expect(client.request("schedule-add", { name: "wt", when: "daily 03:00", launch: { ...fake(), worktree: { path: "/x", branch: "b", repo: "/r", base: "main" } } })).rejects.toMatchObject({ code: "bad_request" });
 	});
 });
 

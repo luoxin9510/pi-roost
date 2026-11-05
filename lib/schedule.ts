@@ -179,21 +179,33 @@ export function runSlot(now: number = Date.now()): string {
 
 /** The dispatch for one run: `{{run}}` filled in the session file and the command. */
 export function runLaunch(template: DispatchArgs, slot: string): DispatchArgs {
+	// a command or a terminal agent has no session file: each run is the command again
+	if (!template.sessionFile.includes(RUN_SLOT)) return { ...template };
 	const file = template.sessionFile.split(RUN_SLOT).join(slot);
 	// the session file's own argument only: a task that says {{run}} is left as written
 	return { ...template, sessionFile: file, command: template.command.map((x) => (x === template.sessionFile ? file : x)) };
 }
 
-/** A template a schedule may keep: a pi job whose session file has the run slot. */
+/**
+ * A template a schedule may keep: a pi job whose session file has the run slot, or a
+ * command or terminal agent (M40: `kind: "shell"`, with or without a profile).
+ */
 export function checkTemplate(t: unknown): asserts t is DispatchArgs {
 	const a = t as DispatchArgs;
 	if (!a || typeof a !== "object") throw new Error("launch: missing");
-	if (a.kind === "shell") throw new Error("launch: a pi session (scheduled commands are not supported yet)");
-	if (typeof a.sessionFile !== "string" || !a.sessionFile.includes(RUN_SLOT)) throw new Error(`launch: its sessionFile must hold ${RUN_SLOT}`);
-	if (Array.isArray(a.command) && !a.command.includes(a.sessionFile)) throw new Error("launch: its command must name its sessionFile");
 	if (!Array.isArray(a.command) || a.command.length === 0 || !a.command.every((x) => typeof x === "string")) throw new Error("launch: command");
 	if (typeof a.cwd !== "string" || !a.cwd.startsWith("/")) throw new Error("launch: cwd");
+	if (a.kind === "shell") {
+		if (a.sessionFile !== "" && a.sessionFile !== undefined) throw new Error("launch: a command has no sessionFile");
+		if (a.worktree !== undefined) throw new Error("launch: a scheduled run has no worktree");
+		return;
+	}
+	if (typeof a.sessionFile !== "string" || !a.sessionFile.includes(RUN_SLOT)) throw new Error(`launch: its sessionFile must hold ${RUN_SLOT}`);
+	if (!a.command.includes(a.sessionFile)) throw new Error("launch: its command must name its sessionFile");
 }
+
+/** What a template runs, for lists: "pi", "shell" or a profile's name. */
+export const templateAgent = (t: DispatchArgs): string => t.profile ?? (t.kind === "shell" ? "shell" : "pi");
 
 // ---- what the hub and the CLI read and show ------------------------------------------
 

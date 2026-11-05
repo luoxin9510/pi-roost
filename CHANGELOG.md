@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Interrupted runs carry on, and schedules run, for the agents of `agentProfiles` too: a protocol agent or a terminal agent with `resume` that dies mid-work is started again and told to continue (one without `resume` stays failed, as before); `/schedule` with `/profile x` on runs that agent, and a task starting with `!` runs a command on the schedule. A scheduled terminal agent is closed once it is done and quiet.
+
 - Scheduled tasks: `/schedule <name> <every 30m | daily 09:00 | weekdays 09:00 | cron "…"> <task>` in the agent view runs the task as a new session on that schedule (local time). A run is skipped while the previous one still works; one missed while the background service was off runs when it starts again; a finished run's process is closed. `/schedule` lists them (`run`, `pause`, `resume`, `rm <name>`); `pi-roost schedule` too.
 
 - Interrupted sessions carry on by themselves (`autoResume`, default `"interrupted"`): a session whose worker crashed or was killed, whose host went away, or that was working when the machine or the background service went down (in the last 6 hours) is started again with "Continue where you left off.", up to 3 times in a row after 1, 5 and 15 seconds; then it waits for you. While it waits, the row stays working and says so; stop or a reply calls the restart off. `"crash"` restarts after worker crashes only, `"off"` never.

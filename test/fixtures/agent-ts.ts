@@ -15,6 +15,12 @@ const agent = RoostAgent.fromEnv({
 			setTimeout(() => void agent!.close().then(() => process.exit(0)), 300);
 			return;
 		}
+		if (r.text === "crash") {
+			// M40: dies mid-work, the reply acked (this handler returned)
+			agent!.report({ state: "working", summary: "on crash" });
+			setTimeout(() => process.exit(2), 150);
+			return;
+		}
 		handled++;
 		agent!.report({ state: "working", summary: `on ${r.text}` });
 		await new Promise((res) => setTimeout(res, 200));

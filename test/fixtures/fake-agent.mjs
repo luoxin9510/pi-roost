@@ -18,6 +18,12 @@ function work(line) {
 					return done();
 				}
 				if (line === "quit") process.exit(0);
+				if (line === "crash") {
+					// M40: dies mid-work (the screen was moving)
+					out("working on crash...");
+					setTimeout(() => process.exit(3), 300);
+					return done();
+				}
 				if (line === "ask") {
 					asking = true;
 					out("Do you want to proceed? (y/n) ");
@@ -29,7 +35,8 @@ function work(line) {
 					out(".");
 					if (++n < 5) return;
 					clearInterval(t);
-					out(`\r\nanswer: ${line}\r\n\x1b]9;finished ${line}\x07fake> `);
+					// FAKE_QUIET: no notification at the end (an agent that just stops)
+					out(`\r\nanswer: ${line}\r\n${process.env.FAKE_QUIET ? "" : `\x1b]9;finished ${line}\x07`}fake> `);
 					done();
 				}, 150);
 			}),

@@ -86,6 +86,7 @@ class FakeClient {
 		}
 		if (op === "reply") return this.replyResult;
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
+		if (op === "schedule-add") return { ...(args as object), paused: false, nextAt: Date.now() + 3600_000 };
 		return {};
 	}
 }
@@ -1461,6 +1462,47 @@ describe("AgentView presets (M27)", () => {
 		expect(user.has("duo")).toBe(false);
 		expect(view.render(120).join("\n")).not.toContain("new sessions: preset duo");
 		view.dispose();
+	});
+});
+
+describe("AgentView schedules (M39, M40)", () => {
+	function withAll() {
+		const profiled: { profile: string; task: string; opts: unknown }[] = [];
+		const s = setup([], {
+			extra: {
+				profiles: () => ["codex"],
+				launchProfile: (profile, task, o) => {
+					profiled.push({ profile, task, opts: o });
+					return { kind: "shell", profile, cwd: o.cwd, sessionFile: "", command: [profile, task], env: {}, name: task, origin: "dispatch" };
+				},
+				scheduleLaunch: (task, o) => ({ cwd: o.cwd, sessionFile: "/s/{{run}}.jsonl", command: ["pi", "--session", "/s/{{run}}.jsonl", "--", task], env: {}, name: task, origin: "dispatch", model: o.model }),
+			},
+		});
+		return { ...s, profiled };
+	}
+	const added = (client: FakeClient) => client.requests.filter((r) => r.op === "schedule-add").map((r) => r.args as { name: string; when: string; task: string; launch: Record<string, unknown> });
+
+	it("/schedule adds a pi session, the /profile agent, or a ! command, with the view's choices", async () => {
+		const { view, client, profiled } = withAll();
+		await view.start();
+		const submit = async (text: string) => {
+			type(view, text);
+			view.handleInput("\r");
+			await sleep(10);
+		};
+		await submit("/model a/one");
+		await submit("/schedule nightly every 2h check the build");
+		expect(added(client)[0]).toMatchObject({ name: "nightly", when: "every 2h", task: "check the build", launch: { model: "a/one", sessionFile: "/s/{{run}}.jsonl" } });
+		await submit("/profile codex");
+		await submit("/model o3-mini");
+		await submit("/schedule deps daily 09:00 update the dependencies");
+		expect(added(client)[1]).toMatchObject({ name: "deps", launch: { kind: "shell", profile: "codex", command: ["codex", "update the dependencies"] } });
+		expect(profiled[0]).toMatchObject({ profile: "codex", task: "update the dependencies", opts: { worktree: false, model: "o3-mini" } });
+		await submit("/schedule tests weekdays 18:00 ! npm test");
+		expect(added(client)[2]).toMatchObject({ name: "tests", when: "weekdays 18:00", launch: { kind: "shell", command: ["sh", "-lc", "npm test"] } });
+		expect(added(client)[2]!.launch.profile).toBeUndefined();
+		await submit("/schedule bad hourly task");
+		expect(added(client)).toHaveLength(3);
 	});
 });
 
