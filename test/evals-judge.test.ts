@@ -14,6 +14,7 @@ const outcome = (o: Partial<RoostOutcome> = {}): RoostOutcome => ({
 	files: {},
 	children: [],
 	repliesPending: 0,
+	restarts: 0,
 	costUsd: 0.001,
 	tokens: 10,
 	ms: 1000,

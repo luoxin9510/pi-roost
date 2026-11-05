@@ -45,7 +45,8 @@ Claude Code's documented behaviour.
 | M37 | [evals with real models](m37-evals.md) | next |
 | M32 | [folders by layer: `adapters/pi/`, package exports](m32-layers.md) | next |
 | M33 | [the hub on its own: `pi-roost hub`](m33-hub.md) | next |
+| M38 | [interrupted runs carry on; a crash loop is bounded](m38-resume.md) | next |
 
-Next: the durable-inspired work from [any agent](any-agent.md) (interrupted runs and a crash-loop limit, scheduled tasks), measured by the stress run and the evals.
+Next: the durable-inspired work from [any agent](any-agent.md) (scheduled tasks), measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).
