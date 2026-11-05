@@ -311,7 +311,7 @@ export class RoostAgent {
 
 	private deliver(item: DeliverItem): void {
 		// agent items (peer messages) are pi's; a plain agent takes user replies only
-		if (item.kind === "message" || item.kind === "report") return;
+		if (item.kind === "message" || item.kind === "report" || item.kind === "notice") return;
 		if (item.seq <= this.handled) {
 			// sent again (a reconnect): ack only what is finished; the rest is acked when it is
 			if (item.seq <= this.completed) this.reporter.ack(item.seq);

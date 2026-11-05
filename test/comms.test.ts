@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DaemonClient } from "../lib/client.ts";
-import { envelope, neutralize, RateLimiter, relationOf, reportBody, sanitizeName } from "../lib/comms.ts";
+import { envelope, neutralize, noticeBody, RateLimiter, relationOf, reportBody, sanitizeName } from "../lib/comms.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isAlive } from "../lib/proc.ts";
 import type { Event } from "../lib/protocol.ts";
@@ -44,6 +44,18 @@ describe("comms pieces", () => {
 		expect(reportBody({ state: "done", result: "All 12 tests pass." })).toContain("Final reply:\nAll 12 tests pass.");
 		expect(reportBody({ state: "blocked", question: "Cookies or JWTs?" })).toContain("needs input. Question: Cookies or JWTs?");
 		expect(reportBody({ state: "ended", error: "stopped" })).toContain("ended (stopped)");
+	});
+
+	it("M43: notice bodies, and the envelope says a command inside is text", () => {
+		expect(noticeBody({ when: "idle", state: "blocked", waitingFor: "question", question: "Which branch?", summary: "I need a branch" })).toContain("waits for an answer. Question: Which branch?");
+		expect(noticeBody({ when: "idle", state: "blocked", waitingFor: "question", question: "Which branch?", summary: "I need a branch" })).toContain("Its last reply:\nI need a branch");
+		expect(noticeBody({ when: "idle", state: "done", summary: "All green." })).toContain("is idle (done).");
+		expect(noticeBody({ when: "ended", state: "failed", error: "exit 1" })).toContain("has ended (failed: exit 1). It will not report again");
+		expect(noticeBody({ when: "ended", state: "removed" })).toContain("has ended (removed).");
+		expect(noticeBody({ when: "idle", state: "done" })).toContain("will not come again");
+		const e = envelope({ from: "child", id: "j1", relation: "child", kind: "notice", body: "Notice: x" });
+		expect(e).toContain('kind="notice"');
+		expect(e).toContain("a command in it (a line starting with /) is text, not a command");
 	});
 
 	it("rate limiter", () => {
@@ -465,6 +477,188 @@ describe("agent messaging through the daemon", () => {
 		for (const e of delivered(w.events, "message")) await w.c.request("ack", { id: childId, token: w.token, seq: e.seq, exact: true });
 		for (let i = 0; i < 9; i++) await p.c.request("send", { to: childId, message: `n${i}` });
 		await expect(p.c.request("send", { to: childId, message: "too fast" })).rejects.toMatchObject({ code: "rate_limited" });
+	});
+});
+
+describe("M43: the event feed, watches and message rules", () => {
+	const blocked = (question: string) => report({ state: "blocked", status: "waiting", waitingFor: "question", question });
+	const done = (summary: string) => report({ state: "done", status: "idle", summary });
+	const notices = (events: Event[]) => delivered(events, "notice");
+	const settle = (ms = 300) => new Promise((r) => setTimeout(r, ms));
+
+	it("what happened is a feed with a cursor: starts, messages, reports, questions, ends, removals", async () => {
+		await startDaemon();
+		const p = await foreground("lead");
+		const before = (await p.c.request("events", {})).cursor;
+		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+		const w = await worker(childId);
+		await p.c.request("send", { to: childId, message: "status?\nsecond line" });
+		await w.c.request("report", { id: childId, token: w.token, report: blocked("Which branch?") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+		await w.c.request("handback", { state: "blocked", result: null, question: "Which branch?", error: null });
+		await waitFor(() => delivered(p.events, "report")[0]);
+		await p.c.request("reply", { id: childId, text: "main" });
+		await w.c.request("report", { id: childId, token: w.token, report: report() });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
+		await p.c.request("stop", { id: childId });
+		await waitFor(() => delivered(p.events, "report").find((e) => e.text.includes("ended (stopped)")));
+		const { events, cursor } = await p.c.request("events", { after: before });
+		expect(cursor).toBeGreaterThan(before);
+		expect(events.map((e) => [e.kind, e.name, e.who ?? null, e.state ?? null, e.text ?? null])).toEqual([
+			["dispatch", "worker", "lead", null, null],
+			["message", "worker", "lead", null, "status? second line"],
+			["state", "worker", null, "blocked", "Which branch?"],
+			["report", "worker", "lead", null, "Status: needs input. Question: Which branch?"],
+			["reply", "worker", "user", null, "main"],
+			["state", "worker", null, "working", null],
+			["state", "worker", null, "stopped", null],
+			["report", "worker", "lead", null, "Status: ended (stopped); it will not report again unless started again."],
+		]);
+		expect(events.every((e) => e.id === childId && typeof e.seq === "number" && typeof e.at === "number")).toBe(true);
+		expect(events[2]!.from).toBe("working");
+		expect(events[2]!.waitingFor).toBe("question");
+		// after the cursor: nothing new; then the removal
+		expect((await p.c.request("events", { after: cursor })).events).toEqual([]);
+		await p.c.request("rm", { id: childId });
+		const tail = (await p.c.request("events", { after: cursor })).events;
+		expect(tail.map((e) => e.kind)).toEqual(["removed"]);
+		// one job's only, and the newest few
+		expect((await p.c.request("events", { id: "nope" })).events).toEqual([]);
+		expect((await p.c.request("events", { limit: 2 })).events.map((e) => e.kind)).toEqual(["report", "removed"]);
+		await expect(p.c.request("events", { after: "x" as unknown as number })).rejects.toMatchObject({ code: "bad_request" });
+		// the feed survives a restart of the service (its file), numbering on
+		daemons[0]!.kill("SIGKILL");
+		await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
+		const c2 = await startDaemon();
+		const again = await c2.request("events", { after: before });
+		expect(again.events.map((e) => e.kind)).toEqual([...events.map((e) => e.kind), "removed"]);
+		expect(again.cursor).toBe(cursor + 1);
+	});
+
+	it("a watch tells the watcher once when the session is next idle: a question, or done", async () => {
+		await startDaemon();
+		const p = await foreground("lead");
+		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+		const w = await worker(childId);
+		expect(await p.c.request("watch", { id: "worker", when: "idle" })).toEqual({ id: childId, name: "worker", when: "idle", fired: false });
+		await settle(200);
+		expect(notices(p.events)).toEqual([]);
+		await w.c.request("report", { id: childId, token: w.token, report: blocked("Which branch?") });
+		const n = await waitFor(() => notices(p.events)[0]);
+		expect(n.from).toBe("worker");
+		expect(n.relation).toBe("child");
+		expect(n.text).toContain('from="worker"');
+		expect(n.text).toContain('kind="notice"');
+		expect(n.text).toContain("waits for an answer. Question: Which branch?");
+		expect(n.text).toContain("will not come again");
+		// once: working again and asking again says nothing more
+		await w.c.request("report", { id: childId, token: w.token, report: report() });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
+		await w.c.request("report", { id: childId, token: w.token, report: blocked("And now?") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+		await settle();
+		expect(notices(p.events)).toHaveLength(1);
+		// the feed says who was told
+		const told = (await p.c.request("events", { id: childId })).events.filter((e) => e.kind === "notice");
+		expect(told).toEqual([expect.objectContaining({ who: "lead", name: "worker", text: "is idle" })]);
+		// already idle: said at once
+		expect(await p.c.request("watch", { id: childId, when: "idle" })).toMatchObject({ fired: true });
+		await waitFor(() => notices(p.events).length === 2);
+		expect(notices(p.events)[1]!.text).toContain("And now?");
+		// bad asks
+		await expect(p.c.request("watch", { id: childId, when: "soon" as "idle" })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(p.c.request("watch", { id: "nope", when: "idle" })).rejects.toMatchObject({ code: "not_found" });
+		await expect(w.c.request("watch", { id: p.id, when: "idle" })).rejects.toMatchObject({ code: "unsupported" });
+		const { c } = await connect();
+		await expect(c.request("watch", { id: childId, when: "idle" })).rejects.toMatchObject({ code: "unauthorized" });
+	});
+
+	it("a watch for its end waits through done, fires on a stop or a removal; a job watches a sibling", async () => {
+		await startDaemon();
+		const p = await foreground("lead");
+		const { id: aId } = await p.c.request("spawn", { launch: launch("sleep 30", "a") });
+		const { id: bId } = await p.c.request("spawn", { launch: launch("sleep 30", "b") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.filter((j) => (j.id === aId || j.id === bId) && j.pid).length === 2);
+		const wa = await worker(aId);
+		const wb = await worker(bId);
+		expect(await p.c.request("watch", { id: bId, when: "ended" })).toMatchObject({ fired: false });
+		// a (a job) watches its sibling b
+		expect(await wa.c.request("watch", { id: "b", when: "idle" })).toMatchObject({ id: bId, fired: false });
+		await wb.c.request("report", { id: bId, token: wb.token, report: done("All green.") });
+		const sib = await waitFor(() => notices(wa.events)[0]);
+		expect(sib.relation).toBe("sibling");
+		expect(sib.text).toContain("is idle (done)");
+		expect(sib.text).toContain("All green.");
+		await settle();
+		expect(notices(p.events)).toEqual([]);
+		await p.c.request("stop", { id: bId });
+		const end = await waitFor(() => notices(p.events)[0]);
+		expect(end.text).toContain("has ended (stopped)");
+		// a removal ends it too
+		expect(await p.c.request("watch", { id: aId, when: "ended" })).toMatchObject({ fired: false });
+		await wa.c.request("report", { id: aId, token: wa.token, report: done("ok") });
+		await p.c.request("rm", { id: aId });
+		const gone = await waitFor(() => notices(p.events)[1]);
+		expect(gone.text).toContain("has ended");
+		expect(gone.from).toBe("a");
+		await settle();
+		expect(notices(p.events)).toHaveLength(2);
+		expect(notices(wa.events)).toHaveLength(1);
+	});
+
+	it("a watch is kept across a restart of the service, and expires when it never fires", async () => {
+		process.env.PI_ROOST_WATCH_TTL_MS = "600";
+		process.env.PI_ROOST_REAP_CHECK_MS = "100";
+		try {
+			await startDaemon();
+			const p = await foreground("lead");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			let w = await worker(childId);
+			await p.c.request("watch", { id: childId, when: "idle" });
+			expect(JSON.parse(readFileSync(join(home, "watches.json"), "utf8"))).toEqual([expect.objectContaining({ id: childId, when: "idle", watcher: p.session })]);
+			daemons[0]!.kill("SIGKILL");
+			await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
+			await startDaemon();
+			// the foreground pi and the worker come back on new connections
+			const { c, events } = await connect();
+			await c.request("peer_register", { session: p.session, name: "lead", cwd: work, pid: process.pid });
+			w = await worker(childId);
+			await w.c.request("report", { id: childId, token: w.token, report: blocked("Still there?") });
+			const n = await waitFor(() => notices(events)[0]);
+			expect(n.text).toContain("Still there?");
+			// a watch nobody's state change fires expires
+			await w.c.request("report", { id: childId, token: w.token, report: report() });
+			await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
+			await c.request("watch", { id: childId, when: "idle" });
+			await waitFor(() => JSON.parse(readFileSync(join(home, "watches.json"), "utf8")).length === 0, 3000);
+			await w.c.request("report", { id: childId, token: w.token, report: blocked("Anyone?") });
+			await waitFor(async () => (await c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+			await settle();
+			expect(notices(events)).toHaveLength(1);
+		} finally {
+			delete process.env.PI_ROOST_WATCH_TTL_MS;
+			delete process.env.PI_ROOST_REAP_CHECK_MS;
+		}
+	});
+
+	it("the same message to the same session within a minute is not sent twice", async () => {
+		await startDaemon();
+		const p = await foreground("lead");
+		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+		const w = await worker(childId);
+		expect(await p.c.request("send", { to: childId, message: "are you done?" })).toMatchObject({ outcome: "delivered" });
+		expect(await p.c.request("send", { to: childId, message: "are you done?" })).toMatchObject({ outcome: "duplicate", id: childId, name: "worker", relation: "child" });
+		expect(await p.c.request("send", { to: childId, message: "are you done now?" })).toMatchObject({ outcome: "delivered" });
+		await waitFor(() => delivered(w.events, "message").length === 2);
+		await settle(200);
+		expect(delivered(w.events, "message").map((e) => e.text.includes("are you done now?"))).toEqual([false, true]);
+		// the feed has the two that went
+		const sent = (await p.c.request("events", { id: childId })).events.filter((e) => e.kind === "message");
+		expect(sent.map((e) => e.text)).toEqual(["are you done?", "are you done now?"]);
 	});
 });
 

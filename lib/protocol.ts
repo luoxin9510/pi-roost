@@ -1,3 +1,4 @@
+import type { RoostEvent } from "./events.ts";
 import type { PrInfo } from "./pr.ts";
 import type { UsageInfo } from "./usage.ts";
 import type { ProfileTerm } from "./profiles.ts";
@@ -87,8 +88,8 @@ export interface PeerRow {
 }
 
 export interface SendResult {
-	/** delivered: handed to the running session; queued: it is busy starting; started: it was ended and starts again */
-	outcome: "delivered" | "queued" | "started" | "stopped" | "not running";
+	/** delivered: handed to the running session; queued: it is busy starting; started: it was ended and starts again; duplicate (M43): the same text went to it a moment ago, not sent again */
+	outcome: "delivered" | "queued" | "started" | "stopped" | "not running" | "duplicate";
 	id: string;
 	name: string;
 	relation: PeerRow["relation"];
@@ -261,6 +262,10 @@ export interface OpArgs {
 	handback: HandbackArgs;
 	/** M9, on a foreground peer connection: the report with this ref reached pi. */
 	peer_ack: { ref: string };
+	/** M43: the event feed (what happened), with a cursor: `after` the seq last seen. */
+	events: { after?: number; limit?: number; id?: string };
+	/** M43, on a peer connection: tell me once when that session is next idle (done, or waiting for an answer) or has ended. */
+	watch: { id: string; when: "idle" | "ended" };
 }
 
 export interface OpResults {
@@ -294,6 +299,9 @@ export interface OpResults {
 	spawn: { id: string; name: string };
 	handback: { routed: boolean };
 	peer_ack: {};
+	events: { events: RoostEvent[]; cursor: number };
+	/** fired: it was already so; the notice went out at once. */
+	watch: { id: string; name: string; when: "idle" | "ended"; fired: boolean };
 }
 
 export type Op = keyof OpArgs;
@@ -316,8 +324,8 @@ export type Event =
 			id: string;
 			seq: number;
 			text: string;
-			/** M9: absent for user replies; agent items carry an envelope as text. */
-			kind?: "reply" | "message" | "report";
+			/** M9: absent for user replies; agent items carry an envelope as text (M43: a notice is a watch that fired). */
+			kind?: "reply" | "message" | "report" | "notice";
 			from?: string;
 			relation?: string;
 			/** M9: a report to a foreground peer, acknowledged with peer_ack. */

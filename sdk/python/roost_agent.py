@@ -223,7 +223,7 @@ class RoostAgent:
     def _message(self, msg):
         if msg.get("event") == "deliver" and msg.get("id") == self.job_id:
             # agent items (peer messages) are pi's; a plain agent takes user replies only
-            if msg.get("kind") in ("message", "report"):
+            if msg.get("kind") in ("message", "report", "notice"):
                 return
             seq = msg.get("seq")
             if not isinstance(seq, int):

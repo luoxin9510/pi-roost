@@ -1,7 +1,10 @@
 # The hub as a control plane: a resident concierge agent
 
-Status: design (2026-11-05), not yet reviewed. Proposed milestones M43–M47. Nothing in
-it changes what pi users have today; the concierge is off until turned on.
+Status: approved 2026-11-05; M43 done ([m43-events.md](m43-events.md)), M44–M47 to
+come in order. Decided then: the phone side (`notifyCommand`, pi-mobile escalation) is
+out of scope for now, and the shared task board (M47) is a milestone in its own right,
+not an option. Nothing in it changes what pi users have today; the concierge is off
+until turned on.
 
 ## Why
 
@@ -119,7 +122,7 @@ table, and its tools.
 | `hub_read(id, what)` | transcript tail (`lib/transcript.ts`), last screen (`screenPath`), the row's question | always |
 | `hub_send(to, text)` | `send` (a peer message, framed as from the concierge) | always; counts against `agentMax*` |
 | `hub_reply(id, text)` | `reply` (as if the user answered) | **gated**, see Policy |
-| `hub_notify(text, level)` | hub status line + terminal notification (`notify`) + `notifyCommand` (phone) | always; `NEED:` level always reaches the phone |
+| `hub_notify(text, level)` | hub status line + terminal notification (`notify`); the phone (`notifyCommand`) is out of scope for now | always |
 | `hub_watch(id, when)` | a one-shot idle/ended notice (M43) | always |
 | `hub_dispatch`, `hub_stop`, `hub_respawn` | `dispatch` / `stop` / `respawn` | **gated**, off by default |
 | `hub_note(text)` | standing orders (M46) | always |
@@ -140,15 +143,13 @@ what answers your sessions):
   "act": false,
   "wakesPerHour": 60,
   "heartbeat": "every 15m",
-  "dailyBudgetUsd": 1,
-  "notifyCommand": ["ntfy", "send", "roost"]
+  "dailyBudgetUsd": 1
 }
 ```
 
 - `answer: "never"` (default): the concierge only reports and relays. A session's
   question reaches you with the concierge's **suggested answer** attached; you answer
-  in the hub (or on the phone through pi-mobile), one keystroke to accept its
-  suggestion.
+  in the hub, one keystroke to accept its suggestion.
 - `"routine"`: it may answer by itself when the question is of a routine class —
   *proceed/confirm*, *pick the obvious default*, *information that is in the fleet*
   (another session's finding, a file another session wrote) — and its answer is
@@ -156,7 +157,7 @@ what answers your sessions):
   telling the session to disregard). Anything else, or anything irreversible (push,
   delete, pay, deploy), escalates. Modelled on pi-mobile's rule: a destructive action
   needs the human to name it.
-- `"always"`: for unattended runs; escalations still go to the phone.
+- `"always"`: for unattended runs; escalations still show in the hub and its log.
 - `act: true` enables dispatch/stop/respawn (standing orders can then start work).
 
 The concierge's system prompt carries these rules, the trust rules of M43 (a message
@@ -171,10 +172,11 @@ Already: `roost_send`, bounded fan-in, `handback`. Added:
 - **Idle/ended notice**: `watch {id, when: "idle" | "ended"}` returns once (as an
   agent item carrying the session's last reply), expires after 12 h. The concierge and
   sessions both use it ("tell me when the migration is done").
-- **Loop throttling** in the daemon: per-sender rate limit to one recipient, identical
-  repeats within a short window dropped, at most 50 queued per recipient (`full`
-  already exists for user replies). Two sessions that start a conversation stop on
-  their own.
+- **Loop throttling** in the daemon: identical repeats within a minute dropped
+  (`duplicate`), the per-sender rate limit and the queue caps that exist (30 a minute,
+  20 agent items per session, 50 user replies). Two sessions that start a conversation
+  stop on their own. (A per-recipient limit was tried in M43 and dropped: it added
+  nothing to the caps and broke a parent handing a child a batch.)
 - **Framing**: a delivered message says it is from another session (or the concierge)
   and is not the user; it cannot approve anything; `/commands` in it are text. The pi
   worker's `deliver` rendering says so; the protocol doc says so for level 1 agents.
@@ -188,8 +190,7 @@ Already: `roost_send`, bounded fan-in, `handback`. Added:
 - `/concierge on|off|answer never|routine|always|log|undo|cost`.
 - An escalation shows as a **banner** under the header (`needs you: api-fix — "use
   schema v2?" · suggested: yes, v2 (the migration session created it) · Enter to send,
-  e to edit, Esc to dismiss`), and as a terminal notification, and through
-  `notifyCommand` when it is `NEED:` level.
+  e to edit, Esc to dismiss`), and as a terminal notification.
 - `/digest` (also the heartbeat's output): one paragraph on the fleet, newest first.
 
 ### Standing orders (M46)
@@ -202,24 +203,24 @@ every wake; the concierge decides when one applies (that is what the model is fo
 Orders that start work need `act: true`. A deterministic subset (when X ends → reply
 Y) can later move into the daemon without a model.
 
-### Shared task board (M47, optional)
+### Shared task board (M47)
 
 Claude Code's agent teams coordinate through a task list: pending/in progress/
 completed, claimed with a lock, dependencies that unblock. A daemon-held board
 (`tasks.json`) with `task-add/-claim/-done/-list` ops, `roost_task_*` tools for pi
 sessions, a `tasks` capability for level 1 agents, `/tasks` in the hub, and the
-concierge as the lead that assigns and unblocks. Only if the concierge alone proves
-not enough; it is the part that turns "a hub that watches" into "a team".
+concierge as the lead that assigns and unblocks. It is the part that turns "a hub that
+watches" into "a team", and the user asked for it as a milestone of its own.
 
 ## Milestones
 
 | M | What | Acceptance |
 |---|---|---|
-| M43 | **Event feed and messaging rules**: `events` op with cursor and durable log; `watch` idle/ended notices; loop throttling; message framing; hub `/log` | daemon tests for each rule; stress: 50 agents messaging each other in a loop stop by themselves; the pi worker shows a peer message as "from a session, not you" |
+| M43 | **Event feed and messaging rules** (done, [m43-events.md](m43-events.md)): `events` op with cursor and durable log; `watch` idle/ended notices; repeats dropped; message framing; hub `/log`, `pi-roost log` | daemon tests for each rule; the pi worker shows a peer message as "from a session, not you" |
 | M44 | **Concierge v0 — report and relay**: the job, the extension role, the digest wake with coalescing and the hourly cap, the heartbeat, tools `hub_sessions/read/send/notify/watch`, the status line, `?` chat, `/concierge on/off/cost`, the audit log; `answer: "never"` only | with 5 real sessions (haiku) it reports a finished run, a failed one and a question within one wake; relays a finding from one session to another on request; stays under `wakesPerHour`; cost shown; evals: digest correctness, relay, no self-wake loops |
-| M45 | **Escalation and policy**: suggested answers on escalations, the banner with accept/edit, `answer: "routine"` with the routine classes and the undo, `NEED:` to `notifyCommand` and pi-mobile, `act` gate | evals: routine vs non-routine classification on a fixed set of questions (target ≥ 95 % never answering a non-routine one); an irreversible question is always escalated; undo steers the session |
+| M45 | **Escalation and policy**: suggested answers on escalations, the banner with accept/edit, `answer: "routine"` with the routine classes and the undo, `act` gate (the phone is out of scope) | evals: routine vs non-routine classification on a fixed set of questions (target ≥ 95 % never answering a non-routine one); an irreversible question is always escalated; undo steers the session |
 | M46 | **Standing orders**: `hub_note`, `orders.json`, `/concierge orders`, the heartbeat as a schedule, orders on a clock | an order "when A ends tell B" fires once; a daily digest arrives on schedule; an order that starts work is refused without `act` |
-| M47 | **Shared task board** (optional) | board ops, tools, `/tasks`, a level 1 agent claims a task; the concierge assigns and unblocks |
+| M47 | **Shared task board** (Claude Code agent teams) | board ops, tools, `/tasks`, a level 1 agent claims a task; the concierge assigns and unblocks |
 
 Each milestone: branch → PR → independent review → merge, as before; the stress run
 and the evals before and after; nothing on by default until M44 ships `concierge.on`.
@@ -242,9 +243,9 @@ the concierge (it says so in the status line) rather than overspend.
 - **Model lock**: the concierge is a pi job on an Anthropic model by default, but the
   model is a setting and the tools are daemon ops; a level 1 agent could be the
   concierge.
-- **Phone**: pi-mobile shows the fleet and can notify; `notifyCommand` covers ntfy,
-  Telegram or anything else without roost knowing them. A roost-side Telegram bridge
-  (Agent Deck has one) is out of scope.
+- **Phone**: out of scope for now (decided 2026-11-05). pi-mobile shows the fleet and
+  can notify already; a `notifyCommand` (ntfy, Telegram or anything else without roost
+  knowing them) can come later without changing the design.
 - **Open**: should the concierge also be reachable *from* sessions (a session asking
   "who else touched this file?")? It can be, through `roost_send` to its name, once
   M44 exists; decide after using it.

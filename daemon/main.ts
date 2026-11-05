@@ -9,11 +9,15 @@ import { deferDurability, durable, readJson, setSyncErrorHandler, writeJsonAtomi
 import { hostEntry } from "../lib/client.ts";
 import {
 	type AgentKind,
+	DUPLICATE_WINDOW_MS,
 	envelope,
 	foregroundPeerId,
+	isAgentKind,
 	MAX_PENDING_AGENT,
+	MAX_WATCHES,
 	MESSAGE_MAX,
 	MESSAGES_PER_MINUTE,
+	noticeBody,
 	RateLimiter,
 	type Relation,
 	relationOf,
@@ -21,8 +25,10 @@ import {
 	sanitizeName,
 	SPAWNS_PER_MINUTE,
 	type TreeNode,
+	WATCH_TTL_MS,
 } from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
+import { clipText, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
@@ -37,6 +43,7 @@ import {
 	type Event,
 	type HandbackArgs,
 	type JobRow,
+	type JobStateName,
 	LineReader,
 	type PeerRow,
 	type SendResult,
@@ -217,6 +224,138 @@ const workerAlive = new Set<string>();
 const removing = new Set<string>();
 const messageLimiter = new RateLimiter(MESSAGES_PER_MINUTE);
 const spawnLimiter = new RateLimiter(SPAWNS_PER_MINUTE);
+/** M43: the last text each sender sent each session (an identical one soon after is dropped). */
+const lastSent = new Map<string, { hash: string; at: number }>();
+
+// ---- M43: the event feed ---------------------------------------------------------------
+
+/** What happened, for the hub's /log, `pi-roost log` and (M44) the concierge; in roostHome. */
+const eventLog = new EventLog(join(roostHome(), "events.jsonl"), { warn: (msg) => log("warn", msg) });
+
+function record(e: Omit<RoostEvent, "seq" | "at">): void {
+	eventLog.append(e);
+}
+
+/** The state each job was last seen in: a change into one that matters is recorded, and fires watches. */
+const lastSeen = new Map<string, { state: JobStateName; waitingFor: JobRow["waitingFor"] }>();
+
+/** A job's row went out: a state change that matters is an event (and may fire a watch). */
+function noteState(job: JobRow): void {
+	const prev = lastSeen.get(job.id);
+	lastSeen.set(job.id, { state: job.state, waitingFor: job.waitingFor });
+	if (!prev) return;
+	const changed = prev.state !== job.state || (job.state === "blocked" && prev.waitingFor !== job.waitingFor);
+	if (!changed) return;
+	if (stateMatters(prev.state, job.state) || job.state === "blocked") {
+		const text = job.state === "blocked" ? job.question : job.state === "failed" ? job.error : job.state === "done" ? job.summary : null;
+		record({ kind: "state", id: job.id, name: job.name, state: job.state, from: prev.state, waitingFor: job.waitingFor, text: clipText(text) });
+	}
+	if (job.state !== "working") void fireWatches(job);
+}
+
+/** M43: a watch: tell `watcher` (a session key) once when job `id` is next idle, or has ended. */
+interface Watch {
+	watcher: string;
+	watcherName: string;
+	id: string;
+	when: "idle" | "ended";
+	at: number;
+}
+const watchesPath = () => join(roostHome(), "watches.json");
+let watches: Watch[] = [];
+const WATCH_TTL = Number(process.env.PI_ROOST_WATCH_TTL_MS) || WATCH_TTL_MS;
+
+function loadWatches(): void {
+	const saved = readJson<Watch[]>(watchesPath());
+	if (!Array.isArray(saved)) return;
+	const now = Date.now();
+	watches = saved.filter((w) => w && str(w.watcher) && str(w.id) && (w.when === "idle" || w.when === "ended") && typeof w.at === "number" && now - w.at < WATCH_TTL && recs.has(w.id));
+}
+
+function saveWatches(): void {
+	try {
+		writeJsonAtomic(watchesPath(), watches);
+	} catch (err) {
+		log("error", "watches not saved", { error: String(err) });
+	}
+}
+
+/** Watches that never fired expire; ones on removed jobs go. */
+function sweepWatches(now = Date.now()): void {
+	const before = watches.length;
+	watches = watches.filter((w) => now - w.at < WATCH_TTL && recs.has(w.id));
+	if (watches.length !== before) saveWatches();
+}
+
+/** idle: it stopped working (done, waiting, failed, stopped); ended: it failed, was stopped, or is gone. */
+function watchFires(when: Watch["when"], state: JobStateName | "removed"): boolean {
+	if (state === "removed") return true;
+	if (when === "ended") return state === "failed" || state === "stopped";
+	return state !== "working";
+}
+
+/** The job is in a state watches fire on: tell each watcher once, and forget the watch. */
+async function fireWatches(job: JobRow | { id: string; name: string; state: "removed" }): Promise<void> {
+	const due = watches.filter((w) => w.id === job.id && watchFires(w.when, job.state));
+	if (due.length === 0) return;
+	watches = watches.filter((w) => !due.includes(w));
+	saveWatches();
+	for (const w of due) await fireWatch(w, job);
+}
+
+async function fireWatch(w: Watch, job: JobRow | { id: string; name: string; state: "removed" }): Promise<void> {
+	const removed = job.state === "removed";
+	const row = removed ? undefined : (job as JobRow);
+	const when: Watch["when"] = removed || row?.state === "failed" || row?.state === "stopped" ? "ended" : "idle";
+	const body = noticeBody({
+		when,
+		state: job.state,
+		waitingFor: row?.waitingFor ?? null,
+		question: row?.question ?? null,
+		summary: row?.summary ?? null,
+		error: removed ? null : (row?.error ?? null),
+	});
+	// what the watched session is to the watcher
+	const key = recs.get(job.id)?.sessionFile || `job:${job.id}`;
+	const relation = relationOf(treeNode(w.watcher), treeNode(key));
+	const text = envelope({ from: job.name, id: job.id, relation, kind: "notice", body });
+	try {
+		const r = await deliverAgent(w.watcher, "notice", text, { from: job.name, relation });
+		log("info", "watch fired", { id: job.id, watcher: w.watcher, when: w.when, outcome: r.outcome });
+		record({ kind: "notice", id: job.id, name: job.name, who: w.watcherName, text: when === "ended" ? "ended" : "is idle" });
+	} catch (err) {
+		log("warn", "watch notice failed", { id: job.id, watcher: w.watcher, error: String(err) });
+	}
+}
+
+/** M43: the `watch` op: a peer asks to be told once when a session is next idle, or has ended. */
+async function addWatch(conn: Conn, args: { id?: unknown; when?: unknown } | undefined): Promise<{ id: string; name: string; when: Watch["when"]; fired: boolean }> {
+	const peer = requirePeer(conn);
+	const to = typeof args?.id === "string" ? args.id.trim() : "";
+	const when = args?.when;
+	if (!to) throw new OpError("bad_request", "id required");
+	if (when !== "idle" && when !== "ended") throw new OpError("bad_request", "when must be idle or ended");
+	const me = sessionKeyOf(peer);
+	const target = findTarget(peer, to);
+	if (target.key === me) throw new OpError("bad_request", "a session cannot watch itself");
+	if (target.role !== "job") throw new OpError("unsupported", "a foreground session is not watched (it has no job state)");
+	const row = rowOf(target.id);
+	if (!row) throw new OpError("not_found", `no such job: ${target.id}`);
+	const w: Watch = { watcher: me, watcherName: peerName(peer), id: row.id, when, at: Date.now() };
+	// already so: said at once, nothing kept
+	if (watchFires(when, row.state)) {
+		await fireWatch(w, row);
+		return { id: row.id, name: row.name, when, fired: true };
+	}
+	const mine = watches.filter((x) => x.watcher === me);
+	const same = mine.find((x) => x.id === row.id && x.when === when);
+	if (same) watches = watches.filter((x) => x !== same);
+	else if (mine.length >= MAX_WATCHES) throw new OpError("full", `at most ${MAX_WATCHES} watches at a time`);
+	watches.push(w);
+	saveWatches();
+	log("info", "watch", { id: row.id, watcher: me, when });
+	return { id: row.id, name: row.name, when, fired: false };
+}
 
 function persistRoster(): void {
 	const obj: Record<string, HostRef> = {};
@@ -423,7 +562,9 @@ function push(event: Event): void {
 
 function pushJob(id: string): void {
 	const job = rowOf(id);
-	if (job) push({ event: "job", job });
+	if (!job) return;
+	push({ event: "job", job });
+	noteState(job);
 }
 
 /** rm: stop the job, drop its records, then its worktree when that holds no work (M10). */
@@ -454,6 +595,11 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 	}
 	const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
 	const file = recs.get(id)?.sessionFile;
+	const name = rowOf(id)?.name ?? recs.get(id)?.name ?? id;
+	// M43: before the record goes (a watcher is told, then the record and the row are gone)
+	await fireWatches({ id, name, state: "removed" });
+	record({ kind: "removed", id, name });
+	lastSeen.delete(id);
 	recs.delete(id);
 	replyAt.delete(id);
 	shellPids.delete(id);
@@ -731,6 +877,7 @@ function scheduleResume(id: string, ms: number, why: "crash" | "host-gone" | "in
 	clearTimeout(resumeTimers.get(id));
 	telemetry.counter("roost.auto_resume").add(1, { why });
 	log("info", "resume scheduled", { id, ms, why });
+	record({ kind: "resume", id, name: rowOf(id)?.name ?? id, why, text: clipText(rowOf(id)?.error) });
 	const t = setTimeout(() => {
 		resumeTimers.delete(id);
 		if (shuttingDown || roster.has(id) || !recs.has(id) || typeof readState(id)?.resumeAt !== "number") return;
@@ -892,6 +1039,7 @@ async function runSchedule(s: Schedule, now: number, why: "due" | "catch-up" | "
 			s.lastJob = r.id;
 			s.lastSkip = undefined;
 			log("info", "schedule ran", { schedule: s.name, id: r.id, why });
+			record({ kind: "schedule", id: r.id, name: r.name, who: s.name, why });
 			return r.id;
 		} catch (err) {
 			s.lastSkip = { at: now, why: (err as Error).message };
@@ -990,6 +1138,12 @@ function loadJobs(): void {
 		const rec = readJob(id);
 		if (rec) recs.set(id, rec);
 	}
+	// M43: what each job was last in, so what changed while the service was off is an event, and no more
+	for (const id of recs.keys()) {
+		const st = readState(id);
+		if (st && !hidden(st)) lastSeen.set(id, { state: st.state, waitingFor: st.endedAt === undefined ? ((st.waitingFor as JobRow["waitingFor"]) ?? null) : null });
+	}
+	loadWatches();
 	const saved = readJson<Record<string, HostRef>>(rosterPath()) ?? {};
 	for (const [id, ref] of Object.entries(saved)) {
 		if (!recs.has(id) || typeof ref?.hostPid !== "number") continue;
@@ -1187,6 +1341,12 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		throw err;
 	}
 	log("info", "dispatch", { id, name, cwd: rec.cwd, origin });
+	// M43: the feed starts the job as working; a schedule's run is recorded by the schedule
+	lastSeen.set(id, { state: "working", waitingFor: null });
+	if (!extra.schedule) {
+		const parent = extra.parentSession ? holderOf(extra.parentSession) : undefined;
+		record({ kind: "dispatch", id, name, who: parent ? holderName(parent) : "user", why: origin === "dispatch" ? null : origin });
+	}
 	if (!shell) supersedeOthers(id);
 	if (!shell) pushChildrenOf(rec.sessionFile); // M13: an adopted session's children have a parent row now
 	return { id, name };
@@ -1646,7 +1806,7 @@ interface PendingReply {
 	relation?: Relation;
 }
 
-const isAgentItem = (r: PendingReply) => r.kind === "message" || r.kind === "report";
+const isAgentItem = (r: PendingReply) => isAgentKind(r.kind);
 
 const MAX_PENDING = 50;
 
@@ -1723,6 +1883,7 @@ async function reply(
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
 	if (isTermJob(recs.get(id))) {
 		const r = await replyToProfile(id, text, live);
+		if (r.delivered || r.saved) record({ kind: "reply", id, name: rowOf(id)?.name ?? id, who: "user", text: clipText(text) });
 		// typed in first, then kept: a crash in between types it again on a resend (not atomic)
 		if (rid && (r.delivered || r.saved) && readState(id)) updateState(id, { requestIds: withRequest(readState(id), rid) });
 		return r;
@@ -1743,6 +1904,7 @@ async function reply(
 	// the request id goes in the same write as the reply: both are kept, or neither
 	updateState(id, { replySeq: seq, pendingReplies: [...pending, item], ...(rid ? { requestIds: withRequest(st, rid) } : {}) });
 	replyIn(id, seq);
+	record({ kind: "reply", id, name: rowOf(id)?.name ?? id, who: "user", text: clipText(text) });
 	if (connected) {
 		send(conn!, deliverEvent(id, item));
 		return { delivered: true, saved: false };
@@ -1787,7 +1949,7 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
 }
 
 /** M31: what the daemon offers agents beyond report, ack and hello. */
-const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback"];
+const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch"];
 
 /**
  * M31: an agent's hello. Informational (a report is what proves a job): the daemon keeps
@@ -2098,13 +2260,26 @@ async function sendMessage(conn: Conn, args: { to?: unknown; message?: unknown }
 	const me = sessionKeyOf(peer);
 	const target = findTarget(peer, to);
 	if (target.key === me) throw new OpError("bad_request", "a session cannot message itself");
+	// M43: the same text to the same session again within a minute is not sent twice (a
+	// loop of two sessions repeating themselves stops here)
+	const pair = `${me}\n${target.key}`;
+	const hash = createHash("sha1").update(message).digest("hex");
+	const last = lastSent.get(pair);
+	const now = Date.now();
+	if (last && last.hash === hash && now - last.at < DUPLICATE_WINDOW_MS) {
+		log("info", "agent message dropped", { from: peer.id, to: target.id, why: "duplicate" });
+		return { outcome: "duplicate", id: target.id, name: target.name, relation: target.relation };
+	}
 	if (!messageLimiter.take(me)) throw new OpError("rate_limited", `at most ${MESSAGES_PER_MINUTE} messages a minute`);
+	lastSent.set(pair, { hash, at: now });
+	if (lastSent.size > 1000) for (const [k, v] of lastSent) if (now - v.at > DUPLICATE_WINDOW_MS) lastSent.delete(k);
 	// the receiver sees the sender from its own side of the tree
 	const relation = relationOf(treeNode(target.key), treeNode(me));
 	const from = peerName(peer);
 	const text = envelope({ from, id: peer.id, relation, kind: "message", body: message });
 	const r = await deliverAgent(target.key, "message", text, { from, relation });
 	log("info", "agent message", { from: peer.id, to: r.id || target.id, outcome: r.outcome });
+	if (r.outcome !== "not running" && r.outcome !== "stopped") record({ kind: "message", id: r.id || target.id, name: r.name || target.name, who: from, text: clipText(message) });
 	return { ...r, id: r.id || target.id, name: r.name || target.name, relation: target.relation };
 }
 
@@ -2148,6 +2323,7 @@ async function routeReport(childId: string, body: string, ref = `${childId}:${Da
 		const r = await deliverAgent(parentKey, "report", text, { from, relation: "child", ref });
 		if (r.outcome !== "not running" && r.outcome !== "stopped") {
 			log("info", "report", { from: childId, to: r.id, outcome: r.outcome });
+			record({ kind: "report", id: childId, name: from, who: r.name, text: clipText(body.split("\n")[0]) });
 			return true;
 		}
 	} catch (err) {
@@ -2444,6 +2620,17 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return handback(conn, args);
 		case "peer_ack":
 			return peerAck(conn, args);
+		case "events": {
+			const after = args?.after;
+			const limit = args?.limit;
+			const id = args?.id;
+			if (after !== undefined && (typeof after !== "number" || !Number.isFinite(after))) throw new OpError("bad_request", "after must be a number");
+			if (limit !== undefined && (typeof limit !== "number" || !Number.isFinite(limit))) throw new OpError("bad_request", "limit must be a number");
+			if (id !== undefined && !str(id)) throw new OpError("bad_request", "id must be a job id");
+			return eventLog.since({ after, limit, id });
+		}
+		case "watch":
+			return addWatch(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
 	}
@@ -2533,6 +2720,7 @@ const shellWatcher = setInterval(shellTick, 2000);
 shellWatcher.unref();
 const reaper = setInterval(
 	() => {
+		sweepWatches();
 		void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) }));
 		void cleanupOld().catch((err: unknown) => log("error", "cleanup failed", { error: String(err) }));
 		void pollPrs().catch((err: unknown) => log("error", "pull request poll failed", { error: String(err) }));

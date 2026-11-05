@@ -19,6 +19,7 @@ import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
+import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -855,6 +856,10 @@ export class AgentView implements Component {
 			case "usage":
 				this.showUsage();
 				return done();
+			case "log":
+			case "events":
+				void this.showLog();
+				return done();
 			case "schedule":
 			case "schedules":
 				void this.scheduleCommand(arg);
@@ -1105,6 +1110,66 @@ export class AgentView implements Component {
 				const key = parseKey(data);
 				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
 				else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
+				else if (key === "pageUp") top = Math.max(0, top - 10);
+				else if (key === "pageDown") top += 10;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	/** M43 /log: what happened lately across the sessions (newest first); r reloads, Esc closes. */
+	private async showLog(): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		let events: RoostEvent[];
+		try {
+			events = (await client.request("events", { limit: 200 })).events;
+		} catch (err) {
+			return this.say((err as Error).message, "error");
+		}
+		if (events.length === 0) return this.say("nothing happened yet (the log starts with the next task, reply or message)");
+		let top = 0;
+		const view = this;
+		const lines = (width: number): string[] => {
+			const t = view.o.theme;
+			const now = Date.now();
+			const out = [t.bold(truncateToWidth("Log · what happened lately (newest first)", width)), ""];
+			for (const e of [...events].reverse()) {
+				const tone =
+					e.kind === "state" && e.state === "failed"
+						? "error"
+						: e.kind === "state" && e.state === "blocked"
+							? "warning"
+							: e.kind === "state" && e.state === "done"
+								? "success"
+								: e.kind === "message" || e.kind === "report" || e.kind === "notice"
+									? "accent"
+									: "muted";
+				out.push(truncateToWidth(`  ${t.fg("dim", eventAgo(e.at, now).padStart(4))}  ${t.fg(tone, oneLine(eventLine(e)))}`, width));
+			}
+			return out;
+		};
+		this.overlay = {
+			render(width: number) {
+				const all = lines(width);
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				top = Math.max(0, Math.min(top, all.length - room));
+				const keys = view.o.theme.fg("dim", truncateToWidth("r reload · ↑↓ scroll · Esc close", width));
+				return [...all.slice(top, top + room), "", keys];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (data === "r") {
+					void client
+						.request("events", { limit: 200 })
+						.then((r) => {
+							events = r.events;
+							view.o.tui.requestRender();
+						})
+						.catch(() => {});
+				} else if (key === "up") top = Math.max(0, top - 1);
 				else if (key === "down") top++;
 				else if (key === "pageUp") top = Math.max(0, top - 10);
 				else if (key === "pageDown") top += 10;
@@ -2531,6 +2596,7 @@ export class AgentView implements Component {
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["/usage", "what the sessions spent: today, all, by model, by session"],
+			["/log", "what happened lately: tasks, questions, results, messages (newest first)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],
 			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
 			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],
