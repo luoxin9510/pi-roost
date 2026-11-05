@@ -529,6 +529,20 @@ const jobs = await list({ cwd: process.cwd() });
 await attach(id); // hands this terminal to the session until it detaches · 把当前终端交给会话，直到退出
 ```
 
+### Telemetry · 遥测
+
+`ROOST_TELEMETRY=/path/file.jsonl` in the environment of whatever starts the background
+service (stop it first: `pi-roost daemon stop`) makes the service and its hosts write
+spans and metrics there as JSON lines: every request with its time, reply delivery and
+acknowledgement latency, reports, state changes, events pushed, host start, attach
+replay. Nothing leaves your machine; it is off by default. The shape follows pi's
+`pi-telemetry` contract, so an adapter to it or to OpenTelemetry is small.
+
+启动后台服务时，如果环境里设了 `ROOST_TELEMETRY=/path/file.jsonl`（先 `pi-roost daemon stop`），
+后台服务和各个 host 会把 span 和指标以 JSON lines 写进这个文件：每个请求及其耗时、回复送达和确认的延迟、
+上报、状态变化、推送的事件、host 启动、attach 回放。数据不会离开你的机器，默认关闭。格式沿用 pi 的
+`pi-telemetry` 约定，要接到它或 OpenTelemetry 只需一个很小的适配层。
+
 ## How it works · 工作原理
 
 ```text

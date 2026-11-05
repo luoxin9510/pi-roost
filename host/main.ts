@@ -14,6 +14,7 @@ import { ModeTracker, StreamTail } from "../lib/term-modes.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { isProfileJob, launchCommand, readJob, readState, screenPath, termPath, writeExit, writeWorker } from "../lib/store.ts";
 import { TermSignalCollector } from "../lib/term-signals.ts";
+import { telemetryFromEnv } from "../lib/telemetry.ts";
 import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
 import { jobEnv } from "../lib/identity.ts";
 
@@ -35,6 +36,12 @@ function log(msg: string, extra: Record<string, unknown> = {}): void {
 process.on("uncaughtException", (err) => log("uncaughtException", { error: String(err?.stack ?? err) }));
 process.on("unhandledRejection", (err) => log("unhandledRejection", { error: String(err) }));
 process.on("SIGPIPE", () => {});
+
+// M34: ROOST_TELEMETRY reaches the host from the daemon's environment
+const telemetry = telemetryFromEnv(`host-${id}`);
+const hostReady = telemetry.histogram("roost.host.ready");
+const replayLatency = telemetry.histogram("roost.attach.replay_latency");
+const inputs = telemetry.counter("roost.host.input");
 
 const job = readJob(id);
 if (!job) {
@@ -270,6 +277,7 @@ function snapshot(extra: { modes: string; region: [number, number] | undefined }
 
 /** M21: send the snapshot once the mirror has every byte that came before the attach. */
 function replay(a: Attach): void {
+	const t0 = Date.now();
 	// all taken at the snapshot point: what follows is in the pending output
 	const extra = { modes: modes.restore(), region: modes.scrollRegion() };
 	const cut = tail.text();
@@ -286,6 +294,7 @@ function replay(a: Attach): void {
 		}
 		for (const p of a.pending ?? []) if (p) a.sock.write(encodeFrame(FrameType.DATA, p));
 		a.pending = undefined;
+		replayLatency.record(Date.now() - t0, { alt: term.buffer.active.type === "alternate" });
 	});
 }
 
@@ -341,6 +350,7 @@ function control(sock: Socket, req: { op: string; data?: unknown }): void {
 			else {
 				try {
 					proc.write(req.data);
+					inputs.add(1);
 					reply = { ok: true };
 				} catch (err) {
 					reply = { ok: false, error: String(err) };
@@ -447,6 +457,7 @@ server.listen(sockPath, () => {
 		chmodSync(sockPath, 0o600);
 	} catch {}
 	log("listening", { sockPath });
+	hostReady.record(Math.round(process.uptime() * 1000), { kind: job?.kind ?? "pi" });
 });
 
 let finishing = false;

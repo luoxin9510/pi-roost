@@ -1016,3 +1016,44 @@ describe("M31 the agent protocol", () => {
 		}, 60000);
 	}
 });
+
+describe("M34 the daemon's telemetry", () => {
+	it("records a span per request, reply latencies, reports and host start", async () => {
+		const file = join(home, "telemetry.jsonl");
+		process.env.ROOST_TELEMETRY = file;
+		try {
+			const { client } = await startDaemon();
+			await client.request("subscribe", {});
+			const { id } = await client.request("dispatch", {
+				cwd: work,
+				sessionFile: "",
+				kind: "shell",
+				profile: "scripted",
+				protocol: true,
+				command: [process.execPath, resolve("test/fixtures/agent-ts.ts")],
+				env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+				name: "scripted",
+				origin: "dispatch",
+				term: { submit: "\r", settleMs: 600, typeTask: "first" },
+			});
+			await waitFor(async () => (await find(client, id))?.summary === "did first (#1)", 15000);
+			await client.request("reply", { id, text: "second" });
+			await waitFor(async () => (await find(client, id))?.summary === "did second (#2)", 15000);
+			await waitFor(() => (readState(id)?.pendingReplies as unknown[] | undefined)?.length === 0);
+			await client.request("stop", { id });
+			await waitFor(async () => (await find(client, id))?.endedAt);
+			const { parseTelemetry } = await import("../lib/telemetry.ts");
+			const recs = await waitFor(() => {
+				const r = existsSync(file) ? parseTelemetry(readFileSync(file, "utf8")) : [];
+				return r.some((x) => x.name === "roost.reply.ack_latency") && r.some((x) => x.name === "roost.host.ready") ? r : undefined;
+			}, 5000);
+			const names = new Set(recs.map((r) => r.name));
+			for (const n of ["roost.op.dispatch", "roost.op.reply", "roost.op.report", "roost.op.ack", "roost.op.hello", "roost.op.stop", "roost.reports", "roost.events", "roost.host.start", "roost.host.ready", "roost.reply.deliver_latency", "roost.reply.ack_latency", "roost.state_changes"]) {
+				expect(names, n).toContain(n);
+			}
+			expect(recs.find((r) => r.name === "roost.host.ready")?.proc).toBe(`host-${id}`);
+		} finally {
+			delete process.env.ROOST_TELEMETRY;
+		}
+	}, 40000);
+});
