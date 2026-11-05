@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Evals with real models (`npm run eval`, for development): each case runs a real pi in an isolated roost (a task to done, a reply continuing the session, a steer joining the work, a subagent reporting back) and is graded on what roost saw; repeated runs give pass rates and flaky cases, with cost and time. See [docs/plans/m37-evals.md](docs/plans/m37-evals.md).
+
 - Request ids: `reply` and `dispatch` take an optional `requestId`; a request sent again with the same id (its answer lost when the background service restarted) is taken once. With them the stress run's chaos scenario handles every reply exactly once.
 
 - Much faster under load, found by a new stress run (`npm run stress`: 50 agents, 1000 replies, a hard-killed daemon and hosts): replies are taken in about 8 ms instead of 240, acknowledged in 25 ms instead of a second, and the hub hears of changes in about 25 ms instead of over a second. The background service no longer runs `ps` for every session on each check, writes reports without waiting on the disk, and syncs what must survive a crash in groups, off its main loop. An agent restarted after a crash no longer redoes a reply it had finished.

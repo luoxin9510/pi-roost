@@ -64,6 +64,7 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "stress": "node stress/run.ts",
+    "eval": "node evals/run.ts",
     "prepare": "npm run build",
     "install:local": "sh scripts/install-local.sh",
     "prepublishOnly": "npm run check && npm test && npm run build"
