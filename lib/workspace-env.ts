@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
+import { JOB_ENV_NAMES } from "./identity.ts";
 
 export type WorkspaceEnvMode = "shell" | "direnv" | "off";
 
@@ -14,7 +15,7 @@ export type WorkspaceEnvMode = "shell" | "direnv" | "off";
  * its own PTY and is opened from any terminal, or a phone).
  */
 export const ENV_NEVER = new Set([
-	"PI_JOB_ID", "PI_JOB_TOKEN", "PI_JOB_DIR", "PI_DAEMON_SOCK", "PI_ROOST_RESTORE",
+	...JOB_ENV_NAMES,
 	"TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "LC_TERMINAL", "LC_TERMINAL_VERSION",
 	"TMUX", "TMUX_PANE", "STY", "WINDOW", "WINDOWID", "ITERM_SESSION_ID", "ITERM_PROFILE",
 	"KITTY_WINDOW_ID", "KITTY_PID", "KITTY_LISTEN_ON", "KITTY_PUBLIC_KEY", "WEZTERM_PANE", "WEZTERM_UNIX_SOCKET",

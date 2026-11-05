@@ -381,6 +381,7 @@ describe("worker reports", () => {
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", { ...args("sleep 30"), fanout: "fabc123" });
 		expect((await find(client, id))?.fanout).toBe("fabc123");
+		expect((await find(client, id))?.profile).toBe("pi"); // M29
 		const bad = await client.request("dispatch", { ...args("sleep 30"), fanout: "../../x" });
 		expect((await find(client, bad.id))?.fanout).toBeNull();
 	});
@@ -738,7 +739,7 @@ describe("shell jobs (DI-6)", () => {
 			const r = await find(client, id);
 			return r?.summary === "LAST-LINE" ? r : undefined;
 		}, 8000);
-		expect(live).toMatchObject({ kind: "shell", status: "busy", sessionFile: "" });
+		expect(live).toMatchObject({ kind: "shell", profile: "shell", status: "busy", sessionFile: "" });
 		await expect(client.request("reply", { id, text: "hello" })).rejects.toMatchObject({ code: "unsupported" });
 		const done = await waitFor(async () => {
 			const r = await find(client, id);

@@ -63,6 +63,8 @@ export interface JobRow {
 	worktree?: { path: string; branch: string; base?: string } | null;
 	/** M26: the sessions started together for one task with several models share this id. */
 	fanout?: string | null;
+	/** M29: the agent that runs it: "pi" and "shell" today, other agents' profiles later. */
+	profile?: string;
 }
 
 /** M9: a session an agent may message (roost_agents). */

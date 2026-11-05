@@ -1,9 +1,10 @@
 // pi-roost settings (PRD §8.1): ~/.pi/agent/roost.json, overridden per project
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
+import { roostEnv } from "./identity.ts";
 
 export interface RoostConfig {
 	leftArrowOpensAgents: boolean;
@@ -186,13 +187,29 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	return out;
 }
 
+/**
+ * The user's settings file: ROOST_CONFIG_DIR (or PI_ROOST_CONFIG_DIR), else
+ * ~/.config/roost/roost.json when it exists (M29: a home not named after one agent),
+ * else ~/.pi/agent/roost.json, where it has always been. Nothing is moved.
+ */
 export function userConfigPath(): string {
-	return join(process.env.PI_ROOST_CONFIG_DIR || join(homedir(), ".pi", "agent"), "roost.json");
+	const dir = roostEnv("CONFIG_DIR");
+	if (dir) return join(dir, "roost.json");
+	// XDG: a relative XDG_CONFIG_HOME is ignored (it would resolve against each process's cwd).
+	const xdg = process.env.XDG_CONFIG_HOME;
+	const neutral = join(xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".config"), "roost", "roost.json");
+	return existsSync(neutral) ? neutral : join(homedir(), ".pi", "agent", "roost.json");
+}
+
+/** M29: a project's settings: .roost/roost.json, else .pi/roost.json. */
+export function projectConfigPath(cwd: string): string {
+	const neutral = join(cwd, ".roost", "roost.json");
+	return existsSync(neutral) ? neutral : join(cwd, ".pi", "roost.json");
 }
 
 export function loadConfig(cwd: string): RoostConfig {
 	const user = pick(readJson(userConfigPath()));
-	const project = pick(readJson(join(cwd, ".pi", "roost.json")));
+	const project = pick(readJson(projectConfigPath(cwd)));
 	// A cloned repository must not choose which of your environment reaches its workers,
 	// which provider receives transcript excerpts (or what they cost), nor how far its
 	// agents may reach and multiply.

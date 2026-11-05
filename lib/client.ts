@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { daemonSocketPath, ensureDirs } from "./paths.ts";
 import { type ArgsOf, encodeLine, type Event, LineReader, type Op, type Response, type ResultOf } from "./protocol.ts";
+import { JOB_ENV_NAMES } from "./identity.ts";
 
 export class DaemonError extends Error {
 	code: string | undefined;
@@ -79,7 +80,7 @@ export class DaemonClient {
 		if (!existsSync(entry)) throw new DaemonError(`daemon not built: ${entry} (run npm run build)`, "not_built");
 		// The first client may be a worker: its job identity must not leak into the daemon.
 		const env = { ...process.env };
-		for (const key of ["PI_JOB_ID", "PI_JOB_TOKEN", "PI_JOB_DIR", "PI_DAEMON_SOCK", "PI_ROOST_RESTORE"]) delete env[key];
+		for (const key of JOB_ENV_NAMES) delete env[key];
 		const child = spawn(process.execPath, [entry], { detached: true, stdio: "ignore", env, cwd: "/" });
 		child.unref();
 		const deadline = Date.now() + timeoutMs;

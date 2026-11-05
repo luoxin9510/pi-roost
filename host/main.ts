@@ -14,6 +14,7 @@ import { ModeTracker, StreamTail } from "../lib/term-modes.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
 import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
 import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
+import { jobEnv } from "../lib/identity.ts";
 
 const { Terminal } = xterm;
 
@@ -67,12 +68,7 @@ const token = launchState?.jobToken;
 const identity: Record<string, string> =
 	job.kind === "shell"
 		? {}
-		: {
-				PI_JOB_ID: id,
-				...(typeof token === "string" ? { PI_JOB_TOKEN: token } : {}),
-				PI_DAEMON_SOCK: daemonSocketPath(),
-				PI_JOB_DIR: jobDir(id),
-			};
+		: jobEnv({ id, ...(typeof token === "string" ? { token } : {}), socket: daemonSocketPath(), dir: jobDir(id) });
 // M20: the workspace's own environment (direnv, mise, fnm ...), evaluated at every start.
 // Told to stop meanwhile: the probe goes, and the job ends as one that never ran.
 const earlyStop = () => {
