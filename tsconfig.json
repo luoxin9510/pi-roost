@@ -13,6 +13,7 @@
     "erasableSyntaxOnly": true
   },
   "include": [
+    "adapters",
     "extensions",
     "spikes",
     "lib",

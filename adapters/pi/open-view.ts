@@ -1,9 +1,9 @@
-import { discoverAgents } from "../lib/agents.ts";
+import { discoverAgents } from "../../lib/agents.ts";
 import { type ExtensionContext, type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset } from "../lib/config.ts";
-import { buildLaunch, buildProfileLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../lib/dispatch.ts";
-import { readWriterLock } from "../lib/locks.ts";
-import { notifySequence, notifyText, resolveNotify } from "../lib/job-events.ts";
+import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset } from "../../lib/config.ts";
+import { buildLaunch, buildProfileLaunch, workerEnv, fallbackName, isolationDefault, prepareIsolation } from "../../lib/dispatch.ts";
+import { readWriterLock } from "../../lib/locks.ts";
+import { notifySequence, notifyText, resolveNotify } from "../../lib/job-events.ts";
 import { AgentView } from "./agent-view.ts";
 
 // Process-wide, not per module copy: a session switch may load this module again.

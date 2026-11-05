@@ -4,9 +4,9 @@
 // attached: the view reads the child's session file and follows it while it is open.
 import { statSync } from "node:fs";
 import { type Component, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { JobRow } from "../lib/protocol.ts";
-import { clean, neighboursOf, pathOf, readTail, type TranscriptItem, transcriptItems } from "../lib/transcript.ts";
-import { ageOf, iconOf, sentenceOf } from "../lib/view-model.ts";
+import type { JobRow } from "../../lib/protocol.ts";
+import { clean, neighboursOf, pathOf, readTail, type TranscriptItem, transcriptItems } from "../../lib/transcript.ts";
+import { ageOf, iconOf, sentenceOf } from "../../lib/view-model.ts";
 
 export interface TranscriptTheme {
 	fg: (color: string, text: string) => string;

@@ -10,5 +10,5 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["lib", "daemon", "host", "bin"]
+  "include": ["lib", "daemon", "host", "bin", "adapters/pi/api.ts"]
 }

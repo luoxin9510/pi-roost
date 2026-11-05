@@ -5,16 +5,16 @@
 //
 // Everything goes through the per-user daemon (started on demand).
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { attachToHost, type DetachReason } from "./attach.ts";
+import { attachToHost, type DetachReason } from "../../lib/attach.ts";
 import { join } from "node:path";
-import { DaemonClient, packageRoot } from "./client.ts";
-import { buildLaunch, fallbackName, prepareIsolation, refusedByDaemon } from "./dispatch.ts";
-import { envPolicy, loadConfig } from "./config.ts";
-import { hostSocketPath } from "./paths.ts";
-import type { JobRow } from "./protocol.ts";
-import { ensureLive } from "./resume.ts";
+import { DaemonClient, packageRoot } from "../../lib/client.ts";
+import { buildLaunch, fallbackName, prepareIsolation, refusedByDaemon } from "../../lib/dispatch.ts";
+import { envPolicy, loadConfig } from "../../lib/config.ts";
+import { hostSocketPath } from "../../lib/paths.ts";
+import type { JobRow } from "../../lib/protocol.ts";
+import { ensureLive } from "../../lib/resume.ts";
 
-export type { JobRow } from "./protocol.ts";
+export type { JobRow } from "../../lib/protocol.ts";
 
 export interface SpawnOptions {
 	/** The first prompt (≥ 1 character). */
@@ -65,7 +65,7 @@ export async function spawn(opts: SpawnOptions): Promise<{ id: string; name: str
 	const argv = [
 		process.argv[0] ?? process.execPath,
 		cli,
-		...(opts.loadExtension ? ["-e", join(packageRoot(), "extensions", "index.ts")] : []),
+		...(opts.loadExtension ? ["-e", join(packageRoot(), "adapters", "pi", "index.ts")] : []),
 	];
 	try {
 		const r = await withClient((c) =>

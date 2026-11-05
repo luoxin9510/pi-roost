@@ -33,7 +33,8 @@ terminal, as a terminal agent's; after that its reports set the row.
   ```
 
   `Reporter` underneath is what pi's worker uses (coalescing, backoff, `call` for other
-  ops).
+  ops). It needs node alone (a test keeps it so). A controller (a hub, a script) uses
+  `pi-roost/client` (`DaemonClient`) and the types in `pi-roost/protocol`.
 - **Python**: `sdk/python/roost_agent.py`, one file, standard library only (3.8+).
 
   ```python

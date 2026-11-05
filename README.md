@@ -593,7 +593,7 @@ npm install
 npm test
 npm run stress                            # 50 fake agents, 1000 replies, chaos; report in stress/.runs/ · 压力测试
 npm run eval -- --runs 3                  # real pi on a cheap model, graded; report in evals/.runs/ · 真实模型评测
-pi -e ./extensions/index.ts --agents      # try the checkout without installing · 不安装直接试用
+pi -e ./adapters/pi/index.ts --agents     # try the checkout without installing · 不安装直接试用
 npm run install:local                     # or install the checkout as a local pi package · 或作为本地 pi 包安装
 ```
 

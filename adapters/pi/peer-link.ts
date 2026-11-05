@@ -3,11 +3,11 @@
 // receive messages and reports, and hands them to pi as agent messages.
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DaemonClient } from "../lib/client.ts";
-import { AGENT_MESSAGE_TYPE } from "../lib/comms.ts";
-import type { ArgsOf, Event, Op, ResultOf } from "../lib/protocol.ts";
-import { isScratchSession } from "../lib/paths.ts";
-import { listJobIds, readJob } from "../lib/store.ts";
+import { DaemonClient } from "../../lib/client.ts";
+import { AGENT_MESSAGE_TYPE } from "../../lib/comms.ts";
+import type { ArgsOf, Event, Op, ResultOf } from "../../lib/protocol.ts";
+import { isScratchSession } from "../../lib/paths.ts";
+import { listJobIds, readJob } from "../../lib/store.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 
 type Deliver = Extract<Event, { event: "deliver" }>;

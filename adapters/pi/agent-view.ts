@@ -4,21 +4,21 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, stripTerminalSequences, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { attachToHost, type DetachReason } from "../lib/attach.ts";
-import { DaemonClient, type DaemonError } from "../lib/client.ts";
-import { hostSocketPath } from "../lib/paths.ts";
-import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
-import { type Filter, parseFilter } from "../lib/filter.ts";
-import { forgetJob, observeJob } from "../lib/job-events.ts";
-import { ensureLive } from "../lib/resume.ts";
-import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
-import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
+import { attachToHost, type DetachReason } from "../../lib/attach.ts";
+import { DaemonClient, type DaemonError } from "../../lib/client.ts";
+import { hostSocketPath } from "../../lib/paths.ts";
+import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../../lib/dispatch-input.ts";
+import { type Filter, parseFilter } from "../../lib/filter.ts";
+import { forgetJob, observeJob } from "../../lib/job-events.ts";
+import { ensureLive } from "../../lib/resume.ts";
+import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../../lib/worktree.ts";
+import { formatCost, todayOf, totalUsage } from "../../lib/usage.ts";
 import { TaskEditor } from "./task-editor.ts";
-import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
-import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
-import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
-import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
-import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
+import { type AgentDef, findAgent, pickAgent } from "../../lib/agents.ts";
+import { hyperlink, prLabel, prTone, rowHasPr } from "../../lib/pr.ts";
+import { fallbackName, refusedByDaemon } from "../../lib/dispatch.ts";
+import type { DispatchArgs, Event, JobRow, ReplyMode } from "../../lib/protocol.ts";
+import { type Preset, presetFrom, projectConfigPath } from "../../lib/config.ts";
 import {
 	ageOf,
 	counts,
@@ -41,7 +41,7 @@ import {
 	type Tone,
 	isProfileRow,
 	takesReplies,
-} from "../lib/view-model.ts";
+} from "../../lib/view-model.ts";
 
 const MIN_TASK = 4; // DI-1
 const DOUBLE_PRESS_MS = 2000; // Ctrl+X delete, Ctrl+C exit
