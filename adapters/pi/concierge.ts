@@ -22,6 +22,8 @@ export const HUB_TOOLS = ["hub_sessions", "hub_events", "hub_read", "hub_send", 
 /** M45: the tools the policy switches on: an answer in the user's place; starting, stopping, restarting sessions. */
 export const ANSWER_TOOLS = ["hub_reply"] as const;
 export const ACT_TOOLS = ["hub_stop", "hub_respawn", "hub_dispatch"] as const;
+/** M46: standing orders: always. */
+export const ORDER_TOOLS = ["hub_note", "hub_note_done", "hub_note_drop"] as const;
 
 export function isConciergeRole(env: NodeJS.ProcessEnv): boolean {
 	return env[CONCIERGE_ROLE_ENV] === "concierge";
@@ -29,7 +31,7 @@ export function isConciergeRole(env: NodeJS.ProcessEnv): boolean {
 
 /** The tools the policy in force lets it use (the rest stay registered, inactive). */
 export function activeTools(p: ConciergePolicy): string[] {
-	return [...HUB_TOOLS, ...(p.answer === "never" ? [] : ANSWER_TOOLS), ...(p.act ? ACT_TOOLS : [])];
+	return [...HUB_TOOLS, ...ORDER_TOOLS, ...(p.answer === "never" ? [] : ANSWER_TOOLS), ...(p.act ? ACT_TOOLS : [])];
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -359,6 +361,47 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 			const launch = dispatchLaunch(ctx, params);
 			const r = await link.call("concierge-act", { what: "dispatch", launch, why: `dispatch ${params.name ?? ""}`.trim() });
 			return text(`Started ${r.name} (${r.id}). What it does reaches you in the digests.`);
+		},
+	});
+
+	// M46: standing orders: keep one the user gives, mark one applied, drop one of yours
+	pi.registerTool({
+		name: "hub_note",
+		label: "Keep a standing order",
+		description:
+			'Keep a rule the user gave you, in their words, so it is in every digest: "when build ends, tell deploy its result", "every evening say what finished and what is blocked". For one on a clock, give when (every 30m, daily 18:00, weekdays 09:00, cron "…"): roost wakes you with it when due.',
+		parameters: Type.Object({
+			text: Type.String({ description: "The order, one or two lines (at most 500 characters)" }),
+			when: Type.Optional(Type.String({ description: "every 30m | daily 18:00 | weekdays 09:00 | cron \"m h dom mon dow\"" })),
+		}),
+		async execute(_id, params) {
+			const r = await link.call("concierge-order", { action: "add", text: params.text, when: params.when });
+			return text(`Kept as #${r.order?.id}${params.when ? ` (${params.when})` : ""}. It is in every digest from now on.`);
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_note_done",
+		label: "Order applied",
+		description: "Say that you applied a standing order (#id) just now, and what you did; the user's log shows it.",
+		parameters: Type.Object({
+			id: Type.Number({ description: "The order's number" }),
+			what: Type.String({ description: "One line: what you did for it" }),
+		}),
+		async execute(_id, params) {
+			await link.call("concierge-order", { action: "applied", id: params.id, text: params.what });
+			return text(`Noted for #${params.id}.`);
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_note_drop",
+		label: "Drop a standing order",
+		description: "Drop a standing order you kept (#id), when the user tells you to. An order the user gave in the hub is the user's to drop (/concierge orders rm).",
+		parameters: Type.Object({ id: Type.Number({ description: "The order's number" }) }),
+		async execute(_id, params) {
+			await link.call("concierge-order", { action: "rm", id: params.id });
+			return text(`Dropped #${params.id}.`);
 		},
 	});
 }

@@ -2,7 +2,7 @@
 
 Status: approved 2026-11-05; M43 done ([m43-events.md](m43-events.md)), M44 done
 ([m44-concierge.md](m44-concierge.md)), M45 done ([m45-policy.md](m45-policy.md)),
-M46–M47 to come in order. Decided then: the phone side (`notifyCommand`, pi-mobile escalation) is
+M46 done ([m46-orders.md](m46-orders.md)), M47 to come. Decided then: the phone side (`notifyCommand`, pi-mobile escalation) is
 out of scope for now, and the shared task board (M47) is a milestone in its own right,
 not an option. Nothing in it changes what pi users have today; the concierge is off
 until turned on.
@@ -126,7 +126,7 @@ table, and its tools.
 | `hub_notify(text, level)` | hub status line + terminal notification (`notify`); the phone (`notifyCommand`) is out of scope for now | always |
 | `hub_watch(id, when)` | a one-shot idle/ended notice (M43) | always |
 | `hub_dispatch`, `hub_stop`, `hub_respawn` | `dispatch` / `stop` / `respawn` | **gated**, off by default |
-| `hub_note(text)` | standing orders (M46) | always |
+| `hub_note(text, when?)`, `hub_note_done(id, what)`, `hub_note_drop(id)` | standing orders (M46): `concierge-order` | always (it drops only its own) |
 
 Everything the concierge does is written to `concierge.jsonl` in the roost home
 (who, what, why, the event that caused it) and shown by `/concierge log`.
@@ -220,7 +220,7 @@ watches" into "a team", and the user asked for it as a milestone of its own.
 | M43 | **Event feed and messaging rules** (done, [m43-events.md](m43-events.md)): `events` op with cursor and durable log; `watch` idle/ended notices; repeats dropped; message framing; hub `/log`, `pi-roost log` | daemon tests for each rule; the pi worker shows a peer message as "from a session, not you" |
 | M44 | **Concierge v0 — report and relay** (done, [m44-concierge.md](m44-concierge.md)): the job, the extension role, the digest wake with coalescing and the hourly cap, the heartbeat, the daily budget, tools `hub_sessions/events/read/send/notify/watch`, the status line, `?` chat, `/concierge on/off/status/log/attach`, the feed as its audit; `answer: "never"` only | with 3 real sessions (haiku) it reports a finished run, a failed one and a question within its first wakes, the question as needing the user, without answering it; relays a finding from one session to another on request; wakes and cost shown; daemon tests for the cap, the budget, the heartbeat and its own events left out |
 | M45 | **Escalation and policy** (done, [m45-policy.md](m45-policy.md)): suggested answers on every question (`hub_suggest`, on the row), the banner with `Ctrl+Y` send / `Ctrl+E` edit / Esc, `/concierge answer never|routine|always` with the routine classes and the irreversible list in the prompt, the daemon's gate (`concierge-reply`), the undo (a steer or reply), `/concierge act on|off` with `hub_dispatch/stop/respawn` (the phone is out of scope) | evals: routine vs careful questions on a fixed set (`evals/policy.eval.ts`; none of the careful ones answered, each with a suggestion; the routine ones answered, the fleet one with the other session's value); `never`: nothing answered, a suggestion on each; daemon tests: the gates, the undo steer, suggestions dropping with the row |
-| M46 | **Standing orders**: `hub_note`, `orders.json`, `/concierge orders`, the heartbeat as a schedule, orders on a clock | an order "when A ends tell B" fires once; a daily digest arrives on schedule; an order that starts work is refused without `act` |
+| M46 | **Standing orders** (done, [m46-orders.md](m46-orders.md)): `hub_note`/`hub_note_done`/`hub_note_drop`, `orders.json` (the daemon's, at most 50), `/concierge orders [add \| rm]`, every digest lists them, the ones on a clock wake it when due (`why: "order"`, "Due now"; the heartbeat stays as it is), never beyond the policy | evals (`evals/orders.eval.ts`): "when A ends tell B" applied once with `#1` said; a rule told in a question kept with `every 1m` and carried out when due; an order that starts work refused without `act`, the user told; daemon tests: the store, the gates, the digest, the clock wake and its once-ness, a restart |
 | M47 | **Shared task board** (Claude Code agent teams) | board ops, tools, `/tasks`, a level 1 agent claims a task; the concierge assigns and unblocks |
 
 Each milestone: branch → PR → independent review → merge, as before; the stress run

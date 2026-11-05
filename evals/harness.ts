@@ -43,6 +43,8 @@ export interface Step {
 	stop?: true;
 	/** M44: a question to the concierge (`? …` in the hub). */
 	ask?: string;
+	/** M46: wait this long (a clock order's due time, say) before the case may settle. */
+	waitMs?: number;
 	mode?: ReplyMode;
 	afterMs?: number;
 }
@@ -66,6 +68,8 @@ export interface RoostCase {
 	extra?: { name: string; task?: string; command?: string[] }[];
 	/** M44: the concierge on (its model: the case's) before the sessions start; M45: with a policy. */
 	concierge?: boolean | { answer?: ConciergeAnswer; act?: boolean };
+	/** M46: standing orders the user gave (kept before the sessions start). */
+	orders?: { text: string; when?: string }[];
 }
 
 export interface RoostOutcome {
@@ -109,6 +113,9 @@ export interface RoostOutcome {
 		answered: { to: string; text: string }[];
 		suggestions: { to: string; text: string }[];
 		acts: string[];
+		/** M46: the standing orders as the case ended, and the ones it said it applied (`#id what`). */
+		orders: { id: number; text: string; when: string | null; by: string; count: number }[];
+		applied: string[];
 		transcript: { kind: string; text: string }[];
 	} | null;
 }
@@ -287,6 +294,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				thinking: "off",
 			});
 			await within(cl.request("concierge", { action: "on", launch: { ...launch, env: { ...launch.env, ROOST_ROLE: "concierge" } } }), left(), "concierge on");
+			// M46: the user's standing orders, before anything happens
+			for (const o of c.orders ?? []) await within(cl.request("concierge-order", { action: "add", text: o.text, when: o.when }), left(), "concierge-order add");
 		}
 		const launches: DispatchArgs[] = [];
 		if (c.fanout) {
@@ -397,6 +406,14 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 						settledAt = 0;
 						continue;
 					}
+					if (next.waitMs) {
+						// M46: time for a clock order to come due (bounded by the case's deadline)
+						states().push("wait");
+						await sleep(Math.min(next.waitMs, Math.max(0, deadline - Date.now())));
+						workingSince = 0;
+						settledAt = 0;
+						continue;
+					}
 					// before the request: the row may move before its answer comes
 					states().push(`reply${next.mode === "steer" ? " (steer)" : ""}`);
 					await within(
@@ -480,7 +497,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 					ct = transcriptItems(readFileSync(conciergeSession, "utf8")).map((i) => (i.kind === "tool" ? { kind: "tool", text: `${i.name} ${i.args}` } : { kind: i.kind, text: i.text }));
 				} catch {}
 				concierge = {
-					notices: feed.filter((e) => e.kind === "concierge" && e.why !== "answer").map((e) => ({ kind: e.why ?? "info", text: e.text ?? "" })),
+					notices: feed.filter((e) => e.kind === "concierge" && (e.why === "info" || e.why === "need")).map((e) => ({ kind: e.why ?? "info", text: e.text ?? "" })),
 					answers: feed.filter((e) => e.kind === "concierge" && e.why === "answer").map((e) => e.text ?? ""),
 					sent: feed.filter((e) => e.kind === "message" && !!status.id && e.whoId === status.id).map((e) => ({ to: e.name, text: e.text ?? "" })),
 					wakes: status.wakesLastHour,
@@ -488,6 +505,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 					answered: feed.filter((e) => e.kind === "reply" && !!status.id && e.whoId === status.id).map((e) => ({ to: e.name, text: e.text ?? "" })),
 					suggestions: feed.filter((e) => e.kind === "concierge" && e.why === "suggest").map((e) => ({ to: e.name, text: e.text ?? "" })),
 					acts: feed.filter((e) => e.kind === "concierge" && e.why === "act").map((e) => e.text ?? ""),
+					orders: (await within(client.request("concierge-order", { action: "list" }), 5000, "concierge-order list")).orders.map((o) => ({ id: o.id, text: o.text, when: o.when, by: o.by, count: o.count })),
+					applied: feed.filter((e) => e.kind === "concierge" && e.why === "order").map((e) => e.text ?? ""),
 					transcript: ct,
 				};
 			} catch {}

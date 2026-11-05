@@ -53,7 +53,8 @@ Claude Code's documented behaviour.
 | M43 | [the event feed, watches and message rules](m43-events.md) | next |
 | M44 | [the concierge, v0: report and relay](m44-concierge.md) | next |
 | M45 | [escalation and policy: suggestions, routine answers, undo, act](m45-policy.md) | next |
+| M46 | [standing orders: rules it keeps, in every digest, on a clock](m46-orders.md) | next |
 
-Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers (M43–M47; M43–M45 done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
+Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers (M43–M47; M43–M46 done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

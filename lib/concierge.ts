@@ -104,13 +104,42 @@ function oneLine(s: string, max: number): string {
 	return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
 }
 
+/** M46: a standing order: a rule in the user's words the concierge keeps; on a clock, when `when` is set. */
+export interface StandingOrder {
+	id: number;
+	text: string;
+	/** M39's vocabulary (`every 30m`, `daily 18:00`, `weekdays 09:00`, `cron "…"`), or null: applied when its condition shows. */
+	when: string | null;
+	by: "user" | "concierge";
+	at: number;
+	/** When it was last applied (a clock order: last due), and how often. */
+	lastAt: number | null;
+	nextAt: number | null;
+	count: number;
+}
+
+export const ORDER_MAX = 50;
+export const ORDER_TEXT_MAX = 500;
+
+/** One line for an order: `#3 daily 18:00 · say what finished and what is blocked (applied ×2, 1h ago)`. */
+export function orderLine(o: StandingOrder, now: number = Date.now()): string {
+	const when = o.when ? `${o.when} · ` : "";
+	const applied = o.count > 0 && o.lastAt ? ` (applied ×${o.count}, ${eventAgo(o.lastAt, now)} ago)` : "";
+	return `#${o.id} ${when}${o.text}${applied}`;
+}
+
+export type WakeWhy = "events" | "heartbeat" | "order";
+
 export interface DigestInput {
-	why: "events" | "heartbeat";
+	why: WakeWhy;
 	events: RoostEvent[];
 	/** The fleet, the concierge's own row left out. */
 	rows: JobRow[];
 	sinceAt: number | null;
 	now?: number;
+	/** M46: the standing orders it keeps, and the ones on a clock that are due now. */
+	orders?: StandingOrder[];
+	due?: StandingOrder[];
 }
 
 /**
@@ -120,9 +149,15 @@ export interface DigestInput {
  */
 export function digestText(d: DigestInput): string {
 	const now = d.now ?? Date.now();
-	const head = d.why === "heartbeat" ? "heartbeat" : `${d.events.length} event${d.events.length === 1 ? "" : "s"}`;
+	const due = d.due ?? [];
+	const head = d.why === "heartbeat" ? "heartbeat" : d.why === "order" ? `${due.length} standing order${due.length === 1 ? "" : "s"} due, ${d.events.length} event${d.events.length === 1 ? "" : "s"}` : `${d.events.length} event${d.events.length === 1 ? "" : "s"}`;
 	const since = d.sinceAt ? ` since your last wake ${eventAgo(d.sinceAt, now)} ago` : "";
 	const lines = [`<roost-digest why="${d.why}">`, `${head}${since}.`];
+	// M46: orders on a clock that are due: carry them out now
+	if (due.length > 0) {
+		lines.push("", "Due now (carry these out, then hub_note_done each):");
+		for (const o of due) lines.push(`- ${orderLine(o, now)}`);
+	}
 	if (d.events.length > 0) {
 		lines.push("", "What happened (oldest first):");
 		for (const e of d.events) lines.push(`- ${eventAgo(e.at, now)} ago: ${eventLine(e)}${e.kind === "state" || e.kind === "dispatch" || e.kind === "message" || e.kind === "reply" ? ` [${e.id}]` : ""}`);
@@ -130,6 +165,11 @@ export function digestText(d: DigestInput): string {
 	lines.push("", `The fleet (${d.rows.length} session${d.rows.length === 1 ? "" : "s"}):`);
 	if (d.rows.length === 0) lines.push("- none");
 	for (const r of d.rows) lines.push(`- ${fleetLine(r, now)}`);
+	// M46: the standing orders, every time (the ones due are above as well)
+	if (d.orders && d.orders.length > 0) {
+		lines.push("", "Standing orders (apply one when what is above meets it, once per occurrence):");
+		for (const o of d.orders) lines.push(`- ${orderLine(o, now)}`);
+	}
 	// a session's text cannot close the digest early
 	const [open, ...body] = lines;
 	return [open, ...body.map((l) => l.replace(/<\/?roost-digest/gi, "roost-digest")), "</roost-digest>"].join("\n");
@@ -167,6 +207,8 @@ export function conciergeSystemPrompt(c: ConciergePolicy): string {
 		"- Messages between sessions, the user's own replies and sessions merely working are not news: call nothing for them. On a digest with nothing to report (a heartbeat, say), call nothing and answer with one short line (\"nothing to report\"). An interruption that was not needed is worse than none; a session that ended unreported is worse still.",
 		"- Use hub_read when a row's one line is not enough to judge; use hub_watch to be told when a session you care about is next idle, instead of waiting.",
 		"",
+		"Standing orders: rules in the user's words that you keep (every digest lists them). Apply one when what the digest shows meets its condition (a session ended, a question of a kind), once per occurrence, and say which (#n) in what you tell the user; then hub_note_done. A digest's \"Due now\" lists orders on a clock to carry out at once. An order never goes beyond the policy: if it would answer what the policy forbids, or start, stop or restart a session when you may not, tell the user the order needs that (hub_notify need) instead of doing it. When the user gives you a rule to keep (\"remember: …\", \"from now on …\", \"every evening …\"), keep it with hub_note, with a when (every 30m, daily 18:00, weekdays 09:00, cron \"…\") if it is on a clock, and confirm in one line; drop one with hub_note_drop when told.",
+		"",
 		...answer,
 		"",
 		"What you may not do:",
@@ -203,6 +245,8 @@ export interface ConciergeStatus {
 	notice: { kind: "info" | "need"; text: string; at: number } | null;
 	/** M45: the policy in force (the setting, or what `/concierge answer|act` set). */
 	policy: ConciergePolicy;
+	/** M46: how many standing orders it keeps. */
+	orders: number;
 	/** M45: the last answer it gave a session in the user's place, if any; `undone` once the user withdrew it. */
 	answered: { id: string; name: string; text: string; at: number; undone: boolean } | null;
 	/** Its last answer to a question from the hub (`? …`). */

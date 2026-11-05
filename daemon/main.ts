@@ -28,7 +28,22 @@ import {
 	WATCH_TTL_MS,
 } from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
-import { CONCIERGE_ANSWERS, CONCIERGE_DEFAULTS, CONCIERGE_NAME, CONCIERGE_ROLE_ENV, type ConciergeAnswer, type ConciergePolicy, type ConciergeStatus, digestText, heartbeatMs, undoText } from "../lib/concierge.ts";
+import {
+	CONCIERGE_ANSWERS,
+	CONCIERGE_DEFAULTS,
+	CONCIERGE_NAME,
+	CONCIERGE_ROLE_ENV,
+	type ConciergeAnswer,
+	type ConciergePolicy,
+	type ConciergeStatus,
+	digestText,
+	heartbeatMs,
+	ORDER_MAX,
+	ORDER_TEXT_MAX,
+	type StandingOrder,
+	undoText,
+	type WakeWhy,
+} from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
 import { hostControl } from "../lib/hostclient.ts";
@@ -279,7 +294,7 @@ let conciergeTimer: NodeJS.Timeout | undefined;
 let conciergeOverBudget = false;
 /** One wake at a time; something that happened during one is a wake after it (a heartbeat, if `on` asked for one). */
 let conciergeWaking = false;
-let conciergeNudged: false | "events" | "heartbeat" = false;
+let conciergeNudged: false | WakeWhy = false;
 /** One `on` at a time. */
 let conciergeOnPending: Promise<ConciergeStatus> | undefined;
 
@@ -348,7 +363,7 @@ function conciergeBudget(now: number): boolean {
 }
 
 /** A wake that could not go now (the cap, a full queue) is tried again later. */
-function conciergeRetry(why: "events" | "heartbeat"): void {
+function conciergeRetry(why: WakeWhy): void {
 	if (conciergeTimer || shuttingDown) return;
 	conciergeTimer = setTimeout(() => {
 		conciergeTimer = undefined;
@@ -376,6 +391,7 @@ function conciergeStatus(): ConciergeStatus {
 		overBudget: conciergeOverBudget,
 		notice: concierge.notice,
 		policy: conciergePolicy(),
+		orders: orders.size,
 		answered: concierge.answered.at(-1) ?? null,
 		answer: concierge.answer,
 	};
@@ -503,11 +519,11 @@ function nudgeConcierge(): void {
  * delivered like an agent message (its queue; an ended concierge starts again for it).
  * Held back while it is over its budget for the day, or over its wakes for the hour.
  */
-async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
+async function wakeConcierge(why: WakeWhy): Promise<boolean> {
 	const id = concierge.id;
 	if (!concierge.on || !id || !recs.has(id) || shuttingDown) return false;
 	if (conciergeWaking) {
-		conciergeNudged = why === "heartbeat" ? "heartbeat" : conciergeNudged || "events";
+		conciergeNudged = why !== "events" ? why : conciergeNudged || "events";
 		return false;
 	}
 	const cfg = conciergeConfig();
@@ -529,7 +545,9 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 		return false;
 	}
 	const rows = list(undefined).filter((r) => r.id !== id);
-	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now });
+	// M46: the orders it keeps, and the ones on a clock due now (carried by whatever wake comes first)
+	const due = ordersDue(now);
+	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now, orders: [...orders.values()], due });
 	// an `on` during the wake starts it over (its cursor is not this wake's to set)
 	const epoch = concierge.onAt;
 	conciergeWaking = true;
@@ -566,13 +584,24 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 		concierge.lastWakeAt = now;
 		concierge.wakes.push(now);
 		saveConcierge();
+		// the clock orders it was woken with move on to their next time (once each)
+		if (due.length > 0) {
+			for (const o of due) {
+				try {
+					o.nextAt = o.when ? nextRun(parseWhen(o.when), now, o.at) : null;
+				} catch {
+					o.nextAt = null;
+				}
+			}
+			saveOrders();
+		}
 		pushConcierge();
 		return true;
 	} finally {
 		// what happened during the wake is the next one; an `on` meanwhile wants the fleet now
 		const next = conciergeNudged;
 		conciergeNudged = false;
-		if (next === "heartbeat") void wakeConcierge("heartbeat").catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
+		if (next && next !== "events") void wakeConcierge(next).catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
 		else if (next) nudgeConcierge();
 	}
 }
@@ -582,6 +611,11 @@ function conciergeTick(now = Date.now()): void {
 	if (!concierge.on || !concierge.id || shuttingDown || conciergeTimer || conciergeWaking) return;
 	// the budget is looked at here too, so the hub's flag is right across midnight
 	if (conciergeBudget(now)) return;
+	// M46: a standing order on a clock that is due is a wake of its own
+	if (ordersDue(now).length > 0) {
+		void wakeConcierge("order").catch((err: unknown) => log("error", "concierge order wake failed", { error: String(err) }));
+		return;
+	}
 	const hb = CONCIERGE_HEARTBEAT_MS || heartbeatMs(conciergeConfig());
 	if (hb === null) return;
 	const last = concierge.lastWakeAt ?? concierge.onAt ?? now;
@@ -722,6 +756,110 @@ async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; la
 		return r;
 	}
 	throw new OpError("bad_request", "what must be stop, respawn or dispatch");
+}
+
+// ---- M46: standing orders ---------------------------------------------------------------
+//
+// Rules in the user's words the concierge keeps: in every digest; the ones on a clock
+// wake it when due. The daemon keeps them (orders.json); the model applies them.
+
+const ordersPath = () => join(roostHome(), "orders.json");
+const orders = new Map<number, StandingOrder>();
+
+function loadOrders(): void {
+	const saved = readJson<StandingOrder[]>(ordersPath());
+	if (!Array.isArray(saved)) return;
+	const now = Date.now();
+	for (const o of saved) {
+		try {
+			if (!o || typeof o !== "object" || !Number.isInteger(o.id) || o.id <= 0 || !str(o.text)) continue;
+			const when = str(o.when) ? o.when : null;
+			if (when) parseWhen(when);
+			const at = Number.isFinite(o.at) ? o.at : now;
+			orders.set(o.id, {
+				id: o.id,
+				text: o.text.slice(0, ORDER_TEXT_MAX),
+				when,
+				by: o.by === "concierge" ? "concierge" : "user",
+				at,
+				lastAt: Number.isFinite(o.lastAt) ? o.lastAt : null,
+				// a time that passed while the service was off is due now, once
+				nextAt: when ? (Number.isFinite(o.nextAt) ? o.nextAt : nextRun(parseWhen(when), now, at)) : null,
+				count: Number.isInteger(o.count) && o.count! > 0 ? o.count! : 0,
+			});
+		} catch (err) {
+			log("warn", "standing order dropped", { id: o?.id, error: String(err) });
+		}
+	}
+}
+
+function saveOrders(): void {
+	try {
+		writeJsonAtomic(ordersPath(), [...orders.values()]);
+	} catch (err) {
+		log("error", "standing orders not saved", { error: String(err) });
+	}
+}
+
+/** The orders on a clock whose time has come. */
+function ordersDue(now: number): StandingOrder[] {
+	return [...orders.values()].filter((o) => o.when && o.nextAt !== null && o.nextAt <= now);
+}
+
+/** `concierge-order`: keep, drop, list, mark applied. */
+function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: unknown; id?: unknown } | undefined): { orders: StandingOrder[]; order?: StandingOrder } {
+	const peer = conn.peer;
+	if (peer && !isConciergePeer(peer)) throw new OpError("unsupported", "standing orders are the hub's and the concierge's");
+	const by: StandingOrder["by"] = peer ? "concierge" : "user";
+	const action = args?.action;
+	const all = () => [...orders.values()].sort((a, b) => a.id - b.id);
+	if (action === "list") return { orders: all() };
+	if (action === "add") {
+		const text = conciergeText(args?.text, ORDER_TEXT_MAX);
+		if (!text) throw new OpError("bad_request", "empty order");
+		if (orders.size >= ORDER_MAX) throw new OpError("full", `${ORDER_MAX} standing orders at most; drop one first`);
+		const whenText = typeof args?.when === "string" ? args.when.trim() : "";
+		let when: string | null = null;
+		if (whenText) {
+			try {
+				parseWhen(whenText);
+				when = whenText;
+			} catch (err) {
+				throw new OpError("bad_request", `when: ${(err as Error).message}`);
+			}
+		}
+		const now = Date.now();
+		const id = Math.max(0, ...orders.keys()) + 1;
+		const order: StandingOrder = { id, text, when, by, at: now, lastAt: null, nextAt: when ? nextRun(parseWhen(when), now, now) : null, count: 0 };
+		orders.set(id, order);
+		saveOrders();
+		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: by, whoId: peer?.id ?? null, why: "order-kept", text: clipText(`#${id} ${when ? `${when} · ` : ""}${text}`) });
+		log("info", "standing order kept", { id, by, when });
+		pushConcierge();
+		return { orders: all(), order };
+	}
+	const id = typeof args?.id === "number" ? args.id : Number(args?.id);
+	if (!Number.isInteger(id) || !orders.has(id)) throw new OpError("not_found", `no standing order #${String(args?.id)}`);
+	const order = orders.get(id)!;
+	if (action === "rm") {
+		// the user's orders are the user's to drop
+		if (peer && order.by !== "concierge") throw new OpError("unsupported", `#${id} is the user's order: only the hub drops it`);
+		orders.delete(id);
+		saveOrders();
+		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: by, whoId: peer?.id ?? null, why: "order-dropped", text: clipText(`#${id} ${order.text}`) });
+		log("info", "standing order dropped", { id, by });
+		pushConcierge();
+		return { orders: all() };
+	}
+	if (action === "applied") {
+		if (!peer) throw new OpError("unsupported", "the concierge marks an order applied");
+		order.lastAt = Date.now();
+		order.count += 1;
+		saveOrders();
+		record({ kind: "concierge", id: concierge.id ?? peer.id, name: CONCIERGE_NAME, who: CONCIERGE_NAME, whoId: peer.id, why: "order", text: clipText(`#${id} ${conciergeText(args?.text, 500) || order.text}`) });
+		return { orders: all(), order };
+	}
+	throw new OpError("bad_request", "action must be add, rm, list or applied");
 }
 
 /** The state each job was last seen in: a change into one that matters is recorded, and fires watches. */
@@ -1654,6 +1792,7 @@ function loadJobs(): void {
 	}
 	loadWatches();
 	loadConcierge();
+	loadOrders();
 	const saved = readJson<Record<string, HostRef>>(rosterPath()) ?? {};
 	for (const [id, ref] of Object.entries(saved)) {
 		if (!recs.has(id) || typeof ref?.hostPid !== "number") continue;
@@ -3185,6 +3324,9 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return conciergeReply(conn, args);
 		case "concierge-act":
 			return conciergeAct(conn, args);
+		// M46: the standing orders (the hub's, and the concierge's own connection)
+		case "concierge-order":
+			return orderOp(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
 	}

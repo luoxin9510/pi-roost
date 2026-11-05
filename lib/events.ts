@@ -195,8 +195,30 @@ export function eventLine(e: RoostEvent): string {
 			return `schedule ${e.who ?? "?"} started ${e.name}${e.why ? ` (${e.why})` : ""}`;
 		case "removed":
 			return `${e.name} removed`;
-		case "concierge":
-			return `concierge${e.why === "need" ? " needs you" : e.why === "answer" ? " answered" : ""}: ${e.text ?? ""}`;
+		case "concierge": {
+			// M44: what it told the user; M45: a suggestion, the policy, an answer withdrawn, an act; M46: an order applied, kept, dropped
+			const how =
+				e.why === "need"
+					? "concierge needs you"
+					: e.why === "answer"
+						? "concierge answered"
+						: e.why === "suggest"
+							? `concierge suggests for ${e.name}`
+							: e.why === "policy"
+								? "concierge policy"
+								: e.why === "undo"
+									? `concierge's answer to ${e.name} withdrawn`
+									: e.why === "act"
+										? "concierge"
+										: e.why === "order"
+											? "concierge applied an order"
+											: e.why === "order-kept"
+												? "concierge keeps an order"
+												: e.why === "order-dropped"
+													? "concierge dropped an order"
+													: "concierge";
+			return `${how}: ${e.text ?? ""}`;
+		}
 		default:
 			return `${e.kind} ${e.name}`;
 	}

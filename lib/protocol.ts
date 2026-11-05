@@ -1,4 +1,4 @@
-import type { ConciergeAnswer, ConciergePolicy, ConciergeStatus } from "./concierge.ts";
+import type { ConciergeAnswer, ConciergePolicy, ConciergeStatus, StandingOrder } from "./concierge.ts";
 import type { RoostEvent } from "./events.ts";
 import type { PrInfo } from "./pr.ts";
 import type { UsageInfo } from "./usage.ts";
@@ -294,6 +294,12 @@ export interface OpArgs {
 	"concierge-reply": { id: string; text: string; why?: string };
 	/** M45, on the concierge's connection: stop, restart or start a session; refused (`policy`) unless `act`. */
 	"concierge-act": { what: "stop" | "respawn"; id: string; why?: string } | { what: "dispatch"; launch: DispatchArgs; why?: string };
+	/**
+	 * M46: the standing orders: keep one (the hub's or the concierge's connection; `when` in M39's
+	 * vocabulary puts it on a clock), drop one (the hub's; the concierge's own only), list them,
+	 * mark one applied (the concierge's).
+	 */
+	"concierge-order": { action: "add"; text: string; when?: string } | { action: "rm"; id: number } | { action: "list" } | { action: "applied"; id: number; text?: string };
 }
 
 export interface OpResults {
@@ -337,6 +343,7 @@ export interface OpResults {
 	"concierge-suggest": { id: string; name: string };
 	"concierge-reply": { id: string; name: string };
 	"concierge-act": { id: string; name: string };
+	"concierge-order": { orders: StandingOrder[]; order?: StandingOrder };
 }
 
 export type Op = keyof OpArgs;

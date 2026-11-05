@@ -7,7 +7,7 @@ import { AgentView, type AgentViewOptions } from "../hub/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import type { RoostEvent } from "../lib/events.ts";
-import type { ConciergeStatus } from "../lib/concierge.ts";
+import type { ConciergeStatus, StandingOrder } from "../lib/concierge.ts";
 import { modelFacts, rowDetailsOf, takesReplies } from "../lib/view-model.ts";
 
 let n = 0;
@@ -53,7 +53,7 @@ class FakeClient {
 	/** M43: what /log shows. */
 	log: RoostEvent[] = [];
 	/** M44: the concierge as the daemon says it stands. */
-	concierge: ConciergeStatus = { on: false, id: null, state: null, live: false, model: null, wakesLastHour: 0, lastWakeAt: null, behind: 0, costToday: 0, budget: 1, overBudget: false, notice: null, policy: { answer: "never", act: false }, answered: null, answer: null };
+	concierge: ConciergeStatus = { on: false, id: null, state: null, live: false, model: null, wakesLastHour: 0, lastWakeAt: null, behind: 0, costToday: 0, budget: 1, overBudget: false, notice: null, policy: { answer: "never", act: false }, orders: 0, answered: null, answer: null };
 	constructor(rows: JobRow[]) {
 		this.rows = rows;
 	}
@@ -105,8 +105,20 @@ class FakeClient {
 			return this.concierge;
 		}
 		if (op === "concierge-ask") return { id: "c1" };
+		// M46: the standing orders
+		if (op === "concierge-order") {
+			const a = args as { action: string; id?: number; text?: string; when?: string };
+			if (a.action === "rm") this.orders = this.orders.filter((o) => o.id !== a.id);
+			if (a.action === "add") {
+				const order: StandingOrder = { id: this.orders.length + 1, text: a.text ?? "", when: a.when ?? null, by: "user", at: Date.now(), lastAt: null, nextAt: a.when ? Date.now() + 60_000 : null, count: 0 };
+				this.orders = [...this.orders, order];
+				return { orders: this.orders, order };
+			}
+			return { orders: this.orders };
+		}
 		return {};
 	}
+	orders: StandingOrder[] = [];
 }
 
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
@@ -1017,6 +1029,70 @@ describe("M45: escalation and policy in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		expect(view.render(200).join("\n")).toContain("/concierge answer never | routine | always");
+	});
+});
+
+describe("M46: standing orders in the hub", () => {
+	it("/concierge orders lists them (an overlay, newest first); orders add asks the concierge to keep it; orders rm drops one", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: { ROOST_ROLE: "concierge" }, name: "concierge", origin: "dispatch" as const };
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { conciergeLaunch: () => launch } });
+		await view.start();
+		type(view, "/concierge on");
+		view.handleInput("\r");
+		await sleep(20);
+		// none yet
+		type(view, "/concierge orders");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(200).join("\n")).toContain("no standing orders · /concierge orders add <rule>");
+		// add: the user's own, kept at once; a clock first, in roost's words
+		type(view, "/concierge orders add when build ends, tell deploy its result");
+		view.handleInput("\r");
+		await sleep(20);
+		type(view, '/concierge orders add every 30m say what is blocked');
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "concierge-order" && (r.args as { action: string }).action === "add").map((r) => r.args)).toEqual([
+			{ action: "add", text: "when build ends, tell deploy its result" },
+			{ action: "add", text: "say what is blocked", when: "every 30m" },
+		]);
+		expect(view.render(200).join("\n")).toContain("kept standing order #2 (every 30m); the concierge sees it on its next wake");
+		expect(client.requests.some((r) => r.op === "concierge-ask")).toBe(false);
+		type(view, "/concierge orders add");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(200).join("\n")).toContain("/concierge orders add [every 30m | daily 18:00 | weekdays 09:00 | cron");
+		// the list: an overlay, newest first, the user's marked, the ones on a clock with their when and count
+		const now = Date.now();
+		client.orders = [
+			{ id: 1, text: "when build ends, tell deploy its result", when: null, by: "user", at: now - 3600_000, lastAt: now - 60_000, nextAt: null, count: 2 },
+			{ id: 2, text: "say what is blocked", when: "every 30m", by: "concierge", at: now - 600_000, lastAt: null, nextAt: now + 1_200_000, count: 0 },
+		];
+		type(view, "/concierge orders");
+		view.handleInput("\r");
+		await sleep(20);
+		const screen = view.render(200);
+		const text = screen.join("\n");
+		expect(text).toContain("Standing orders · what the concierge keeps in mind");
+		expect(text.indexOf("#2 every 30m · say what is blocked")).toBeLessThan(text.indexOf("#1 when build ends, tell deploy its result (applied ×2, 1m ago) · yours"));
+		expect(text).toContain("↑↓ scroll · Esc close");
+		view.handleInput("\x1b");
+		expect(view.render(200).join("\n")).not.toContain("Standing orders · what");
+		// rm
+		type(view, "/concierge orders rm 2");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.find((r) => r.op === "concierge-order" && (r.args as { action: string }).action === "rm")?.args).toEqual({ action: "rm", id: 2 });
+		expect(client.orders.map((o) => o.id)).toEqual([1]);
+		expect(view.render(200).join("\n")).toContain("dropped standing order #2");
+		type(view, "/concierge orders rm x");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(200).join("\n")).toContain("/concierge orders rm <id>");
+		type(view, "/concierge orders what");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(200).join("\n")).toContain("/concierge orders | orders add <rule> | orders rm <id>");
 	});
 });
 

@@ -123,6 +123,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `/log` | what happened lately across the sessions, newest first: tasks started, questions, results, failures, messages between sessions, replies (`r` reloads) | 最近各会话发生了什么，最新在前：启动的任务、提问、结果、失败、会话之间的消息、回复（按 `r` 刷新） |
 | `/concierge on\|off\|log` · `? question` | the hub's own agent ([below](#the-concierge--值班-agent)): it watches the sessions, tells you what needs you, relays between them; `?` asks it | hub 自己的值班 agent（[见下文](#the-concierge--值班-agent)）：盯着各会话，告诉你哪些需要你处理，在会话之间传话；`?` 向它提问 |
 | `/concierge answer never\|routine\|always` · `act on\|off` · `undo` · `Ctrl+Y` / `Ctrl+E` | may it answer routine questions itself, start/stop sessions; withdraw its last answer; send / edit its suggested answer for the session that waits (the banner) | 它能否自行回答常规提问、启停会话；撤回它上一个回答；把它为等待中会话建议的答案发出 / 先编辑（标题下的横幅） |
+| `/concierge orders [add <rule> \| rm <id>]` · `? remember …` | the standing orders it keeps: rules in your words ("when build ends, tell deploy its result", "every evening say what is blocked"), in every digest; the ones on a clock wake it when due | 它记着的常备指令：用你的话写的规则（"build 结束就把结果告诉 deploy"、"每晚说一下哪些卡住了"），每次唤醒都会带上；带时钟的到点就唤醒它 |
 | `/fanout a/x b/y`, `/compare` | the next task runs once per model, each in its own git worktree (bare `/fanout`: pick the models; `off` cancels); `/compare` on one of them puts them side by side (state, cost, the change in each worktree, the last reply): ← → choose, Enter open, `k` twice keeps one and deletes the others | 下一个任务按每个模型各跑一份，各自在独立的 git worktree 里（不带参数的 `/fanout` 从列表选模型，`off` 取消）；在其中一行上用 `/compare` 并排对比（状态、花费、各自 worktree 的改动、最后的回复）：← → 选择，Enter 进入，`k` 按两次保留这一个并删除其余 |
 | `/preset [name]` | launch presets: model, thinking, worktree, agent, directory and fan-out together; bare: pick one; `save name` keeps what new sessions use now, `rm name`, `off` | 启动预设：模型、thinking、worktree、agent、目录和多模型并跑一起切换；不带参数则从列表里选；`save name` 把当前新会话的设置存成预设，另有 `rm name`、`off` |
 | `/profile [name]` | new sessions run one of your [other agents](#other-agents--其他-agent) (`pi` goes back); bare: pick one | 新会话改用你的某个[其他 agent](#other-agents--其他-agent)（`pi` 换回）；不带参数则从列表里选 |
@@ -339,6 +340,21 @@ when you ask it to. The policy is kept by the background service; `roost.json`'s
 [docs/plans/m45-policy.md](docs/plans/m45-policy.md).
 
 当某个会话向你提问时，值班 agent 还会给出建议答案：标题下方出现横幅（`needs you · api-fix asks: Use schema v2? (2m) · concierge suggests: yes, v2 (…) · Ctrl+Y sends it · Ctrl+E edits · Esc dismisses`），行的 peek 里也会显示。`/concierge answer routine` 允许它自行回答常规提问（继续/确认、显而易见的默认值、其他会话里已有的信息），其余升级给你；不可逆或花钱的事（push、删除、付款、部署、凭据……）永远升级；`always` 则除不可逆问题外都由它答。它给出的回答在事件流里标为值班 agent 的，在它的状态行上显示一分钟，`/concierge undo` 可撤回（该会话会被告知忽略并重新问你）。`/concierge act on` 允许它在你要求时启动、停止、重启会话。策略由后台服务保存；`roost.json` 的 `answer`、`act` 只是初始值。设计说明：[docs/plans/m45-policy.md](docs/plans/m45-policy.md)。
+
+Standing orders are rules in your words the concierge keeps in mind: `/concierge orders
+add when build ends, tell deploy its result` keeps one as yours, with a time first when
+it is on a clock (`/concierge orders add daily 18:00 say what finished and what is
+blocked`; `every 30m`, `weekdays 09:00`, `cron "…"` too); told in plain words (`? remember:
+every evening, say what is blocked`) the concierge keeps it itself with `hub_note`, turning
+the clock into those words. Every digest lists them, and one on a clock wakes it when due. It applies an order when
+what a digest shows meets it, once per occurrence, says which (`#n`) in its line, and
+never goes beyond the policy: an order that would answer what the policy forbids, or
+start a session without `act`, gets you a `needs you` line instead. `/concierge orders`
+lists them (newest first), `/concierge orders rm <id>` drops one; the concierge may drop
+only the ones it made for itself. At most 50, kept by the background service
+(`orders.json`). Design notes: [docs/plans/m46-orders.md](docs/plans/m46-orders.md).
+
+常备指令是用你的话写的规则，值班 agent 会一直记着：`/concierge orders add when build ends, tell deploy its result` 直接记成你的指令，带时钟的把时间写在最前面（`/concierge orders add daily 18:00 say what finished and what is blocked`；也可以是 `every 30m`、`weekdays 09:00`、`cron "…"`）；用自然语言说的（`? remember: every evening, say what is blocked`）由值班 agent 自己用 `hub_note` 记下，并把时钟换成上面那种写法。每次唤醒的摘要都列出全部指令，带时钟的到点就唤醒它。某次摘要里的情况符合某条指令时它就执行一次（每次发生只执行一次），在它的那行里说明是哪条（`#n`），而且永远不越过策略：若某条指令要它回答策略禁止回答的问题、或在没有 `act` 的情况下启动会话，它会改为给你一行 `needs you`。`/concierge orders` 列出全部（最新在前），`/concierge orders rm <id>` 删掉一条；它自己只能删它自己记的那些。最多 50 条，由后台服务保存（`orders.json`）。设计说明：[docs/plans/m46-orders.md](docs/plans/m46-orders.md)。
 
 ## Scheduled tasks · 定时任务
 
