@@ -51,6 +51,6 @@ Claude Code's documented behaviour.
 | M41 | [more evals: a fan-out, a terminal agent, a protocol agent](m37-evals.md#m41-the-other-agents) | 0.1.12 |
 | M42 | a stress test that failed under load: the fake worker kept keys as pi does ([M22 tests](m22-multi-window.md#tests)) | 0.1.12 |
 
-Next: see [any agent](any-agent.md); measured by the stress run and the evals.
+Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers (proposed M43–M47); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).
