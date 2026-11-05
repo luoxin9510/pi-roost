@@ -30,8 +30,14 @@ describe("processes that run without pi", () => {
 	});
 
 	it("M32: the layers keep their lines (docs/plans/any-agent.md)", () => {
-		const imports = (file: string) =>
-			[...readFileSync(file, "utf8").matchAll(/^(?:import|export)\s+(?:type\s+)?[^"';]*from\s+["']([^"']+)["']/gm)].map((m) => m[1]!);
+		const imports = (file: string) => {
+			const src = readFileSync(file, "utf8");
+			return [
+				...src.matchAll(/^(?:import|export)\s+(?:type\s+)?[^"';]*from\s+["']([^"']+)["']/gm),
+				...src.matchAll(/^import\s+["']([^"']+)["']/gm),
+				...src.matchAll(/\b(?:import|require)\s*\(\s*["'`]([^"'`]+)/g),
+			].map((m) => m[1]!);
+		};
 		const bad: string[] = [];
 		// the core and the agent client: no pi package, nothing from an adapter
 		for (const dir of ["lib", "daemon", "host", "bin"]) {
@@ -44,7 +50,7 @@ describe("processes that run without pi", () => {
 		}
 		// pi's adapter is the only place pi's packages are imported; the old path only points at it
 		expect(readdirSync("extensions")).toEqual(["index.ts"]);
-		expect(imports("extensions/index.ts")).toEqual(["../adapters/pi/index.ts"]);
+		expect(imports("extensions/index.ts").filter((i) => !i.startsWith("@earendil-works/"))).toEqual(["../adapters/pi/index.ts"]);
 		expect(bad).toEqual([]);
 	});
 
@@ -52,8 +58,20 @@ describe("processes that run without pi", () => {
 		expect(external("lib/agent-client.ts", new Set())).toEqual([]);
 	});
 
-	it("M32: the old extension path loads pi's adapter", async () => {
-		expect((await import("../extensions/index.ts")).default).toBe((await import("../adapters/pi/index.ts")).default);
+	it("M32: the old extension path loads pi's adapter, once per process", async () => {
+		const key = Symbol.for("pi-roost.loaded-by");
+		const g = globalThis as Record<symbol, unknown>;
+		const before = g[key];
+		// a pi that fails on any use: the second path must not touch it
+		const untouchable = new Proxy({}, { get: () => { throw new Error("registered twice"); } });
+		try {
+			g[key] = "adapters/pi";
+			(await import("../extensions/index.ts")).default(untouchable as never);
+			g[key] = "extensions";
+			(await import("../adapters/pi/index.ts")).default(untouchable as never);
+		} finally {
+			g[key] = before;
+		}
 	});
 
 	it("measure text as pi-tui does", () => {

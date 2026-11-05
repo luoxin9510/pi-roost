@@ -21,6 +21,21 @@ import { JOB_ENV } from "../../lib/identity.ts";
 // the agent view (`pi --agents`, `/agents`).
 
 export default function (pi: ExtensionAPI) {
+	register(pi, "adapters/pi");
+}
+
+const LOADED_BY = Symbol.for("pi-roost.loaded-by");
+
+/**
+ * M32: one pi process may name both paths (a job saved with `-e …/extensions/index.ts`
+ * before the move, and the package's `adapters/pi/index.ts`); pi dedupes extensions by
+ * path only, so the second to load steps aside. A path loading again (tests) registers
+ * again, as before.
+ */
+export function register(pi: ExtensionAPI, via: "adapters/pi" | "extensions"): void {
+	const g = globalThis as { [LOADED_BY]?: string };
+	if (g[LOADED_BY] && g[LOADED_BY] !== via) return;
+	g[LOADED_BY] = via;
 	setJobEventBus(pi.events); // NT-2
 	setCommandSource(() => pi.getCommands().map((c) => ({ name: c.name, source: c.source })));
 	pi.registerFlag("bg", { description: "Start <task> as a background session and exit", type: "string" });
