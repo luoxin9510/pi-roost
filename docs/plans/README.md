@@ -50,12 +50,12 @@ Claude Code's documented behaviour.
 | M40 | [interrupted runs and schedules for every agent](m40-agents-resume.md) | 0.1.12 |
 | M41 | [more evals: a fan-out, a terminal agent, a protocol agent](m37-evals.md#m41-the-other-agents) | 0.1.12 |
 | M42 | a stress test that failed under load: the fake worker kept keys as pi does ([M22 tests](m22-multi-window.md#tests)) | 0.1.12 |
-| M43 | [the event feed, watches and message rules](m43-events.md) | next |
-| M44 | [the concierge, v0: report and relay](m44-concierge.md) | next |
-| M45 | [escalation and policy: suggestions, routine answers, undo, act](m45-policy.md) | next |
-| M46 | [standing orders: rules it keeps, in every digest, on a clock](m46-orders.md) | next |
-| M48 | [the peek, deeper: more to see, an editor to answer in, commands, completion](m48-peek.md) (before M47, at the user's request) | next |
-| M47 | [the shared task board: tasks any session takes, a lock, dependencies, the concierge as the lead](m47-tasks.md) | next |
+| M43 | [the event feed, watches and message rules](m43-events.md) | 0.1.14 |
+| M44 | [the concierge, v0: report and relay](m44-concierge.md) | 0.1.14 |
+| M45 | [escalation and policy: suggestions, routine answers, undo, act](m45-policy.md) | 0.1.14 |
+| M46 | [standing orders: rules it keeps, in every digest, on a clock](m46-orders.md) | 0.1.14 |
+| M48 | [the peek, deeper: more to see, an editor to answer in, commands, completion](m48-peek.md) (before M47, at the user's request) | 0.1.14 |
+| M47 | [the shared task board: tasks any session takes, a lock, dependencies, the concierge as the lead](m47-tasks.md) | 0.1.14 |
 
 Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers, and a shared task board (M43–M47, all done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 

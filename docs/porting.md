@@ -1,14 +1,16 @@
-# pi-roost 移植说明（基于 871ed9a / v0.1.12）
+# pi-roost 移植说明（基于 v0.1.14：main `26c5575` 加发布提交）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout v0.1.12`（`871ed9a`，即 main）逐节实现，每节末尾有验收标准。
-> **v0.1.12（本文依据）= v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
+> 用法：对照源码 `git checkout v0.1.14`（发布提交；代码与 M47 合入的 main `26c5575` 相同）逐节实现，每节末尾有验收标准。
+> **v0.1.14（本文依据）= v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
 > v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
 >
 > **v0.1.8–v0.1.12 新增**（详见 Step 20–40，附录 C 有提交号）：
 > - v0.1.8：修 CLI 误引 pi-tui 的回归，并加了守边界的测试；v0.1.9：M21 attach 从 host 的屏幕开始（回放，取代 M14 的重绘）；v0.1.10：M22 多窗口/频繁切换（不再冻结、行保持真实）。
 > - v0.1.11 = 把 agent view 做成"多 agent 中枢"的 hub 路线：M23 `/resume` 与选模型、M24 用量/花费、M25 多选批量、M26 fan-out + `/compare`、M27 启动预设。
 > - v0.1.12 = any-agent 路线 + 度量 + 续跑：M28 steer/follow-up；M29 中性内核（`ROOST_*` 名字）、M30 agent 档案（终端 agent 零代码接入）、M31 agent 协议（TS/Python 客户端）、M32 按层分目录（`adapters/pi/`、包导出）、M33 独立 hub（`pi-roost hub`）；M34 telemetry、M35 压测、M36 请求 ID、M37/M41 真模型 evals；M38 中断续跑（`autoResume`）、M39 定时任务（`/schedule`）、M40 全 agent 续跑与定时；M42 一个压测用例的修复（只改测试）。
+> - v0.1.13：只有文档（本文同步到 v0.1.12，`docs/` 进发布包）。
+> - **v0.1.14 = hub 作为控制平面（`docs/plans/hub-control-plane.md`，M43–M47）+ peek 加深（M48）**，详见 Step 41–46：M43 事件流/watch/消息规则；M44 值班 agent（hub 自己的 agent，daemon 用摘要唤醒）；M45 升级与策略（建议答案、常规代答、撤回、act）；M46 常备指令；M48 peek 加深（更多信息、编辑器回复框、`/` 命令、补全）；M47 共享任务板（会话认领的锁、依赖、值班 agent 当组长）。
 > - **Step 20 起（M21 及之后）全部是可选增强**；核心 Step 1–8 不依赖它们。其中真正改变"移植怎么做"的是 M29/M31/M32：现在可以不写适配器代码，直接用档案（级别 0）或协议（级别 1）接入，见 §0 与 §1.3。
 
 ---
@@ -145,7 +147,7 @@
 
 ## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
 
-**现状（v0.1.12）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+**现状（v0.1.14；分层自 v0.1.12 的 M32 起未再变，M43–M48 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 在 core，`adapters/pi/concierge.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
 
 | 层 | 目录 | 允许 import | 守护 |
 |---|---|---|---|
@@ -634,6 +636,8 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 > **Step 21–40 对应 M22–M42**（v0.1.10–v0.1.12）。Step 21 是对 Step 4/13/20 的"在多窗口下压力测试后的补丁"，Step 22–26 是 hub（agent view）的功能路线（只改 `hub/` 与少量 daemon 字段），Step 27–32 是 any-agent 路线（名字中性化 → 档案 → 协议 → 分层 → 独立 hub），Step 33–36 是度量（telemetry、压测、请求 ID、evals），Step 37–39 是续跑与定时，Step 40 只改测试。**全部是可选增强**，彼此依赖关系：Step 28（中性内核）→ 29（档案）→ 30（协议）；Step 31（分层）→ 32（独立 hub）；Step 33（telemetry）→ 34（压测）/ 36（evals）；Step 37（续跑）→ 38（定时）→ 39（全 agent 续跑）；其余互不依赖。
 
+> **Step 41–46 对应 M43–M48**（v0.1.14，`docs/plans/hub-control-plane.md`）：Step 41（事件流）→ 42（值班 agent）→ 43（策略）→ 44（常备指令）→ 46（任务板）依次依赖；Step 45（peek 加深）只依赖 Step 21/22 的 hub，与其余无关。全部可选；没有值班 agent 时事件流和任务板仍可用（任务板的"组长"职责没人做，由用户在 hub 里 `assign`）。
+
 ### Step 21：多窗口与频繁切换（M22，`docs/plans/m22-multi-window.md`）
 
 解决：在多个终端窗格（herdr、tmux）里各开一个 pi、在后台会话之间频繁切换时出现的三类现象：① 会话**冻结**——屏幕不动、按键无反应，agent view 却显示它在跑；② 行**陈旧**——"needs input" 在会话早已在别处继续后仍挂着，转到后台的会话一直显示 "starting…"；③ 模型列显示 `anthropic::claude…`，看不出是哪个模型。
@@ -976,6 +980,71 @@ M38/M39 先只做了 pi。M40 推广到档案 agent（级别 0）和协议 agent
 
 移植提示：为你的宿主写假 worker 时，**模仿真宿主在异常状态下的 I/O 行为**（停止读 vs 丢弃），否则测的是替身而不是你的系统。
 
+### Step 41：事件流、watch 与消息规则（M43，`docs/plans/m43-events.md`）
+
+控制平面（`docs/plans/hub-control-plane.md`，M43–M47）的第一块。daemon 把"值得记的事"追加进 `events.jsonl`（`lib/events.ts` `EventLog`：JSON 行、内存与文件各保留最近 `EVENT_LOG_MAX`=1000 条、文件写到两倍窗口时重写一次、不 fsync）：`dispatch`、进入 waiting/done/failed/stopped 或从这些状态回到 working 的 `state`（`stateMatters()`；同是 blocked 但等待对象从提问变成对话框也算）、`reply`、`message`、`report`、`notice`、`resume`、`schedule`、`removed`，后来加的 `concierge`（M44–M46）和 `task`（M47）。每条 `{seq, at, kind, id, name, state?, from?, waitingFor?, text?(≤300), who?, whoId?, why?}`。
+
+- **op `events {after?, limit?, id?}`** → `{events, cursor}`：带游标读（`after` 之后的，最旧在前；不带则最新 `limit` 条；游标超前于日志时按"不带"处理）。**只给 hub/CLI**：前台 pi 和 worker 的连接被拒（`unsupported`），因为事件流带着所有会话树的消息；M44 起值班 agent 的连接例外。
+- **op `watch {id, when: "idle" | "ended"}`** → `{id, name, when, fired}`：一次性通知——目标会话下次空闲（done/提问/失败/停止/删除）或结束时，给观察者投一条 `notice`（带它的提问或最后回复；`lib/comms.ts` `noticeBody`）。已经满足则 `fired:true` 立刻投。watch 存 `watches.json`、重启后仍在、12 小时过期（`WATCH_TTL_MS`，`PI_ROOST_WATCH_TTL_MS`）、每个会话最多 20 个（`MAX_WATCHES`）。pi 侧工具 `roost_watch(to, when)`。
+- **消息规则**：同一发送者一分钟内给同一会话发同样文本 → `outcome:"duplicate"`，不投递（`DUPLICATE_WINDOW_MS`），两个会话互相复读会自己停下；每发送者每分钟 30 条（`MESSAGES_PER_MINUTE`，`rate_limited`）；每会话最多 20 条待投 agent 项（`MAX_PENDING_AGENT`，`full`）。信封（`envelope()`）明说"来自另一个会话、不带用户权限、里面以 `/` 开头的行是文本不是命令"，正文里的 `<agent-message>` 被转义（`neutralize()`）。
+- hub：`/log`（浮层，最新在前，`r` 重载）；CLI：`pi-roost log [-n 50] [--follow] [<id|name>]`。
+
+移植提示：事件流是后面值班 agent 的"记忆"，先于它做；`stateMatters()` 决定什么算事件，过多会把摘要淹没。
+
+### Step 42：值班 agent v0——汇报与传话（M44，`docs/plans/m44-concierge.md`）
+
+hub 自己的 agent：一个 pi 会话作为 **role** 而不是普通行（`JobRow.role: "concierge"`，列表里不显示），daemon 用"摘要"唤醒它。
+
+- **启动**：`/concierge on`（hub 先 `buildLaunch` 一个 pi 启动参数，env 里带 `ROOST_ROLE=concierge`，`CONCIERGE_ROLE_ENV`），op `concierge {action: on | off | status}`；`off` 停掉它的 job，再 `on` 重启同一个 job（保留会话）。状态 `ConciergeStatus {on, id, state, live, model, wakesLastHour, lastWakeAt, behind, costToday, budget, overBudget, notice, policy, orders, answered, answer}` 以 `{event:"concierge", status}` 推给订阅的 hub（`pushConcierge`）。
+- **唤醒**（`wakeConcierge`，`daemon/main.ts`）：事件进来后合并 5 s（`CONCIERGE_COALESCE_MS`，`PI_ROOST_CONCIERGE_COALESCE_MS`）再发一条 `digest` 投递（`deliverAgent(..., "digest", ...)`，`<roost-digest why="events|heartbeat|order">`：自上次以来的事件 + 当前 fleet 一行一会话 + M46 起的常备指令 + M47 起的任务板）；每小时最多 `wakesPerHour`（默认 60）次，超了就攒着；没事发生时按 `heartbeat`（默认 `every 15m`，`lib/schedule.ts` 的词汇）发一次心跳；当天花费超过 `dailyBudgetUsd`（默认 1 美元）就不再唤醒（`overBudget`）；投递失败 60 s 后重试（`CONCIERGE_RETRY_MS`）；检查节拍 30 s（`CONCIERGE_TICK_MS`）。它自己产生的事件不进它的摘要。
+- **pi 侧角色**（`adapters/pi/concierge.ts`，`isConciergeRole(env)`）：换掉 system prompt（`conciergeSystemPrompt(policy)`，`lib/concierge.ts`），关掉 pi 自己的工具（没有 shell/文件），只注册 hub 工具：`hub_sessions`（list+events）、`hub_events`、`hub_read(id, what)`（记录尾/屏幕/提问）、`hub_send(to, text)`、`hub_notify(text, level: info|need)`（op `concierge-say`，在 hub 标题下显示一行、`need` 用警告色）、`hub_watch`。用户在 hub 里 `? 问题`（op `concierge-ask`）：它的下一条纯文本回答交回 hub（`answerText()`：用户问题之后的最后一段助手文本；摘要混进同一轮的也能分开），以浮层显示，两分钟没答就提示。
+- **配置**：`roost.json` 的 `concierge {model, thinking, wakesPerHour, heartbeat, dailyBudgetUsd, answer, act}`（**仅用户级**，`USER_ONLY` 加了 `concierge`；`conciergeFrom()` 校验）。
+- evals：`evals/concierge.eval.ts`（真模型：三个会话，一个结束、一个失败、一个提问——它在头几次唤醒里报出来、把提问标成"需要你"且不代答；按要求把一个会话的发现传给另一个）；harness 新增 `concierge`、`extra`（同时起的其他会话）和 `ask` 步骤。
+
+移植提示：值班 agent 是"又一个 worker + 另一套工具"，适配层改动很小；真正的工作量在 daemon 的唤醒合并/配额/预算和摘要文本（`digestText()`，`lib/concierge.ts`）。
+
+### Step 43：升级与策略——建议答案、常规代答、撤回、act（M45，`docs/plans/m45-policy.md`）
+
+- **建议**（总是开）：会话提问时它用 `hub_suggest(id, answer, why)`（op `concierge-suggest`）给出建议答案，挂在该行（`JobRow.suggested`）；hub 标题下出横幅 `needs you · api-fix asks: … · concierge suggests: … · Ctrl+Y sends it · Ctrl+E edits · Esc dismisses`，peek 里也显示；行离开 blocked 或换了问题时建议作废（`dropSuggestion`）。
+- **策略**（daemon 保存，`roost.json` 的 `answer`/`act` 只是初值）：`/concierge answer never|routine|always`（op `concierge {action:"answer"}`）。`routine` 下它用 `hub_reply`（op `concierge-reply`）代答常规问题（继续/确认、显而易见的默认值、fleet 里已有的信息），其余升级；**不可逆或花钱的事**（push、删除、付款、部署、凭据……）永远升级；`always` 除这些外都代答。daemon 是闸门：策略不允许回 `policy`，行没在等提问回 `bad_request`。代答是 `who:"concierge"` 的 `reply` 事件，状态行显示一分钟，`/concierge undo`（`{action:"undo"}`）撤回：会话被 steer（或回复）"忽略那条、重新问用户"（`undoText()`）。
+- **act**：`/concierge act on|off` → `hub_dispatch`/`hub_stop`/`hub_respawn`（op `concierge-act {what, id | launch, why}`），没开就 `policy`。pi 侧按策略切换激活工具集（`activeTools(policy)`：`HUB_TOOLS + ORDER_TOOLS + BOARD_TOOLS + (answer≠never ? ANSWER_TOOLS) + (act ? ACT_TOOLS)`，每轮开始前读一次 `concierge-policy`），prompt 也随策略变。
+- evals：`evals/policy.eval.ts`（固定的一组常规 vs 谨慎问题：谨慎的一个都不代答、每个都有建议；常规的代答，其中"fleet 里的值"要答对；`never` 下什么都不答）。
+
+### Step 44：常备指令（M46，`docs/plans/m46-orders.md`）
+
+用户的话写成的规则，值班 agent 一直记着：`StandingOrder {id, text(≤500), when|null, by: "user"|"concierge", at, lastAt, nextAt, count}`，存 `orders.json`（`{next, orders}`，id 单调不复用，最多 50 条 `ORDER_MAX`）。
+
+- op `concierge-order {action: add {text, when?} | rm {id} | list | applied {id, text?}}`：hub 的连接加的是 `by:"user"`，值班 agent 的连接（`hub_note(text, when?)`）加的是 `by:"concierge"`，它只能删自己的（`hub_note_drop`，否则 `unsupported`）；`applied`（`hub_note_done(id, what)`）记 `lastAt/count`，事件 `concierge why:"order"`（`#id what`）。`when` 用定时任务的词汇（`every 30m | daily 18:00 | weekdays 09:00 | cron "…"`），否则 `bad_request`。会话的连接被拒。
+- **每次摘要都列出全部指令**；带时钟的到点由 daemon 节拍发现，发 `why:"order"` 的摘要并带 "Due now" 节（送达后 `nextAt` 才前移；被配额压住时下一次摘要带上，只带一次）。自己记的标 "(kept by you)"，prompt 明说这种指令不能放宽策略。
+- hub：`/concierge orders`（浮层，最新在前）、`orders add [时钟] <规则>`（像时钟但不是 roost 词汇的提示不记）、`orders rm <id>`；状态里有 `orders` 数。
+- evals：`evals/orders.eval.ts`（"A 结束就把结果告诉 B"只执行一次并说出 `#1`；在提问里说的规则被它以 `every 1m` 记下并在到点唤醒时执行；要它启动会话的指令在没有 `act` 时拒绝并告诉用户）。harness 新增 `orders` 和 `waitMs` 步骤。
+
+### Step 45：peek 加深（M48，`docs/plans/m48-peek.md`；按用户要求在 M47 之前做）
+
+只改 hub 与少量 daemon 字段：
+
+- **更多信息**：`JobRow` 新增 `task`（启动时 `--` 之后的任务文本，`rowTask()`）和 `queued`（等着投给它的用户回复数，不含 agent 项）。peek 显示任务、在哪、从何时起（结束的显示用时）、花费（`$0.12 · 34k tokens`）、排队回复数，以及记录尾（`lib/transcript.ts` `readTail(file, max)`：先 `stat`，只读末尾 256 KB；缓存按文件大小/mtime 键控，原始行在渲染时按宽度截断，浮层开着时每 2 s 刷新；终端 agent 显示屏幕行；失败的会话显示完整错误）。
+- **回复框**是和任务框一样的编辑器（`TaskEditor`：多行、粘贴折叠、Ctrl+G 外部编辑器），页脚按会话状态说明 Enter 做什么（`Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys`，须 ≤80 列）。
+- **peek 里的 `/` 命令**对这个会话生效（`peekCommand`）：`/stop /respawn /rm /pin /rename /attach /model /thinking /name /compact /continue /log /transcript /ask`；其他 `/…` 原样作为回复发给会话（pi 的 prompt 模板和 skill）；`!` 拒绝；会话已结束（`pid === null`）时 `/name` `/compact` 拒绝（否则会把它重启）。worker 侧新增：从回复里执行 `/compact`。
+- **补全**：两个框都用 pi-tui 的 `CombinedAutocompleteProvider(commands, basePath, fdPath)`（`/` 命令带描述与参数补全、`@` 路径、有 `fd` 时模糊）；菜单开着时对 `/` 命令按 Enter 直接执行（`Editor.isShowingAutocomplete()`）；Tab 对 `@dir` 走 `completeAt()`，否则交给编辑器。
+
+移植提示：真实终端里验收（tmux，`node bin/pi-roost.ts hub 2> log`，**别重定向 stdout**），自动化测试里行选择要跳过分组标题行。
+
+### Step 46：共享任务板（M47，`docs/plans/m47-tasks.md`）
+
+控制平面的最后一块，把"盯着看的 hub"变成"团队"（对应 Claude Code agent teams 的任务列表）：
+
+- **存储** `tasks.json`（`{next, tasks}`，`lib/board.ts` `BoardTask {id, title(≤200), detail(≤2000)|null, state: open|claimed|done|dropped, after: ids, by:{who, whoId}, at, owner:{id,name}|null, claimedAt, doneAt, result|null, assigned:{id,name,at}|null}`，最多 200 条 `TASK_MAX`，满了先清 done/dropped 最旧的，id 不复用）。`blockedOn(t, all)`：`after` 里既非 done 也非 dropped 的 id。加载时规范化：没有持有者的 claimed 变 open，open 不带持有者。
+- **op `task {action}`**，在任何连接上，动作者由连接决定（`boardActor()`：hub=`user`、值班 agent、job（report 被接受之后）、前台 pi（`peer_register` 之后）；说过 `hello`/`report` 但没有被接受的 report 的连接回 `unauthorized`，绝不当成 hub）：`list`；`add {title, detail?, after?}`（`after` 必须在板上且未 dropped，否则 `bad_request`；满 `full`）；`claim {id}`（**只有会话**，hub/值班 agent 回 `unsupported`；别的活着的会话持有 → `conflict`；持有者已不在（job 不在 roster、前台 pi 断开）→ 先释放再接管；依赖未完成 → `blocked`；done/dropped → `bad_request`；自己重复认领无事）；`release`/`done {result?}`（持有者、hub、值班 agent；hub/值班 agent 收回时持有者会收到一条消息）；`drop`（只有 hub 与值班 agent；done 的不能 drop；持有者收到消息）、`assign {id, to}`（只有 hub 与值班 agent；给目标会话投一条 `message`（任务、细节、怎么认领或还在等谁）；**消息送达且任务仍 open 时**才记 `assigned` 和事件，应答带 `sent`；同一任务同时两次交办回 `bad_request`）。id 只认正整数或数字串。结果 `{tasks, task?, sent?}`。
+- **认领随会话走**：job 失败/停止（`noteState`）或被删除（`removeJob`）时释放其全部认领（事件 `why:"release"`，文本 `#1 one: a stopped`）；启动时记录已不存在、或状态为 failed/stopped 的持有者也释放；前台 pi 断开 5 s 后释放（`FG_CLAIM_GRACE_MS`，`PI_ROOST_FG_CLAIM_GRACE_MS`；同一会话重开的 pi 用同一 id 回来则保留）；roost 自动续跑（M38）的会话保留认领（同一 job id）；已 done 的 job 活着时保留。
+- **事件与推送**：`task` 事件（`why: add|claim|release|done|drop|assign`，`text: "#id title[: result | : to name | : 释放原因]"`）；每次变化向订阅的 hub 推 `{event:"board", board:{open, claimed, blocked, done}}`；每次摘要在 fleet 之后带 "The board (…)" 段（open、blocked、claimed 各一行，`liveOrder`）。daemon capabilities 加 `tasks`。
+- **工具**：会话 `roost_tasks` `roost_task_claim` `roost_task_done` `roost_task_release` `roost_task_add`；值班 agent `hub_tasks` `hub_task_add` `hub_task_assign` `hub_task_done` `hub_task_drop` `hub_task_release`（`BOARD_TOOLS`，总是激活；prompt：它是组长不是工人——有空闲会话且有开放任务就交出去、任务完成就告诉用户、会话结束就再交出去、从不自己认领）。
+- **hub**：`/tasks`（浮层：open 强调色、blocked 警告色带依赖、claimed 弱化、done 最新在前最多 30 条；是打开那一刻的快照）、`/tasks add <title> [after #n …] [-- detail]`（`after` 要带 `#`，"retry after 3" 是标题；正则无嵌套量词）、`assign <id> <session>`、`done <id> [result]`、`rm <id>`、`release <id>`；板上有东西时标题下一行 `tasks 1 open · 1 blocked · /tasks`（来自 `board` 事件，启动时 `task list` 取一次）。
+- **SDK**：TS `RoostAgent.call(op, args)` + `tasks/claimTask/taskDone/releaseTask/addTask`；Python `request(op, args, timeout)`（按请求 id 路由应答：`_send(..., waiter)` 在锁内登记、`_message` 先匹配 id、`_drop` 让等待者以 `disconnected` 失败、发送失败时撤销登记；要在第一次 `report()` 建立连接之后用）+ `RoostError(code, message)` + `tasks/claim_task/task_done/release_task/add_task`。协议一致性测试里 TS 与 Python 两个脚本化 agent 各自在板上挂一个任务、认领、完成。
+- evals：`evals/tasks.eval.ts`（一个会话按板工作：两个任务、第二个依赖第一个，事件顺序证明 #2 在 #1 完成后才被认领；值班 agent 把任务交给空闲会话、对方认领并完成、它自己一次都没认领）。harness 新增 `tasks`（按位置写依赖），结果带 `board`、`taskEvents`。首轮 2/2、2/2。
+
+移植提示：认领是"活着的会话持有的锁"，关键在 `ownerLive()` 与四处释放（失败/停止、删除、前台断开、启动清扫）；忘了任何一处，任务就会卡死。独立审核在这一步抓出的问题值得记住：没有 peer 的连接默认当 hub（agent 在 report 被接受前就能冒充）、投递 `await` 之后不复查状态、正则嵌套量词回溯。
+
 ---
 
 ## 5. 配置项（`lib/config.ts`）
@@ -1007,8 +1076,9 @@ M38/M39 先只做了 pi。M40 推广到档案 agent（级别 0）和协议 agent
 | `autoResume`（M38） | `"interrupted"`（另有 `"crash"`、`"off"`） | （不在 `USER_ONLY` 里，但 daemon 只读用户文件：`loadUserConfig().autoResume`，项目文件里写了没有效果） |
 | `presets`（M27） | 无；`{名字: {model thinking worktree agent dir fanout profile}}`。**用户文件与项目文件都能写，按名字合并，项目的优先**；畸形条目跳过；`/preset save` 只写用户文件 | |
 | `agentProfiles`（M30） | 无；`{档案名: {command task model thinking resume working waiting submit settleMs env protocol}}`，见 Step 29 | ✔（项目文件不能定义，因为档案是 roost 要运行的命令） |
+| `concierge`（M44–M46） | 无；`{model: "anthropic/claude-haiku-5-5", thinking: "off", wakesPerHour: 60, heartbeat: "every 15m", dailyBudgetUsd: 1, answer: "never", act: false}`，见 Step 42–43；`answer`/`act` 只是初值，之后由 daemon 保存（`concierge.json`） | ✔ |
 
-> 表中"仅用户级"的集合就是 `lib/config.ts` 的 `USER_ONLY`：`envAllowList inheritEnv envDenyList workspaceEnv summaryModel agentExternalMessages agentMaxDepth agentMaxChildren agentMaxTree agentMaxTotal agentProfiles`（v0.1.12 起含 `agentProfiles`，M30 加的）。`presets` 和 `autoResume` **不在**其中。（v0.1.5 的旧表把 `agentTools` 也标成了仅用户级，那是错的。）`inheritEnv:false` 时 `envPolicy()` 会把 `workspaceEnv` 强制成 `"off"`。
+> 表中"仅用户级"的集合就是 `lib/config.ts` 的 `USER_ONLY`：`envAllowList inheritEnv envDenyList workspaceEnv summaryModel agentExternalMessages agentMaxDepth agentMaxChildren agentMaxTree agentMaxTotal agentProfiles concierge`（v0.1.12 起含 `agentProfiles`，M30 加的；v0.1.14 起含 `concierge`，M44 加的）。`presets` 和 `autoResume` **不在**其中。（v0.1.5 的旧表把 `agentTools` 也标成了仅用户级，那是错的。）`inheritEnv:false` 时 `envPolicy()` 会把 `workspaceEnv` 强制成 `"off"`。
 
 "仅用户级"的原因：别人克隆来的仓库不能决定**你的环境变量**流向哪里、**会话记录**发给哪个模型、agent 能扩散多远。移植时保留这条规则。
 
@@ -1076,10 +1146,23 @@ M38/M39 先只做了 pi。M40 推广到档案 agent（级别 0）和协议 agent
 | telemetry 文件写入批次（M34） | 250 ms 或满 1000 条 | `lib/telemetry.ts` `fileTelemetry` |
 | 压测预算（M35） | dispatch p95 3000 ms；全部就绪 30 s + 200 ms×job 数；ack p95 3000 ms；hub 事件延迟 p95 1000 ms；daemon RSS 400 MB | `stress/run.ts` `BUDGET` |
 | eval 单用例时限 / "沉寂"判定（M37） | 180 s / 3 s | `evals/harness.ts` `runCase` |
+| 事件日志保留 / 单条文本上限（M43） | 1000 条 / 300 字符 | `lib/events.ts` `EVENT_LOG_MAX` / `EVENT_TEXT_MAX` |
+| watch 过期 / 每会话上限（M43） | 12 h / 20 | `lib/comms.ts` `WATCH_TTL_MS`（`PI_ROOST_WATCH_TTL_MS`）/ `MAX_WATCHES` |
+| 重复消息窗口（M43） | 60 s | `lib/comms.ts` `DUPLICATE_WINDOW_MS` |
+| 值班 agent 唤醒合并 / 投递失败重试 / 节拍（M44） | 5 s / 60 s / 30 s | `daemon/main.ts` `CONCIERGE_COALESCE_MS` `CONCIERGE_RETRY_MS` `CONCIERGE_TICK_MS`（各有 `PI_ROOST_CONCIERGE_*` 变量；`PI_ROOST_CONCIERGE_HEARTBEAT_MS` 覆盖心跳） |
+| 值班 agent 默认每小时唤醒 / 心跳 / 日预算（M44） | 60 次 / `every 15m` / 1 美元 | `lib/concierge.ts` `CONCIERGE_DEFAULTS` |
+| `?` 提问等待回答（M44） | 2 min | `hub/agent-view.ts` `asked()` |
+| 代答在状态行显示（M45） | 60 s | `hub/agent-view.ts` `conciergeLine()` |
+| 常备指令上限 / 单条长度（M46） | 50 / 500 | `lib/concierge.ts` `ORDER_MAX` / `ORDER_TEXT_MAX` |
+| 任务板上限 / 标题 / 细节与结果（M47） | 200 / 200 / 2000 | `lib/board.ts` `TASK_MAX` `TASK_TITLE_MAX` `TASK_TEXT_MAX` |
+| 前台 pi 断开后认领保留（M47） | 5 s | `daemon/main.ts` `FG_CLAIM_GRACE_MS`（`PI_ROOST_FG_CLAIM_GRACE_MS`） |
+| peek 记录尾读取 / 刷新（M48） | 末尾 256 KB / 2 s | `hub/agent-view.ts`（`readTail`） |
 
 调试用环境变量：`PI_ROOST_HOME` `PI_ROOST_RUNTIME_DIR` `PI_ROOST_CONFIG_DIR` `PI_ROOST_HOST_ENTRY` `PI_ROOST_REAP_MINUTES` `PI_ROOST_REAP_CHECK_MS` `PI_ROOST_SHELL_KEEP_MS` `PI_ROOST_PROGRESS_MS` `PI_ROOST_FIRST_PROGRESS_MS`；v0.1.7 新增：`PI_ROOST_AUTO_CLOSE_MS`（M13）、`PI_ROOST_CLEANUP_DAYS` `PI_ROOST_CLEANUP_CHECK_MS`（M15）、`PI_ROOST_PR_POLL_MS` `PI_ROOST_GH`（M16，`gh` 可执行文件路径）——测试全靠它们把时间缩短、把目录隔离到临时路径、用假的 `gh`。（内部标记变量 `PI_ROOST_RESTORE`、`PI_ROOST_CHILD` 见 §3。）
 
 v0.1.12 新增：`ROOST_HOME` `ROOST_RUNTIME_DIR` `ROOST_CONFIG_DIR`（M29，分别优先于 `PI_ROOST_*` 同名）；`PI_ROOST_RESUME_DELAYS_MS`（M38）；`PI_ROOST_SCHEDULE_TICK_MS`（M39）；`ROOST_TELEMETRY=<绝对路径.jsonl>`（M34，需在启动 daemon 前设）；`ROOST_PI_PACKAGE`（M33，独立 hub 找 pi 的包）；`ROOST_EVAL_MODEL` `ROOST_EVAL_THINKING` `ROOST_EVAL_RUNS` `ROOST_EVAL_SECOND_MODEL` `ROOST_EVAL_DIR` `ROOST_EVAL_KEEP`（M37/M41）；跑测试时的 `STRESS=1`（`test/stress-attach.test.ts` 从 60 轮加到 600 轮）。
+
+v0.1.14 新增：`PI_ROOST_WATCH_TTL_MS`（M43）；`PI_ROOST_CONCIERGE_COALESCE_MS` `PI_ROOST_CONCIERGE_RETRY_MS` `PI_ROOST_CONCIERGE_TICK_MS` `PI_ROOST_CONCIERGE_HEARTBEAT_MS`（M44）；`ROOST_ROLE=concierge`（M44，daemon 给值班 agent 的 job 设的，扩展据此换角色）；`PI_ROOST_FG_CLAIM_GRACE_MS`（M47）。
 
 ---
 
@@ -1100,7 +1183,7 @@ v0.1.12 新增：`ROOST_HOME` `ROOST_RUNTIME_DIR` `ROOST_CONFIG_DIR`（M29，分
 
 ## 8. 测试策略
 
-`test/` 下 **38 个** vitest 文件（v0.1.7 时 25 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
+`test/` 下 **40 个** vitest 文件（v0.1.7 时 25 个，v0.1.12 时 38 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
 
 | 测试 | 覆盖 | 移植难度 |
 |---|---|---|
@@ -1128,6 +1211,16 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 | `hub-standalone`（M33） | 找 pi 的包、解析钩子（从 pi 解析、失败回退）、模型列表、配色与 `NO_COLOR`、CLI 错误 | 取决于宿主是否也做独立 hub |
 | `daemon`（大幅扩充） | M22 一会话一行；M30 档案 agent（用假终端 agent）；**M31 协议一致性：TS 与 Python 两个客户端各跑一个脚本化 agent 对着真 daemon**；M34 遥测；M35 丢 ack 后重启、崩溃后空 state 文件；M36 请求 ID；M38 续跑；M39 定时；M40 全 agent 续跑与定时 | 改路径/env 前缀即可；Python 一致性用例在没有 python 时跳过 |
 | `reporter`（M22 退避）、`reply-queue`（M28 steer）、`agent-view`（M23–M30 的键、`/preset` `/fanout` `/compare` `/usage` `/schedule` `/profile`）、`mobile`、`foreground`… | 用假的 `ExtensionAPI` 驱动 | 换成你的适配器 mock |
+
+v0.1.14 新增/扩充（M43–M48）：
+
+| 测试 | 覆盖 | 移植难度 |
+|---|---|---|
+| `events`（M43） | `EventLog`：追加、窗口、文件重写、游标与超前游标、`eventLine` | 纯函数/临时文件，直接复用 |
+| `comms`（大幅扩充，M43–M48） | 对着真 daemon：watch 的触发与过期、重复消息、速率与队列上限、事件流只给 hub；M44 值班 agent 的 on/off/状态推送、唤醒合并、配额、预算、心跳、`?` 问答；M45 建议/代答闸门/undo/act；M46 指令的存储、闸门、摘要、时钟唤醒、重启；M47 任务板的存储与加载规范化、闸门（含 report 前的连接）、锁与四种释放、接管、上限与清扫、重启、交办消息（含未送达）、drop/release 通知持有者、摘要；M48 行的 `task`/`queued` | 改路径/env 前缀即可 |
+| `concierge`（M44–M47） | pi 侧角色：工具注册与按策略激活（含 `BOARD_TOOLS`）、prompt 替换、纯文本回答交回 hub、摘要渲染 | 换成你的适配器 mock |
+| `agent-view`（扩充，M43–M48） | `/log`、`/concierge …`、横幅与 Ctrl+Y/E、`/concierge orders`、`/tasks` 与标题计数（含 `after` 正则边角）、peek 的信息/回复框/命令/补全（行选择要跳过分组标题） | 换成你的适配器 mock |
+| `daemon` 的协议一致性用例（M31 + M47） | TS 与 Python 脚本化 agent 各在板上挂任务、认领、完成（Python 的应答按请求 id 路由） | 改路径/env 前缀即可 |
 
 **单列**：
 - `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos soak`，不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
@@ -1166,10 +1259,15 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 25. （M39）定时**只认本地时间**，没有时区选项；cron 只有 5 个字段；夏令时重复的那一小时里不会重复运行，春季不存在的时刻改到次日；一个计划的上一次运行没做完就**跳过**而不是排队；定时模板不带 worktree，不带 fan-out；过去运行的行按 `cleanupDays` 清理。
 26. （M22）孤儿进程组的 SIGTSTP 被内核丢弃——宿主若有"Ctrl+Z 挂起自己"，后台 worker 里必须拦下，否则会永久冻结（见 Step 21）。
 27. （M29）设计文档（`any-agent.md`）与代码有出入的地方以代码为准：`kind` 仍是 `"pi" | "shell"` 加 `profile`，没有 `agent: string`；档案占位符只有 `{task} {model} {thinking}`，没有 `{session}`；档案状态经 `term.json` 文件由 daemon 读取，而不是 host 推的 `term` 事件。
+28. （M44）值班 agent 是**又一个会花钱的会话**：默认 haiku、每小时最多 60 次唤醒、每天 1 美元封顶；预算用完当天不再唤醒，第二天自动恢复；它没有 shell/文件工具，只能看记录尾和屏幕；`?` 的回答靠"用户问题之后的最后一段助手文本"识别，它若在同一轮里既处理摘要又回答，摘要部分会被丢掉。
+29. （M45）"常规问题"的判断在 prompt 里，不在代码里：不可逆清单（push/删除/付款/部署/凭据）靠模型遵守，evals 只能抽样验证；`undo` 只是告诉会话"忽略那条"，已经执行的动作撤不回。
+30. （M46）常备指令的时钟只认 `lib/schedule.ts` 的词汇；到点唤醒受每小时配额和日预算约束，被压住时随下一次摘要带上（只带一次）；指令"应用过"全靠它自己上报（`hub_note_done`）。
+31. （M47）任务板一个 roost home 一块，没有按项目分；没有"我依赖的任务完成了就通知我"（要自己 `roost_watch` 它的会话，或等值班 agent 转交）；任何会话都能把板挂满 200 条开放任务（只清 done/dropped），失控的会话要用户来停；值班 agent 交办只是发消息，对方不认领就一直 `assigned`，hub 里能看到 "handed to … 2m ago"；`/tasks` 浮层是打开时的快照（标题计数是实时的）。
+32. （M48）peek 的记录尾只读文件末尾 256 KB，长工具输出会被截去头部；`/` 命令只在 peek 的回复框里按会话解释，任务框里仍是 hub 命令；`!` 在 peek 里拒绝（不会把命令当回复发）。
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.12）
+## 附录 A：daemon op 一览（v0.1.14）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -1191,6 +1289,13 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 | `schedule-add {name, when, launch, task?, catchUp?}` | hub（M39） | 新增计划；同名已存在回 `exists`（先 `rm`）、名字须匹配 `SCHEDULE_NAME`（1–40 字符）、总数上限 100（`limit`）；`launch` 是带 `{{run}}` 的 dispatch 模板 |
 | `schedule-rm {name}` `schedule-pause {name, paused}` | hub/CLI（M39） | 删除 / 暂停与恢复 |
 | `schedule-run {name}` | hub/CLI（M39） | 立即运行一次，返回 `{name, id}`；上一次还在跑则 `busy` |
+| `events {after?, limit?, id?}` | hub/CLI（M43） | 事件流，带游标；会话连接被拒（值班 agent 除外） |
+| `watch {id, when}` | 前台/worker（M43） | 一次性 idle/ended 通知 |
+| `concierge {action: on {launch?} \| off \| status \| answer {answer} \| act {act} \| undo}` | hub（M44/M45） | 值班 agent 的开关、状态、策略、撤回 |
+| `concierge-ask {text}` | hub（M44） | `?` 提问 |
+| `concierge-say {kind, text}` `concierge-policy` `concierge-suggest {id, text, why?}` `concierge-reply {id, text, why?}` `concierge-act {what, id \| launch, why?}` | 值班 agent 自己的连接（M44/M45） | 通知/读策略/建议/代答（闸门：`policy`）/启停（闸门：`policy`） |
+| `concierge-order {action: add \| rm \| list \| applied}` | hub 与值班 agent（M46） | 常备指令 |
+| `task {action: list \| add \| claim \| release \| done \| drop \| assign}` | 任意（M47） | 共享任务板；动作者由连接决定，见 Step 46 |
 
 **v0.1.12 的 op 与字段变化**（在上表 v0.1.7 内容之上）：
 - **新增 op**：`hello`（M31）、`schedules` `schedule-add` `schedule-rm` `schedule-pause` `schedule-run`（M39）。`lib/protocol.ts` 的 `OpArgs`/`OpResults` 是权威清单。
@@ -1200,6 +1305,16 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 - **`WorkerReport`** 新增：`usage`（M24）；协议文档把 `context` `usage` `prLinks` `remoteAt` 列为 capability 字段，`attachSignal` `attachRepaint` `agentItems` 为 pi 专用。
 - **host 帧协议的 control op** 现在是 `detach input snapshot status terminate terminate-idle`：`input {data}`（M30，把文本写进 PTY，仅档案 job，≤64 KB）、`terminate-idle`（M22，只在没人 attach 时停止，由 host 原子判断，有人则回 `{ok:false, attached:true}`）。host 还写 `term.json`（M30）。
 - 推送事件 `deliver` 现在是 `{event:"deliver", id, seq, text, kind?, from?, relation?, ref?, mode?}`。
+
+**v0.1.14 的 op 与字段变化**（在上表 v0.1.12 内容之上）：
+- **新增 op**：`events` `watch`（M43）、`concierge` `concierge-ask` `concierge-say`（M44）、`concierge-policy` `concierge-suggest` `concierge-reply` `concierge-act`（M45）、`concierge-order`（M46）、`task`（M47）。
+- **`JobRow`** 新增：`role`（`"concierge" | null`，M44）、`suggested`（M45）、`task` `queued`（M48）。
+- **`send`** 结果的 `outcome` 多了 `"duplicate"`（M43）；`deliver` 的 `kind` 多了 `notice`（M43）和 `digest`（M44）。
+- **推送事件**新增：`{event:"concierge", status}`（M44）、`{event:"board", board}`（M47）。
+- **事件流**的 `kind`：`dispatch state reply message report notice resume schedule removed concierge task`。
+- **daemon capabilities**：`replies steer agent-items peers spawn handback events watch tasks`。
+- **文件**（都在 roost home）：`events.jsonl`（M43）、`watches.json`（M43）、`concierge.json`（M44）、`orders.json`（M46）、`tasks.json`（M47）。
+- **错误码**新增用法：`policy`（M45，策略不允许）、`conflict` `blocked`（M47，认领）、`unauthorized`（M47，没有被接受的 report 的 agent 连接碰任务板）。
 
 **v0.1.7 没有新增 op**：M11–M20 的新功能都复用现有 op，只在字段上扩展——`list`/`job` 事件里的 `JobRow` 新增 `parentOpen`（M13）、`agent`（M18）、`prs`（M16，`PrInfo[]`），M10 的 `worktree`；`dispatch` 的 `DispatchArgs` 新增 `agent` `workspaceEnv` `envDeny` `envForce`；`report` 的 `WorkerReport` 新增 `attachRepaint`（M21 起只有旧 host 读）`remoteAt` `prLinks`。`reply`（M19 记录视图发消息、M12b 面板 `m`）、`respawn`（M13 唤醒休眠的子会话）、`rm`（M15 `.worktreeinclude` 感知的清理）语义不变。host 帧协议新增：attach 的首个回复帧 `HELLO {repaint}`（M14）/ `{replay:true}`（M21，之后第一帧 DATA 是快照），`attached.json` 的 `replay`（M21），数据流里的私有标记 `OSC 7700;pi-roost-repaint`（M21 起 host 只负责剔除）。
 
@@ -1244,6 +1359,12 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 | 38 | M39 定时任务 | `lib/schedule.ts` + daemon ticker + hub `/schedule` | 中 |
 | 39 | M40 全 agent 续跑/定时 | daemon 的 `resumable`、`profileTick` 分支、`templateAgent` | 小到中 |
 | 40 | M42 | 仅测试 | — |
+| 41 | M43 事件流/watch/消息规则 | `lib/events.ts` + daemon `record()`/`fireWatches` + hub `/log` + CLI `log` | 小到中 |
+| 42 | M44 值班 agent v0 | `lib/concierge.ts` + `adapters/pi/concierge.ts` + daemon `wakeConcierge` 一族 + hub `/concierge` `?` | 中（唤醒合并/配额/预算是主体） |
+| 43 | M45 策略 | daemon 闸门 + hub 横幅/Ctrl+Y/E + prompt | 中 |
+| 44 | M46 常备指令 | daemon `orderOp`/时钟 + 摘要 + hub `/concierge orders` | 小到中 |
+| 45 | M48 peek 加深 | `hub/agent-view.ts`（peek、`TaskEditor`、补全）+ `lib/transcript.ts` `readTail` | 中（全在视图里） |
+| 46 | M47 任务板 | `lib/board.ts` + daemon `taskOp`/四处释放 + 两套工具 + hub `/tasks` + SDK | 中 |
 
 ## 附录 C：版本对应
 
@@ -1299,8 +1420,18 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 | `bac1080` | PR #61：M40 全 agent 的续跑与定时 |
 | `6972c06` | PR #62：M41 更多 evals（fan-out、终端 agent、协议 agent） |
 | `d1f43f0` | PR #63：M42 压测用例不再在负载下失败 |
-| `871ed9a` | PR #64：发布 v0.1.12（本文依据，tag `v0.1.12`） |
+| `871ed9a` | PR #64：发布 v0.1.12（tag `v0.1.12`） |
+| `074499e` | PR #65：本文同步到 v0.1.12 |
+| `2ffd947` | PR #66：发布 v0.1.13（只有文档；`docs/` 进发布包，tag `v0.1.13`） |
+| `3a2280a` | PR #67：设计——hub 作为控制平面（M43–M47） |
+| `fac2040` | PR #68：M43 事件流、watch 与消息规则 |
+| `6ca9673` | PR #69：M44 值班 agent v0 |
+| `33e8842` | PR #70：M45 升级与策略 |
+| `16809e0` | PR #71：M46 常备指令 |
+| `ec1bb74` | PR #72：M48 peek 加深 |
+| `26c5575` | PR #73：M47 共享任务板（含独立审核的修复） |
+| （发布提交） | PR #74：发布 v0.1.14（本文依据，tag `v0.1.14`；代码与 `26c5575` 相同） |
 
-> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`）。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=PR #74 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
 
-所需 pi 最低版本（v0.1.12 仍以 **pi 1.5.0** 验证：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
+所需 pi 最低版本（v0.1.14 仍以 **pi 1.5.0** 验证，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
