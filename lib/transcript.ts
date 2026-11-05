@@ -117,14 +117,14 @@ export function transcriptItems(text: string, truncated = false): TranscriptItem
 	return items;
 }
 
-/** A session file's last READ_MAX bytes; truncated when the file is longer. */
-export function readTail(file: string): { text: string; truncated: boolean; size: number; mtimeMs: number } {
+/** A session file's last `max` bytes (READ_MAX unless said); truncated when the file is longer. */
+export function readTail(file: string, max: number = READ_MAX): { text: string; truncated: boolean; size: number; mtimeMs: number } {
 	const fd = openSync(file, "r");
 	try {
 		const st = fstatSync(fd);
-		const truncated = st.size > READ_MAX;
+		const truncated = st.size > max;
 		// one byte before the tail too: whether its first line is whole
-		const len = truncated ? READ_MAX + 1 : st.size;
+		const len = truncated ? max + 1 : st.size;
 		const buf = Buffer.alloc(len);
 		readSync(fd, buf, 0, len, st.size - len);
 		let text = buf.toString("utf8");
