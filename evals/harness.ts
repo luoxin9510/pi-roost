@@ -10,6 +10,7 @@
  * ROOST_EVAL_DIR (where observations go; evals/run.ts sets it), ROOST_EVAL_KEEP=1.
  */
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import type { ConciergeAnswer } from "../lib/concierge.ts";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, lstatSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -63,8 +64,8 @@ export interface RoostCase {
 	fanout?: string[];
 	/** M44: other sessions started with the case's (a pi task, or a command), by name. */
 	extra?: { name: string; task?: string; command?: string[] }[];
-	/** M44: the concierge on (its model: the case's) before the sessions start. */
-	concierge?: boolean;
+	/** M44: the concierge on (its model: the case's) before the sessions start; M45: with a policy. */
+	concierge?: boolean | { answer?: ConciergeAnswer; act?: boolean };
 }
 
 export interface RoostOutcome {
@@ -104,6 +105,10 @@ export interface RoostOutcome {
 		sent: { to: string; text: string }[];
 		wakes: number;
 		costUsd: number;
+		/** M45: the answers it gave sessions in the user's place, its suggestions, and what it started, stopped or restarted. */
+		answered: { to: string; text: string }[];
+		suggestions: { to: string; text: string }[];
+		acts: string[];
 		transcript: { kind: string; text: string }[];
 	} | null;
 }
@@ -267,7 +272,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			});
 		// M44: the concierge first, so the sessions' starts are its first digest
 		if (c.concierge) {
-			writeFileSync(join(home, "roost.json"), JSON.stringify({ concierge: { model, thinking: "off" } }));
+			const policy = typeof c.concierge === "object" ? c.concierge : {};
+			writeFileSync(join(home, "roost.json"), JSON.stringify({ concierge: { model, thinking: "off", ...(policy.answer ? { answer: policy.answer } : {}), ...(policy.act ? { act: true } : {}) } }));
 			const launch = buildLaunch({
 				task: "",
 				cwd: work,
@@ -479,6 +485,9 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 					sent: feed.filter((e) => e.kind === "message" && !!status.id && e.whoId === status.id).map((e) => ({ to: e.name, text: e.text ?? "" })),
 					wakes: status.wakesLastHour,
 					costUsd: status.costToday,
+					answered: feed.filter((e) => e.kind === "reply" && !!status.id && e.whoId === status.id).map((e) => ({ to: e.name, text: e.text ?? "" })),
+					suggestions: feed.filter((e) => e.kind === "concierge" && e.why === "suggest").map((e) => ({ to: e.name, text: e.text ?? "" })),
+					acts: feed.filter((e) => e.kind === "concierge" && e.why === "act").map((e) => e.text ?? ""),
 					transcript: ct,
 				};
 			} catch {}
@@ -644,7 +653,7 @@ export function checks(name: string, list: Record<string, (o: RoostOutcome) => b
 			if (dir) {
 				appendFileSync(
 					join(dir, "observations.jsonl"),
-					`${JSON.stringify({ case: name, score, failed, error: output.error, states: output.states, costUsd: output.costUsd, tokens: output.tokens, ms: output.ms, ackP50: output.ackP50, answer: output.answer.slice(0, 500), ...(output.concierge ? { concierge: { wakes: output.concierge.wakes, notices: output.concierge.notices.map((n) => `${n.kind}: ${n.text.slice(0, 300)}`), sent: output.concierge.sent.map((m) => `→ ${m.to}: ${m.text.slice(0, 200)}`), answers: output.concierge.answers.map((a) => a.slice(0, 300)) } } : {}) })}\n`,
+					`${JSON.stringify({ case: name, score, failed, error: output.error, states: output.states, costUsd: output.costUsd, tokens: output.tokens, ms: output.ms, ackP50: output.ackP50, answer: output.answer.slice(0, 500), ...(output.concierge ? { concierge: { wakes: output.concierge.wakes, notices: output.concierge.notices.map((n) => `${n.kind}: ${n.text.slice(0, 300)}`), sent: output.concierge.sent.map((m) => `→ ${m.to}: ${m.text.slice(0, 200)}`), answers: output.concierge.answers.map((a) => a.slice(0, 300)), answered: output.concierge.answered.map((a) => `→ ${a.to}: ${a.text.slice(0, 200)}`), suggestions: output.concierge.suggestions.map((s) => `→ ${s.to}: ${s.text.slice(0, 200)}`), acts: output.concierge.acts } } : {}) })}\n`,
 				);
 			}
 			return { score, metadata: { rationale: failed.length ? `failed: ${failed.join(", ")}${output.error ? ` (${output.error})` : ""}` : "all checks pass" } };

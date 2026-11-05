@@ -52,7 +52,8 @@ Claude Code's documented behaviour.
 | M42 | a stress test that failed under load: the fake worker kept keys as pi does ([M22 tests](m22-multi-window.md#tests)) | 0.1.12 |
 | M43 | [the event feed, watches and message rules](m43-events.md) | next |
 | M44 | [the concierge, v0: report and relay](m44-concierge.md) | next |
+| M45 | [escalation and policy: suggestions, routine answers, undo, act](m45-policy.md) | next |
 
-Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers (M43–M47; M43 and M44 done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
+Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers (M43–M47; M43–M45 done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

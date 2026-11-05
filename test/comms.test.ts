@@ -898,6 +898,139 @@ describe("M44: the concierge", () => {
 			restore();
 		}
 	});
+
+	// ---- M45: escalation and policy ----
+	it("suggests an answer on the row that waits (spent by a reply, by the row moving on); the policy is the hub's to set", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub, events } = await connect();
+			await hub.request("subscribe", {});
+			const { id, w: wc } = await conciergeOn(hub);
+			expect(await wc.c.request("concierge-policy", {})).toEqual({ answer: "never", act: false });
+			const p = await foreground("lead");
+			await expect(p.c.request("concierge-policy", {})).rejects.toMatchObject({ code: "unsupported" });
+			await expect(p.c.request("concierge-suggest", { id: "x", text: "y" })).rejects.toMatchObject({ code: "unsupported" });
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			const w = await worker(childId);
+			// not waiting: nothing to suggest for
+			await expect(wc.c.request("concierge-suggest", { id: "worker", text: "main" })).rejects.toMatchObject({ code: "bad_request" });
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Which branch?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+			expect(await wc.c.request("concierge-suggest", { id: "worker", text: "main", why: "the other sessions work on main" })).toEqual({ id: childId, name: "worker" });
+			const row = (await hub.request("list", {})).jobs.find((j) => j.id === childId)!;
+			expect(row.suggested).toMatchObject({ text: "main", why: "the other sessions work on main" });
+			expect(events.some((e) => e.event === "job" && e.job.id === childId && e.job.suggested?.text === "main")).toBe(true);
+			expect((await hub.request("events", { id: childId })).events.filter((e) => e.kind === "concierge")).toEqual([expect.objectContaining({ why: "suggest", who: "concierge", whoId: id, text: "main" })]);
+			// the user's reply spends it
+			await hub.request("reply", { id: childId, text: "main" });
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested ?? null).toBeNull();
+			// a suggestion is for the question it was made for: another question (the same wait) is another
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "And the port?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.question === "And the port?");
+			await expect(wc.c.request("concierge-suggest", { id: childId, text: "/stop" })).rejects.toMatchObject({ code: "bad_request" });
+			await wc.c.request("concierge-suggest", { id: childId, text: "8080" });
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested?.text).toBe("8080");
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "And the host?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.question === "And the host?");
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested ?? null).toBeNull();
+			await wc.c.request("concierge-suggest", { id: childId, text: "localhost" });
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested?.text).toBe("localhost");
+			// a suggestion for the next question goes when the row moves on without a reply
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "working", status: "busy" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested ?? null).toBeNull();
+			// the policy: the hub sets it, the daemon keeps it (over a restart), the concierge reads it
+			await expect(hub.request("concierge", { action: "answer", answer: "sometimes" as "never" })).rejects.toMatchObject({ code: "bad_request" });
+			expect((await hub.request("concierge", { action: "answer", answer: "routine" })).policy).toEqual({ answer: "routine", act: false });
+			expect((await hub.request("concierge", { action: "act", act: true })).policy).toEqual({ answer: "routine", act: true });
+			expect(await wc.c.request("concierge-policy", {})).toEqual({ answer: "routine", act: true });
+			daemons[0]!.kill("SIGKILL");
+			await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
+			const c2 = await startDaemon();
+			expect((await c2.request("concierge", { action: "status" })).policy).toEqual({ answer: "routine", act: true });
+		} finally {
+			restore();
+		}
+	});
+
+	it("answers in the user's place only when the policy lets it; the answer is the user's to undo", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			await hub.request("subscribe", {});
+			const { id, w: wc } = await conciergeOn(hub);
+			const p = await foreground("lead");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			const w = await worker(childId);
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Proceed with the plan?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+			// never: refused with the reason; nothing reaches the session
+			await expect(wc.c.request("concierge-reply", { id: "worker", text: "yes", why: "it asked to proceed" })).rejects.toMatchObject({ code: "policy" });
+			await expect(hub.request("concierge", { action: "undo" })).rejects.toMatchObject({ code: "not_found" });
+			expect(delivered(w.events, undefined as never)).toHaveLength(0);
+			// routine: the answer is a reply, said to be the concierge's in the feed; the hub sees who answered
+			await hub.request("concierge", { action: "answer", answer: "routine" });
+			await expect(wc.c.request("concierge-reply", { id: "worker", text: "/stop", why: "x" })).rejects.toMatchObject({ code: "bad_request" });
+			expect(await wc.c.request("concierge-reply", { id: "worker", text: "yes, proceed", why: "it asked to proceed with its own plan" })).toEqual({ id: childId, name: "worker" });
+			const got = await waitFor(() => w.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.text === "yes, proceed"));
+			expect(got.kind).toBeUndefined();
+			expect((await hub.request("events", { id: childId })).events.filter((e) => e.kind === "reply")).toEqual([expect.objectContaining({ who: "concierge", whoId: id, text: "yes, proceed" })]);
+			expect((await hub.request("concierge", { action: "status" })).answered).toMatchObject({ id: childId, name: "worker", text: "yes, proceed", undone: false });
+			// not waiting for a question any more: refused
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "working", status: "busy" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
+			await expect(wc.c.request("concierge-reply", { id: "worker", text: "and more", why: "x" })).rejects.toMatchObject({ code: "bad_request" });
+			// undo: the session (at work) is steered to disregard it and ask the user
+			expect((await hub.request("concierge", { action: "undo" })).answered).toMatchObject({ text: "yes, proceed", undone: true });
+			const undo = await waitFor(() => w.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.text.includes("came from the concierge")));
+			expect(undo.text).toContain("«yes, proceed»");
+			expect(undo.mode).toBe("steer");
+			expect((await hub.request("events", { id: childId })).events.filter((e) => e.kind === "concierge" && e.why === "undo")).toHaveLength(1);
+			await expect(hub.request("concierge", { action: "undo" })).rejects.toMatchObject({ code: "not_found" });
+			// a second answer, to a new question: undone while it still waits with that question, by a reply
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Run the tests first?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+			await wc.c.request("concierge-reply", { id: "worker", text: "yes, run them", why: "routine" });
+			expect((await hub.request("concierge", { action: "status" })).answered).toMatchObject({ text: "yes, run them", undone: false });
+			expect((await hub.request("concierge", { action: "undo" })).answered).toMatchObject({ text: "yes, run them", undone: true });
+			const undo2 = await waitFor(() => w.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.text.includes("«yes, run them»")));
+			expect(undo2.mode).toBeUndefined();
+			// nothing left to undo: the first was undone before
+			await expect(hub.request("concierge", { action: "undo" })).rejects.toMatchObject({ code: "not_found" });
+		} finally {
+			restore();
+		}
+	});
+
+	it("stops, restarts and starts sessions only when let (act); each is in the feed", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { id, w: wc } = await conciergeOn(hub);
+			const p = await foreground("lead");
+			const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
+			await expect(wc.c.request("concierge-act", { what: "stop", id: "worker", why: "the user asked" })).rejects.toMatchObject({ code: "policy" });
+			await expect(wc.c.request("concierge-act", { what: "dispatch", launch: launch("sleep 30", "x") })).rejects.toMatchObject({ code: "policy" });
+			await hub.request("concierge", { action: "act", act: true });
+			await expect(wc.c.request("concierge-act", { what: "stop", id: "concierge", why: "x" })).rejects.toMatchObject({ code: "bad_request" });
+			expect(await wc.c.request("concierge-act", { what: "stop", id: "worker", why: "the user asked" })).toEqual({ id: childId, name: "worker" });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "stopped");
+			const r = await wc.c.request("concierge-act", { what: "dispatch", launch: launch("sleep 30", "extra"), why: "a standing order" });
+			expect(r.name).toBe("extra");
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === r.id)?.pid);
+			const acts = (await hub.request("events", {})).events.filter((e) => e.kind === "concierge" && e.why === "act");
+			expect(acts.map((e) => e.text)).toEqual(["stopped worker: the user asked", "started extra: a standing order"]);
+			expect(acts.every((e) => e.whoId === id)).toBe(true);
+		} finally {
+			restore();
+		}
+	});
 });
 
 describe("worktrees through the daemon (M10)", () => {
