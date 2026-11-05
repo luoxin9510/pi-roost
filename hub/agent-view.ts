@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import type { HubTheme } from "./theme.ts";
@@ -64,6 +64,11 @@ import {
 
 const MIN_TASK = 4; // DI-1
 const DOUBLE_PRESS_MS = 2000; // Ctrl+X delete, Ctrl+C exit
+
+/** M48: one line of a peek's tail, raw (cut to the width when rendered). */
+type TailItem = { kind: "you" | "said" | "tool" | "note" | "screen"; text: string; error?: boolean };
+/** M48: a peek's tail reads this much of the session file's end (a few lines; the overlay reads more). */
+const TAIL_READ_MAX = 256 * 1024;
 
 /** M48: the commands a peek takes (`/…` in its reply box), for that session. */
 const PEEK_COMMANDS: { name: string; description: string; argumentHint?: string }[] = [
@@ -607,17 +612,27 @@ export class AgentView implements Component {
 		if (this.renaming) return this.renameKey(key, data);
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
-		// M17: Ctrl+J (a bare LF) adds a line; a paste arriving in pieces goes to the editor whole
-		// (M48: the reply box too); the open completion menu takes its keys
-		if (data === "\n" || typing.inPaste() || (typing.autocompleteOpen() && (key === "tab" || key === "up" || key === "down" || key === "enter" || key === "escape"))) {
+		// M17: Ctrl+J (a bare LF) adds a line; a paste arriving in pieces goes to the editor whole (M48: the reply box too)
+		if (data === "\n" || typing.inPaste()) {
 			typing.handleInput(data);
+			this.o.tui.requestRender();
+			return;
+		}
+		// M48: the open completion menu takes its keys; Enter on a / command takes it and runs it at
+		// once (as pi's prompt does); on a path it only completes
+		if (typing.autocompleteOpen() && (key === "tab" || key === "up" || key === "down" || key === "enter" || key === "escape")) {
+			typing.handleInput(data);
+			if (key === "enter" && typing.getValue().startsWith("/")) return void this.enter();
 			this.o.tui.requestRender();
 			return;
 		}
 
 		switch (key) {
 			case "tab":
-				if (!this.peek) this.completeAt();
+				// M6: @dir in the task box; else (M48) pi's menu, forced open as pi's Tab does
+				if (!this.peek && this.completeAt()) return;
+				typing.handleInput(data);
+				this.o.tui.requestRender();
 				return;
 			case "ctrl+s":
 				return this.toggleGroupBy();
@@ -1931,11 +1946,13 @@ export class AgentView implements Component {
 			return this.say("that session no longer exists", "warning");
 		}
 		if (!text || !this.client) return;
-		// M48: a /command in a peek is for that session (M8: /model and /thinking among them)
+		// M48: a /command the peek knows is for that session (M8: /model and /thinking among them);
+		// any other /… goes to the session as a reply (pi's prompt templates and skills, say)
 		const cmd = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
-		if (cmd) {
+		const name = cmd?.[1]?.toLowerCase();
+		if (cmd && name && PEEK_COMMANDS.some((c) => c.name === name)) {
 			try {
-				await this.peekCommand(row, cmd[1]!.toLowerCase(), (cmd[2] ?? "").trim());
+				await this.peekCommand(row, name, (cmd[2] ?? "").trim());
 			} catch (err) {
 				this.say((err as Error).message, "error");
 			}
@@ -2021,16 +2038,17 @@ export class AgentView implements Component {
 				return this.ask(`About the session ${row.name} (${row.id}): ${arg}`);
 			case "name":
 			case "compact": {
-				// pi's own, run in the session by the worker
+				// pi's own, run in the session by the worker (a session that ended is not started again for it)
 				if (name === "name" && !arg) return this.say("/name <the session's own name>", "warning");
 				if (row.kind === "shell") return this.say(`/${name} is for a pi session`, "warning");
+				if (row.pid === null) return this.say(`${row.name} is not running: /${name} works in a running session`, "warning");
 				const r = await client.request("reply", { id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` });
 				done();
 				if (r.delivered) return this.say(`/${name} · ${row.name}`, "success");
-				return this.say(r.saved ? `saved; it runs when ${row.name} starts again` : `not delivered: ${row.name} is not running`, "warning");
+				return this.say(r.respawned ? `starting ${row.name} again; /${name} runs then` : r.saved ? `saved; it runs when ${row.name} starts again` : `not delivered: ${row.name} is not running`, "warning");
 			}
 			default:
-				return this.say(`not a command for a session: /${name} · ${PEEK_COMMANDS.map((c) => `/${c.name}`).join(" ")}`, "warning");
+			// not the peek's: sendReply sends it to the session
 		}
 	}
 
@@ -2039,6 +2057,7 @@ export class AgentView implements Component {
 		const view = this;
 		const t = this.o.theme;
 		let body: string[] = [];
+		let bodyWidth = 0; // the width body was laid out for: a narrower terminal lays it out again
 		let top = -1; // -1: the end
 		const load = (width: number): string[] => {
 			const inner = Math.max(1, width - 2);
@@ -2069,7 +2088,10 @@ export class AgentView implements Component {
 		};
 		this.overlay = {
 			render(width: number) {
-				if (body.length === 0) body = load(width);
+				if (body.length === 0 || bodyWidth !== width) {
+					body = load(width);
+					bodyWidth = width;
+				}
 				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
 				const all = [t.bold(truncateToWidth(`Transcript · ${oneLine(row.name)}`, width)), "", ...body];
 				if (top < 0) top = Math.max(0, all.length - room);
@@ -2093,7 +2115,7 @@ export class AgentView implements Component {
 
 	/** M48: pi's own completion (pi-tui) for a box: `/` its commands, `@` paths under its directory (fuzzy with fd). */
 	private completion(commands: () => SlashCommand[], base: () => string): AutocompleteProvider {
-		const fresh = () => new CombinedAutocompleteProvider(commands(), base());
+		const fresh = () => new CombinedAutocompleteProvider(commands(), base(), fdOnPath());
 		return {
 			triggerCharacters: ["/", "@"],
 			getSuggestions: (lines, line, col, options) => fresh().getSuggestions(lines, line, col, options),
@@ -2120,8 +2142,8 @@ export class AgentView implements Component {
 			{ name: "schedule", description: "a task on a schedule", argumentHint: "<name> <when> <task> | run | pause | resume | rm" },
 			{ name: "fanout", description: "the next task once per model", argumentHint: "model model … | off" },
 			{ name: "compare", description: "the fan-out side by side" },
-			{ name: "preset", description: "launch presets", argumentHint: "name | save name | rm name | off" },
-			{ name: "profile", description: "new sessions run another agent", argumentHint: "name | pi" },
+			{ name: "preset", description: "launch presets", argumentHint: "name | save name | rm name | off", getArgumentCompletions: (p) => starts(names([...Object.keys(this.o.presets?.() ?? {}), "save", "rm", "off"]), p) },
+			{ name: "profile", description: "new sessions run another agent", argumentHint: "name | pi", getArgumentCompletions: (p) => starts(names(["pi", ...(this.o.profiles?.() ?? [])]), p) },
 			{ name: "exit", description: "leave the view" },
 		];
 		const pi = (this.o.commands?.() ?? []).filter((c) => c.source === "prompt" || c.source === "skill").map((c) => ({ name: c.name, description: `pi: ${c.source}` }));
@@ -3118,38 +3140,51 @@ export class AgentView implements Component {
 		return lines;
 	}
 
-	/** M48: the tail of its transcript (or its screen), re-read at most every 2 s; as many lines as the terminal has room for. */
-	private tails = new Map<string, { at: number; key: string; lines: string[] }>();
+	/**
+	 * M48: the tail of its transcript (or its screen): raw lines cached per row, the file looked at
+	 * (its size and mtime) every 2 s at most and read only when it changed; cut to the width at render.
+	 */
+	private tails = new Map<string, { at: number; key: string; items: TailItem[] }>();
 	private tailLines(row: JobRow, inner: number, now: number): string[] {
 		const t = this.o.theme;
 		const max = Math.max(3, Math.min(12, Math.floor((this.o.tui.terminal.rows || 30) / 4)));
-		const cached = this.tails.get(row.id);
-		if (cached && now - cached.at < 2000) return cached.lines.slice(-max);
-		let key = "";
-		const out: string[] = [];
-		try {
-			if (row.kind === "shell" || !row.sessionFile) {
-				const screen = readFileSync(screenPath(row.id), "utf8");
-				for (const l of screen.trimEnd().split("\n")) if (l.trim()) out.push(t.fg("muted", truncateToWidth(oneLine(l), inner)));
-			} else {
-				const tail = readTail(row.sessionFile);
-				key = `${tail.size}:${tail.mtimeMs}`;
-				if (cached?.key === key) {
-					cached.at = now;
-					return cached.lines.slice(-max);
+		let cached = this.tails.get(row.id);
+		if (!cached || now - cached.at >= 2000) {
+			const screen = row.kind === "shell" || !row.sessionFile;
+			const file = screen ? screenPath(row.id) : row.sessionFile;
+			let key = "";
+			try {
+				const st = statSync(file);
+				key = `${file}:${st.size}:${st.mtimeMs}`;
+				if (cached && cached.key === key) cached.at = now;
+				else {
+					const items: TailItem[] = [];
+					if (screen) {
+						for (const l of readFileSync(file, "utf8").trimEnd().split("\n")) if (l.trim()) items.push({ kind: "screen", text: oneLine(l) });
+					} else {
+						// the last part is enough for a few lines (the overlay reads more)
+						const tail = readTail(file, TAIL_READ_MAX);
+						for (const it of transcriptItems(tail.text, tail.truncated)) {
+							if (it.kind === "user") items.push({ kind: "you", text: oneLine(it.text) });
+							else if (it.kind === "assistant") items.push({ kind: "said", text: oneLine(it.text) });
+							else if (it.kind === "tool") items.push({ kind: "tool", text: oneLine(`${it.name}${it.args ? ` ${it.args}` : ""}`), error: it.error === true });
+							else items.push({ kind: "note", text: oneLine(it.text) });
+						}
+					}
+					cached = { at: now, key, items: items.slice(-40) };
+					this.tails.set(row.id, cached);
 				}
-				for (const it of transcriptItems(tail.text, tail.truncated)) {
-					if (it.kind === "user") out.push(t.fg("accent", truncateToWidth(`you: ${oneLine(it.text)}`, inner)));
-					else if (it.kind === "assistant") out.push(truncateToWidth(`› ${oneLine(it.text)}`, inner));
-					else if (it.kind === "tool") out.push(t.fg(it.error ? "error" : "muted", truncateToWidth(`⚙ ${it.name}${it.args ? ` ${oneLine(it.args)}` : ""}`, inner)));
-					else out.push(t.fg("dim", truncateToWidth(`· ${oneLine(it.text)}`, inner)));
-				}
+			} catch {
+				// nothing written yet (a session file pi has not created, no screen kept)
+				cached = { at: now, key, items: [] };
+				this.tails.set(row.id, cached);
 			}
-		} catch {
-			// nothing written yet (a session file pi has not created, no screen kept)
 		}
-		this.tails.set(row.id, { at: now, key, lines: out.slice(-40) });
-		return out.slice(-max);
+		return cached.items.slice(-max).map((it) => {
+			const line = truncateToWidth(it.kind === "you" ? `you: ${it.text}` : it.kind === "said" ? `› ${it.text}` : it.kind === "tool" ? `⚙ ${it.text}` : it.kind === "note" ? `· ${it.text}` : it.text, inner);
+			if (it.kind === "said") return line;
+			return t.fg(it.kind === "you" ? "accent" : it.kind === "tool" && it.error ? "error" : it.kind === "note" ? "dim" : "muted", line);
+		});
 	}
 
 	private footer(): string {
@@ -3315,6 +3350,24 @@ function tildeDir(dir: string): string {
 	const home = process.env.HOME;
 	if (!home) return dir;
 	return dir === home ? "~" : dir.startsWith(`${home}/`) ? `~${dir.slice(home.length)}` : dir;
+}
+
+/** M48: pi's path completion uses fd when it is on the PATH (fuzzy, .gitignore kept); found once. */
+let fdPathCache: string | null | undefined;
+function fdOnPath(): string | null {
+	if (fdPathCache !== undefined) return fdPathCache;
+	fdPathCache = null;
+	for (const dir of (process.env.PATH ?? "").split(":")) {
+		if (!dir) continue;
+		for (const name of ["fd", "fdfind"]) {
+			const p = join(dir, name);
+			if (existsSync(p)) {
+				fdPathCache = p;
+				return p;
+			}
+		}
+	}
+	return fdPathCache;
 }
 
 /** M48: a token count in short (`34k`, `1.2M`). */

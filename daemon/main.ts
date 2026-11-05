@@ -1081,7 +1081,7 @@ function rowOf(id: string): JobRow | undefined {
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 		// M48: the task it was started on, and the user replies waiting for it (the peek shows both)
 		task: rowTask(rec),
-		queued: pendingReplies(id).filter((r) => !isAgentItem(r)).length,
+		queued: (Array.isArray(st.pendingReplies) ? (st.pendingReplies as PendingReply[]) : []).filter((r) => !isAgentItem(r)).length,
 	};
 }
 

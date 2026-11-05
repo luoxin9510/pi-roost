@@ -55,9 +55,9 @@ export class TaskEditor {
 		this.ed.setAutocompleteProvider(provider);
 	}
 
-	/** The completion menu is open: ↑↓, Tab, Enter and Esc are its (pi-tui keeps the state private). */
+	/** The completion menu is open: ↑↓, Tab, Enter and Esc are its. */
 	autocompleteOpen(): boolean {
-		return (this.ed as unknown as { autocompleteState?: unknown }).autocompleteState != null;
+		return this.ed.isShowingAutocomplete();
 	}
 
 	/** Replace the last `count` characters of the text (an `@dir` being completed); the cursor goes to the end. */

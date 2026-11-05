@@ -49,8 +49,10 @@ task box; the session's for the reply box) with a description each and argument
 completion (`/model` the models, `/thinking` the levels, `/preset` the presets,
 `/profile` the profiles, `/concierge` its verbs); `@` opens paths under the directory
 (the hub's for a task, the session's in a peek), with fuzzy matching when `fd` is
-installed; ↑↓ choose, Tab or Enter take it, Esc closes the menu. The view's own Tab
-completion of `@dir` (M6) stays for the task box when the menu is not open.
+installed (found on the PATH once); ↑↓ choose, Tab takes it, Enter takes it and, on a
+command, runs it at once (as pi's prompt does; on a path it only completes), Esc closes
+the menu. The view's own Tab completion of `@dir` (M6) stays for the task box; any other
+Tab goes to the editor, which opens the menu as pi's Tab does.
 
 ## How
 
@@ -69,9 +71,10 @@ shortcut (1-9 on an empty reply fills a choice) stays.
 session (`stop`, `respawn`, `rm`, `pin`, `rename`, `attach`, `log`, `transcript`, `ask`,
 `continue`) run in the hub (the same code the keys use); `model`, `thinking` as before
 (M8); `name` and `compact` go to the session as a reply, where the worker runs them
-(`/name` as before, `/compact` through `ctx.compact()`); anything else is refused with
-the list ("not a command for a session: /stop /respawn …"). `rm` needs a second `/rm`
-within 2 s (as Ctrl+X Ctrl+X). `!` is refused as before.
+(`/name` as before, `/compact` through `ctx.compact()`; a session that is not running is
+not started for them). Any other `/…` goes to the session as a plain reply, as before
+M48 (pi's prompt templates and skills run there). `rm` needs a second `/rm` within 2 s
+(as Ctrl+X Ctrl+X). `!` is refused as before.
 
 ### More in the row
 
@@ -83,11 +86,15 @@ state file by the daemon: `JobRow.queued`).
 ### The tail
 
 `lib/transcript.ts` (`readTail`, `transcriptItems`) reads the session file's end in the
-hub (the hub runs where the sessions are); the peek keeps a small cache per row (mtime,
-size → items) and re-reads at most every 2 s while open, on the render tick. A terminal
-agent (`kind: "shell"`): `screen.txt`'s last lines (`lib/store.ts` `screenPath`). The
-tail is the last N items that fit: N from the terminal's rows (at least 3, at most 12),
-each item one line (`› the assistant's text…`, `⚙ read_file src/x.ts`), the newest last.
+hub (the hub runs where the sessions are): the last 256 KB (`readTail(file, max)`),
+enough for a few lines. The peek keeps a small cache per row of raw lines (the file's
+size and mtime as the key): every 2 s at most it `stat`s the file and reads it only when
+that changed; the lines are cut to the width when rendered, so a narrower terminal is
+fine. A terminal agent (`kind: "shell"`): `screen.txt`'s last lines (`lib/store.ts`
+`screenPath`). The tail is the last N items that fit: N from the terminal's rows (at
+least 3, at most 12), each item one line (`› the assistant's text…`, `⚙ read_file
+src/x.ts`), the newest last. The `/transcript` overlay lays its text out again when the
+width changes.
 
 ### Autocompletion
 

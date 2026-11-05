@@ -1941,9 +1941,11 @@ describe("M48: the peek, deeper", () => {
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/compact" });
 		expect(await send("/name zed")).toContain("/name · tests");
 		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/name zed" });
-		expect(await send("/bogus now")).toContain("not a command for a session: /bogus");
+		// not the peek's: the session's (a prompt template, a skill), sent as a reply
+		expect(await send("/review now")).toContain("sent · tests");
+		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/review now", mode: "steer" });
 		expect(await send("!ls")).toContain("shell commands are not sent to a session");
-		expect(ops("reply")).toHaveLength(3);
+		expect(ops("reply")).toHaveLength(4);
 		// several lines: Ctrl+J adds one; Enter sends them together
 		view.handleInput("\x03");
 		type(view, "line one");
@@ -1989,11 +1991,73 @@ describe("M48: the peek, deeper", () => {
 			view.handleInput("\x1b");
 			expect(view.render(120).join("\n")).not.toContain("Transcript · tests");
 			// completion: pi's menu opens on /, Tab takes the first match
+			const reply = (view as unknown as { reply: { getValue(): string; autocompleteOpen(): boolean } }).reply;
 			type(view, "/tra");
-			await sleep(30);
+			for (let i = 0; i < 100 && !reply.autocompleteOpen(); i++) await sleep(5);
+			expect(reply.autocompleteOpen()).toBe(true);
 			view.handleInput("\t");
 			await sleep(30);
-			expect((view as unknown as { reply: { getValue(): string } }).reply.getValue().trim()).toBe("/transcript");
+			expect(reply.getValue().trim()).toBe("/transcript");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("Enter on a / command in the open menu runs it at once; Tab in a peek opens pi's menu; a narrower terminal keeps every line within it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "roost-peek-"));
+		try {
+			const file = sessionFile(dir);
+			appendFileSync(file, entry("m5", "m4", { role: "assistant", content: [{ type: "text", text: `A very long line ${"x".repeat(150)} end` }] }));
+			const r1 = row({ id: "p1", name: "tests", sessionFile: file, task: `t ${"y".repeat(150)}` });
+			const { view, client } = setup([r1]);
+			client.log = [{ seq: 1, at: Date.now() - 60_000, kind: "state", id: "p1", name: "tests", state: "working", from: null, text: null }];
+			await view.start();
+			view.handleInput(" ");
+			const reply = (view as unknown as { reply: { getValue(): string; autocompleteOpen(): boolean } }).reply;
+			const open = async () => {
+				for (let i = 0; i < 100 && !reply.autocompleteOpen(); i++) await sleep(5);
+				return reply.autocompleteOpen();
+			};
+			// typed whole, the menu still open (as it is for a person): one Enter
+			type(view, "/transcript");
+			expect(await open()).toBe(true);
+			view.handleInput("\r");
+			await sleep(30);
+			expect(view.render(120).join("\n")).toContain("Transcript · tests");
+			expect(reply.getValue()).toBe("");
+			view.handleInput("\x1b");
+			// the menu closed with Esc, Tab opens it again for the prefix (pi's forced completion)
+			type(view, "/s");
+			expect(await open()).toBe(true);
+			view.handleInput("\x1b");
+			for (let i = 0; i < 100 && reply.autocompleteOpen(); i++) await sleep(5);
+			expect(reply.autocompleteOpen()).toBe(false);
+			view.handleInput("\t");
+			expect(await open()).toBe(true);
+			view.handleInput("\x1b");
+			for (let i = 0; i < 100 && reply.autocompleteOpen(); i++) await sleep(5);
+			view.handleInput("\x03"); // clear /s
+			// the same in the task box: /log + Enter opens the log at once
+			view.handleInput("\x1b"); // close the peek
+			const input = (view as unknown as { input: { autocompleteOpen(): boolean } }).input;
+			type(view, "/log");
+			for (let i = 0; i < 100 && !input.autocompleteOpen(); i++) await sleep(5);
+			expect(input.autocompleteOpen()).toBe(true);
+			view.handleInput("\r");
+			await sleep(30);
+			expect(view.render(120).join("\n")).toContain("Log · what happened lately");
+			expect(client.requests.filter((r) => r.op === "dispatch")).toHaveLength(0);
+			view.handleInput("\x1b");
+			// wide, then narrow: the tail and the task are cut to the width each time
+			view.handleInput(" ");
+			expect(view.render(120).some((l) => visibleWidth(l) > 100)).toBe(true);
+			for (const l of view.render(60)) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
+			type(view, "/transcript");
+			expect(await open()).toBe(true);
+			view.handleInput("\r");
+			await sleep(30);
+			expect(view.render(120).some((l) => visibleWidth(l) > 100)).toBe(true);
+			for (const l of view.render(60)) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

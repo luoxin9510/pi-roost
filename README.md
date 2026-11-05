@@ -186,12 +186,14 @@ for that session: `/stop`, `/respawn`, `/rm` (twice), `/pin`, `/rename <name>`,
 `/attach`, `/model`, `/thinking`, `/name <name>` and `/compact` (pi's own, run in the
 session), `/continue` (sends "Continue where you left off."), `/log` (its events),
 `/transcript` (its transcript, or screen, in an overlay), `/ask <question>` (the
-concierge, about it). Both boxes have pi's completion menu: `/` lists the commands with
+concierge, about it); any other `/…` goes to the session as a reply (a prompt template
+or skill of pi's, say). Both boxes have pi's completion menu: `/` lists the commands with
 what each does and completes their arguments (models, thinking levels, presets…), `@`
-lists paths under the directory (fuzzy with `fd`). Design notes:
+lists paths under the directory (fuzzy with `fd` when it is installed); Enter on a
+command in the menu runs it at once, as in pi. Design notes:
 [docs/plans/m48-peek.md](docs/plans/m48-peek.md).
 
-**看得更深，答得更自由。** 偷看（Space）会显示这个会话在问什么或最后说了什么、它启动时的任务、在哪个目录、从何时开始、花了多少（`$0.12 · 34k tokens`）、排队等它的回复数，以及它 transcript 的尾巴：最近说过和做过的事（`› …`、`⚙ read_file src/x.ts`），偷看期间实时更新；终端 agent 则显示最后几行屏幕；失败的会话完整显示错误。回复框和任务框一样是编辑器（Shift+Enter 或 Ctrl+J 换行、粘贴折叠、Ctrl+G 打开 `$VISUAL`），并按会话状态提示 Enter 会做什么。在里面输入 `/` 就是对这个会话下命令：`/stop`、`/respawn`、`/rm`（两次）、`/pin`、`/rename <名字>`、`/attach`、`/model`、`/thinking`、`/name <名字>` 和 `/compact`（pi 自己的命令，在会话里执行）、`/continue`（发送 "Continue where you left off."）、`/log`（它的事件）、`/transcript`（覆盖层里看它的 transcript 或屏幕）、`/ask <问题>`（向值班 agent 问它的情况）。两个输入框都有 pi 的补全菜单：`/` 列出命令并说明用途、补全参数（模型、thinking 级别、预设……），`@` 列出目录下的路径（装了 `fd` 时模糊匹配）。设计说明：[docs/plans/m48-peek.md](docs/plans/m48-peek.md)。
+**看得更深，答得更自由。** 偷看（Space）会显示这个会话在问什么或最后说了什么、它启动时的任务、在哪个目录、从何时开始、花了多少（`$0.12 · 34k tokens`）、排队等它的回复数，以及它 transcript 的尾巴：最近说过和做过的事（`› …`、`⚙ read_file src/x.ts`），偷看期间实时更新；终端 agent 则显示最后几行屏幕；失败的会话完整显示错误。回复框和任务框一样是编辑器（Shift+Enter 或 Ctrl+J 换行、粘贴折叠、Ctrl+G 打开 `$VISUAL`），并按会话状态提示 Enter 会做什么。在里面输入 `/` 就是对这个会话下命令：`/stop`、`/respawn`、`/rm`（两次）、`/pin`、`/rename <名字>`、`/attach`、`/model`、`/thinking`、`/name <名字>` 和 `/compact`（pi 自己的命令，在会话里执行）、`/continue`（发送 "Continue where you left off."）、`/log`（它的事件）、`/transcript`（覆盖层里看它的 transcript 或屏幕）、`/ask <问题>`（向值班 agent 问它的情况）；其他 `/…` 作为普通回复发给会话（比如 pi 的 prompt 模板或 skill）。两个输入框都有 pi 的补全菜单：`/` 列出命令并说明用途、补全参数（模型、thinking 级别、预设……），`@` 列出目录下的路径（装了 `fd` 时模糊匹配）；在菜单里对命令按 Enter 就直接执行，和 pi 一样。设计说明：[docs/plans/m48-peek.md](docs/plans/m48-peek.md)。
 
 ## Agents talking to each other · agent 之间通信
 
@@ -478,7 +480,7 @@ neither imports the other.
 | ↑ ↓ PgUp PgDn | move (Home and End too, when the input is empty) | 移动（输入框为空时 Home、End 也可以） |
 | Enter | open the session · start the typed task · fold a group | 进入会话 · 派发输入的任务 · 折叠分组 |
 | → | open the session | 进入会话 |
-| Space | peek and reply (Enter joins its current work, Alt+Enter waits for it, as in pi); `/` a command for that session (`/stop /respawn /rm /pin /rename /attach /model /thinking /name /compact /continue /log /transcript /ask`) | 偷看并回复（Enter 插进它正在做的工作，Alt+Enter 等它做完，和 pi 一样）；`/` 对这个会话下命令（`/stop /respawn /rm /pin /rename /attach /model /thinking /name /compact /continue /log /transcript /ask`） |
+| Space | peek and reply (Enter joins its current work, Alt+Enter waits for it, as in pi); `/` a command for that session (`/stop /respawn /rm /pin /rename /attach /model /thinking /name /compact /continue /log /transcript /ask`; any other `/…` goes to it as a reply) | 偷看并回复（Enter 插进它正在做的工作，Alt+Enter 等它做完，和 pi 一样）；`/` 对这个会话下命令（`/stop /respawn /rm /pin /rename /attach /model /thinking /name /compact /continue /log /transcript /ask`；其他 `/…` 作为回复发给它） |
 | Ctrl+Enter | start the typed task and open it | 派发输入的任务并进入 |
 | Ctrl+X | stop; again within 2 s to delete | 停止；2 秒内再按一次删除 |
 | Ctrl+S | group by state / directory | 按状态 / 目录分组 |
