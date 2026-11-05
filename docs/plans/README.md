@@ -49,6 +49,7 @@ Claude Code's documented behaviour.
 | M39 | [scheduled tasks](m39-schedules.md) | next |
 | M40 | [interrupted runs and schedules for every agent](m40-agents-resume.md) | next |
 | M41 | [more evals: a fan-out, a terminal agent, a protocol agent](m37-evals.md#m41-the-other-agents) | next |
+| M42 | a stress test that failed under load: the fake worker kept keys as pi does ([M22 tests](m22-multi-window.md#tests)) | next |
 
 Next: see [any agent](any-agent.md); measured by the stress run and the evals.
 
