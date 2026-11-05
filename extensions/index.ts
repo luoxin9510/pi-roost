@@ -14,6 +14,7 @@ import { registerSubagentPanel } from "./subagent-panel.ts";
 import { openAgentView, setCommandSource } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
 import { registerMobileStarter } from "./mobile.ts";
+import { JOB_ENV } from "../lib/identity.ts";
 
 // pi-roost entry: one extension, three roles (agent view, foreground, worker).
 // So far: `--bg` dispatch, the session writer lock (DM-8), the worker role and
@@ -83,7 +84,7 @@ export default function (pi: ExtensionAPI) {
 	if (job) {
 		// M9: commands the agent runs do not inherit the token (same-user processes can still
 		// read it from the job's files: a guard against accidents, not a boundary)
-		delete process.env.PI_JOB_TOKEN;
+		for (const n of JOB_ENV.token) delete process.env[n];
 		registerWorker(pi, job);
 	} else {
 		registerForeground(pi);

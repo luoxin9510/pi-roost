@@ -28,6 +28,7 @@ import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
 import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, rosterPath, runtimeDir } from "../lib/paths.ts";
 import { isAlive, processStartToken, sameProcess } from "../lib/proc.ts";
+import { JOB_ENV_NAMES } from "../lib/identity.ts";
 import {
 	type DaemonStatus,
 	type DispatchArgs,
@@ -203,6 +204,7 @@ function rowOf(id: string): JobRow | undefined {
 		agent: rec.agent ?? null,
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch, base: rec.worktree.base } : null,
 		fanout: rec.fanout ?? null,
+		profile: rec.kind === "shell" ? "shell" : "pi",
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
 }
@@ -600,8 +602,8 @@ async function waitGone(ids: string[], ms: number): Promise<boolean> {
 
 function spawnHost(rec: JobRecord): number {
 	const env = { ...process.env };
-	for (const k of Object.keys(env)) if (k.startsWith("PI_JOB_")) delete env[k];
-	delete env.PI_DAEMON_SOCK;
+	for (const k of Object.keys(env)) if (k.startsWith("PI_JOB_") || k.startsWith("ROOST_JOB_")) delete env[k];
+	for (const k of JOB_ENV_NAMES) delete env[k];
 	const entry = process.env.PI_ROOST_HOST_ENTRY || hostEntry();
 	const child = spawn(process.execPath, [entry, rec.id], { detached: true, stdio: "ignore", cwd: rec.cwd, env });
 	child.on("error", (err) => log("error", "host spawn error", { id: rec.id, error: String(err) }));

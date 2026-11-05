@@ -1,3 +1,4 @@
+import { readJobEnv } from "../lib/identity.ts";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
@@ -35,7 +36,9 @@ const SAVED = Symbol.for("pi-roost.jobIdentity");
  * environment once read (M9), so a /reload finds the identity kept in this process.
  */
 export function jobIdentity(env: NodeJS.ProcessEnv = process.env): JobIdentity | undefined {
-	const { PI_JOB_ID: id, PI_JOB_TOKEN: token, PI_DAEMON_SOCK: socket } = env;
+	const id = readJobEnv(env, "id");
+	const token = readJobEnv(env, "token");
+	const socket = readJobEnv(env, "socket");
 	const g = globalThis as { [SAVED]?: JobIdentity };
 	if (id && token && socket) {
 		if (env === process.env) g[SAVED] = { id, token, socket };

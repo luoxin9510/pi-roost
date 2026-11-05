@@ -20,6 +20,7 @@ import {
 	transcriptTail,
 } from "../lib/summarizer.ts";
 import type { WorkerTracker } from "../lib/worker-state.ts";
+import { readJobEnv } from "../lib/identity.ts";
 
 const PROGRESS_MS = Number(process.env.PI_ROOST_PROGRESS_MS) || 5 * 60_000; // SM-2
 // the first one sooner, so a long turn does not sit on an empty row for five minutes
@@ -169,7 +170,7 @@ function attachedNow(): boolean {
 }
 
 function attachedFile(): { attached?: unknown; at?: unknown; replay?: unknown } | undefined {
-	const dir = process.env.PI_JOB_DIR;
+	const dir = readJobEnv(process.env, "dir");
 	if (!dir) return undefined;
 	return readJson<{ attached?: unknown; at?: unknown; replay?: unknown }>(join(dir, "attached.json"));
 }
@@ -229,7 +230,7 @@ export function registerAttachRepaint(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		if (onSignal) process.off("SIGUSR2", onSignal);
 		onSignal = undefined;
-		if (!ctx.hasUI || !process.env.PI_JOB_DIR) return;
+		if (!ctx.hasUI || !readJobEnv(process.env, "dir")) return;
 		// a widget that draws nothing, for the TUI it is given (the factory runs now)
 		ctx.ui.setWidget(
 			"pi-roost-attach",

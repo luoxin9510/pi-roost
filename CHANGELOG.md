@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Neutral names, the first step towards agents other than pi: `ROOST_HOME`, `ROOST_RUNTIME_DIR`, `ROOST_CONFIG_DIR` (the `PI_ROOST_*` names still work), settings in `~/.config/roost/roost.json` when that file exists (else `~/.pi/agent/roost.json`, as before) and a project's `.roost/roost.json` (else `.pi/roost.json`); a job's worker also gets `ROOST_JOB_ID`, `ROOST_JOB_TOKEN`, `ROOST_SOCKET`; rows say which agent runs them (`profile`).
+
 - Replies steer or wait, as in pi: in a peek Enter joins the work the session is doing (after its current tool calls), Alt+Enter waits until it is done; the same for marked rows.
 
 ## [0.1.11] - 2026-11-05

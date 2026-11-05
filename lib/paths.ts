@@ -1,13 +1,15 @@
 import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { roostEnv } from "./identity.ts";
 
 export function roostHome(): string {
-	return process.env.PI_ROOST_HOME || join(homedir(), ".pi", "agent", "roost");
+	return roostEnv("HOME") || join(homedir(), ".pi", "agent", "roost");
 }
 
 export function runtimeDir(): string {
-	if (process.env.PI_ROOST_RUNTIME_DIR) return process.env.PI_ROOST_RUNTIME_DIR;
+	const rt = roostEnv("RUNTIME_DIR");
+	if (rt) return rt;
 	if (process.env.XDG_RUNTIME_DIR) return join(process.env.XDG_RUNTIME_DIR, "pi-roost");
 	return `/tmp/pi-roost-${process.getuid?.() ?? 0}`;
 }

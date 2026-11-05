@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { truncateToWidth as tuiTruncate, visibleWidth as tuiWidth } from "@earendil-works/pi-tui";
@@ -27,6 +27,17 @@ function external(entry: string): string[] {
 describe("processes that run without pi", () => {
 	it("import nothing from pi's packages", () => {
 		for (const entry of ["bin/pi-roost.ts", "daemon/main.ts", "host/main.ts"]) expect(external(entry), entry).toEqual([]);
+	});
+
+	it("M29: the shared library imports no pi package (only lib/api.ts, pi's extension API, does)", () => {
+		const bad: string[] = [];
+		for (const f of readdirSync("lib")) {
+			if (!f.endsWith(".ts") || f === "api.ts") continue;
+			for (const m of readFileSync(`lib/${f}`, "utf8").matchAll(/^import\s+(?:type\s+)?[^"']*["']([^"']+)["']/gm)) {
+				if (m[1]!.startsWith("@earendil-works/")) bad.push(`lib/${f} -> ${m[1]}`);
+			}
+		}
+		expect(bad).toEqual([]);
 	});
 
 	it("measure text as pi-tui does", () => {
