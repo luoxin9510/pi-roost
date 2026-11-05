@@ -99,8 +99,8 @@ worktree's files and change.
 | Case | Checks |
 |---|---|
 | fan-out | two sessions sharing one fan-out id, both done; each on its own `roost/` branch; each wrote the file in its worktree, the main tree untouched; `/compare`'s change (`worktreeChange`) sees one file each; two models |
-| terminal agent | working, then done, seen from the screen alone; the first answer (42) on the screen; a typed reply answered (50); `stop`, then a reply starts it again with `--continue` and the answer (51) shows it kept its context; done, nothing pending |
-| protocol agent | hello seen (name `pi-print`, capability `replies`); the first task came as a reply and was reported done; the report is the answer (42); the reply's answer (50) had the first turn's context; the model it reported; acked |
+| terminal agent | working, then done, seen from the screen alone; the first answer (42) on the screen and in its session; a typed reply answered (50, in the session: the screen's footer has numbers of its own); `stop`, then a reply starts it again with `--continue` and the answer (51) shows it kept its context; done, nothing pending |
+| protocol agent | hello seen (name `pi-print`, capability `replies`); the first task came as a reply (`turn 1:` reported working) and was reported done; the report is the answer (42); the reply's answer (50) had the first turn's context; the model it reported; acked |
 
 Results (2026-11-05, `anthropic/claude-haiku-5-5`, thinking low, 3 runs each):
 

@@ -42,6 +42,9 @@ def on_reply(reply):
     except subprocess.TimeoutExpired:
         agent.report("failed", summary="pi took too long", error="pi -p timed out", model=MODEL)
         return
+    except Exception as e:  # node or pi not where it was said to be: say so, rather than stay working
+        agent.report("failed", summary="pi could not start", error=str(e)[:500], model=MODEL)
+        return
     if out.returncode != 0:
         agent.report("failed", summary="pi failed", error=(out.stderr or out.stdout)[-500:], model=MODEL)
         return

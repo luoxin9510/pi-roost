@@ -33,7 +33,7 @@ const PI_AGENT = join(ROOT, "evals", "fixtures", "pi_agent.py");
 export interface Step {
 	/**
 	 * The row's state that triggers it ("working" waits `afterMs` into the work; "idle":
-	 * done, or a terminal agent's notification; "stopped": after a `stop` step).
+	 * done, or blocked on a question; "stopped": after a `stop` step).
 	 */
 	when: "working" | "blocked" | "done" | "idle" | "stopped";
 	/** What the user sends; or, instead, `kill`: the worker is killed (SIGKILL), as a crash; `stop`: the job is stopped. */
@@ -91,7 +91,7 @@ export interface RoostOutcome {
 	ackP50: number | null;
 }
 
-const DEFAULT_MODEL = "anthropic/claude-haiku-5-5";
+export const DEFAULT_MODEL = "anthropic/claude-haiku-5-5";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function piCli(): string {
@@ -317,6 +317,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 						await within(cl.request("stop", { id }), left(), "stop");
 						const until = Date.now() + 30_000;
 						while (Date.now() < until && Date.now() < deadline && rows.get(id)?.state !== "stopped") await sleep(100);
+						if (rows.get(id)?.state !== "stopped") throw new Error(`did not stop (state ${rows.get(id)?.state})`);
 						workingSince = 0;
 						settledAt = 0;
 						continue;
@@ -356,8 +357,10 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				continue;
 			}
 			// settled: nothing of this roost working (the case's job and its subagents) for
-			// 3 s, no reply pending anywhere
-			const busy = [...rows.values()].some((j) => j.state === "working" || ((readState(j.id)?.pendingReplies as unknown[] | undefined)?.length ?? 0) > 0);
+			// 3 s, no reply pending anywhere; every job dispatched has a row, and was working
+			const busy =
+				ids.some((i) => !rows.has(i) || !(statesOf.get(i) ?? []).includes("working")) ||
+				[...rows.values()].some((j) => j.state === "working" || ((readState(j.id)?.pendingReplies as unknown[] | undefined)?.length ?? 0) > 0);
 			if (busy) {
 				settledAt = 0;
 				continue;
@@ -372,8 +375,9 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 		// what it left
 		let transcript: { kind: string; text: string }[] = [];
 		try {
-			// a pi session of the worker's; a terminal or protocol agent's: its newest own session
-			let file = sessionFile;
+			// a pi session of the worker's (a fan-out: the case's job's); a terminal or protocol
+			// agent's: its newest own session
+			let file = c.fanout ? join(root, "sessions", "fanout-0.jsonl") : sessionFile;
 			if (c.agent === "term" || c.agent === "protocol") {
 				const dir = join(root, "sessions");
 				const newest = readdirSync(dir)
