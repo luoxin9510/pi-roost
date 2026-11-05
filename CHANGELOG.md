@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- More evals (`evals/agents.eval.ts`): one task on two models, each in its own worktree (what `/fanout` and `/compare` rest on); pi as a terminal agent (a profile: its row read from its screen, a typed reply, stop and a resume with `--continue`); a protocol agent on the Python client, each reply one turn of pi's print mode. The eval harness takes `agent: "term" | "protocol"`, `fanout: [models]` and a `stop` step.
+
 - Interrupted runs carry on, and schedules run, for the agents of `agentProfiles` too: a protocol agent or a terminal agent with `resume` that dies mid-work is started again and told to continue (one without `resume` stays failed, as before); `/schedule` with `/profile x` on runs that agent, and a task starting with `!` runs a command on the schedule. A scheduled terminal agent is closed once it is done and quiet.
 
 - Scheduled tasks: `/schedule <name> <every 30m | daily 09:00 | weekdays 09:00 | cron "…"> <task>` in the agent view runs the task as a new session on that schedule (local time). A run is skipped while the previous one still works; one missed while the background service was off runs when it starts again; a finished run's process is closed. `/schedule` lists them (`run`, `pause`, `resume`, `rm <name>`); `pi-roost schedule` too.

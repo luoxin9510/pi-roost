@@ -48,6 +48,7 @@ Claude Code's documented behaviour.
 | M38 | [interrupted runs carry on; a crash loop is bounded](m38-resume.md) | next |
 | M39 | [scheduled tasks](m39-schedules.md) | next |
 | M40 | [interrupted runs and schedules for every agent](m40-agents-resume.md) | next |
+| M41 | [more evals: a fan-out, a terminal agent, a protocol agent](m37-evals.md#m41-the-other-agents) | next |
 
 Next: see [any agent](any-agent.md); measured by the stress run and the evals.
 

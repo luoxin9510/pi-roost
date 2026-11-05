@@ -52,7 +52,9 @@ tokens, time, the answer), `report.json` and `report.txt` (per case: passed/runs
 flaky when some runs pass and some fail, the checks that failed and how often, errors,
 cost, time p50). A report of one run each says it is not a measure of stability.
 
-## The cases (`evals/core.eval.ts`)
+## The cases
+
+`evals/core.eval.ts`, pi through its worker:
 
 | Case | Checks |
 |---|---|
@@ -81,9 +83,41 @@ that a user's `ROOST_HOME` would have reached the user's roost, that the run cou
 settle before a subagent reported, that checks matched any "child" or "done", and that
 a run that threw left its daemon and environment behind; all fixed.
 
+## M41: the other agents
+
+`evals/agents.eval.ts` runs what roost runs besides a pi worker, with the same real
+model. A case says `agent: "term"` (pi itself as a terminal agent, through a profile:
+`pi -ne --session-dir …`, the task as an argument, `--model`/`--thinking`, resume with
+`--continue`, `working: "Working ─"`; its row is read from its screen), `agent:
+"protocol"` (`evals/fixtures/pi_agent.py` on the Python client: each reply is one turn
+of `pi -p --session …`, what pi printed is the report) or `fanout: [models]` (one task
+per model, each in its own worktree, as `/fanout` does). A step may `stop` the job, and
+wait for `stopped`. The outcome adds the screen, the row's texts in order, the agent's
+hello (name, capabilities), the model, the command, and per fan-out session its
+worktree's files and change.
+
+| Case | Checks |
+|---|---|
+| fan-out | two sessions sharing one fan-out id, both done; each on its own `roost/` branch; each wrote the file in its worktree, the main tree untouched; `/compare`'s change (`worktreeChange`) sees one file each; two models |
+| terminal agent | working, then done, seen from the screen alone; the first answer (42) on the screen and in its session; a typed reply answered (50, in the session: the screen's footer has numbers of its own); `stop`, then a reply starts it again with `--continue` and the answer (51) shows it kept its context; done, nothing pending |
+| protocol agent | hello seen (name `pi-print`, capability `replies`); the first task came as a reply (`turn 1:` reported working) and was reported done; the report is the answer (42); the reply's answer (50) had the first turn's context; the model it reported; acked |
+
+Results (2026-11-05, `anthropic/claude-haiku-5-5`, thinking low, 3 runs each):
+
+```
+PASS   fan-out          3/3  p50 7s   $0.0234
+PASS   terminal agent   3/3  p50 25s  cost n/a
+PASS   protocol agent   3/3  p50 5s   cost n/a
+total 9/9
+```
+
+A terminal or protocol agent reports no cost (pi's worker does, through its extension);
+the fan-out's is two sessions'. The terminal agent's 25 s are mostly settling: its row
+is read from the screen, so each turn ends with 2.5 s of a still screen, and a resume
+starts pi over.
+
 ## Next cases
 
-From [the plan](evals.md): fan-out over two models and `/compare`'s data; a level 0
-agent (dialog seen as needing input, a typed reply, resume); a protocol agent driven by
-a model; a question answered by a reply (`blocked` → reply → done), once a case makes
-pi ask reliably.
+A question answered by a reply (`blocked` → reply → done), once a case makes pi ask
+reliably; a terminal agent's dialog seen as needing input (pi has none that a typed
+reply answers; another agent's would need that agent installed).
