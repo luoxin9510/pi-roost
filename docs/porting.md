@@ -751,7 +751,7 @@ any-agent 路线的第一步（设计见 `docs/plans/any-agent.md`）：名字�
 | `working` / `waiting` | 对**整个屏幕**的正则（不分大小写、多行）；`working` 压过一切表示在工作，`waiting` 匹配到的那一行就是行的 question。校验：≤500 字符、必须能编译 |
 | `submit` | 回复后打的键，默认 `"\r"`（≤16 字符） |
 | `settleMs` | 屏幕静止多久算"安静"，默认 3000，整数 500–60000 |
-| `env` | 额外环境变量（名字合法、≤100 项），走 `envDenyList` |
+| `env` | 额外环境变量，走 `envDenyList`；只取前 100 项，名字不合法或值含 `\0` 的条目被忽略（档案不会因此整体丢弃） |
 | `protocol` | `true` = 它说 roost agent 协议（Step 30） |
 
 模板规则：argv 里**恰好等于** `{model}` `{thinking}` `{task}` 的元素被整元素替换（值为空则该元素删除），**不做部分替换**；`command` 自己放了 `{task}`/`{model}` 就放在那里而不是追加到末尾（`profileCommand()`）。档案名 `^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$` 且不能是保留字 `pi shell off none`；有畸形字段（坏正则、`command` 是字符串）的档案整个丢弃。（`any-agent.md` 里写过的 `{session}` 占位符**代码里没有**，只有 `task/model/thinking`。）
@@ -1004,7 +1004,7 @@ M38/M39 先只做了 pi。M40 推广到档案 agent（级别 0）和协议 agent
 | `agentTools` | `true` | |
 | `agentExternalMessages` | `false` | ✔ |
 | `agentMaxDepth/Children/Tree/Total` | 3 / 8 / 16 / 32 | ✔ |
-| `autoResume`（M38） | `"interrupted"`（另有 `"crash"`、`"off"`） | |
+| `autoResume`（M38） | `"interrupted"`（另有 `"crash"`、`"off"`） | （不在 `USER_ONLY` 里，但 daemon 只读用户文件：`loadUserConfig().autoResume`，项目文件里写了没有效果） |
 | `presets`（M27） | 无；`{名字: {model thinking worktree agent dir fanout profile}}`。**用户文件与项目文件都能写，按名字合并，项目的优先**；畸形条目跳过；`/preset save` 只写用户文件 | |
 | `agentProfiles`（M30） | 无；`{档案名: {command task model thinking resume working waiting submit settleMs env protocol}}`，见 Step 29 | ✔（项目文件不能定义，因为档案是 roost 要运行的命令） |
 
@@ -1118,8 +1118,8 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 | `cli-deps`（M32/M33） | CLI/daemon/host 不 import pi 的包；`lib daemon host bin` 不 import `@earendil-works/*` 和 `adapters/`；`hub/` 只许 pi-tui；`extensions/` 只含转发；TS 客户端 import 图只含 node；旧路径加载同一扩展且只注册一次 | 改目录名即可，**强烈建议保留** |
 | `stress-attach`（M22/M42） | attach/takeover/断开/改尺寸/不读数据客户端的压力轮次；一个 PTY 在两个会话间用 Ctrl+Z 切换；自己挂起的 worker 被 SIGCONT 救回（`STRESS=1` 加大轮数） | 需要 PTY；假 worker 要像真宿主那样**停止读终端**而不是丢键 |
 | `attach-keys`、`client-order`（M22） | detach 键各种编码（`localDetachAt`）；list 回复与事件的顺序（`requestAt`/`position`） | 纯函数/小，直接复用 |
-| `term-modes`、`term-signals`（M21/M30） | 终端模式跟踪（含被截断的序列、`StreamTail`）；信号收集器对着真 xterm、`inferTermState` 的优先级 | 直接复用 |
-| `profiles`（M30） | 档案解析、校验、模板、配置只认用户级 | 直接复用 |
+| `term-modes`（M21） | 终端模式跟踪（含被截断的序列、`StreamTail`） | 直接复用 |
+| `profiles`（M30） | 档案解析、校验、模板、配置只认用户级；`lib/term-signals.ts` 的测试也在这里：信号收集器对着真 xterm、`inferTermState` 的优先级 | 直接复用 |
 | `identity`（M29）、`config` | `ROOST_*`/`PI_*` 并存与优先级、配置路径候选 | 直接复用 |
 | `usage`（M24）、`transcript`、`list-format`、`view-model` | 用量口径与列/面板、记录、行格式 | `usage` 的口径要按宿主的会话格式改 |
 | `schedule`（M39） | cron 字段与错误、下次运行（周末/月末/闰日/日周任一/never）、`every` 锚点、模板检查、夏令时 | 纯函数，直接复用 |
@@ -1188,7 +1188,7 @@ v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
 | `handback` | 子 worker（M9） | 报告给父会话 |
 | `hello {protocol, agent?, capabilities?}` | agent 客户端（M31） | 每条新连接在第一个 `report` 之前发；回 `{protocol, daemon:{name,version}, capabilities}`；旧 daemon 回 `bad_request` |
 | `schedules` | hub/CLI（M39） | 列出计划（`ScheduleRow[]`：`name when task agent cwd model paused catchUp nextAt lastRunAt lastJob lastSkip`） |
-| `schedule-add {name, when, launch, task?, catchUp?}` | hub（M39） | 新增/覆盖计划；`launch` 是带 `{{run}}` 的 dispatch 模板 |
+| `schedule-add {name, when, launch, task?, catchUp?}` | hub（M39） | 新增计划；同名已存在回 `exists`（先 `rm`）、名字须匹配 `SCHEDULE_NAME`（1–40 字符）、总数上限 100（`limit`）；`launch` 是带 `{{run}}` 的 dispatch 模板 |
 | `schedule-rm {name}` `schedule-pause {name, paused}` | hub/CLI（M39） | 删除 / 暂停与恢复 |
 | `schedule-run {name}` | hub/CLI（M39） | 立即运行一次，返回 `{name, id}`；上一次还在跑则 `busy` |
 
