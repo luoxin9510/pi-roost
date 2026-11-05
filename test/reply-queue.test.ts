@@ -57,6 +57,22 @@ describe("ReplyQueue", () => {
 		expect(h.acks).toEqual([1, 2]);
 	});
 
+	it("M28: a steering reply joins the running turn; one without a mode follows up", () => {
+		const h = harness();
+		h.state.running = true;
+		h.state.idle = false;
+		h.q.add({ seq: 1, text: "use pnpm", mode: "steer" });
+		h.q.add({ seq: 2, text: "then run the tests" });
+		expect(h.sent).toEqual([
+			{ text: "use pnpm", opts: { deliverAs: "steer", expandPromptTemplates: true } },
+			{ text: "then run the tests", opts: { deliverAs: "followUp", expandPromptTemplates: true } },
+		]);
+		// idle: either one starts a turn
+		const idle = harness();
+		idle.q.add({ seq: 1, text: "go", mode: "steer" });
+		expect(idle.sent).toEqual([{ text: "go", opts: { expandPromptTemplates: true } }]);
+	});
+
 	it("runs settings at once, warns on bad ones, and drops resends", () => {
 		const h = harness();
 		h.state.running = true;

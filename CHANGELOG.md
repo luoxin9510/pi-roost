@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Replies steer or wait, as in pi: in a peek Enter joins the work the session is doing (after its current tool calls), Alt+Enter waits until it is done; the same for marked rows.
+
 ## [0.1.11] - 2026-11-05
 
 - Launch presets: `presets` in `roost.json` (yours and a project's) name combinations of model, thinking, worktree, agent, directory and fan-out; `/preset name` uses one for new sessions (bare: pick), `/preset save name` keeps the current choices, `/preset rm name`, `/preset off`. The line under the header names the preset in use.

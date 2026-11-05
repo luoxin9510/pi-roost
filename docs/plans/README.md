@@ -35,5 +35,6 @@ Claude Code's documented behaviour.
 | M25 | [marking rows, batch actions](m25-batch.md) | 0.1.11 |
 | M26 | [one task, several models, compared](m26-fanout.md) | 0.1.11 |
 | M27 | [launch presets](m27-presets.md) | 0.1.11 |
+| M28 | [steer or wait, as in pi](m28-steer.md) | next |
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

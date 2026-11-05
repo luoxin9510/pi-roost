@@ -302,7 +302,7 @@ describe("AgentView keys", () => {
 		view.handleInput("2"); // fills choice 2
 		view.handleInput("\r");
 		await sleep(10);
-		expect(client.requests.find((r) => r.op === "reply")?.args).toEqual({ id: a.id, text: "no" });
+		expect(client.requests.find((r) => r.op === "reply")?.args).toEqual({ id: a.id, text: "no", mode: "steer" });
 
 		type(view, "late answer");
 		client.emit({ event: "removed", id: a.id });
@@ -1008,8 +1008,8 @@ describe("AgentView batch (M25)", () => {
 		view.handleInput("\r");
 		await sleep(10);
 		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([
-			{ id: "a", text: "rebase on main" },
-			{ id: "b", text: "rebase on main" },
+			{ id: "a", text: "rebase on main", mode: "steer" },
+			{ id: "b", text: "rebase on main", mode: "steer" },
 		]);
 		expect(client.requests.some((r) => r.op === "dispatch")).toBe(false);
 		out = view.render(100);
@@ -1128,6 +1128,30 @@ describe("AgentView batch (M25)", () => {
 		await sleep(10);
 		// on the folded header Ctrl+X is the group's (shown as a group), not the hidden marks
 		expect(client.requests.filter((r) => r.op === "stop").map((r) => (r.args as { id: string }).id)).toEqual(["c", "a", "b", "c"]);
+		view.dispose();
+	});
+
+	it("M28: in a peek Enter steers and Alt+Enter waits for the current work; marked rows too", async () => {
+		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" })];
+		const { view, client } = setup(rows);
+		await view.start();
+		view.handleInput(" ");
+		type(view, "use pnpm");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(view.render(100).join("\n")).toContain("sent · one · joins its current work");
+		type(view, "then run the tests");
+		view.handleInput("\x1b\r"); // Alt+Enter
+		await sleep(10);
+		expect(view.render(100).join("\n")).toContain("sent · one · after its current work");
+		view.handleInput("\x1b"); // close the peek
+		view.handleInput("\x0f");
+		view.handleInput("\x0f");
+		type(view, "rebase please");
+		view.handleInput("\x1b\r");
+		await sleep(10);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => (r.args as { mode: string }).mode)).toEqual(["steer", "followUp", "followUp", "followUp"]);
+		expect(view.render(100).join("\n")).toContain("sent to 2 of 2 sessions (after their current work)");
 		view.dispose();
 	});
 

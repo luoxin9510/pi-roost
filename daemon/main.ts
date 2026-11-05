@@ -1015,6 +1015,8 @@ interface PendingReply {
 	text: string;
 	/** M9: absent for user replies. */
 	kind?: "reply" | AgentKind;
+	/** M28: a user reply that steers. */
+	mode?: "steer";
 	from?: string;
 	relation?: Relation;
 }
@@ -1058,14 +1060,16 @@ function deliverEvent(id: string, r: PendingReply): Event {
 		...(r.kind ? { kind: r.kind } : {}),
 		...(r.from ? { from: r.from } : {}),
 		...(r.relation ? { relation: r.relation } : {}),
+		...(r.mode ? { mode: r.mode } : {}),
 	};
 }
 
 async function reply(
-	args: { id?: unknown; text?: unknown } | undefined,
+	args: { id?: unknown; text?: unknown; mode?: unknown } | undefined,
 ): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string }> {
 	const id = requireJob(args);
 	const text = typeof args?.text === "string" ? args.text.trim() : "";
+	const steer = args?.mode === "steer";
 	if (!text) throw new OpError("bad_request", "empty reply");
 	const live = roster.has(id);
 	if (text === "/stop") {
@@ -1085,9 +1089,10 @@ async function reply(
 	// Every reply stays pending until the worker acknowledges it, so a dying connection loses nothing.
 	const st = readState(id);
 	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
-	updateState(id, { replySeq: seq, pendingReplies: [...pending, { seq, text }] });
+	const item: PendingReply = { seq, text, ...(steer ? { mode: "steer" as const } : {}) };
+	updateState(id, { replySeq: seq, pendingReplies: [...pending, item] });
 	if (connected) {
-		send(conn!, { event: "deliver", id, seq, text });
+		send(conn!, deliverEvent(id, item));
 		return { delivered: true, saved: false };
 	}
 	log("info", "reply saved", { id, live });

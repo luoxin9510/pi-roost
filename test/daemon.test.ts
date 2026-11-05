@@ -496,6 +496,19 @@ describe("replies", () => {
 		await waitFor(() => resent.length === 1);
 		expect(resent).toEqual([2]);
 
+		// M28: a steering reply keeps its mode, also when it is sent again
+		const modes: (string | undefined)[] = [];
+		again.onEvent((e) => {
+			if (e.event === "deliver") modes.push(e.mode);
+		});
+		expect(await client.request("reply", { id, text: "use pnpm", mode: "steer" })).toEqual({ delivered: true, saved: false });
+		await waitFor(() => modes.length === 1);
+		expect(modes).toEqual(["steer"]);
+		expect((readState(id)?.pendingReplies as { mode?: string }[]).at(-1)).toMatchObject({ text: "use pnpm", mode: "steer" });
+		await client.request("reply", { id, text: "plain", mode: "sideways" as never });
+		await waitFor(() => modes.length === 2);
+		expect(modes[1]).toBeUndefined();
+
 		expect(await client.request("reply", { id, text: "/stop" })).toMatchObject({ stopped: true });
 		const row = await waitFor(async () => {
 			const r = await find(client, id);

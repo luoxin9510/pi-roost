@@ -172,7 +172,8 @@ export interface OpArgs {
 	shutdown: { keepWorkers?: boolean };
 	subscribe: {};
 	report: { id: string; token: string; report: WorkerReport };
-	reply: { id: string; text: string };
+	/** M28: a reply to a working session steers into its current work (pi's Enter) or waits for it to finish (Alt+Enter); absent: waits. */
+	reply: { id: string; text: string; mode?: ReplyMode };
 	/** Worker → daemon: the reply with this seq was handed to pi (exact: only that agent item). */
 	ack: { id: string; token: string; seq: number; exact?: boolean };
 	/** Start an ended job again from its session file; `restart` also restarts a live one. */
@@ -246,7 +247,12 @@ export type Event =
 			relation?: string;
 			/** M9: a report to a foreground peer, acknowledged with peer_ack. */
 			ref?: string;
+			/** M28: how a user reply joins a running turn. */
+			mode?: ReplyMode;
 	  };
+
+/** M28: "steer" joins the work under way, after its current tool calls; "followUp" waits until it is done. */
+export type ReplyMode = "steer" | "followUp";
 
 /** A ContextInfo from untrusted JSON (a report, state.json), or null. */
 export function contextFrom(v: unknown): ContextInfo | null {

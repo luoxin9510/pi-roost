@@ -17,7 +17,7 @@ import { TaskEditor } from "./task-editor.ts";
 import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
-import type { DispatchArgs, Event, JobRow } from "../lib/protocol.ts";
+import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { type Preset, presetFrom } from "../lib/config.ts";
 import {
 	ageOf,
@@ -603,6 +603,11 @@ export class AgentView implements Component {
 			case "ctrl+enter":
 				if (!this.peek) return void this.dispatch(true);
 				break;
+			case "alt+enter":
+				// M28 (as pi): Alt+Enter queues the reply after the session's current work
+				if (this.peek) return void this.sendReply("followUp");
+				if (text.trim() && !this.filter() && this.markedRows().length > 0) return void this.sendToMarked("followUp");
+				break;
 			case "enter":
 				return void this.enter();
 			case "space":
@@ -711,11 +716,11 @@ export class AgentView implements Component {
 	}
 
 	private async enter(): Promise<void> {
-		if (this.peek) return this.sendReply();
+		if (this.peek) return this.sendReply("steer");
 		// a second Enter while a batch is sent neither sends again nor attaches
 		if (this.sendingMarked) return;
 		// M25: with rows marked, the typed text goes to each of them
-		if (this.input.getValue().trim() && !this.filter() && this.markedRows().length > 0) return this.sendToMarked();
+		if (this.input.getValue().trim() && !this.filter() && this.markedRows().length > 0) return this.sendToMarked("steer");
 		// AV-K2: filter text is not a task: Enter acts on the selection
 		if (this.input.getValue().trim() && !this.filter()) return this.dispatch(false);
 		const it = this.selected();
@@ -1345,7 +1350,8 @@ export class AgentView implements Component {
 		}
 	}
 
-	private async sendReply(): Promise<void> {
+	/** M28: Enter steers into the work under way (pi's Enter); Alt+Enter waits for it (pi's Alt+Enter). */
+	private async sendReply(mode: ReplyMode = "steer"): Promise<void> {
 		const row = this.peekId ? this.rows.get(this.peekId) : undefined;
 		const text = this.reply.getValue().trim();
 		if (!row) {
@@ -1357,11 +1363,12 @@ export class AgentView implements Component {
 		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
 		if (setting) return this.sessionSetting(row, setting[1] as "model" | "thinking", (setting[2] ?? "").trim());
 		try {
-			const r = await this.client.request("reply", { id: row.id, text });
+			const r = await this.client.request("reply", { id: row.id, text, mode });
 			this.reply.setValue("");
 			if (r.stopped) this.say(`stopped · ${row.name}`);
 			else if (r.delivered) {
-				this.say(row.waitingFor === "dialog" ? "queued; attach (→) to answer the dialog" : `sent · ${row.name}`, "success");
+				const how = row.state !== "working" ? "" : mode === "steer" ? " · joins its current work" : " · after its current work";
+				this.say(row.waitingFor === "dialog" ? "queued; attach (→) to answer the dialog" : `sent · ${row.name}${how}`, "success");
 			} else if (r.respawned) this.say(`sent · starting ${row.name} again`, "success");
 			else if (r.saved) this.say(`saved; it is sent when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
 			else this.say("not delivered: the session is not running", "error");
@@ -1871,7 +1878,7 @@ export class AgentView implements Component {
 	}
 
 	/** M25: the typed text to every marked session; /model and /thinking switch them all. */
-	private async sendToMarked(): Promise<void> {
+	private async sendToMarked(mode: ReplyMode = "steer"): Promise<void> {
 		if (this.sendingMarked) return;
 		const rows = this.markedRows();
 		const typed = this.input.getValue();
@@ -1899,7 +1906,7 @@ export class AgentView implements Component {
 		try {
 			for (const r of pi) {
 				try {
-					const res = await this.client.request("reply", { id: r.id, text });
+					const res = await this.client.request("reply", { id: r.id, text, mode });
 					if (res.delivered || res.respawned) sent++;
 					else if (res.saved) later++;
 					else failed.push(r.name);
@@ -1912,7 +1919,7 @@ export class AgentView implements Component {
 		}
 		// nothing reached anyone: the text comes back
 		if (sent === 0 && later === 0 && !this.input.getValue()) this.input.setValue(typed);
-		const parts = [`sent to ${sent} of ${pi.length} sessions`];
+		const parts = [`sent to ${sent} of ${pi.length} sessions${mode === "followUp" ? " (after their current work)" : ""}`];
 		if (later) parts.push(`${later} saved for their next start`);
 		if (failed.length) parts.push(`not delivered: ${failed.map(oneLine).join(", ")}`);
 		if (pi.length < rows.length) parts.push(`${rows.length - pi.length} shell jobs skipped`);
@@ -2314,7 +2321,7 @@ export class AgentView implements Component {
 		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
 		if (this.filter()) return "filtering (s: n: o: a: #PR) · Enter/→ attach · Esc clear";
-		if (this.peek) return "Enter send · 1-9 pick · ↑↓ next · → attach · /stop stops · Esc close · ? keys";
+		if (this.peek) return "Enter send · Alt+Enter after its work · 1-9 pick · → attach · Esc close · ? keys";
 		const n = this.markedRows().length;
 		if (n > 0) return `${n} marked · type, Enter: send to all · /model /thinking · Ctrl+T pin · Ctrl+X stop · Ctrl+O mark · Esc unmark`;
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
@@ -2353,6 +2360,7 @@ export class AgentView implements Component {
 			["Ctrl+T", "pin / unpin (pinned sessions keep running)"],
 			["Ctrl+O", "mark the row (on a header: the group) for a batch"],
 			["marked: type, Enter", "send it to every marked session (/model, /thinking too)"],
+			["in a peek: Alt+Enter", "send after its current work (Enter: joins it, as in pi)"],
 			["marked: Ctrl+X Ctrl+T", "stop / delete, pin / unpin all of them"],
 			["Ctrl+R", "rename"],
 			["Shift+↑ Shift+↓", "move the row within its group"],
