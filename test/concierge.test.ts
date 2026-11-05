@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CONCIERGE_DEFAULTS, conciergeFrom, conciergeSystemPrompt, digestText, fleetLine, heartbeatMs } from "../lib/concierge.ts";
 import { loadConfig } from "../lib/config.ts";
 import type { JobRow } from "../lib/protocol.ts";
-import { ACT_TOOLS, ANSWER_TOOLS, HUB_TOOLS, isConciergeRole, ORDER_TOOLS, registerConcierge } from "../adapters/pi/concierge.ts";
+import { ACT_TOOLS, ANSWER_TOOLS, BOARD_TOOLS, HUB_TOOLS, isConciergeRole, ORDER_TOOLS, registerConcierge } from "../adapters/pi/concierge.ts";
 
 const row = (over: Partial<JobRow> = {}): JobRow => ({
 	id: "j1",
@@ -176,14 +176,14 @@ describe("M44: the concierge's role in pi", () => {
 		const calls = () => all.filter((c) => c.op !== "concierge-policy");
 		const { pi, emit, tools, renderers, active } = fakePi();
 		registerConcierge(pi, link as never);
-		expect(tools).toEqual([...HUB_TOOLS, ...ANSWER_TOOLS, ...ACT_TOOLS, ...ORDER_TOOLS]);
+		expect(tools).toEqual([...HUB_TOOLS, ...ANSWER_TOOLS, ...ACT_TOOLS, ...ORDER_TOOLS, ...BOARD_TOOLS]);
 		expect(renderers).toEqual(["pi-roost-agent-message"]);
 		// pi's own tools go off at once (from the setting), before the service has answered
 		const started = emit("session_start", {});
-		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS]);
+		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS, ...BOARD_TOOLS]);
 		await started;
 		await new Promise((r) => setTimeout(r, 0));
-		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS]);
+		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS, ...BOARD_TOOLS]);
 		const [r] = await emit("before_agent_start", { systemPrompt: "pi's own" });
 		expect((r as { systemPrompt: string }).systemPrompt).toContain("You are the concierge of pi-roost");
 		expect((r as { systemPrompt: string }).systemPrompt).toContain("never answer a session's question in its place");
@@ -191,10 +191,10 @@ describe("M44: the concierge's role in pi", () => {
 		policy = { answer: "routine", act: true };
 		const [r2] = await emit("before_agent_start", { systemPrompt: "pi's own" });
 		expect((r2 as { systemPrompt: string }).systemPrompt).toContain("a routine question you answer yourself");
-		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS, ...ANSWER_TOOLS, ...ACT_TOOLS]);
+		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS, ...BOARD_TOOLS, ...ANSWER_TOOLS, ...ACT_TOOLS]);
 		policy = { answer: "never", act: false };
 		await emit("before_agent_start", { systemPrompt: "pi's own" });
-		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS]);
+		expect(active()).toEqual([...HUB_TOOLS, ...ORDER_TOOLS, ...BOARD_TOOLS]);
 		// a turn a digest started (a custom message, kept by pi as a custom_message entry): its text goes nowhere
 		const branch = (last: { role: string; content: unknown }[]) => ({
 			sessionManager: { getBranch: () => last.map((m) => (m.role === "custom" ? { type: "custom_message", customType: "pi-roost-agent-message", content: m.content } : { type: "message", message: m })) },

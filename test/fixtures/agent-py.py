@@ -17,6 +17,14 @@ def on_reply(reply):
         agent.report("done", summary="bye")
         done.set()
         return
+    if reply.text == "board":
+        # M47: the board through the client (answers routed by request id): put on, claimed, done
+        agent.report("working", summary="on board")
+        t = agent.add_task("from the agent", detail="a task it put on")
+        agent.claim_task(t["id"])
+        agent.task_done(t["id"], "done by the agent")
+        agent.report("done", summary="board #%d" % t["id"])
+        return
     handled += 1
     agent.report("working", summary="on " + reply.text)
     time.sleep(0.2)

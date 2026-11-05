@@ -23,7 +23,9 @@ export type EventKind =
 	/** A job's record was removed. */
 	| "removed"
 	/** M44: the concierge told the user something (why: info | need), or answered a question (why: answer). */
-	| "concierge";
+	| "concierge"
+	/** M47: the task board: a task added, claimed, released, done, dropped, or handed to a session (why says which). */
+	| "task";
 
 export interface RoostEvent {
 	seq: number;
@@ -218,6 +220,11 @@ export function eventLine(e: RoostEvent): string {
 													? "concierge dropped an order"
 													: "concierge";
 			return `${how}: ${e.text ?? ""}`;
+		}
+		case "task": {
+			// M47: who did what on the board; the text is `#id title` (done: with the result)
+			const verb = e.why === "add" ? "added" : e.why === "claim" ? "claimed" : e.why === "release" ? "released" : e.why === "done" ? "finished" : e.why === "drop" ? "dropped" : e.why === "assign" ? "handed over" : "changed";
+			return `${e.who ?? "someone"} ${verb} task ${e.text ?? ""}`;
 		}
 		default:
 			return `${e.kind} ${e.name}`;

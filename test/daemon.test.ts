@@ -1020,6 +1020,13 @@ describe("M31 the agent protocol", () => {
 			// a reply
 			expect(await first.client.request("reply", { id, text: "second" })).toMatchObject({ delivered: true });
 			await until(first.client, (r) => r.summary === "did second (#2)");
+			// M47: the board through the client, as the job: a task put on, claimed, done (the answers routed by request id)
+			await first.client.request("reply", { id, text: "board" });
+			const boarded = await until(first.client, (r) => (r.summary ?? "").startsWith("board #"));
+			const { tasks } = await first.client.request("task", { action: "list" });
+			expect(tasks).toHaveLength(1);
+			expect(tasks[0]).toMatchObject({ id: 1, title: "from the agent", detail: "a task it put on", state: "done", result: "done by the agent", owner: { id, name: "scripted" }, by: { who: "scripted", whoId: id } });
+			expect(boarded.summary).toBe("board #1");
 			// the daemon restarts under it: it reconnects, says hello, reports, and takes replies once each
 			const before = Date.now();
 			await first.client.request("shutdown", { keepWorkers: true });

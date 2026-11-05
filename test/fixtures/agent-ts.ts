@@ -21,6 +21,15 @@ const agent = RoostAgent.fromEnv({
 			setTimeout(() => process.exit(2), 150);
 			return;
 		}
+		if (r.text === "board") {
+			// M47: the board through the client: a task put on, claimed, done
+			agent!.report({ state: "working", summary: "on board" });
+			const t = await agent!.addTask("from the agent", { detail: "a task it put on" });
+			await agent!.claimTask(t.id);
+			await agent!.taskDone(t.id, "done by the agent");
+			agent!.report({ state: "done", summary: `board #${t.id}` });
+			return;
+		}
 		handled++;
 		agent!.report({ state: "working", summary: `on ${r.text}` });
 		await new Promise((res) => setTimeout(res, 200));

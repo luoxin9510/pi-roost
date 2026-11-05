@@ -28,6 +28,8 @@ const outcome = (o: Partial<RoostOutcome> = {}): RoostOutcome => ({
 	ackP50: null,
 	extra: [],
 	concierge: null,
+	board: [],
+	taskEvents: [],
 	...o,
 });
 

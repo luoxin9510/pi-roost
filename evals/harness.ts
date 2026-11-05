@@ -70,6 +70,8 @@ export interface RoostCase {
 	concierge?: boolean | { answer?: ConciergeAnswer; act?: boolean };
 	/** M46: standing orders the user gave (kept before the sessions start). */
 	orders?: { text: string; when?: string }[];
+	/** M47: tasks the user put on the board before the sessions start (after: by position, 1-based, among these). */
+	tasks?: { title: string; detail?: string; after?: number[] }[];
 }
 
 export interface RoostOutcome {
@@ -118,6 +120,9 @@ export interface RoostOutcome {
 		applied: string[];
 		transcript: { kind: string; text: string }[];
 	} | null;
+	/** M47: the task board as the case ended, and what happened on it (who, why: add|claim|release|done|drop|assign, `#id title[: result]`). */
+	board: { id: number; title: string; state: string; owner: string | null; result: string | null; assigned: string | null; by: string }[];
+	taskEvents: { who: string; why: string; text: string }[];
 }
 
 export const DEFAULT_MODEL = "anthropic/claude-haiku-5-5";
@@ -296,6 +301,13 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			await within(cl.request("concierge", { action: "on", launch: { ...launch, env: { ...launch.env, ROOST_ROLE: "concierge" } } }), left(), "concierge on");
 			// M46: the user's standing orders, before anything happens
 			for (const o of c.orders ?? []) await within(cl.request("concierge-order", { action: "add", text: o.text, when: o.when }), left(), "concierge-order add");
+		}
+		// M47: the user's tasks on the board, before the sessions start (after: positions among these)
+		const taskIds: number[] = [];
+		for (const t of c.tasks ?? []) {
+			const after = (t.after ?? []).map((i) => taskIds[i - 1]).filter((x): x is number => typeof x === "number");
+			const r = await within(cl.request("task", { action: "add", title: t.title, detail: t.detail, after: after.length > 0 ? after : undefined }), left(), "task add");
+			taskIds.push(r.task?.id ?? 0);
 		}
 		const launches: DispatchArgs[] = [];
 		if (c.fanout) {
@@ -487,6 +499,15 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			} catch {}
 			return { name: x.name, state: r?.state ?? "?", summary: r?.summary ?? null, answer: last };
 		});
+		// M47: the board, and what happened on it
+		let board: RoostOutcome["board"] = [];
+		let taskEvents: RoostOutcome["taskEvents"] = [];
+		if (client) {
+			try {
+				board = (await within(client.request("task", { action: "list" }), 5000, "task list")).tasks.map((t) => ({ id: t.id, title: t.title, state: t.state, owner: t.owner?.name ?? null, result: t.result, assigned: t.assigned?.name ?? null, by: t.by.who }));
+				taskEvents = (await within(client.request("events", { limit: 1000 }), 5000, "events")).events.filter((e) => e.kind === "task").map((e) => ({ who: e.who ?? "", why: e.why ?? "", text: e.text ?? "" }));
+			} catch {}
+		}
 		let concierge: RoostOutcome["concierge"] = null;
 		if (c.concierge && client) {
 			try {
@@ -594,6 +615,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			ackP50,
 			extra,
 			concierge,
+			board,
+			taskEvents,
 		};
 	} finally {
 		await teardown(client, daemon, rows);

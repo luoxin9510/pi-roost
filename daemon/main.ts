@@ -46,6 +46,7 @@ import {
 } from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
+import { type BoardTask, blockedOn, boardSummary, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX } from "../lib/board.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -230,6 +231,8 @@ interface Conn {
 	agentItems?: boolean;
 	/** M31: what the agent on this connection said in its hello. */
 	hello?: { name: string; version: string | null; capabilities: string[] };
+	/** M47: an agent's connection (it said hello or reported): never the hub's, even before its peer is set. */
+	agentSide?: boolean;
 }
 
 /** M9: connected foreground pi sessions, by peer id. */
@@ -549,7 +552,7 @@ async function wakeConcierge(why: WakeWhy): Promise<boolean> {
 		return false;
 	}
 	const rows = list(undefined).filter((r) => r.id !== id);
-	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now, orders: [...orders.values()], due });
+	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now, orders: [...orders.values()], due, board: [...tasks.values()] });
 	// an `on` during the wake starts it over (its cursor is not this wake's to set)
 	const epoch = concierge.onAt;
 	conciergeWaking = true;
@@ -817,7 +820,7 @@ function ordersDue(now: number): StandingOrder[] {
 /** `concierge-order`: keep, drop, list, mark applied. */
 function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: unknown; id?: unknown } | undefined): { orders: StandingOrder[]; order?: StandingOrder } {
 	const peer = conn.peer;
-	if (peer && !isConciergePeer(peer)) throw new OpError("unsupported", "standing orders are the hub's and the concierge's");
+	if ((peer && !isConciergePeer(peer)) || (!peer && conn.agentSide)) throw new OpError("unsupported", "standing orders are the hub's and the concierge's");
 	const by: StandingOrder["by"] = peer ? "concierge" : "user";
 	const action = args?.action;
 	const all = () => [...orders.values()].sort((a, b) => a.id - b.id);
@@ -870,6 +873,282 @@ function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: un
 	throw new OpError("bad_request", "action must be add, rm, list or applied");
 }
 
+// ---- M47: the shared task board ----------------------------------------------------
+//
+// Tasks the sessions take work from, the hub shows and edits, the concierge hands over
+// as the lead. The daemon keeps them (tasks.json); a claim is a lock a live session holds.
+
+const tasksPath = () => join(roostHome(), "tasks.json");
+const tasks = new Map<number, BoardTask>();
+/** The next task's id: never one that was used. */
+let taskNext = 1;
+
+function loadTasks(): void {
+	const raw = readJson<{ next?: unknown; tasks?: unknown }>(tasksPath());
+	const saved = raw && Array.isArray(raw.tasks) ? (raw.tasks as BoardTask[]) : null;
+	if (!saved) return;
+	for (const t of saved) {
+		if (!t || typeof t !== "object" || !Number.isInteger(t.id) || t.id <= 0 || !str(t.title)) continue;
+		const state = t.state === "claimed" || t.state === "done" || t.state === "dropped" ? t.state : "open";
+		tasks.set(t.id, {
+			id: t.id,
+			title: t.title.slice(0, TASK_TITLE_MAX),
+			detail: str(t.detail) ? t.detail.slice(0, TASK_TEXT_MAX) : null,
+			state,
+			after: Array.isArray(t.after) ? t.after.filter((x): x is number => Number.isInteger(x)) : [],
+			by: t.by && typeof t.by === "object" && str(t.by.who) ? { who: t.by.who, whoId: str(t.by.whoId) ? t.by.whoId : null } : { who: "user", whoId: null },
+			at: Number.isFinite(t.at) ? t.at : Date.now(),
+			owner: t.owner && typeof t.owner === "object" && str(t.owner.id) ? { id: t.owner.id, name: str(t.owner.name) ? t.owner.name : t.owner.id } : null,
+			claimedAt: Number.isFinite(t.claimedAt) ? t.claimedAt : null,
+			doneAt: Number.isFinite(t.doneAt) ? t.doneAt : null,
+			result: str(t.result) ? t.result.slice(0, TASK_TEXT_MAX) : null,
+			assigned:
+				t.assigned && typeof t.assigned === "object" && str(t.assigned.id)
+					? { id: t.assigned.id, name: str(t.assigned.name) ? t.assigned.name : t.assigned.id, at: Number.isFinite(t.assigned.at) ? t.assigned.at : Date.now() }
+					: null,
+		});
+	}
+	const kept = Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
+	taskNext = Math.max(kept, Math.max(0, ...tasks.keys()) + 1);
+	for (const t of tasks.values()) {
+		// a claim without a holder (a file edited or cut short) is no claim; an open task holds nobody
+		if (t.state === "claimed" && !t.owner) t.state = "open";
+		if (t.state === "open") {
+			t.owner = null;
+			t.claimedAt = null;
+		}
+		if (t.state !== "claimed" || !t.owner) continue;
+		// a claim held by a session that is gone (its record removed while the service was down), or that failed or was stopped, is released
+		const rec = recs.get(t.owner.id);
+		const st = rec ? readState(t.owner.id) : undefined;
+		if (!rec) releaseTask(t, "its session is gone");
+		else if (st && (st.state === "failed" || st.state === "stopped")) releaseTask(t, `${t.owner.name} ${st.state}`);
+	}
+}
+
+function saveTasks(): void {
+	try {
+		writeJsonAtomic(tasksPath(), { next: taskNext, tasks: [...tasks.values()] });
+	} catch (err) {
+		log("error", "the task board was not saved", { error: String(err) });
+	}
+}
+
+/** The hubs see the counts (the tasks come with `task list`); one goes on subscribe too. */
+function pushBoard(): void {
+	push({ event: "board", board: boardSummary([...tasks.values()]) });
+}
+
+/** Done and dropped tasks beyond the cap go, oldest first. */
+function sweepTasks(): void {
+	const gone = [...tasks.values()].filter((t) => t.state === "done" || t.state === "dropped").sort((a, b) => (a.doneAt ?? a.at) - (b.doneAt ?? b.at));
+	while (tasks.size >= TASK_MAX && gone.length > 0) tasks.delete(gone.shift()!.id);
+}
+
+/** Who acts on the board: the hub ("user"), the concierge, or a session (a job by its id, a foreground pi by its peer id). */
+function boardActor(conn: Conn): { who: string; whoId: string | null; sessionId: string | null; concierge: boolean } {
+	const peer = conn.peer;
+	if (!peer) {
+		// an agent's connection before its report is accepted (or for a job that ended) is not the hub's
+		if (conn.agentSide) throw new OpError("unauthorized", "a session acts on the board after its report is accepted");
+		return { who: "user", whoId: null, sessionId: null, concierge: false };
+	}
+	if (isConciergePeer(peer)) return { who: CONCIERGE_NAME, whoId: peer.id, sessionId: null, concierge: true };
+	return { who: peerName(peer), whoId: peer.kind === "job" ? peer.id : null, sessionId: peer.id, concierge: false };
+}
+
+const taskText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, " ").trim().slice(0, max) : "");
+/** A task id as the op takes it: a positive integer, or a string of digits; nothing else. */
+const taskId = (v: unknown): number | undefined => (typeof v === "number" && Number.isInteger(v) && v > 0 ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : undefined);
+/** Tasks a hand-over is on its way for (two at once would send two messages). */
+const assigning = new Set<number>();
+/** A foreground pi that disconnected holds its claims this long (a pi re-opened on the session comes back under the same id). */
+const FG_CLAIM_GRACE_MS = Number(process.env.PI_ROOST_FG_CLAIM_GRACE_MS) || 5000;
+
+/** The session that holds a task is told when the hub or the concierge takes it from it. */
+function tellOwner(owner: { id: string; name: string }, from: string, body: string): void {
+	const p = fgPeers.get(owner.id)?.peer;
+	const key = recs.get(owner.id)?.sessionFile ?? (p?.kind === "fg" ? p.session : undefined);
+	if (!key) return;
+	const text = envelope({ from, id: from, relation: "external", kind: "message", body });
+	void deliverAgent(key, "message", text, { from, relation: "external" }).catch(() => {});
+}
+
+function taskEvent(a: ReturnType<typeof boardActor>, why: string, t: BoardTask, extra?: string): void {
+	record({ kind: "task", id: a.whoId ?? "", name: a.who, who: a.who, whoId: a.whoId, why, text: clipText(`#${t.id} ${t.title}${extra ? `: ${extra}` : ""}`) });
+}
+
+/** The task's claim is given back (its session ended, or said so). */
+function releaseTask(t: BoardTask, why: string, a?: ReturnType<typeof boardActor>): void {
+	const owner = t.owner;
+	t.state = "open";
+	t.owner = null;
+	t.claimedAt = null;
+	saveTasks();
+	record({ kind: "task", id: a?.whoId ?? owner?.id ?? "", name: a?.who ?? owner?.name ?? "roost", who: a?.who ?? "roost", whoId: a?.whoId ?? owner?.id ?? null, why: "release", text: clipText(`#${t.id} ${t.title}: ${why}`) });
+	pushBoard();
+}
+
+/** A session that ended (failed, stopped, removed) holds nothing: its claims are released. */
+function releaseClaimsOf(sessionId: string, why: string): void {
+	for (const t of tasks.values()) if (t.state === "claimed" && t.owner?.id === sessionId) releaseTask(t, why);
+}
+
+/** The session that holds a claim is live: a job in the roster, or a connected foreground pi. */
+function ownerLive(id: string): boolean {
+	if (roster.has(id)) return true;
+	const c = fgPeers.get(id);
+	return !!c && !c.sock.destroyed;
+}
+
+/** The `task` op: the board, for the hub, the concierge and the sessions. */
+async function taskOp(
+	conn: Conn,
+	args: { action?: unknown; id?: unknown; title?: unknown; detail?: unknown; after?: unknown; result?: unknown; to?: unknown } | undefined,
+): Promise<{ tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"] }> {
+	const a = boardActor(conn);
+	const all = () => [...tasks.values()].sort((x, y) => x.id - y.id);
+	const action = args?.action;
+	if (action === "list") return { tasks: all() };
+	if (action === "add") {
+		const title = taskText(args?.title, TASK_TITLE_MAX);
+		if (!title) throw new OpError("bad_request", "a task needs a title");
+		const after: number[] = [];
+		if (args?.after !== undefined) {
+			if (!Array.isArray(args.after)) throw new OpError("bad_request", "after must be a list of task ids");
+			for (const x of args.after) {
+				const dep = taskId(x);
+				const d = dep !== undefined ? tasks.get(dep) : undefined;
+				if (dep === undefined || !d || d.state === "dropped") throw new OpError("bad_request", `after: no task #${String(x)} to wait on`);
+				if (!after.includes(dep)) after.push(dep);
+			}
+		}
+		sweepTasks();
+		if (tasks.size >= TASK_MAX) throw new OpError("full", `${TASK_MAX} tasks at most; drop or finish some first`);
+		const t: BoardTask = {
+			id: taskNext++,
+			title,
+			detail: taskText(args?.detail, TASK_TEXT_MAX) || null,
+			state: "open",
+			after,
+			by: { who: a.who, whoId: a.whoId },
+			at: Date.now(),
+			owner: null,
+			claimedAt: null,
+			doneAt: null,
+			result: null,
+			assigned: null,
+		};
+		tasks.set(t.id, t);
+		saveTasks();
+		taskEvent(a, "add", t);
+		pushBoard();
+		return { tasks: all(), task: t };
+	}
+	if (action !== "claim" && action !== "release" && action !== "done" && action !== "drop" && action !== "assign") throw new OpError("bad_request", "action must be list, add, claim, release, done, drop or assign");
+	const id = taskId(args?.id);
+	const t = id !== undefined ? tasks.get(id) : undefined;
+	if (!t) throw new OpError("not_found", `no task #${String(args?.id)}`);
+	const mine = a.sessionId !== null && t.owner?.id === a.sessionId;
+	const lead = a.sessionId === null; // the hub, the concierge
+	switch (action) {
+		case "claim": {
+			if (a.concierge) throw new OpError("unsupported", "the concierge hands tasks over (hub_task_assign); it does not take them");
+			if (a.sessionId === null) throw new OpError("unsupported", "a session claims a task (roost_task_claim); the hub hands one over (/tasks assign)");
+			if (t.state === "done" || t.state === "dropped") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
+			if (t.state === "claimed" && t.owner && t.owner.id !== a.sessionId) {
+				// a lock a live session holds; one whose session is gone is taken over
+				if (ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);
+				releaseTask(t, "its session is gone");
+			}
+			const waits = blockedOn(t, tasks.values());
+			if (waits.length > 0) throw new OpError("blocked", `#${t.id} waits on ${waits.map((i) => `#${i}`).join(", ")}: not done yet`);
+			if (t.state !== "claimed") {
+				t.state = "claimed";
+				t.owner = { id: a.sessionId, name: a.who };
+				t.claimedAt = Date.now();
+				t.assigned = null;
+				saveTasks();
+				taskEvent(a, "claim", t);
+				pushBoard();
+			}
+			return { tasks: all(), task: t };
+		}
+		case "release": {
+			if (t.state !== "claimed") throw new OpError("bad_request", `#${t.id} is ${t.state}, not claimed`);
+			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours"}`);
+			const held = t.owner;
+			releaseTask(t, a.sessionId !== null ? "given back" : `released by ${a.who}`, a);
+			if (lead && held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was taken back by ${a.who}: stop working on it; it is open on the board again.`);
+			return { tasks: all(), task: t };
+		}
+		case "done":
+			if (t.state === "done" || t.state === "dropped") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
+			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours: claim it first"}`);
+			t.state = "done";
+			t.doneAt = Date.now();
+			t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
+			if (!t.owner && a.sessionId !== null) t.owner = { id: a.sessionId, name: a.who };
+			saveTasks();
+			taskEvent(a, "done", t, t.result ?? undefined);
+			pushBoard();
+			return { tasks: all(), task: t };
+		case "drop": {
+			if (!lead) throw new OpError("unsupported", "the hub and the concierge drop tasks; a session gives its back (roost_task_release)");
+			if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
+			const held = t.state === "claimed" ? t.owner : null;
+			t.state = "dropped";
+			t.owner = null;
+			t.claimedAt = null;
+			t.assigned = null;
+			saveTasks();
+			taskEvent(a, "drop", t);
+			pushBoard();
+			if (held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was dropped by ${a.who}: stop working on it.`);
+			return { tasks: all(), task: t };
+		}
+		case "assign": {
+			if (!lead) throw new OpError("unsupported", "the hub and the concierge hand tasks over; a session claims one (roost_task_claim)");
+			if (t.state !== "open") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
+			const to = typeof args?.to === "string" ? args.to.trim() : "";
+			if (!to) throw new OpError("bad_request", "to: a session id or exact name");
+			const rows = list(undefined).filter((r) => r.role !== "concierge");
+			const named = rows.filter((r) => r.name === to);
+			const target = rows.find((r) => r.id === to) ?? (named.length === 1 ? named[0] : undefined);
+			if (!target) throw new OpError("not_found", named.length > 1 ? `"${to}" names ${named.length} sessions: use the id` : `no session "${to}"`);
+			const rec = recs.get(target.id);
+			if (!rec || rec.kind === "shell") throw new OpError("unsupported", `${target.name} is a command, not a session that takes tasks`);
+			const waits = blockedOn(t, tasks.values());
+			const body = [
+				`Task #${t.id} on the board: ${t.title}`,
+				t.detail ?? "",
+				waits.length > 0
+					? `It waits on ${waits.map((i) => `#${i}`).join(", ")}: claim it once those are done.`
+					: "Claim it with roost_task_claim, do it, then roost_task_done with the result (or roost_task_release to give it back).",
+			]
+				.filter(Boolean)
+				.join("\n");
+			const text = envelope({ from: a.who, id: a.whoId ?? a.who, relation: "external", kind: "message", body });
+			if (assigning.has(t.id)) throw new OpError("bad_request", `#${t.id} is being handed over already`);
+			assigning.add(t.id);
+			let r: Awaited<ReturnType<typeof deliverAgent>>;
+			try {
+				r = await deliverAgent(rec.sessionFile, "message", text, { from: a.who, relation: "external" });
+			} finally {
+				assigning.delete(t.id);
+			}
+			// handed over only when the message reached it, and the task is still open (the wait was real)
+			if (reached(r.outcome) && t.state === "open") {
+				t.assigned = { id: target.id, name: target.name, at: Date.now() };
+				saveTasks();
+				taskEvent(a, "assign", t, `to ${target.name}`);
+				pushBoard();
+			}
+			return { tasks: all(), task: t, sent: r.outcome };
+		}
+	}
+}
+
 /** The state each job was last seen in: a change into one that matters is recorded, and fires watches. */
 const lastSeen = new Map<string, { state: JobStateName; waitingFor: JobRow["waitingFor"]; question: string | null }>();
 
@@ -889,6 +1168,8 @@ function noteState(job: JobRow): void {
 		record({ kind: "state", id: job.id, name: job.name, state: job.state, from: prev.state, waitingFor: job.waitingFor, text: clipText(text) });
 	}
 	if (job.state !== "working") void fireWatches(job);
+	// M47: a session that failed or was stopped holds no task
+	if (job.state === "failed" || job.state === "stopped") releaseClaimsOf(job.id, `${job.name} ${job.state}`);
 }
 
 /** M43: a watch: tell `watcher` (a session key) once when job `id` is next idle, or has ended. */
@@ -1253,6 +1534,7 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 	const name = rowOf(id)?.name ?? recs.get(id)?.name ?? id;
 	// M43: before the record goes (a watcher is told, then the record and the row are gone)
 	await fireWatches({ id, name, state: "removed" });
+	releaseClaimsOf(id, `${name} removed`);
 	record({ kind: "removed", id, name });
 	lastSeen.delete(id);
 	recs.delete(id);
@@ -1812,6 +2094,7 @@ function loadJobs(): void {
 	loadWatches();
 	loadConcierge();
 	loadOrders();
+	loadTasks();
 	const saved = readJson<Record<string, HostRef>>(rosterPath()) ?? {};
 	for (const [id, ref] of Object.entries(saved)) {
 		if (!recs.has(id) || typeof ref?.hostPid !== "number") continue;
@@ -2633,7 +2916,7 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
 }
 
 /** M31: what the daemon offers agents beyond report, ack and hello. */
-const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch"];
+const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks"];
 
 /**
  * M31: an agent's hello. Informational (a report is what proves a job): the daemon keeps
@@ -3217,6 +3500,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { name: s.name, id: await runSchedule(s, Date.now(), "now") };
 		}
 		case "hello":
+			conn.agentSide = true;
 			return hello(conn, args);
 		case "list":
 			return { jobs: list(args) };
@@ -3290,6 +3574,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return {};
 		}
 		case "report":
+			conn.agentSide = true;
 			acceptReport(conn, args);
 			return {};
 		case "reply":
@@ -3346,6 +3631,9 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		// M46: the standing orders (the hub's, and the concierge's own connection)
 		case "concierge-order":
 			return orderOp(conn, args);
+		// M47: the shared task board (the hub, the concierge, the sessions)
+		case "task":
+			return taskOp(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
 	}
@@ -3408,6 +3696,11 @@ server = createServer((sock) => {
 		if (conn.peer?.kind === "fg" && fgPeers.get(conn.peer.id) === conn) {
 			fgPeers.delete(conn.peer.id);
 			pushChildrenOf(conn.peer.session);
+			// M47: its claims go a moment later, unless a pi re-opened on the session is back under the same id
+			const { id, name } = conn.peer;
+			setTimeout(() => {
+				if (!ownerLive(id)) releaseClaimsOf(id, `${name} disconnected`);
+			}, FG_CLAIM_GRACE_MS).unref();
 		}
 	});
 });
