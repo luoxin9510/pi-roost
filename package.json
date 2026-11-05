@@ -54,6 +54,7 @@
   },
   "files": [
     "adapters",
+    "hub",
     "extensions",
     "lib",
     "sdk",

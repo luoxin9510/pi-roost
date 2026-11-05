@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `pi-roost hub [dir]`: the agent view in a terminal of its own, without a pi session around it. The same view, keys and commands (/model from pi's model list, /resume with pi's session picker, attach and back); new sessions run the pi on your PATH.
+
 - The pi extension moved to `adapters/pi/` (the old `extensions/index.ts` still loads it, for sessions started before). New package exports: `pi-roost/client` (talk to the background service) and `pi-roost/protocol` (its types).
 
 - Evals with real models (`npm run eval`, for development): each case runs a real pi in an isolated roost (a task to done, a reply continuing the session, a steer joining the work, a subagent reporting back) and is graded on what roost saw; repeated runs give pass rates and flaky cases, with cost and time. See [docs/plans/m37-evals.md](docs/plans/m37-evals.md).
