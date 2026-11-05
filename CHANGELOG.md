@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-05
+
+- The porting guide ([docs/porting.md](docs/porting.md), in Chinese) now describes v0.1.12: the three levels of integration (profiles, the agent protocol, the pi adapter), the layering, Steps 21–40 for M22–M42, config keys, constants, ops and fields, and the commits of each version. `docs/` ships in the package.
+
 ## [0.1.12] - 2026-11-05
 
 - More evals (`evals/agents.eval.ts`): one task on two models, each in its own worktree (what `/fanout` and `/compare` rest on); pi as a terminal agent (a profile: its row read from its screen, a typed reply, stop and a resume with `--continue`); a protocol agent on the Python client, each reply one turn of pi's print mode. The eval harness takes `agent: "term" | "protocol"`, `fanout: [models]` and a `stop` step.
