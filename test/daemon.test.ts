@@ -69,6 +69,7 @@ afterEach(() => {
 		["PI_ROOST_HOST_ENTRY", saved.host],
 		["PI_ROOST_CONFIG_DIR", undefined],
 		["PI_ROOST_REAP_MINUTES", undefined],
+		["PI_ROOST_SCHEDULE_TICK_MS", undefined],
 		["PI_ROOST_RESUME_DELAYS_MS", undefined],
 		["PI_ROOST_REAP_CHECK_MS", undefined],
 		["PI_ROOST_SHELL_KEEP_MS", undefined],
@@ -1328,3 +1329,133 @@ describe("M38: interrupted runs carry on", () => {
 		expect((await find(client, id))?.pid).toBeNull();
 	});
 });
+
+describe("M39: scheduled tasks", () => {
+	// the session file in the command, as pi's has it (`sh -c script <file>`: its $0)
+	const template = (script: string) => {
+		const file = join(work, "{{run}}.jsonl");
+		return args(script, { sessionFile: file, command: ["/bin/sh", "-c", script, file] });
+	};
+	const writeSchedules = (list: unknown[]) => writeFileSync(join(home, "schedules.json"), JSON.stringify(list));
+	const saved = (over: Record<string, unknown>) => ({
+		name: "nightly",
+		when: "every 1h",
+		launch: template("sleep 0.3"),
+		paused: false,
+		catchUp: true,
+		createdAt: Date.now() - 7200_000,
+		anchor: Date.now() - 7200_000,
+		nextAt: Date.now() - 60_000,
+		...over,
+	});
+
+	it("adds, lists, pauses, resumes and removes schedules; refuses bad ones", async () => {
+		const { client } = await startDaemon();
+		const before = Date.now();
+		const row = await client.request("schedule-add", { name: "hourly", when: "every 1h", launch: template("sleep 0.3"), task: "check the build" });
+		expect(row).toMatchObject({ name: "hourly", when: "every 1h", task: "check the build", cwd: work, paused: false, catchUp: true, lastJob: null });
+		expect(row.nextAt! - before).toBeGreaterThanOrEqual(3600_000 - 1000);
+		expect((await client.request("schedules", {})).schedules.map((s) => s.name)).toEqual(["hourly"]);
+		await expect(client.request("schedule-add", { name: "hourly", when: "every 1h", launch: template("x") })).rejects.toMatchObject({ code: "exists" });
+		await expect(client.request("schedule-add", { name: "b", when: "hourly", launch: template("x") })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(client.request("schedule-add", { name: "c", when: "every 1h", launch: args("x") })).rejects.toMatchObject({ code: "bad_request", message: expect.stringContaining("{{run}}") });
+		await expect(client.request("schedule-add", { name: "../x", when: "every 1h", launch: template("x") })).rejects.toMatchObject({ code: "bad_request" });
+		const paused = await client.request("schedule-pause", { name: "hourly", paused: true });
+		expect(paused).toMatchObject({ paused: true, nextAt: null });
+		const resumed = await client.request("schedule-pause", { name: "hourly", paused: false });
+		expect(resumed.nextAt).toBeGreaterThan(Date.now() + 3500_000);
+		await client.request("schedule-rm", { name: "hourly" });
+		expect((await client.request("schedules", {})).schedules).toEqual([]);
+		await expect(client.request("schedule-rm", { name: "hourly" })).rejects.toMatchObject({ code: "not_found" });
+	});
+
+	it("runs one now: a session of its own, named after the schedule; never two at once", async () => {
+		const { client } = await startDaemon();
+		await client.request("schedule-add", { name: "check", when: "daily 03:00", launch: template("sleep 1.5") });
+		const { id } = await client.request("schedule-run", { name: "check" });
+		const row = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.pid ? r : undefined;
+		});
+		expect(row).toMatchObject({ name: "check", schedule: "check", state: "working" });
+		const rec = (await import("../lib/store.ts")).readJob(id)!;
+		expect(rec.sessionFile).toMatch(/\/\d{4}-\d\d-\d\dT[\d-]+Z_[0-9a-f-]{36}\.jsonl$/);
+		await expect(client.request("schedule-run", { name: "check" })).rejects.toMatchObject({ code: "busy" });
+		const s = (await client.request("schedules", {})).schedules[0]!;
+		expect(s.lastJob).toBe(id);
+		expect(s.lastSkip?.why).toMatch(/still going/);
+		await waitFor(async () => (await find(client, id))?.state === "done");
+		const again = await client.request("schedule-run", { name: "check" });
+		expect(again.id).not.toBe(id);
+		expect((await find(client, again.id))?.name).toBe("check (2)");
+	});
+
+	it("runs when due, and keeps going on its rhythm", async () => {
+		process.env.PI_ROOST_SCHEDULE_TICK_MS = "100";
+		writeSchedules([saved({ nextAt: Date.now() + 400, catchUp: false })]);
+		const { client } = await startDaemon();
+		const job = await waitFor(async () => (await client.request("list", {})).jobs.find((j) => j.schedule === "nightly"), 5000);
+		expect(job.name).toBe("nightly");
+		const s = (await client.request("schedules", {})).schedules[0]!;
+		expect(s.lastJob).toBe(job.id);
+		// the next whole hour from its anchor
+		expect(s.nextAt).toBeGreaterThan(Date.now());
+		const off = (s.nextAt! - (Date.now() - 7200_000)) % 3600_000;
+		expect(Math.min(off, 3600_000 - off)).toBeLessThan(5000);
+	});
+
+	it("a run missed while the service was off runs once at start (catchUp), or is skipped", async () => {
+		process.env.PI_ROOST_SCHEDULE_TICK_MS = "100";
+		writeSchedules([saved({ name: "missed", nextAt: Date.now() - 3 * 3600_000 }), saved({ name: "skipped", catchUp: false })]);
+		const { client } = await startDaemon();
+		await waitFor(async () => (await client.request("list", {})).jobs.some((j) => j.schedule === "missed") || undefined, 5000);
+		await new Promise((r) => setTimeout(r, 500));
+		const jobs = (await client.request("list", {})).jobs;
+		expect(jobs.filter((j) => j.schedule === "missed")).toHaveLength(1);
+		expect(jobs.filter((j) => j.schedule === "skipped")).toHaveLength(0);
+		for (const s of (await client.request("schedules", {})).schedules) expect(s.nextAt).toBeGreaterThan(Date.now());
+	});
+
+	it("survives a restart of the service; a paused one does not run", async () => {
+		process.env.PI_ROOST_SCHEDULE_TICK_MS = "100";
+		const first = await startDaemon();
+		await first.client.request("schedule-add", { name: "kept", when: "weekdays 09:00", launch: template("sleep 0.3"), catchUp: false });
+		await first.client.request("shutdown", { keepWorkers: true });
+		await waitFor(() => exited(first.proc));
+		const list = JSON.parse(readFileSync(join(home, "schedules.json"), "utf8"));
+		writeSchedules([...list, saved({ name: "resting", paused: true, nextAt: null })]);
+		const second = await startDaemon();
+		const rows = (await second.client.request("schedules", {})).schedules;
+		expect(rows.map((s) => [s.name, s.paused])).toEqual([
+			["kept", false],
+			["resting", true],
+		]);
+		await new Promise((r) => setTimeout(r, 400));
+		expect((await second.client.request("list", {})).jobs.filter((j) => j.schedule)).toEqual([]);
+	});
+
+	it("a finished run whose worker is still up does not hold the next one; its worker is closed", async () => {
+		const { client } = await startDaemon();
+		await client.request("schedule-add", { name: "idle", when: "daily 03:00", launch: template("sleep 30") });
+		const { id } = await client.request("schedule-run", { name: "idle" });
+		await waitFor(async () => (await find(client, id))?.pid);
+		const token = readState(id)?.jobToken as string;
+		await client.request("report", { id, token, report: { state: "done", status: "idle", waitingFor: null, summary: "did it", question: null, choices: [], tool: null, error: null, name: null, model: null } });
+		const second = await client.request("schedule-run", { name: "idle" });
+		expect(second.id).not.toBe(id);
+		// done and idle: closed a moment later, as a subagent's
+		await waitFor(async () => ((await find(client, id))?.pid === null ? true : undefined), 10000);
+		expect((await find(client, id))?.state).toBe("done");
+		await client.request("stop", { id: second.id });
+	});
+
+	it("two runs asked at once start one", async () => {
+		const { client } = await startDaemon();
+		await client.request("schedule-add", { name: "twice", when: "daily 03:00", launch: template("sleep 2") });
+		const both = await Promise.allSettled([client.request("schedule-run", { name: "twice" }), client.request("schedule-run", { name: "twice" })]);
+		expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+		expect(both.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "busy" } });
+		expect((await client.request("list", {})).jobs.filter((j) => j.schedule === "twice")).toHaveLength(1);
+	});
+});
+

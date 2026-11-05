@@ -66,6 +66,8 @@ export interface JobRow {
 	fanout?: string | null;
 	/** M29: the agent that runs it: "pi", "shell", or (M30) the name of the user's agent profile. */
 	profile?: string;
+	/** M39: the schedule that started it. */
+	schedule?: string | null;
 	/** M31: what its agent said it can do in its hello (absent: it never said). */
 	capabilities?: string[];
 }
@@ -200,8 +202,29 @@ export interface HelloResult {
 	capabilities: string[];
 }
 
+/** M39: a schedule as the hub and the CLI show it. */
+export interface ScheduleRow {
+	name: string;
+	when: string;
+	task: string | null;
+	cwd: string;
+	model: string | null;
+	paused: boolean;
+	catchUp: boolean;
+	nextAt: number | null;
+	lastRunAt: number | null;
+	lastJob: string | null;
+	lastSkip: { at: number; why: string } | null;
+}
+
 export interface OpArgs {
 	ping: {};
+	/** M39: scheduled tasks. */
+	schedules: {};
+	"schedule-add": { name: string; when: string; launch: DispatchArgs; task?: string; catchUp?: boolean };
+	"schedule-rm": { name: string };
+	"schedule-pause": { name: string; paused: boolean };
+	"schedule-run": { name: string };
 	/** M31: an agent says which protocol and capabilities it has, before it reports. */
 	hello: HelloArgs;
 	list: { all?: boolean; cwd?: string };
@@ -238,6 +261,11 @@ export interface OpArgs {
 
 export interface OpResults {
 	ping: { pid: number; version: string };
+	schedules: { schedules: ScheduleRow[] };
+	"schedule-add": ScheduleRow;
+	"schedule-rm": { name: string };
+	"schedule-pause": ScheduleRow;
+	"schedule-run": { name: string; id: string };
 	hello: HelloResult;
 	list: { jobs: JobRow[] };
 	dispatch: { id: string; name: string };

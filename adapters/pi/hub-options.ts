@@ -3,6 +3,7 @@
  * standalone one (`pi-roost hub`): how pi jobs are launched and resumed, models, presets,
  * agents and profiles. What the host pi knows (its models, its session) comes in `h`.
  */
+import { join } from "node:path";
 import { type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
 import type { AgentViewOptions } from "../../hub/agent-view.ts";
 import { discoverAgents } from "../../lib/agents.ts";
@@ -10,6 +11,7 @@ import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset }
 import { buildLaunch, buildProfileLaunch, fallbackName, isolationDefault, prepareIsolation, workerEnv } from "../../lib/dispatch.ts";
 import { notifySequence, notifyText, resolveNotify } from "../../lib/job-events.ts";
 import { readWriterLock } from "../../lib/locks.ts";
+import { RUN_SLOT } from "../../lib/schedule.ts";
 
 export interface PiHost {
 	/** Directory new jobs start in. */
@@ -64,6 +66,24 @@ export function piHubOptions(h: PiHost): PiHubOptions {
 				...(o.agent ? { agent: o.agent } : {}),
 			});
 			return { ...launch, ...(iso.worktree ? { worktree: iso.worktree, discard: iso.discard } : {}), ...(iso.note ? { note: iso.note } : {}) };
+		},
+		// M39: each run gets its own session in this directory's session folder, as pi names one
+		scheduleLaunch: (task, o) => {
+			const dir = SessionManager.create(o.cwd).getSessionDir();
+			return buildLaunch({
+				task,
+				cwd: o.cwd,
+				sessionFile: join(dir, `${RUN_SLOT}.jsonl`),
+				name: fallbackName(task),
+				origin: "dispatch",
+				argv: h.argv,
+				execPath: process.execPath,
+				env: process.env,
+				...envPolicy(config),
+				piVersion: VERSION,
+				model: o.model ?? config.dispatchModel,
+				thinking: o.thinking ?? config.dispatchThinking,
+			});
 		},
 		// M30: read again each time (an edited roost.json counts at once)
 		profiles: () => Object.keys(loadConfig(dispatchCwd).agentProfiles ?? {}),

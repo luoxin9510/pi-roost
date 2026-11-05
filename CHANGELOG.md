@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Scheduled tasks: `/schedule <name> <every 30m | daily 09:00 | weekdays 09:00 | cron "…"> <task>` in the agent view runs the task as a new session on that schedule (local time). A run is skipped while the previous one still works; one missed while the background service was off runs when it starts again; a finished run's process is closed. `/schedule` lists them (`run`, `pause`, `resume`, `rm <name>`); `pi-roost schedule` too.
+
 - Interrupted sessions carry on by themselves (`autoResume`, default `"interrupted"`): a session whose worker crashed or was killed, whose host went away, or that was working when the machine or the background service went down (in the last 6 hours) is started again with "Continue where you left off.", up to 3 times in a row after 1, 5 and 15 seconds; then it waits for you. While it waits, the row stays working and says so; stop or a reply calls the restart off. `"crash"` restarts after worker crashes only, `"off"` never.
 - Fixed: a session whose worker was killed by a signal (out of memory, `kill -9`) showed as finished instead of failed.
 

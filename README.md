@@ -292,6 +292,27 @@ pi-roost 也能运行它没有专门代码的终端 agent（Claude Code、Codex�
 打进它的终端；进入、停止、删除、worktree 和预设都和 pi 一样。它的模型、上下文、花费和记录无从得知。
 详见 [docs/profiles.md](docs/profiles.md)。你自己写的 agent 也可以改讲 [roost agent 协议](docs/protocol.md)（TypeScript 用 `pi-roost/agent`，Python 用 `sdk/python/roost_agent.py`），这样它自己上报状态、直接接收回复。
 
+## Scheduled tasks · 定时任务
+
+Run a task on a schedule, from the agent view:
+
+在 agent 视图里让任务定时运行：
+
+```text
+/schedule standup weekdays 09:00 summarise yesterday's commits in this repository
+/schedule deps every 6h check for outdated dependencies and open a PR if any
+/schedule weekly cron "0 18 * * 5" write the week's changelog draft
+```
+
+Each run is a new pi session (the view's model, thinking level and directory), named after
+the schedule, listed like any other; when it is done its process is closed (a reply starts
+it again). A run is skipped while the previous one is still working. A run that fell due
+while the background service was off runs once when it starts again. `/schedule` lists
+them; `/schedule run|pause|resume|rm <name>`; `pi-roost schedule` from a shell. Times are
+local.
+
+每次运行都是一个新的 pi 会话（使用视图当前的模型、思考级别和目录），以定时任务名命名，和其他会话一样列出；跑完后关掉进程（回复会重新启动它）。上一次还在跑时，这一次跳过。后台服务关着时错过的运行，下次启动后补跑一次。`/schedule` 列出全部；`/schedule run|pause|resume|rm <名字>`；在 shell 里用 `pi-roost schedule`。时间按本地时区。
+
 ## Worktrees · 独立 worktree
 
 A new background session can work in its own git worktree and branch, so several
@@ -499,6 +520,8 @@ The package installs a `pi-roost` command:
 
 ```text
 pi-roost hub [dir]                      the agent view on its own          单独运行 agent 视图
+pi-roost schedule [list]                scheduled tasks                    定时任务列表
+pi-roost schedule run|pause|resume|rm <name>
 pi-roost list [--all] [--subagents]     list sessions as a table           以表格列出会话
 pi-roost --json [--all] [--cwd <dir>]   list sessions as JSON              以 JSON 列出会话
 pi-roost attach <id|name>               open a session (Ctrl+Z detaches)   进入会话（Ctrl+Z 退出）
