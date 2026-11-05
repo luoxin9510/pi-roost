@@ -32,7 +32,7 @@ choose one.
 | `command` | the argv it starts with. An array, never a shell line: no shell, no `$VARS`, no globbing. |
 | `task` | how the first task reaches it: `"argv"` (default: added as the last argument), `"type"` (typed in once it is first quiet), or `"none"`. |
 | `model`, `thinking` | argv added when `/model` or `/thinking` chose a value; leave one out and the agent takes no such choice. |
-| `resume` | argv that reopens its last session; a reply to an ended one starts this and types the reply in. Without it, the reply starts `command` again (with the model, without the first task). |
+| `resume` | argv that reopens its last session; a reply to an ended one starts this and types the reply in. Without it, the reply starts `command` again (with the model, without the first task). With it, a run cut short (a crash, a kill, the machine down) is started again by itself and told to continue (`autoResume`); without it, it is left failed. |
 | `working` | a regex (case-insensitive, over the whole screen) meaning it is working, whatever else the screen says. |
 | `waiting` | a regex meaning it waits for you; the line it matched is the row's question. |
 | `submit` | what is typed after a reply (default `"\r"`). |

@@ -47,6 +47,7 @@ Claude Code's documented behaviour.
 | M33 | [the hub on its own: `pi-roost hub`](m33-hub.md) | next |
 | M38 | [interrupted runs carry on; a crash loop is bounded](m38-resume.md) | next |
 | M39 | [scheduled tasks](m39-schedules.md) | next |
+| M40 | [interrupted runs and schedules for every agent](m40-agents-resume.md) | next |
 
 Next: see [any agent](any-agent.md); measured by the stress run and the evals.
 

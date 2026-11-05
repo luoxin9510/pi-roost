@@ -66,6 +66,6 @@ steps; Sunday 0 or 7; day of month and day of week both given: either, as cron d
 
 ## Not yet
 
-- Scheduled commands and terminal agents (pi sessions only).
+- ~~Scheduled commands and terminal agents~~: [M40](m40-agents-resume.md).
 - A worktree per run, a fan-out per run.
 - Rows of past runs go as other rows do (`cleanupDays`).

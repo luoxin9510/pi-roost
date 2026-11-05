@@ -304,14 +304,15 @@ Run a task on a schedule, from the agent view:
 /schedule weekly cron "0 18 * * 5" write the week's changelog draft
 ```
 
-Each run is a new pi session (the view's model, thinking level and directory), named after
-the schedule, listed like any other; when it is done its process is closed (a reply starts
+Each run is a new session (the view's model, thinking level and directory; with `/profile`
+on, that agent; a task starting with `!` runs as a command), named after the schedule,
+listed like any other; when it is done its process is closed (a reply starts
 it again). A run is skipped while the previous one is still working. A run that fell due
 while the background service was off runs once when it starts again. `/schedule` lists
 them; `/schedule run|pause|resume|rm <name>`; `pi-roost schedule` from a shell. Times are
 local.
 
-每次运行都是一个新的 pi 会话（使用视图当前的模型、思考级别和目录），以定时任务名命名，和其他会话一样列出；跑完后关掉进程（回复会重新启动它）。上一次还在跑时，这一次跳过。后台服务关着时错过的运行，下次启动后补跑一次。`/schedule` 列出全部；`/schedule run|pause|resume|rm <名字>`；在 shell 里用 `pi-roost schedule`。时间按本地时区。
+每次运行都是一个新的会话（使用视图当前的模型、思考级别和目录；开着 `/profile` 时跑那个 agent；任务以 `!` 开头则作为命令运行），以定时任务名命名，和其他会话一样列出；跑完后关掉进程（回复会重新启动它）。上一次还在跑时，这一次跳过。后台服务关着时错过的运行，下次启动后补跑一次。`/schedule` 列出全部；`/schedule run|pause|resume|rm <名字>`；在 shell 里用 `pi-roost schedule`。时间按本地时区。
 
 ## Worktrees · 独立 worktree
 
@@ -472,7 +473,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `envAllowList` | `[]` | names that always go, even when `envDenyList` matches them; with `inheritEnv: false`, the extra variables on top of the basics | 总会传过去的变量名，即使 `envDenyList` 匹配到也照传；`inheritEnv: false` 时是基础变量之外额外传的变量 |
 | `subagentPanel`, `subagentPanelRows` | `true`, `5` | the panel of this session's subagents below the prompt, and how many rows it shows (1–10) | 提示符下方的子 agent 面板，以及最多显示几行（1–10） |
 | `subagentAutoClose` | `true` | close a subagent's process once it finished and reported; a message starts it again | 子 agent 完成并汇报后关闭其进程；再发消息会重新启动 |
-| `autoResume` | `"interrupted"` | a pi session cut short carries on by itself ("Continue where you left off."): when its worker crashes or is killed, its host goes away, or the machine or the background service went down in the last 6 h; up to 3 times in a row (after 1, 5 and 15 s), then it waits for you. `"crash"`: worker crashes only; `"off"`: never | 被打断的 pi 会话自动接着跑（发 "Continue where you left off."）：worker 崩溃或被杀、host 消失，或 6 小时内机器/后台服务挂掉；连续最多 3 次（间隔 1、5、15 秒），之后等你处理。`"crash"`：只在 worker 崩溃时；`"off"`：从不 |
+| `autoResume` | `"interrupted"` | a session cut short carries on by itself (pi; a protocol agent; a terminal agent with `resume`) ("Continue where you left off."): when its worker crashes or is killed, its host goes away, or the machine or the background service went down in the last 6 h; up to 3 times in a row (after 1, 5 and 15 s), then it waits for you. `"crash"`: worker crashes only; `"off"`: never | 被打断的会话自动接着跑（pi；协议 agent；带 `resume` 的终端 agent）（发 "Continue where you left off."）：worker 崩溃或被杀、host 消失，或 6 小时内机器/后台服务挂掉；连续最多 3 次（间隔 1、5、15 秒），之后等你处理。`"crash"`：只在 worker 崩溃时；`"off"`：从不 |
 | `agentViewSubagents` | `"hide"` | `"inline"`: subagents are rows of the agent view again | `"inline"`：子 agent 重新作为 agent 视图里的行显示 |
 | `worktreeIsolation` | `"off"` | `"children"`: `roost_spawn` children get their own worktree; `"all"`: every new session; outside a git repository they run without one | `"children"`：`roost_spawn` 派出的子会话各用独立 worktree；`"all"`：所有新会话都用；不在 git 仓库里时照常运行、不建 worktree |
 | `agentTools` | `true` | the `roost_*` tools in every session | 在每个会话里提供 `roost_*` 工具 |

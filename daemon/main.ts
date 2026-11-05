@@ -23,7 +23,7 @@ import {
 	type TreeNode,
 } from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
-import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME } from "../lib/schedule.ts";
+import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -576,7 +576,12 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	if (recs.get(id)?.kind === "shell") {
 		// DI-6: stopped, or the command's exit status; the row goes away a while later
 		if (stopReq) patch.state = "stopped";
-		else if (isProtocolJob(recs.get(id)) && ex?.code === 0 && st.state === "failed" && typeof st.reportedAt === "number") {
+		else if (reaped && isProfileJob(recs.get(id))) {
+			// M40: a scheduled run's agent closed once done: the row stays as it was
+			patch.state = st.state === "working" ? "done" : st.state;
+			patch.reaped = true;
+			patch.stateSince = typeof st.stateSince === "number" ? st.stateSince : now;
+		} else if (isProtocolJob(recs.get(id)) && ex?.code === 0 && st.state === "failed" && typeof st.reportedAt === "number") {
 			// M31: an agent that said it failed and then exited cleanly failed
 			patch.state = "failed";
 		} else {
@@ -590,6 +595,33 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 			patch.waitingFor = null;
 			patch.question = null;
 			patch.typeTask = null;
+			// M40: an agent cut short mid-work carries on by itself, as a pi session does (M38):
+			// a protocol agent takes "continue" as a reply; a terminal agent needs `resume`
+			const progress = typeof st.reportedAt === "number" ? st.reportedAt : st.updatedAt;
+			if (!stopReq && !ex && opts.startup) {
+				// the machine or the service went away under it: what it was stands (a dialog
+				// died with the process; a question stays, a reply starts it again)
+				if (st.state !== "working") {
+					const dialog = st.state === "blocked" && st.waitingFor !== "question";
+					patch.state = dialog ? "done" : st.state;
+					patch.error = null;
+					if (st.state === "blocked" && !dialog) {
+						patch.waitingFor = st.waitingFor;
+						patch.question = st.question;
+					}
+				} else if (now - progress < RECENT_MS) patch.error = "it ended while it was working (machine restart?); reply or press Enter twice to resume";
+				else {
+					patch.state = "stopped";
+					patch.error = "ended while the background service was off";
+				}
+			}
+			if (patch.state === "failed" && st.state === "working" && !stopReq && (isProtocolJob(rec) || rec?.resumable === true)) {
+				const mode = autoResume();
+				if (ex ? crashed(ex) && mode !== "off" : mode === "interrupted" && (!opts.startup || now - progress < RESUME_WINDOW_MS)) {
+					restart = true;
+					resumeWhy = ex ? "crash" : opts.startup ? "interrupted" : "host-gone";
+				}
+			}
 			// a reply waiting to be typed in never reached it: say so, not lose it quietly
 			if (str(st.typeTask)) {
 				const t = st.typeTask.length > 60 ? `${st.typeTask.slice(0, 59)}…` : st.typeTask;
@@ -597,10 +629,12 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 				if (patch.state === "done") patch.state = "failed";
 			}
 		}
-		// the host flushed its screen on exit: the last output line is the result
+		// the host flushed its screen on exit: the last output line is the result; a row
+		// kept as it was (closed once done, or restored after the service was down) keeps its text
+		const kept = reaped || (!ex && opts.startup === true && st.state !== "working");
 		const line = isProfileJob(rec) ? (readTermSignals(termPath(id))?.title ?? lastScreenLine(id)) : lastScreenLine(id);
 		// M31: a protocol agent's row keeps what it last said
-		if (line && !(isProtocolJob(rec) && typeof st.reportedAt === "number")) patch.summary = line;
+		if (line && !kept && !(isProtocolJob(rec) && typeof st.reportedAt === "number")) patch.summary = line;
 	} else if (reaped) {
 		// DM-4: an idle worker stopped to save resources; the row stays as it was
 		patch.state = st.state === "working" ? "done" : st.state;
@@ -803,6 +837,7 @@ function scheduleRow(s: Schedule): ScheduleRow {
 		name: s.name,
 		when: s.when,
 		task: s.task ?? null,
+		agent: templateAgent(s.launch),
 		cwd: s.launch.cwd,
 		model: s.launch.model ?? null,
 		paused: s.paused,
@@ -1114,7 +1149,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		sessionFile: shell ? "" : a.sessionFile,
 		command: a.command,
 		...(shell ? { kind: "shell" as const } : {}),
-		...(profile ? { profile, term: { ...term!, typeTask: undefined }, ...(resumeCommand ? { resumeCommand } : {}), ...(a.protocol === true ? { agentProtocol: true } : {}) } : {}),
+		...(profile ? { profile, term: { ...term!, typeTask: undefined }, ...(resumeCommand ? { resumeCommand } : {}), ...(a.protocol === true ? { agentProtocol: true } : {}), ...(a.resumable === true ? { resumable: true } : {}) } : {}),
 		env,
 		...(str(a.model) ? { model: a.model } : {}),
 		...(str(a.thinking) ? { thinking: a.thinking } : {}),
@@ -1284,12 +1319,6 @@ async function respawnNow(
 		const shell = rec.kind === "shell";
 		// M30: a level 0 agent takes its prompt typed in, once it is up and quiet
 		const typeTask = isTermJob(rec) && opts.prompt ? opts.prompt : undefined;
-		// M31: a protocol agent takes the prompt as a reply, waiting for its first report
-		if (isProtocolJob(rec) && opts.prompt) {
-			const cur = readState(id);
-			const seq = (typeof cur?.replySeq === "number" ? cur.replySeq : 0) + 1;
-			updateState(id, { replySeq: seq, pendingReplies: [...pendingReplies(id), { seq, text: opts.prompt }] });
-		}
 		let prompt = shell ? undefined : opts.prompt;
 		// M38: started by other means (attach, Enter twice) while a restart waited: the run
 		// still carries on; a reply waiting goes in instead
@@ -1331,6 +1360,12 @@ async function respawnNow(
 		const now = Date.now();
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
 		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
+		// M31: a protocol agent takes the prompt as a reply, waiting for its first report
+		// (queued only now: a start refused above must not leave it for the next one)
+		if (isProtocolJob(rec) && opts.prompt) {
+			const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
+			updateState(id, { replySeq: seq, pendingReplies: [...pendingReplies(id), { seq, text: opts.prompt }] });
+		}
 		// M38: it starts now: the waiting restart is spent (a failure above leaves it to run)
 		clearTimeout(resumeTimers.get(id));
 		resumeTimers.delete(id);
@@ -1440,7 +1475,12 @@ function profileTick(id: string, rec: JobRecord, st: JobState, now: number): voi
 	} catch {}
 	const inputAt = typeof st.termInputAt === "number" ? st.termInputAt : st.startedAt;
 	const typed = st.termTyped === true;
-	const v = inferTermState(readTermSignals(termPath(id)), screen, term, { now, inputAt, typed });
+	let v = inferTermState(readTermSignals(termPath(id)), screen, term, { now, inputAt, typed });
+	// M40: a scheduled run is unattended: an agent that notified and went quiet is done
+	// (the notification is the row's text); a dialog it is stuck in is still a dialog
+	if (v.state === "blocked" && v.waitingFor === "question" && recs.get(id)?.schedule) {
+		v = { ...v, state: "done", status: "idle", waitingFor: null, question: null, summary: v.question ?? v.summary };
+	}
 	const pid = readWorkerPid(id) ?? null;
 	// quiet at its prompt (a notification asks for input too); never into a dialog
 	if (str(st.typeTask) && v.quiet && v.state !== "working" && v.waitingFor !== "dialog" && !typing.has(id)) {
@@ -1460,6 +1500,8 @@ function profileTick(id: string, rec: JobRecord, st: JobState, now: number): voi
 	if (v.summary && st.summary !== v.summary) patch.summary = v.summary;
 	const moved = Object.keys(patch).length > 0;
 	if (moved) updateState(id, patch);
+	// M40: a scheduled run of a terminal agent goes once it is done (a reply starts it again)
+	if (moved && v.state === "done" && recs.get(id)?.schedule) scheduleAutoClose(id);
 	if (moved || shellPids.get(id) !== pid) {
 		shellPids.set(id, pid);
 		pushJob(id);

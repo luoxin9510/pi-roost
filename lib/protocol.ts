@@ -164,6 +164,8 @@ export interface DispatchArgs {
 	resumeCommand?: string[];
 	/** M30: the first task is in its argv (it has been given something to do). */
 	taskInArgv?: boolean;
+	/** M40: a profile with `resume`: a run of it cut short can carry on (autoResume). */
+	resumable?: boolean;
 	/** M31: a profile's agent that speaks the roost agent protocol. */
 	protocol?: boolean;
 	/** M36: a resend with the same id returns the job the first one made. */
@@ -207,6 +209,8 @@ export interface ScheduleRow {
 	name: string;
 	when: string;
 	task: string | null;
+	/** M40: what each run is: "pi", "shell" (a command) or a profile's name. */
+	agent: string;
 	cwd: string;
 	model: string | null;
 	paused: boolean;

@@ -30,6 +30,8 @@ export interface JobRecord {
 	profile?: string;
 	/** M39: started by this schedule. */
 	schedule?: string;
+	/** M40: a profile whose `resume` takes its last session up (auto-resume applies). */
+	resumable?: boolean;
 	/** M30: how its screen is read and how replies are typed into it. */
 	term?: ProfileTerm;
 	/** M30: the argv that reopens it (a reply to it once it has ended). */

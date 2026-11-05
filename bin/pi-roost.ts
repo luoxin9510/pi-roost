@@ -173,7 +173,7 @@ async function cmdSchedule(args: string[]): Promise<void> {
 		for (const s of schedules) {
 			const next = s.paused ? "paused" : s.nextAt === null ? "never" : `next ${untilText(s.nextAt, now)}`;
 			const last = s.lastRunAt ? `last ${agoText(now - s.lastRunAt)} ago (${s.lastJob})` : "not run yet";
-			process.stdout.write(`${s.name}  ${s.when}  ${next}  ${last}\n  ${s.task ?? ""}\n  ${s.cwd}${s.model ? `  ${s.model}` : ""}\n`);
+			process.stdout.write(`${s.name}  ${s.when}  ${next}  ${last}\n  ${s.task ?? ""}\n  ${s.agent}  ${s.cwd}${s.model ? `  ${s.model}` : ""}\n`);
 			if (s.lastSkip) process.stdout.write(`  skipped ${agoText(now - s.lastSkip.at)} ago: ${s.lastSkip.why}\n`);
 		}
 		return;
