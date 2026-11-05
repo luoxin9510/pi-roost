@@ -349,7 +349,7 @@ neither imports the other.
 | ↑ ↓ PgUp PgDn | move (Home and End too, when the input is empty) | 移动（输入框为空时 Home、End 也可以） |
 | Enter | open the session · start the typed task · fold a group | 进入会话 · 派发输入的任务 · 折叠分组 |
 | → | open the session | 进入会话 |
-| Space | peek and reply | 偷看并回复 |
+| Space | peek and reply (Enter joins its current work, Alt+Enter waits for it, as in pi) | 偷看并回复（Enter 插进它正在做的工作，Alt+Enter 等它做完，和 pi 一样） |
 | Ctrl+Enter | start the typed task and open it | 派发输入的任务并进入 |
 | Ctrl+X | stop; again within 2 s to delete | 停止；2 秒内再按一次删除 |
 | Ctrl+S | group by state / directory | 按状态 / 目录分组 |

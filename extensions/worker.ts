@@ -331,7 +331,8 @@ export class ReplyQueue {
 			if (running) this.awaitingStart = 0;
 			if (this.awaitingStart && Date.now() - this.awaitingStart < START_WAIT_MS) return this.retry();
 			if (running) {
-				void this.pi.sendUserMessage(next.text, { deliverAs: "followUp", expandPromptTemplates: true });
+				// M28: as pi's Enter (steer) or Alt+Enter (follow-up) while it works
+				void this.pi.sendUserMessage(next.text, { deliverAs: next.mode === "steer" ? "steer" : "followUp", expandPromptTemplates: true });
 				this.userJoined = true;
 			} else if (ctx.isIdle()) {
 				void this.pi.sendUserMessage(next.text, { expandPromptTemplates: true });
@@ -734,7 +735,7 @@ function thinkingOf(pi: ExtensionAPI): string | null {
 }
 
 /** A delivered reply or agent item (M9 adds the kind). */
-export type DeliverItem = Pick<Extract<Event, { event: "deliver" }>, "seq" | "text" | "kind" | "from" | "relation">;
+export type DeliverItem = Pick<Extract<Event, { event: "deliver" }>, "seq" | "text" | "kind" | "from" | "relation" | "mode">;
 
 const isAgentKind = (k: DeliverItem["kind"]) => k === "message" || k === "report";
 const MAX_MESSAGE_REPORTS = 3;
