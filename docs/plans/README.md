@@ -37,4 +37,6 @@ Claude Code's documented behaviour.
 | M27 | [launch presets](m27-presets.md) | 0.1.11 |
 | M28 | [steer or wait, as in pi](m28-steer.md) | next |
 
+Next: [any agent](any-agent.md), the design for M29–M33 (roost for agents other than pi, pi staying the baseline).
+
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).
