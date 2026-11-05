@@ -23,22 +23,51 @@ export function findPiCli(env: NodeJS.ProcessEnv = process.env): string | undefi
 	}
 }
 
-/** The directory of pi's package (ROOST_PI_PACKAGE, else the one the pi on the PATH runs from). */
-export function findPiPackage(env: NodeJS.ProcessEnv = process.env, cli: string | undefined = findPiCli(env)): string | undefined {
-	if (env.ROOST_PI_PACKAGE) return env.ROOST_PI_PACKAGE;
-	if (!cli) return undefined;
-	for (let d = dirname(cli), i = 0; i < 10; i++) {
-		const pj = join(d, "package.json");
-		if (existsSync(pj)) {
-			try {
-				if ((JSON.parse(readFileSync(pj, "utf8")) as { name?: string }).name === PI_PACKAGE) return d;
-			} catch {}
-		}
-		const up = dirname(d);
-		if (up === d) break;
-		d = up;
+const isPiPackage = (dir: string): boolean => {
+	try {
+		return (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string }).name === PI_PACKAGE;
+	} catch {
+		return false;
 	}
-	return undefined;
+};
+
+/**
+ * The directory of pi's package: ROOST_PI_PACKAGE; else the one the pi on the PATH runs
+ * from (an npm-style link to its CLI); else npm's global packages (where a shim of pnpm,
+ * volta, asdf or mise does not lead).
+ */
+export function findPiPackage(env: NodeJS.ProcessEnv = process.env, cli: string | undefined = findPiCli(env), npmRoot: () => string | undefined = () => globalNpmRoot(env)): string | undefined {
+	if (env.ROOST_PI_PACKAGE) return env.ROOST_PI_PACKAGE;
+	if (cli) {
+		for (let d = dirname(cli), i = 0; i < 10; i++) {
+			if (existsSync(join(d, "package.json")) && isPiPackage(d)) return d;
+			const up = dirname(d);
+			if (up === d) break;
+			d = up;
+		}
+	}
+	const root = npmRoot();
+	const global = root ? join(root, PI_PACKAGE) : undefined;
+	return global && isPiPackage(global) ? global : undefined;
+}
+
+function globalNpmRoot(env: NodeJS.ProcessEnv): string | undefined {
+	try {
+		return execFileSync("npm", ["root", "-g"], { encoding: "utf8", env, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** pi's CLI in its package (its `bin.pi`): a file node runs, whatever shim put pi on the PATH. */
+export function piCliOf(pkg: string): string | undefined {
+	try {
+		const bin = (JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")) as { bin?: string | Record<string, string> }).bin;
+		const rel = typeof bin === "string" ? bin : bin?.pi;
+		return rel && existsSync(join(pkg, rel)) ? join(pkg, rel) : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Resolve pi's packages from `dir` (pi's package directory) in this process from now on. */

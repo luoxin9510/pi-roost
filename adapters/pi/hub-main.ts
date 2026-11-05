@@ -30,7 +30,11 @@ function listModels(piCli: string): Promise<string[]> {
 
 export function parseModelList(out: string): string[] {
 	const models: string[] = [];
-	for (const line of out.split("\n").slice(1)) {
+	// a table under a header; anything else (no credentials: a message) lists nothing
+	const lines = out.split("\n");
+	const header = lines.findIndex((l) => /^provider\s+model\b/.test(l.trim()));
+	if (header < 0) return [];
+	for (const line of lines.slice(header + 1)) {
 		const [provider, id] = line.trim().split(/\s+/);
 		if (provider && id) models.push(`${provider}/${id}`);
 	}
@@ -50,6 +54,8 @@ export async function runHub(o: HubMainOptions): Promise<void> {
 		models = m;
 	});
 	const terminal = new ProcessTerminal();
+	// a closed tab or a kill: exit, so pi-tui's exit handler gives the terminal back
+	for (const sig of ["SIGTERM", "SIGHUP"] as const) process.once(sig, () => process.exit(128 + (sig === "SIGTERM" ? 15 : 1)));
 	// as pi draws by default (its fullscreen mode): the alternate screen, the shell kept below
 	const tui = new TuiAltScreen(terminal);
 	await new Promise<void>((done) => {
@@ -76,5 +82,7 @@ export async function runHub(o: HubMainOptions): Promise<void> {
 		tui.start();
 		void view.start();
 	});
+	// keys still arriving (a kitty key release of the Esc that closed it) stay out of the shell
+	await terminal.drainInput(1000).catch(() => {});
 	tui.stop();
 }

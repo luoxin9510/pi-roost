@@ -19,14 +19,18 @@ else of pi's, and nothing from `adapters/`.
 ## pi's packages
 
 They are pi's, not roost's (peer dependencies, left out when pi installs roost), and the
-CLI runs on plain node. `lib/pi-resolve.ts` (node only) finds the pi on the PATH
-(`ROOST_PI_PACKAGE` overrides), and registers a resolve hook (`node:module` `register`)
+CLI runs on plain node. `lib/pi-resolve.ts` (node only) finds pi's package
+(`ROOST_PI_PACKAGE`; else up from the pi on the PATH, an npm-style link; else `npm root
+-g`, where a pnpm, volta, asdf or mise shim does not lead), takes pi's CLI from the
+package's `bin` (never the shim), and registers a resolve hook (`node:module` `register`)
 that resolves `@earendil-works/*` from pi's installation, as pi itself imports them: the
 hub runs the same pi-tui as the user's pi, and new sessions run that pi. `pi-roost hub`
 loads `adapters/pi/hub-main` by path, as the daemon starts the host: from `dist/` when
 installed (it is built now), from the `.ts` in a checkout.
 
-Without pi on the PATH it says so and exits 1; a missing directory is a usage error.
+Without pi it says so (naming `ROOST_PI_PACKAGE`) and exits 1; a missing directory is a
+usage error. It leaves the terminal as it found it on Esc, Ctrl+C, an error, SIGTERM or
+SIGHUP (input drained before the screen is given back, as pi does).
 
 ## Checked
 
@@ -44,5 +48,7 @@ Without pi on the PATH it says so and exits 1; a missing directory is a usage er
 - The standalone hub has no pi session, so nothing moves to the background from it
   (that is `←` in pi) and pi's slash commands (skills, prompt templates) are not offered
   as first prompts.
+- Sessions and the model list run pi under the node that runs pi-roost; a pi installed
+  for another node that it cannot run under would fail there.
 - Its colours follow pi's dark theme, not the user's chosen pi theme (pi does not export
   the theme in use).

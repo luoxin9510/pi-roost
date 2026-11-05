@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseModelList } from "../adapters/pi/hub-main.ts";
 import { ansiTheme } from "../hub/theme.ts";
-import { findPiPackage, resolve } from "../lib/pi-resolve.ts";
+import { findPiPackage, piCliOf, resolve } from "../lib/pi-resolve.ts";
 
 describe("M33: the standalone hub", () => {
 	it("finds pi's package from its CLI, or from ROOST_PI_PACKAGE", () => {
@@ -17,10 +17,17 @@ describe("M33: the standalone hub", () => {
 		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "something-else" }));
 		const cli = join(pkg, "dist", "bundle", "cli.js");
 		writeFileSync(cli, "");
-		expect(findPiPackage({}, cli)).toBe(pkg);
-		expect(findPiPackage({}, join(root, "elsewhere.js"))).toBeUndefined();
-		expect(findPiPackage({}, undefined)).toBeUndefined();
-		expect(findPiPackage({ ROOST_PI_PACKAGE: "/x/pi" }, cli)).toBe("/x/pi");
+		const none = () => undefined;
+		expect(findPiPackage({}, cli, none)).toBe(pkg);
+		expect(findPiPackage({}, join(root, "elsewhere.js"), none)).toBeUndefined();
+		expect(findPiPackage({}, undefined, none)).toBeUndefined();
+		expect(findPiPackage({ ROOST_PI_PACKAGE: "/x/pi" }, cli, none)).toBe("/x/pi");
+		// a shim (pnpm, volta, asdf, mise) leads nowhere: npm's global packages
+		expect(findPiPackage({}, join(root, "shims", "pi"), () => join(root, "node_modules"))).toBe(pkg);
+		// the CLI comes from the package, whatever put pi on the PATH
+		writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "dist/bundle/cli.js" } }));
+		expect(piCliOf(pkg)).toBe(cli);
+		expect(piCliOf(root)).toBeUndefined();
 	});
 
 	it("resolves pi's packages as pi itself would, and the rest as usual", async () => {
@@ -55,6 +62,7 @@ describe("M33: the standalone hub", () => {
 		const out = "provider   model             context\nanthropic  claude-haiku-5-5  1M\ndeepseek   deepseek-flash    128K\n\n";
 		expect(parseModelList(out)).toEqual(["anthropic/claude-haiku-5-5", "deepseek/deepseek-flash"]);
 		expect(parseModelList("")).toEqual([]);
+		expect(parseModelList("No models available. Log in:\n  anthropic  run /login\n")).toEqual([]);
 	});
 
 	it("draws in colour unless NO_COLOR", () => {
@@ -69,8 +77,9 @@ describe("M33: the standalone hub", () => {
 		const missing = run(["hub", "/no/such/dir"], process.env);
 		expect(missing.status).toBe(2);
 		expect(missing.stderr).toContain("no such directory");
-		const nopi = run(["hub", tmpdir()], { PATH: "/usr/bin:/bin", HOME: process.env.HOME });
+		// no pi anywhere (an empty PATH, a package directory that is not pi's)
+		const nopi = run(["hub", tmpdir()], { PATH: "", HOME: process.env.HOME, ROOST_PI_PACKAGE: tmpdir() });
 		expect(nopi.status).toBe(1);
-		expect(nopi.stderr).toContain("needs pi on your PATH");
+		expect(nopi.stderr).toContain("the hub needs pi");
 	});
 });

@@ -8,7 +8,7 @@ import { hostControl } from "../lib/hostclient.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
 import { daemonLogPath, hostSocketPath, runtimeDir } from "../lib/paths.ts";
-import { findPiCli, findPiPackage, usePiPackage } from "../lib/pi-resolve.ts";
+import { findPiPackage, piCliOf, usePiPackage } from "../lib/pi-resolve.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
@@ -229,9 +229,12 @@ async function cmdDaemon(sub: string | undefined, args: string[]): Promise<void>
 async function cmdHub(rest: string[]): Promise<void> {
 	const cwd = resolvePath(rest[0] ?? process.cwd());
 	if (!existsSync(cwd)) throw new UsageError(`no such directory: ${cwd}`);
-	const piCli = findPiCli();
-	const pkg = findPiPackage(process.env, piCli);
-	if (!piCli || !pkg) throw new Error("the hub needs pi on your PATH: it runs pi sessions and draws with pi's terminal library");
+	const pkg = findPiPackage();
+	const piCli = pkg ? piCliOf(pkg) : undefined;
+	if (!pkg || !piCli)
+		throw new Error(
+			"the hub needs pi (it runs pi sessions and draws with pi's terminal library): put pi on your PATH, or set ROOST_PI_PACKAGE to the directory of its package (@earendil-works/pi-coding-agent)",
+		);
 	usePiPackage(pkg);
 	const entry = new URL(import.meta.url.endsWith(".ts") ? "../adapters/pi/hub-main.ts" : "../adapters/pi/hub-main.js", import.meta.url);
 	const hub = (await import(entry.href)) as { runHub: (o: { cwd: string; piCli: string }) => Promise<void> };
