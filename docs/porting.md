@@ -1,8 +1,15 @@
-# pi-roost 移植说明（基于 0d16cd4 / v0.1.7）
+# pi-roost 移植说明（基于 871ed9a / v0.1.12）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout v0.1.7`（`0d16cd4`，即 main）逐节实现，每节末尾有验收标准。
-> v0.1.7 包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
+> 用法：对照源码 `git checkout v0.1.12`（`871ed9a`，即 main）逐节实现，每节末尾有验收标准。
+> **v0.1.12（本文依据）= v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
+> v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
+>
+> **v0.1.8–v0.1.12 新增**（详见 Step 20–40，附录 C 有提交号）：
+> - v0.1.8：修 CLI 误引 pi-tui 的回归，并加了守边界的测试；v0.1.9：M21 attach 从 host 的屏幕开始（回放，取代 M14 的重绘）；v0.1.10：M22 多窗口/频繁切换（不再冻结、行保持真实）。
+> - v0.1.11 = 把 agent view 做成"多 agent 中枢"的 hub 路线：M23 `/resume` 与选模型、M24 用量/花费、M25 多选批量、M26 fan-out + `/compare`、M27 启动预设。
+> - v0.1.12 = any-agent 路线 + 度量 + 续跑：M28 steer/follow-up；M29 中性内核（`ROOST_*` 名字）、M30 agent 档案（终端 agent 零代码接入）、M31 agent 协议（TS/Python 客户端）、M32 按层分目录（`adapters/pi/`、包导出）、M33 独立 hub（`pi-roost hub`）；M34 telemetry、M35 压测、M36 请求 ID、M37/M41 真模型 evals；M38 中断续跑（`autoResume`）、M39 定时任务（`/schedule`）、M40 全 agent 续跑与定时；M42 一个压测用例的修复（只改测试）。
+> - **Step 20 起（M21 及之后）全部是可选增强**；核心 Step 1–8 不依赖它们。其中真正改变"移植怎么做"的是 M29/M31/M32：现在可以不写适配器代码，直接用档案（级别 0）或协议（级别 1）接入，见 §0 与 §1.3。
 
 ---
 
@@ -23,7 +30,19 @@
 | host | `host/main.ts` | 每个会话 1 个，持有 PTY | **否**（只依赖 `node-pty`、`@xterm/headless`） |
 | CLI | `bin/pi-roost.ts` | 临时 | **否** |
 | 扩展（三种角色） | `adapters/pi/*.ts`（M32 前在 `extensions/`） | 每个宿主 agent 进程里加载一次 | **是**（适配层） |
-| 公共库 | `lib/*.ts` | — | 只有 `lib/api.ts` 依赖（`SessionManager`） |
+| 公共库 | `lib/*.ts` | — | **否**（M32 把唯一依赖 pi 的 `lib/api.ts` 搬到了 `adapters/pi/api.ts`） |
+| hub（视图，M33） | `hub/agent-view.ts` `task-editor.ts` `theme.ts` | 嵌在 pi 里，或 `pi-roost hub` 独立运行 | 只依赖 **pi-tui**（终端 UI 库），不依赖 agent API；pi 的部分经 `adapters/pi/hub-options.ts` 注入 |
+| agent 客户端（M31） | `lib/agent-client.ts`（导出 `pi-roost/agent`）、`sdk/python/roost_agent.py` | 跑在 agent 进程里 | 否（TS 客户端只用 node；Python 只用标准库） |
+
+**三级接入**（M29–M31，设计见 `docs/plans/any-agent.md`）：同一套 daemon/host/CLI 可以管三类 agent，按"接入成本"选一级：
+
+| 级别 | 做法 | 你要写什么 | 得到什么 |
+|---|---|---|---|
+| 0 档案 | 用户 `roost.json` 的 `agentProfiles` 里写一个 argv 档案（M30），host 从终端的 OSC/BEL/屏幕静止推状态，回复**打字**进终端 | **零代码** | 行、attach/detach、stop、删除、worktree、fan-out、预设、批量；降级：模型/上下文/用量/记录视图/子 agent |
+| 1 roost agent 协议 | agent 进程里跑一个协议客户端（TS `pi-roost/agent` 或 Python 单文件），自己 `hello`/`report`，接收 `deliver` 并 `ack`（M31，`docs/protocol.md`） | 几十行 | 上面全部 + agent 自己报的状态/问题/模型/用量，回复经 pending/ack 可靠投递，崩溃续跑（M40） |
+| 2 深度集成 | `adapters/pi/` 那一套：前台转后台、子 agent 面板、peer 工具、摘要、记录视图、attach 信号 | 本文 Step 1–19 的适配层 | 全部 |
+
+把 pi-roost 移植到新宿主时，**先用级别 0 验证宿主能在 PTY 里跑起来，再决定要不要做级别 1/2**；下文 Step 1–19 讲的是级别 2。
 
 **核心思想**：每个后台会话就是一个**完整、普通的宿主 agent 交互进程**，跑在 host 持有的伪终端里。attach 时把真实终端直通过去，看到的就是 agent 原本的 TUI；detach 后进程继续跑。worker 内的扩展只负责**上报状态**和**接收回复**，不改 agent 本身。
 
@@ -97,11 +116,51 @@
 | `pi-tui`：`matchesKey` `Key` `isKeyRelease` `Input` `parseKey` `truncateToWidth` `visibleWidth` `Text` | agent view 渲染与按键 | 自带 TUI 时替换 |
 | `pi-tui`：`Editor` + `EditorTheme`（M17，`task-editor.ts`）、`decodeKittyPrintable`、`wrapTextWithAnsi`（M19）、`Component` `TUI` 类型 | 任务输入框用宿主自己的多行编辑器（Shift+Enter 换行、长粘贴折叠）；记录视图的换行 | 可降级为单行 `Input` |
 
-> **评估结论模板**：C1–C4 + 6 个 ★ 事件 + `sendUserMessage` 两种投递方式 + `isIdle/abort/shutdown` 齐了 → 可以做出"后台会话 + 状态上报 + 回复 + attach"（对应 M1–M4）。有 `switchSession` → 能做"聊到一半转后台"。有 `ui.custom` + 可停启的 TUI → 能做内嵌 agent view，否则用独立 CLI/TUI 程序（daemon 协议完全够用）。
+> **评估结论模板**（级别 2）：C1–C4 + 6 个 ★ 事件 + `sendUserMessage` 两种投递方式 + `isIdle/abort/shutdown` 齐了 → 可以做出"后台会话 + 状态上报 + 回复 + attach"（对应 M1–M4）。有 `switchSession` → 能做"聊到一半转后台"。有 `ui.custom` + 可停启的 TUI → 能做内嵌 agent view，否则用独立 CLI/TUI 程序（daemon 协议完全够用）。
+
+### 1.3 按接入级别需要什么（M29–M33）
+
+上面 §1.1/§1.2 是**级别 2**（深度集成）的前提。级别 0/1 对宿主的要求低得多：
+
+| 级别 | 宿主 agent 必须具备 | 不需要 |
+|---|---|---|
+| 0 档案（M30） | 一条 argv 就能启动它，且能在 PTY 里跑（C1）；首条任务能放进 argv（`task: "argv"`）或能在它安静后打字进去（`"type"`）；可选：`--model` 之类的 argv、`resume` 的 argv。状态由 host 从**终端**推：OSC 0/2 标题、OSC 9/777 通知、BEL、OSC 133 提示符标记、备用屏、屏幕静止（`settleMs`），再加档案里自己写的 `working`/`waiting` 正则 | 任何扩展 API、会话文件、写锁（档案 job 是 shell 类 job：没有 worker、没有 `sessionFile`） |
+| 1 协议（M31） | 能在 agent 进程里跑协议客户端：从环境读 `ROOST_JOB_ID` / `ROOST_JOB_TOKEN` / `ROOST_SOCKET`（旧名 `PI_JOB_ID` `PI_JOB_TOKEN` `PI_DAEMON_SOCK` 仍认），连 unix socket，先 `hello`（协议版本、名字、capabilities），之后发完整快照 `report`，收 `deliver` 事件、处理完 `ack`。档案里写 `"protocol": true` 让 roost 把身份环境变量给它 | pi 的 API、PTY 重绘信号；agent 用什么语言都行（TS/Python 客户端只用标准库/node） |
+| 2 深度集成 | §1.1 + §1.2 全部 | — |
+
+级别 2 在 v0.1.12 里额外用到、§1.2 表里没有的 pi 接口（hub 路线 M23/M24/M28/M33）：
+
+| 接口 | 用在哪 | 重要度 |
+|---|---|---|
+| `SessionSelectorComponent`（pi-coding-agent 导出）+ `SessionManager.list(cwd, dir, onProgress, signal)` / `SessionManager.listAll(...)` | M23：hub 里的 `/resume`，pi 自己的会话选择器（搜索、本目录/全部、排序、只看已命名），`adapters/pi/hub-options.ts` | 可降级为 hub 自己的列表（源码里有这个回退） |
+| 模型列表：嵌在 pi 里用 `ctx.modelRegistry`，独立运行用 `pi --list-models`（`adapters/pi/hub-main.ts` `parseModelList`）；`enabledModels` 决定 Ctrl+P 循环哪些 | M23：Ctrl+L 选模型、Ctrl+P/Shift+Ctrl+P 循环、Shift+Tab 切 thinking | 可选 |
+| `ctx.sessionManager.getEntries()` + `ctx.modelRegistry.isUsingOAuth/getProvider(...).auth.oauth.isSubscription` | M24：按 pi footer 的口径数花费（`lib/usage.ts` `sessionUsage`，口径对齐 pi 的 `getUsageCostBreakdown`，代码是自己重写的，不 import）；订阅用量标 `sub`（`adapters/pi/worker.ts`） | 可选 |
+| `pi.sendUserMessage(text, { deliverAs: "steer" \| "followUp", expandPromptTemplates: true })` | M28：回复的 `mode`；steer = 当前工具调用结束后并入同一轮，followUp = 等本轮做完（`adapters/pi/worker.ts`） | 缺 steer 时全部当 followUp |
+| `TuiAltScreen` + `ProcessTerminal`（pi-tui） | M33：独立 hub 画备用屏，和 pi 的全屏模式画法一致（`adapters/pi/hub-main.ts` `runHub`） | 独立 hub 需要 |
+| `initTheme` / `SettingsManager`（pi-coding-agent） | M33：让 pi 的组件（`/resume` 选择器）在独立 hub 里用 pi 的主题 | 可选 |
+
+> pi 的包是 pi 的、不是 roost 的：它们是 peer 依赖，pi 装 roost 时不会装进 roost 的目录。核心（CLI/daemon/host）必须能在纯 node 下跑；独立 hub 运行时才去找用户的 pi 包（见 Step 32）。
 
 ---
 
-## 2. 推荐的移植结构：先抽一个适配层
+## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
+
+**现状（v0.1.12）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+
+| 层 | 目录 | 允许 import | 守护 |
+|---|---|---|---|
+| 核心 | `lib/` `daemon/` `host/` `bin/` | node、roost 自己的运行时依赖（`node-pty`、`@xterm/*`） | `cli-deps.test.ts`：不得 import `@earendil-works/*`，也不得 import `adapters/`；CLI/daemon/host 的整个 import 图只含 node 与白名单依赖 |
+| agent 客户端 | `lib/agent-client.ts`（`pi-roost/agent`）、`sdk/python/roost_agent.py` | 只有 node（TS）/标准库（Python） | 测试：TS 客户端的 import 图连 roost 的运行时依赖都不含 |
+| pi 适配器 | `adapters/pi/`（M32 前叫 `extensions/`；`lib/api.ts` 搬来成了 `adapters/pi/api.ts`） | 核心 + pi 的包 | 全仓库只有这里 import `pi-coding-agent` |
+| hub | `hub/agent-view.ts` `task-editor.ts` `theme.ts`（M33 从 `adapters/pi/` 搬出） | 核心 + **pi-tui**，其余 pi 包与 `adapters/` 都不行 | `cli-deps.test.ts` 逐文件检查；颜色经 `HubTheme`（`fg`、`bold`）注入，pi 自己的主题满足这个接口 |
+| 胶水 | `adapters/pi/hub-options.ts`（`piHubOptions`）、`open-view.ts`（嵌在 pi 里）、`hub-main.ts`（独立运行，`runHub`） | 核心 + pi | hub 需要的 pi 能力（启动/续跑 pi 作业、`/resume` 选择器、设置、预设、agents、profiles）都经 `PiHost`（cwd、argv、模型列表、当前会话）注入 |
+
+- **包导出**（`package.json` `exports`）：`pi-roost/api`（pi 扩展用的 `spawn/list/attach`，指向 `dist/adapters/pi/api`）、`pi-roost/agent`（协议客户端）、`pi-roost/client`（`DaemonClient`，给 hub、脚本等控制端用）、`pi-roost/protocol`（op 与事件的类型）。pi 自己按 `pi.extensions` 加载 `./adapters/pi/index.ts`。
+- **`extensions/index.ts` 转发 shim**：M32 之前派发的 job 把 `-e …/extensions/index.ts` 存进了 `job.json` 的命令，重启时还会加载这个路径。所以 shim 保留，只做 `register(pi, "extensions")`；`test/cli-deps.test.ts` 断言 `extensions/` 里只有 `index.ts`、且它只 import `../adapters/pi/index.ts`。
+- **只注册一次的守卫**：一个 pi 进程可能同时用两条路径加载同一个扩展（pi 只按路径去重）。`adapters/pi/index.ts` 的 `register(pi, via)` 用 `Symbol.for("pi-roost.loaded-by")` 挂在 `globalThis` 上：已被另一条路径加载就直接返回；同一路径再次加载（测试）照常重新注册。
+- **搬迁时的保守做法**：状态目录（`~/.pi/agent/roost`）和运行时目录（`/tmp/pi-roost-<uid>`）**不动**，这样已在运行的 daemon 与 host 仍能互相找到；新配置路径与环境变量名只是"多认一个"，见 §3。
+
+**下面的 `HostAgentAdapter` 接口草案保留作参考**：源码里并没有这个类型（适配器直接调 pi API），但移植时先把宿主差异收进一个接口，能让 `adapters/<宿主>/` 的改动集中。M29 之后，新的"宿主差异"如果只是一个终端 agent，根本不用写适配器——走级别 0 档案；能说 socket 的 agent 走级别 1 协议。
 
 源码里扩展直接调 pi API。移植时建议先定义一个**宿主适配接口**，把 `adapters/pi/` 改写成依赖它，宿主换了只重写适配器：
 
@@ -145,24 +204,34 @@ M5+（转后台、agent view、摘要、M9）再增量加 `switchSession`、`ope
 
 ## 3. 可原样复用的层（直接拷贝）
 
-以下文件**不 import 任何 pi 包**，只需改命名（`pi-roost` → 公司名、`PI_*` 环境变量前缀、`~/.pi/agent` 路径）：
+以下文件**不 import 任何 pi 包**（M32 起有测试守着），只需改命名（`pi-roost` → 公司名、`PI_*` 环境变量前缀、`~/.pi/agent` 路径；M29 起多数名字已有中性版本 `ROOST_*`，见下表）。**v0.1.12 的 `lib/` 全部文件按用途分组如下**；其中标 † 的虽不 import pi 的包，但**假定 pi 的数据格式**（会话 JSONL、`pi-subagents` 定义），移植时要按宿主格式改：
 
 ```
-lib/atomic.ts  ids.ts  proc.ts  paths.ts  framing.ts  protocol.ts  store.ts  locks.ts
-lib/client.ts  hostclient.ts  attach.ts  resume.ts  dispatch.ts  config.ts  version.ts
-lib/heuristics.ts  worker-state.ts  summarizer.ts  filter.ts  dispatch-input.ts
-lib/view-model.ts  job-events.ts  comms.ts  worktree.ts
+基础          atomic.ts ids.ts proc.ts paths.ts identity.ts(M29) framing.ts locks.ts version.ts text-width.ts
+协议与存储    protocol.ts store.ts
+客户端        client.ts(DaemonClient) hostclient.ts attach.ts resume.ts
+              agent-client.ts(M31，Reporter/RoostAgent，=pi-roost/agent)
+派发与配置    dispatch.ts dispatch-input.ts config.ts profiles.ts(M30) workspace-env.ts(M20)
+              worktree.ts schedule.ts(M39) agents.ts†(M18，读 pi-subagents 定义)
+状态与展示    heuristics.ts worker-state.ts summarizer.ts† filter.ts view-model.ts list-format.ts
+              job-events.ts comms.ts pr.ts transcript.ts†(M19) usage.ts†(M24，pi 会话口径)
+终端          term-modes.ts(M21，模式跟踪/StreamTail) term-signals.ts(M30，OSC/BEL/屏幕静止→状态)
+观测          telemetry.ts(M34)
+定位 pi       pi-resolve.ts(M33，仅 node；找 pi 的包并注册解析钩子，只有独立 hub 用)
 daemon/main.ts   host/main.ts   bin/pi-roost.ts
 ```
+
+另有两处不在 `lib/` 但同样可复用：`stress/`（M35 压测，只用协议客户端与假 agent）、`sdk/python/roost_agent.py`（M31，单文件、纯标准库）。**必须按宿主重写的是 `adapters/pi/` 与（若不想依赖 pi-tui）`hub/`**。
 
 **需要改的点**（全局搜索替换即可）：
 
 | 位置 | 改什么 |
 |---|---|
-| `lib/paths.ts` `roostHome()` | `~/.pi/agent/roost` → 你的数据目录 |
-| `lib/paths.ts` `runtimeDir()` | `/tmp/pi-roost-<uid>` → 你的名字（注意 **unix socket 路径长度上限 ~104 字节**，别放太深） |
-| `lib/config.ts` `userConfigPath()` | `~/.pi/agent/roost.json` |
-| 环境变量 | `PI_JOB_ID` `PI_JOB_TOKEN` `PI_DAEMON_SOCK` `PI_JOB_DIR` `PI_ROOST_RESTORE` `PI_ROOST_CHILD` 及 `PI_ROOST_*` 调试变量 |
+| `lib/paths.ts` `roostHome()` | `~/.pi/agent/roost` → 你的数据目录（M29：`ROOST_HOME` 优先于 `PI_ROOST_HOME`，经 `lib/identity.ts` 的 `roostEnv()` 读取） |
+| `lib/paths.ts` `runtimeDir()` | `/tmp/pi-roost-<uid>`（或 `$XDG_RUNTIME_DIR/pi-roost`）→ 你的名字（注意 **unix socket 路径长度上限 ~104 字节**，别放太深）；`ROOST_RUNTIME_DIR` 优先于 `PI_ROOST_RUNTIME_DIR` |
+| `lib/config.ts` `userConfigPath()` / `projectConfigPath(cwd)` | M29：用户级 `ROOST_CONFIG_DIR/roost.json`（或 `PI_ROOST_CONFIG_DIR`）；否则 `~/.config/roost/roost.json`（遵循绝对的 `XDG_CONFIG_HOME`）**存在即用**，否则 `~/.pi/agent/roost.json`——只读**其中一个**，不合并，也不搬文件。项目级 `<cwd>/.roost/roost.json` 存在即用，否则 `<cwd>/.pi/roost.json` |
+| 环境变量（job 身份，`lib/identity.ts` `JOB_ENV`） | 新名 `ROOST_JOB_ID` `ROOST_JOB_TOKEN` `ROOST_SOCKET` `ROOST_JOB_DIR`；旧名 `PI_JOB_ID` `PI_JOB_TOKEN` `PI_DAEMON_SOCK` `PI_JOB_DIR` **永久并存**：host 两套都设（`jobEnv()`），worker 先读新名（`readJobEnv()`），所以旧 host 起的 worker 仍能找到 job。`JOB_ENV_NAMES`（含 `PI_ROOST_RESTORE`）是"job 永不继承"的名单，daemon 起子进程前要剔除 |
+| 其他环境变量 | `PI_ROOST_RESTORE` `PI_ROOST_CHILD` 及 `PI_ROOST_*` 调试变量；`roostEnv(name)` 的规则是 `ROOST_<name>` 优先、`PI_ROOST_<name>` 次之 |
 | `lib/dispatch.ts` `VALUE_FLAGS/BOOL_FLAGS/PATH_FLAGS` | 宿主 agent 中**必须透传给 worker** 的 flag（扩展路径、模型、离线等），相对路径转绝对 |
 | `lib/dispatch.ts` `buildLaunch().command` | worker 的 argv 形状（见 C2/C3） |
 | `lib/store.ts` `taskArg()` | pi 把 `@` 开头的参数当文件附件，所以前面加空格。按宿主 CLI 的特殊前缀调整 |
@@ -244,7 +313,7 @@ daemon/main.ts   host/main.ts   bin/pi-roost.ts
 
 ### Step 2：worker 角色——状态上报（M2）
 
-worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK` 就是 worker（`adapters/pi/worker.ts` `jobIdentity()`），否则是前台。**读完立刻从 `process.env` 删掉 token**（M9 加的），避免 agent 跑的子进程继承。
+worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK`（M29 起也认新名 `ROOST_JOB_ID + ROOST_JOB_TOKEN + ROOST_SOCKET`，新名优先，见 `lib/identity.ts`）就是 worker（`adapters/pi/worker.ts` `jobIdentity()`），否则是前台。**读完立刻从 `process.env` 删掉 token**（M9 加的），避免 agent 跑的子进程继承。
 
 1. **状态机**（`lib/worker-state.ts` `WorkerTracker`，纯函数，可直接复用）：
 
@@ -305,7 +374,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 ### Step 6：agent view（M6a/M6b）
 
 - 纯数据层 `lib/view-model.ts`（分组 Pinned / Needs input / Working / Completed，或按目录；图标、时长、排序）、`lib/filter.ts`（`s:` `n:` `o:` 过滤）、`lib/dispatch-input.ts`（解析 `task` / `@dir task` / `! cmd` / `/model` `/thinking` `/resume`）——**全部可直接复用**。
-- 渲染层 `adapters/pi/agent-view.ts`（1200 行，pi-tui 组件）是**移植工作量最大的部分**。daemon 侧只需要 `subscribe` 后监听 `job` / `removed` 事件，加上 `list pin rename reorder stop rm reply respawn`。
+- 渲染层 `adapters/pi/agent-view.ts`（1200 行，pi-tui 组件）是**移植工作量最大的部分**。（**M33 已把它搬到 `hub/agent-view.ts`**，现在 2500+ 行，只依赖 pi-tui；pi 相关能力经 `adapters/pi/hub-options.ts` 注入，见 Step 32。）daemon 侧只需要 `subscribe` 后监听 `job` / `removed` 事件，加上 `list pin rename reorder stop rm reply respawn`。
 - 进入会话：`tui.stop()` → `attachToHost()` → 返回后重置终端模式 → `tui.start()` + 强制重绘（Step 0 的 R2）。
 - 如果宿主 TUI 不好扩展，**完全可以把 agent view 做成独立程序**（比如 `roost` CLI 的一个子命令），协议不变。
 - 通知（`lib/job-events.ts`）：OSC 9 / OSC 777 / BEL，终端标题显示等待数；同时在宿主事件总线上发 `agents:job_needs_input` / `agents:job_completed`。
@@ -483,7 +552,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ### Step 16：任务输入框用宿主的编辑器（M17，`docs/plans/m17-editor-input.md`）
 
-解决：agent view 的单行 `Input` 没有多行、没有长粘贴折叠。`adapters/pi/task-editor.ts` 包装 pi-tui 的 `Editor`（宿主提示符编辑器的基类），只暴露视图原来从 `Input` 用到的小接口：`getValue`（展开粘贴标记）、`setValue`、`focused`、`handleInput`、`render`，外加 `multiline()`、`atEdge()`。
+解决：agent view 的单行 `Input` 没有多行、没有长粘贴折叠。`task-editor.ts`（M33 起在 `hub/`）包装 pi-tui 的 `Editor`（宿主提示符编辑器的基类），只暴露视图原来从 `Input` 用到的小接口：`getValue`（展开粘贴标记）、`setValue`、`focused`、`handleInput`、`render`，外加 `multiline()`、`atEdge()`。
 
 - 视图自己保留的键：Enter 派发、Ctrl+Enter 派发并 attach、Esc、Tab 补全 `@dir`、空输入框里 Space/`?`。Shift+Enter、Alt+Enter、Ctrl+J 交给编辑器加一行。↑↓ 默认移动行选择，**多行任务内部**才移动光标，到首/末行再切回行选择。
 - 长的括号粘贴在屏幕上显示为 `[paste #1 +30 lines]`，发送时是完整内容。Ctrl+G（外部编辑器）的结果原样放进编辑器，同时 `tui.stop({preserveScreen:true})`。空时那一行显示提示。
@@ -562,17 +631,362 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 **验收**：无人 attach 时启动的全屏 pi worker，`pi-roost attach` 后 0.4 s 内画面完整（对话、编辑框、底栏）；改尺寸、打字、detach、再 attach 都即时，草稿还在；host 日志里没有 repaint 和 nudge。单测：安静的程序不靠信号也能立刻拿到画面；WINCH 重绘排在快照之后；备用屏、鼠标、SGR 鼠标、kitty 标志、隐藏光标完整还原；旧 worker 的标记被剔除；抢占 attach 拿到同一屏幕。
 
+
+> **Step 21–40 对应 M22–M42**（v0.1.10–v0.1.12）。Step 21 是对 Step 4/13/20 的"在多窗口下压力测试后的补丁"，Step 22–26 是 hub（agent view）的功能路线（只改 `hub/` 与少量 daemon 字段），Step 27–32 是 any-agent 路线（名字中性化 → 档案 → 协议 → 分层 → 独立 hub），Step 33–36 是度量（telemetry、压测、请求 ID、evals），Step 37–39 是续跑与定时，Step 40 只改测试。**全部是可选增强**，彼此依赖关系：Step 28（中性内核）→ 29（档案）→ 30（协议）；Step 31（分层）→ 32（独立 hub）；Step 33（telemetry）→ 34（压测）/ 36（evals）；Step 37（续跑）→ 38（定时）→ 39（全 agent 续跑）；其余互不依赖。
+
+### Step 21：多窗口与频繁切换（M22，`docs/plans/m22-multi-window.md`）
+
+解决：在多个终端窗格（herdr、tmux）里各开一个 pi、在后台会话之间频繁切换时出现的三类现象：① 会话**冻结**——屏幕不动、按键无反应，agent view 却显示它在跑；② 行**陈旧**——"needs input" 在会话早已在别处继续后仍挂着，转到后台的会话一直显示 "starting…"；③ 模型列显示 `anthropic::claude…`，看不出是哪个模型。
+
+根因与做法：
+
+| 根因 | 做法 |
+|---|---|
+| **Ctrl+Z 漏进了后台的 pi。** 宿主的 Ctrl+Z 会停掉自己的 TUI、给**进程组**发 SIGTSTP、等 SIGCONT 再重启 TUI。worker 在 PTY 里是会话首进程，它的进程组是**孤儿进程组**，内核直接丢弃 SIGTSTP，TUI 于是永远停着，而 agent 循环照跑照报。原来客户端只在一个数据块**恰好**是 `\x1a` 或 `\x1b[122;5u` 时才当 detach 键：快速打字、复用器合并输入、或带锁定位（Num Lock 的 `\x1b[122;133u`）时 Ctrl+Z 夹在别的字节里就放过去了 | `lib/attach.ts` `localDetachAt(s, pasting)`：在数据块**任意位置**找 detach 键——传统 `0x1a`、kitty CSI-u（任意 alternate keys、Caps/Num Lock、带文本、按下或重复，**松开事件不算**）、modifyOtherKeys；括号粘贴内部不算（`pasting` 跨块携带）；返回位置，位置之前的字节仍照常送给会话。worker 里 Ctrl+Z 也走 detach（后台的 pi 永不挂起） |
+| 已冻结的会话没人叫醒 | `host/main.ts` `continueWorker()`：**每次 attach 都给 worker 的进程组发 SIGCONT**（`process.kill(-pid)`，失败退回单进程），所以进入一个已被冻住的会话就把它救回来 |
+| 被抢占的 attach 还在输入/改尺寸 | 被接管的 attach 不再往 PTY 写、不再 resize |
+| 回收时竞态 | 新增 host 控制 op `terminate-idle`：回收器与自动关闭**不再先问 `attached.json` 再 terminate**，而是让 host 自己原子地判断"现在有没有人 attach"，有人就回 `{ok:false, attached:true}` |
+| **宿主终端的"面板身份"被继承。** M20 起继承整份环境，`HERDR_ENV` `HERDR_SOCKET_PATH` `HERDR_PANE_ID` 随之进了后台 worker，该终端复用器的 pi 集成就把后台会话的状态报进了 hub 所在的那个面板 | `lib/workspace-env.ts` 的 `ENV_NEVER_PREFIX` 加 `HERDR_`。移植规则：**凡是标识"启动它的终端/面板"的环境变量都要进永不继承名单** |
+| **一个会话多个 job。** 从另一个窗口的 pi 再次把同一会话转后台，新 job 旁边留着旧的已结束 job（`fix-login`、`fix-login (2)`），旧行保留最后状态含 "needs input"；在另一个 pi 窗口重新打开一个会话，它已结束的 job 仍显示要输入 | daemon：`supersedeOthers(id)`（新 job 接管同一会话上已结束 job 的**行位置、名字、置顶**，旧记录保留）；`continuedElsewhere(session)`（前台 pi 注册了这个会话时，把它已结束 job 的 "needs input" 或失败改成 done） |
+| 首次上报前行不更新 | live job 的 worker pid 出现时就推一次 `job` 事件（以前只在上报时推，第一次上报前一直 "starting…"） |
+| **推送丢失**：一个数据块里先来 `list` 回复、紧接着是一个事件；事件先被应用，随后 `await` 之后的代码用较旧的 list 把行整个替换了 | `DaemonClient.requestAt()` 返回回复在事件流里的位置，`position()` 取当前位置，视图把 list 回复**之后**到达的事件在其上重放；监听器抛错不再丢掉同一数据块里后面的事件；视图每 `RESYNC_MS`=15 s 对账一次 list；`ensureLive` 的 respawn 20 s 超时（`lib/resume.ts` `RESPAWN_TIMEOUT_MS`）；视图同一时刻只做一次 attach |
+| Reporter 对挂掉的 daemon 狂重连（每秒数百次） | `lib/agent-client.ts` `Reporter`：请求失败后退避 500 ms 翻倍到 5 s（`retryMs`/`backoffUntil`），**状态变化也不例外** |
+| 模型列太长 | `lib/view-model.ts` `shortModel()` 去掉 `vendor::`、Bedrock 前缀和 `-vN:M` 后缀；`fitTail()` 放不下时保留末尾 |
+
+坑：这类问题**只在压力下才暴露**——所以 M22 同时加了压测（下节）。移植时若宿主的 Ctrl+Z 也是"挂起自己"，必须同样保证后台 worker 里它不会真的挂起。
+
+测试：`test/stress-attach.test.ts`——60 轮（`STRESS=1` 时 600 轮）attach / 抢占 / 突然断开 / 改尺寸风暴 / 两个 attach 同时 / 不读数据的客户端，对着一个持续输出、回显、处理 SIGUSR2 的 worker；往一个永不读的客户端灌数据；detach/attach 连发；**一个 PTY 在两个会话之间用 Ctrl+Z 切换**（按键夹在别的字节里，40 轮/`STRESS=1` 300 轮）；一个像 pi 那样**自己挂起**的 worker 会被下一次 attach 的 SIGCONT 救回（没有 host 的 SIGCONT 时该用例失败）。另有 daemon 单测：行被接管、在别处继续、pid 先于上报推送；Reporter 退避；detach 键各编码；模型名；`HERDR_` 不被继承。
+
+**验收**：在两个窗口里反复用 Ctrl+Z / ← 切换同一批会话，没有冻结；把会话在另一窗口转后台，旧行消失/并入新行而不是留着 "needs input"；`STRESS=1 npx vitest run test/stress-attach.test.ts` 通过。
+
+### Step 22：hub 里的 `/resume` 与选模型（M23，`docs/plans/m23-resume-model.md`）
+
+解决：让 agent view 像 `pi --resume` 一样打开任何历史会话，像在 pi 里一样给新会话选模型——这是"把 agent view 做成多 agent 中枢"的第一步。
+
+- **`/resume`**：用 pi 自己导出的 `SessionSelectorComponent`（搜索、本目录/全部会话用 Tab 切换、排序、只看已命名），数据来自 `SessionManager.list(cwd, dir, onProgress, signal)` 与 `SessionManager.listAll(...)`（`adapters/pi/hub-options.ts`），以 `Overlay` 盖在列表上，按键交给它。选中后**立即打开**：已有行的会话直接 attach（已结束的先重启，且因为是在这里选的，不要求再按一次 Enter）；没有行的开一个新的后台 job 来接管它（`origin:"adopt"`，保留它自己的模型），worker 一跑起来就 attach；另一个 pi 正在写的会话提示"在另一个 pi 窗口打开"。它的删除键**绝不删除**有活 job 或别的 pi 正在写（`readWriterLock`）的会话。没有 pi 的选择器组件时回退到视图自己的列表（带行的会话标 "listed"）。
+- **选模型**：选择器可搜索（输入的每个词、不分大小写，Esc 先清搜索）；配置了 `enabledModels` 就只显示它们，Tab 切到全部。**Ctrl+L**：新会话的模型（在偷看里则是该会话的模型）；**Ctrl+P / Shift+Ctrl+P**：下一个/上一个启用的模型（没有启用的就在全部里循环）；**Shift+Tab**：下一个 thinking 级别。标题下面那一行永远写明"新会话跑什么"：选中的模型，或默认值（`dispatchModel`，否则 hub 所在 pi 自己的模型）。
+- 做法在 `hub/agent-view.ts`（按键与状态）与 `adapters/pi/hub-options.ts`（取会话列表、模型来自 `PiHost`）。
+
+**验收**：单测覆盖选择器搜索与范围、循环、thinking、浮层按键、有行/无行的选择、回退、Esc；真 pi（隔离的 runtime）里 pi 的列表在 hub 里渲染、搜索与 Tab 可用、Esc 返回；选中一个会话打开后 Ctrl+Z 回到它的行。
+
+### Step 23：用量与花费（M24，`docs/plans/m24-usage.md`）
+
+解决：会话花了多少钱，在管理它们的地方就能看到。
+
+- **worker 按 pi footer 的口径数**（`lib/usage.ts` `sessionUsage(entries, now, sub)`，输入是 `sessionManager.getEntries()`）：assistant 消息、usage 条目、工具结果、压缩、分支摘要，按 pi 的键归类（口径对齐 pi 的 `getUsageCostBreakdown`，代码是重写的）；还有"自本地午夜起"的部分（`localMidnight`）；按模型分的花费与 token，只留最大的 `USAGE_MODELS`=8 个，其余并入 `other`。订阅（OAuth 到 `isSubscription` 的 provider，或 kimi-coding）标 `sub`（名义价格）。
+- 每次启动和每次回复后计算；随行文本的节奏上报（单独的用量变化要等摘要间隔）；daemon 用 `usageFrom()` 校验（不可信 JSON）后存起来，旧 worker 不发时保留上次的值（`WorkerReport.usage`、`JobRow.usage`）。
+- **视图**：摘要有空间时每行一个花费列（比模型列、占比列更先让位）；标题 `· $x today · $y all`，覆盖视图里所有会话（含子 agent）；`/usage` 面板：总计、按模型（花费、token、会话数）、按会话（最多的在前，今日份额，`(sub)`）。在更早一天计过数的会话，今日份额为 0（`todayOf`）。
+- 级别 0/1 的 agent 没有这些数据时显示破折号而不是 0（协议里 `usage` 是 capability 字段）。
+
+**验收**：单测（求和、今日、按模型、畸形输入、总计、列、面板）；daemon 往返；真 pi：派发的任务行与标题都显示花费，daemon 重启后 worker 重连带回用量。
+
+### Step 24：多选与批量操作（M25，`docs/plans/m25-batch.md`）
+
+解决：一个动作作用于多个会话。
+
+- **Ctrl+O** 标记当前行（第二列一个勾）并移到下一行，所以连按两次标两行；在分组标题上标记整组，再按取消。标记跟着行走，不跟光标；被删的行自动退出。
+- 有标记时：输入文字 + Enter **发给每个被标记的会话**（作为回复，不是新任务；shell 任务跳过；提示里数"已发/已存待下次启动/未送达"）；`/model x`、`/thinking x` 全部切换（每个切换照常按 Step 7.5 的"以上报为准"检查），光输入 `/model` 则弹一次选择器；**其他视图命令在有标记时被拒绝**；Ctrl+X 全部停止，2 秒内再按删除（并取消标记）；Ctrl+T 全部置顶，已全部置顶则取消。
+- 只作用于**屏幕上可见**的被标记行（折叠的组或过滤掉的行，标记保持不动）；偷看里的 Ctrl+X/Ctrl+T 作用于被偷看的那一行；有标记时 `!`、`@dir` 输入被拒绝并保留（否则会被当回复发出去）；批量发送期间输入框被清空，一个都没送达时还原。Esc 的层级：关闭偷看 → 清输入框 → 清标记 → 离开。页脚写明"几个已标记 + 批量键"。
+- 实现在 `hub/agent-view.ts`（`markedRows()`、`sendToMarked()`），daemon 不变——批量就是对每个 id 各发一次现有 op。
+
+**验收**：单测覆盖标记/下移、组标记、批量回复、shell 跳过、批量 model 与选择器、其他命令被拒、停止/删除、置顶、Esc 顺序、被删行；真 pi 手验。
+
+### Step 25：一个任务、多个模型、对比（M26，`docs/plans/m26-fanout.md`）
+
+解决：同一个任务用几个模型并排跑，比较它们各自做了什么，留一个。
+
+- **`/fanout a/x b/y …`**（2–6 个模型；光输入 `/fanout` 弹选择器逐个增删、Esc 完成；`/fanout off` 取消）：**下一个任务**每个模型起一个会话，只生效一次，设置期间标题下一行会写明。每个会话命名 `任务 · 模型`，目录是 git 仓库时**强制**各自一个 worktree（它们的修改不能碰撞）；不在仓库里则共用目录并警告。thinking 与 agent 的选择对全部适用。
+- 同一次 fan-out 的会话带同一个 `fanout` id（`DispatchArgs.fanout` → 记录 → `JobRow.fanout`），daemon 重启后保留。
+- **`/compare`**（在 fan-out 的某一行上，或 Ctrl+O 标记的行）：每个会话一列——模型、状态、用时、花费与 token、它 worktree 里的改动（相对 base 的文件数/增删行，含未提交的，`lib/worktree.ts` `worktreeChange`）、最后一条回复。← → 选择，Enter 打开该会话，`k` 连按两次**保留它、删除其余**（干净的 worktree 一并删除，否则保留并说明）。
+- 约束："保留一个"只在同一次 fan-out 内提供（标记了不同任务的行用 Ctrl+X）；置顶的会话永不被它删除；面板里的字母键在 kitty 编码下也要能用；回复里的转义序列与制表符绝不写到终端。
+
+**验收**：单测（解析、一次性、命名、id 经 daemon 往返、面板布局、保留流程）；真 pi：在临时仓库里两个模型跑一个小任务（后来的 M41 eval 自动化了这个，见 Step 36）。
+
+### Step 26：启动预设（M27，`docs/plans/m27-presets.md`）
+
+解决：把常用的"模型+thinking+worktree+agent+目录+fan-out"存起来，在 hub 里一键套用。
+
+- **预设**（`lib/config.ts` `Preset`/`presetFrom`）：`model` `thinking` `worktree`（布尔） `agent`（M18 的 agent 预设名） `dir`（相对 hub 目录，与 `@dir` 同） `fanout`（2–6 个模型），全可选；M30 又加了 `profile`。放在 `roost.json` 的 `presets`（名字 → 预设）：**用户文件与项目 `roost.json` 都能写，按名字合并，项目的优先**（`loadConfig` 里 `Object.assign(Object.create(null), user.presets, project.presets)`）；畸形条目跳过。
+- **命令**：`/preset 名字` 整体应用于新会话（没写的字段回到默认，不残留上一个预设的东西）；光输入 `/preset` 弹选择器（每个预设显示它设了什么；`none` 清除）；`/preset off` 回默认；`/preset save 名字` 把当前新会话用的选择（模型、thinking、worktree、fan-out、正在用的预设的 agent 与目录）存进**用户**文件（`saveUserPreset`）；`/preset rm 名字` 从用户文件删。标题下一行写出正在用的预设；手输的 `@dir`/agent 仍压过预设的；预设里的 fan-out 同 `/fanout`，对下一个任务生效一次。
+- **安全**：预设的目录在解析符号链接之后必须仍在 hub 目录之下（否则什么都不启动并说明原因——项目里的预设来自别人克隆的仓库）；`off` `save` `rm` 和继承来的对象键不能当预设名；解析不了的用户文件**绝不覆盖**；读回来会不对的选择（没有 provider 的模型）不保存；没有预设在用时 `/preset off` 什么都不改。
+
+**验收**：单测（解析与合并、应用、保存、删除、选择器、dir 与 agent 进派发）；真 pi 手验。
+
+### Step 27：steer 还是等待（M28，`docs/plans/m28-steer.md`）
+
+解决：给一个**正在工作**的会话的回复，要么并入当前这轮，要么等它做完——用 pi 自己的两个键。
+
+- 偷看里 **Enter = steer**（pi 工作时的 Enter：当前工具调用结束后并入同一轮），**Alt+Enter = followUp**（排在当前工作之后）；会话空闲时两者都是开始新一轮。有标记的行（Step 24）用同样两个键。
+- 协议：`reply` op 加 `mode: "steer" | "followUp"`（`lib/protocol.ts` `ReplyMode`）；**缺省（旧客户端、CLI）按 followUp，与以前一致**。daemon 把 `mode` 和 pending 回复存在一起（`PendingReply.mode`），所以重连后重发仍然 steer；`deliver` 事件带 `mode`；worker 交给宿主时 `pi.sendUserMessage(text, { deliverAs: mode === "steer" ? "steer" : "followUp" })`（`adapters/pi/worker.ts`）。
+- 提示写明哪种：`joins its current work` / `after its current work`（`hub/agent-view.ts` `sendReply`）。
+- 级别 1 的 agent 用 capability `steer` 声明自己会处理它；没有时 steer 当作 followUp（`docs/protocol.md`）。级别 0 的档案 agent 不适用（回复就是打字进终端）。
+
+**验收**：单测（reply 队列、daemon 往返与重发、视图按键）；真 pi：会话正在跑 `sleep 25` 时发的 steer 落在工具结果之后、**同一轮**里，一条最终回答同时回应了两个请求。
+
+### Step 28：中性内核（M29，`docs/plans/m29-neutral-core.md`）
+
+any-agent 路线的第一步（设计见 `docs/plans/any-agent.md`）：名字和数据不再假定 pi，**pi 用户看到的一切不变**。
+
+- **job 身份的中性名字**：`ROOST_JOB_ID` `ROOST_JOB_TOKEN` `ROOST_SOCKET` `ROOST_JOB_DIR`，与旧名 `PI_JOB_ID` `PI_JOB_TOKEN` `PI_DAEMON_SOCK` `PI_JOB_DIR` **同时设置**；worker 先读新名（所以旧 host 起的 worker 仍能找到 job）。`lib/identity.ts` 是唯一清单：`JOB_ENV`、`jobEnv()`、`readJobEnv()`、`JOB_ENV_NAMES`（job 永不继承的名字，含 `PI_ROOST_RESTORE`）、`roostEnv(name)`。
+- **roost 自己的设置**：`ROOST_HOME` / `ROOST_RUNTIME_DIR` / `ROOST_CONFIG_DIR` 优先于 `PI_ROOST_*`。配置文件：用户级 `~/.config/roost/roost.json`（遵循绝对的 `XDG_CONFIG_HOME`）存在即用，否则 `~/.pi/agent/roost.json`；项目级 `.roost/roost.json` 存在即用，否则 `.pi/roost.json`。**什么都不搬**；状态目录与运行时目录原地不动，正在跑的 daemon 与 host 仍能互相找到。
+- 行里带 `profile`（`JobRow.profile`：现在是 `"pi"` 或 `"shell"`，M30 起可以是档案名）。
+- `lib/api.ts` 里依赖 pi 的部分——当时是整个核心里唯一 import pi 包的文件——在 M32 搬进 `adapters/pi/api.ts`；`test/cli-deps.test.ts` 守住 `lib/` 不 import pi 的包。
+
+注意（与设计文档的差异）：`any-agent.md` 设想把 `kind: "pi"|"shell"` 改成 `agent: string`；**实际的 `JobRow.kind` 仍是 `"pi" | "shell"`，另加 `profile` 字段**——档案 job 是 `kind:"shell"` + `profile`。移植时按代码为准。
+
+**验收**：整套测试；真 pi：用新名字起的会话照常启动、上报、收回复；旧名字的 worker 与新 daemon 互通。
+
+### Step 29：agent 档案——终端 agent 零代码接入（M30，级别 0，`docs/plans/m30-profiles.md`、`docs/profiles.md`）
+
+解决：host 没有代码的终端 agent（别的 CLI agent）也能被 roost 管：行、attach/detach、stop、删除、worktree、预设、批量、回复。
+
+**档案**（`lib/profiles.ts` `AgentProfile`，只能写在**用户**的 `roost.json` 的 `agentProfiles` 里——`USER_ONLY`；项目文件不能定义，因为档案是 roost 会运行的命令，克隆来的仓库不该能选一条）：
+
+| 字段 | 含义 |
+|---|---|
+| `command` | argv 数组，**不是 shell 行**：不走 shell、不展开 `$VAR`、不 glob |
+| `task` | 首条任务怎么给：`"argv"`（默认，加在最后）、`"type"`（agent 第一次安静后打字进去）、`"none"` |
+| `model` / `thinking` | 选了值时追加的 argv（含 `{model}`/`{thinking}`）；不写就是"该 agent 不支持这个选择" |
+| `resume` | 重开上一次会话的 argv；`null`/缺省 = 回复已结束的 job 时用 `command` 重新启动（带模型、不带首条任务）。带 `resume` 的档案在中断时会自动续跑（M40） |
+| `working` / `waiting` | 对**整个屏幕**的正则（不分大小写、多行）；`working` 压过一切表示在工作，`waiting` 匹配到的那一行就是行的 question。校验：≤500 字符、必须能编译 |
+| `submit` | 回复后打的键，默认 `"\r"`（≤16 字符） |
+| `settleMs` | 屏幕静止多久算"安静"，默认 3000，整数 500–60000 |
+| `env` | 额外环境变量（名字合法、≤100 项），走 `envDenyList` |
+| `protocol` | `true` = 它说 roost agent 协议（Step 30） |
+
+模板规则：argv 里**恰好等于** `{model}` `{thinking}` `{task}` 的元素被整元素替换（值为空则该元素删除），**不做部分替换**；`command` 自己放了 `{task}`/`{model}` 就放在那里而不是追加到末尾（`profileCommand()`）。档案名 `^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$` 且不能是保留字 `pi shell off none`；有畸形字段（坏正则、`command` 是字符串）的档案整个丢弃。（`any-agent.md` 里写过的 `{session}` 占位符**代码里没有**，只有 `task/model/thinking`。）
+
+**数据模型**：档案 job 是 `kind:"shell"` 且带 `profile`、`term`（`ProfileTerm`：`submit` `settleMs` `waiting` `working` `typeTask`）、`resumeCommand` 的 job——没有 worker、没有会话文件、没有写锁，和 shell job 一样；区别：可以有 worktree，**结束后行保留**（照 `cleanupDays` 清理），**接受回复**，且不会因为空闲被回收（会话活在它自己的进程里）。
+
+**状态怎么来**（`lib/term-signals.ts`）：
+1. host 里 `TermSignalCollector` 挂在 xterm 镜像上收集：OSC 0/2 标题、OSC 9 / OSC 777 通知（文本 + 时间）、BEL、OSC 133 标记（A/B→idle，C→busy，D→idle）、是否在备用屏、屏幕文本上次变化的时间 `changedAt`（对屏幕内容取哈希）。host 每秒（有变化时）把它们原子写进 **`term.json`**，同时把屏幕写进 `screen.txt`。
+2. daemon 在 `profileTick()` 里读这两个文件，调用 `inferTermState(sig, screen, term, {now, inputAt, typed})`，**由强到弱**：进程退出（done/failed，不在此函数里）→ `working` 正则 → `waiting` 正则（刚打过字的 `settleMs` 内不匹配，因为屏幕上可能还是它回答的那个问题）→ OSC 133 标记 busy → 屏幕还在动（`settleMs` 内有变化，或刚打过字）= working → 安静后若有通知/BEL 晚于上次打字 = `blocked(question)`，文本取通知 → 从未给过它任何东西 = `blocked(first-prompt)` → 否则 `done`。行文本：标题，否则（非备用屏时）最后一行非空行。
+3. `task:"type"` 的首条任务、或对已结束 job 的回复，在 `v.quiet` 且不在对话框、也不在 working 时才打进去（`typeInto()`：先 host `input` op 打文本，约 150 ms 后再打 `submit`，因为有的 agent 把一次性涌入当粘贴、会保留换行）。
+
+**host 新 op `input`**（`host/main.ts` `control()`）：把 `data` 写进 PTY，等同 attach 的键盘输入；只对档案 job 开放（`signals` 存在），单次 ≤ `MAX_INPUT`=64 KB，worker 已死回 `{ok:false, alive:false}`。回复已结束的档案 job = 先重启（`resume`，否则 `command`）再打字；打字前它又退出了，行里写明没打进去的是什么。
+
+**hub**：`/profile`（粘性；光输入弹选择器；`/profile pi` 回去）、预设里的 `profile`（模型 id 用该 agent 自己的名字，不要求 `provider/id`）、标题下 `runs <profile>`；回复与批量回复可达档案行；模型列显示档案名；fan-out 与 pi 的 agent 名仍只对 pi 会话有效。降级项显示破折号而不是 0：模型/上下文/用量/记录/`/resume`/子 agent/peer。
+
+**坑**：
+- **菜单不能靠打字回复**：按方向键选择的菜单，打字 `2` 不会选第二项，随后的 Enter 反而选了第一项——真机测 Claude Code 的信任对话框时发现。文档化为："菜单要 attach（→）自己回答"，回复只适合文本提示。
+- 回复会在"首条任务还没打进去 / 上一条回复还在打 / 正在启动"时排队并提示稍后再试。
+- 档案 `env` 同样过 `envDenyList`。
+
+**验收**：单测（档案解析与模板、配置只认用户级、预设、信号收集器对着真 xterm、状态推断）；daemon 用一个假终端 agent（用它的通知推状态、打字回复、`waiting` 正则、退出后行保留、回复重启它、`type` 任务）；hub（`/profile`、预设、行）；真机用 Claude Code：任务与模型进 argv、信任对话框显示为需要输入、attach 回答、打字回复、stop 之后 `--continue` 保留对话。
+
+### Step 30：roost agent 协议与 TS/Python 客户端（M31，级别 1，`docs/plans/m31-protocol.md`、`docs/protocol.md`）
+
+解决：agent 自己会说话时（比如一个 Python 服务），别靠猜屏幕——直接把状态报给 roost、从 roost 收回复。协议是**草案 v1**（找到一个仓库之外的真实 agent 用过两个客户端后才冻结）。
+
+**线协议**：unix socket（0700 目录里，仅本人），每条消息一行 UTF-8 JSON。请求 `{id, op, args}`、响应 `{id, ok, result}` 或 `{id, ok:false, error, code}`、daemon 主动推 `{event:...}`（无 `id`）。未知字段两边都忽略；枚举只随协议版本增长；同一连接上的请求按序应答。错误码：`bad_request` `unauthorized`（token 不对：别再替这个 job 说话）`not_found` `full`（待投递回复超过 50）`busy` `unsupported`。
+
+**ops（agent 一侧）**：
+- `hello {protocol:1, agent:{name,version}, capabilities}` → `{protocol, daemon:{name,version}, capabilities}`。每条新连接在第一个 report 之前发。daemon 把 agent 声明的 capabilities 存进 job（`agentInfo` 存在 state 里，`capabilities` 出现在行上）。capability 取值（`lib/protocol.ts` `AGENT_CAPABILITIES`）：`report replies steer usage context model-switch transcript peers agent-items`。**M31 之前的 daemon 对未知 op 回 `bad_request`，客户端要按 v1 行为继续**。
+- `report {id, token, report}`：**完整快照**，缺省为 null。核心字段 `state(working|blocked|done|failed)` `status(busy|waiting|idle)` `waitingFor(null|question|dialog|first-prompt)` `summary` `question/choices` `tool/error` `name` `model/thinking`；capability 字段 `context` `usage` `prLinks` `remoteAt`；pi 专用 `attachSignal` `attachRepaint` `agentItems`。接收 report 的那条连接就成为这个 job 的连接，回复从它下来。
+- `deliver` 事件 `{id, seq, text, mode?}` 与 `ack {id, token, seq}`：回复**按 job 编号**（`seq` 从 1 起、不复用、跨重启延续）；每条在 ack 之前一直 pending，每次新的上报连接建立时**全部重发**；已处理过的 seq 要丢弃（并再 ack）；ack 是累积的（用户回复），peer 条目（`kind` 为 `message`/`report`）逐条 `exact:true` ack。`/stop` 回复从不下发（daemon 直接停 job）；以 `/` 开头的回复在 agent 未连接时被拒绝。
+
+**两个客户端**（行为一致）：
+- TypeScript：`lib/agent-client.ts`（导出 `pi-roost/agent`）。`jobIdentity()` 读环境；`Reporter`（从 pi 的 worker 里**原样搬出来**，外加每次连接先 hello；合并、退避、`call` 发别的 op）；`RoostAgent`（`fromEnv`、带默认值的 `report`、`onReply` 每个 seq 一次、按序、处理完才 ack）。pi 的 worker 现在就建在它上面，以 `pi` 的名字 hello。**整个 import 图只依赖 node**（测试守着）。
+- Python：`sdk/python/roost_agent.py`，单文件、纯标准库：连接线程 + 回复线程、断线退避重连、重连后重发最新 report。
+
+**水位**：客户端把"最后处理完的 seq"写进 job 目录里的 `agent.json`（`ROOST_JOB_DIR`），**先于 ack**。agent 崩溃重启后跳过已处理的（只补 ack）——这是 M35 压测发现"重启后重做已完成回复"之后补的（Step 34）。
+
+**运行一个协议 agent**：档案里写 `"protocol": true`。host 给它 job 身份环境变量；它第一次 report 之前，行从终端读（同级别 0）；之后以 report 为准；回复走 pending/deliver/ack；`task:"type"` 的首条任务作为它的**第一条回复**；已结束的重启时带着等待中的回复；上下文与用量在它发了之后才显示。
+
+**未做**：把协议冻结为 v1；`handback peers send spawn peer_*` 这些 agent 间通信 op 还没在 `protocol.md` 里完整描述（属 `peers` capability，见 `lib/protocol.ts`）。
+
+**验收**：一致性测试（`test/daemon.test.ts` 的 "M31 the agent protocol"）在**两个客户端**上各跑一个脚本化 agent 对着真 daemon：首条任务作为回复 1、report 设定行、ack 清掉 pending、**daemon 重启**（客户端重连、hello、report、下一条回复只处理一次）、agent 退出；另有 hello 的应答与拒绝、`protocol` 档案。
+
+### Step 31：按层分目录与包导出（M32，`docs/plans/m32-layers.md`）
+
+**不改行为**，只搬文件，让"层"看得见，并用测试守住线（详见 §2）：`extensions/` → `adapters/pi/`；`lib/api.ts` → `adapters/pi/api.ts`；`package.json` 的 `pi.extensions` 改指 `./adapters/pi/index.ts`；`extensions/index.ts` 留作一行转发（旧 job 存着 `-e …/extensions/index.ts`）；新增 `exports`：`./api` `./agent` `./client` `./protocol`；`files` 加上 `adapters` `hub` `sdk`。`test/cli-deps.test.ts`：核心与客户端不得 import pi 的包或 `adapters/`；`extensions/` 只含那一个转发文件；TS 客户端的 import 图只含 node；旧路径加载的是同一个扩展且只注册一次。
+
+**验收**：整套测试、构建、`npm pack`（含 `adapters`、shim、`dist/adapters/pi/api.*`）；把 checkout 作为 pi 包装进一个空的 pi 目录，扩展从新位置加载（`--bg` `--worktree` 标志在）；压测数字不变（回复 ack p50 23 ms，hub 事件延迟 p50 26 ms）。
+
+### Step 32：独立 hub——`pi-roost hub`（M33，`docs/plans/m33-hub.md`）
+
+解决：agent view 不必寄生在某个 pi 会话里。`pi-roost hub [dir]` 在自己的终端里跑同一个视图、同样的键和命令（与 `pi --agents` 一样）。
+
+- **分层**：视图在 `hub/`（只依赖核心和 pi-tui；颜色经 `HubTheme`）；hub 需要的 pi 能力在 `adapters/pi/hub-options.ts` 的 `piHubOptions(host: PiHost)`（从 `open-view.ts` 拆出来）；嵌在 pi 里走 `open-view.ts`（用 pi 的扩展上下文、`ctx.ui.custom`），独立运行走 `adapters/pi/hub-main.ts` `runHub()`：在 `ProcessTerminal` 上开 pi-tui 的 `TuiAltScreen`（与 pi 全屏模式的画法一样），模型来自 `pi --list-models`（`parseModelList` 解析表头为 `provider  model` 的表），配色是仿 pi 暗色主题的 256 色（遵守 `NO_COLOR`）。
+- **运行时怎么找 pi 的包**（`lib/pi-resolve.ts`，仅 node）：pi 的包是 peer 依赖，pi 装 roost 时**不会**装进 roost 的目录，而 CLI 跑在纯 node 上。所以：
+  1. `findPiPackage()`：`ROOST_PI_PACKAGE`；否则从 PATH 上的 `pi`（`command -v pi` 的 realpath，沿目录向上找 `package.json` 名字是 `@earendil-works/pi-coding-agent` 的，npm 风格的链接）；否则 `npm root -g`（pnpm/volta/asdf/mise 的 shim 指不过去）。
+  2. `piCliOf(pkg)` 从包的 `bin.pi` 取 pi 的 CLI（**永远不用 shim**），新会话跑的就是这个 pi。
+  3. `usePiPackage(dir)` 用 `node:module` 的 `register()` 注册一个**解析钩子**（本文件自己就是钩子：`initialize`/`resolve`），把 `@earendil-works/*` 的解析指向用户 pi 安装里（以 pi 自己 import 它们的方式：pi 包的 `package.json` 作为 parentURL），解析失败回退默认——于是 hub 跑的是用户 pi 同一份 pi-tui。
+- `pi-roost hub` 像 daemon 启动 host 那样按路径加载 `adapters/pi/hub-main`（安装版从 `dist/`，checkout 里是 `.ts`；`bin/pi-roost.ts` `cmdHub`）。没有 pi 就说明（点名 `ROOST_PI_PACKAGE`）并以 1 退出；目录不存在是用法错误。Esc、Ctrl+C、出错、SIGTERM、SIGHUP 都把终端还原（退出前先排空输入，同 pi）。
+- **限制**：独立 hub 没有 pi 会话，所以"转后台"（pi 里的 ←）没有对应物，pi 的斜杠命令（skill、prompt 模板）不能作为首条提示；会话与模型列表是在运行 pi-roost 的那个 node 下跑 pi 的；配色跟 pi 暗色主题，不跟用户选的主题（pi 没导出正在用的主题）。
+
+**验收**：测试——找 pi 的包、钩子从 pi 解析并在失败时回退、模型列表、配色与 `NO_COLOR`、CLI 的错误；tmux 里隔离的 roost 与 pi 目录（把 checkout 作为 pi 包装进去）：视图全屏、输入任务并以 haiku 跑完、行带花费与模型；Enter attach 到会话（pi 的画面与"离开期间"回顾），Ctrl+Z 回 hub；Ctrl+L 列出 pi 的模型；`/resume` 打开 pi 的选择器；Esc 以状态 0 退出。
+
+### Step 33：telemetry（M34，`docs/plans/evals.md` 第 1 层）
+
+解决：下面的压测和 evals 要"有数可查"，但核心不能多一个依赖。
+
+- `lib/telemetry.ts` **无依赖**，形状与 pi 的 `pi-telemetry` 契约相同（回调式 span：`startSpan(options, (span)=>…)`、属性、事件、ok/error 状态、counter、histogram），以后接 OpenTelemetry 只要几行适配。sink 三种：no-op（默认 `NOOP_TELEMETRY`）、JSON-lines 文件、内存（测试 `memoryTelemetry()`）。
+- **打开方式**：环境变量 `ROOST_TELEMETRY=<文件路径>`（`telemetryFromEnv(proc)`；相对路径会变成绝对并**写回环境**，这样在别的目录启动的 host 也写同一个文件）。文件 sink 批量写（每 250 ms 与退出时，或满 1000 条），文件权限 0600。需要在启动 daemon 之前设好（先 `pi-roost daemon stop`）。
+- 记录点（名字核实自 `daemon/`、`host/`；计划文档里的表 `docs/plans/evals.md` 是设计稿，以代码为准）：`roost.respawn`、`roost.schedule.run`、每个 daemon 请求一个 `roost.op.<op>`（span）；`roost.reports`、`roost.state_changes`、`roost.replies`、`roost.reply.deliver_latency`、`roost.reply.ack_latency`、`roost.attach.replay_latency`、`roost.host.start`/`roost.host.ready`/`roost.host.input`、`roost.events`、`roost.reaped`、`roost.cleaned`、`roost.auto_resume`。具体哪些是 span、哪些是 counter/histogram，见各调用点。`parseTelemetry()` 读文件、`percentiles()` 算 p50/p95/p99，压测与 evals 都用它。**缺失的遥测算"不可用"，不算 0**。
+
+**验收**：`test/telemetry.test.ts`（span/指标/文件 sink）；`test/daemon.test.ts` "M34 the daemon's telemetry"（记录确实出现）。
+
+### Step 34：压测与它找出的问题（M35，`docs/plans/m35-stress.md`）
+
+`npm run stress`（`stress/run.ts`，无模型花费）：隔离 home 里一个真 daemon + 真 host，agent 是假的（`stress/agent.ts`，建在 TS 协议客户端上）。
+
+- 场景：`sessions`（N 个 agent 同时派发、M 个 hub 在看）、`replies`（每个 agent K 条回复，各 job 同时发）、`chaos`（风暴中途 SIGKILL daemon 并重启、SIGKILL 十分之一的 host、一个永不读的 hub，然后给被杀的 job 回复）、`soak`（重复风暴几分钟，观察内存与描述符）。参数：`--jobs 50 --replies 20 --hubs 3 --soak-minutes 10 --work-ms 0`。
+- 不变量：每条回复恰好处理一次且有序（chaos 里请求失败后重发的允许处理两次，计数不判失败；M36 之后连这个也没有了）；被杀的 job 被看作已结束并被回复重新拉起；结束时每个 job 都停了、没有遗留 host 或 socket。
+- 预算（`stress/run.ts` `BUDGET`）：dispatch p95 3000 ms、全部就绪 `30_000 + JOBS*200` ms、回复 ack p95 3000 ms、hub 事件延迟 p95 1000 ms、daemon RSS 400 MB；超预算整个 run 退出 1。报告与遥测在 `stress/.runs/<时间>/`（`report.json`、`report.txt`、`telemetry.jsonl`、agent 日志）。
+
+**它找出并修掉的（50 agent × 20 回复、3 hub、macOS）**：
+
+| 指标 | 之前 | 之后 |
+|---|---|---|
+| reply op p50 | 237 ms | 8 ms |
+| 回复收到→ack p50 / p95 | 1073 / 1683 ms | 25 / 30 ms |
+| hub 事件延迟 p50 | 1414 ms | 26 ms |
+| 1000 条回复全部处理 | 21.8 s | 5.2 s |
+| report op p50 | 17 ms | 1 ms |
+
+1. **`checkHosts` 每次对每个 job 同步跑 `ps`**：50 个 job = 一圈 50 个进程，事件循环被堵。现在 pid 活着就算它的 host，最多每 30 s 复查一次；起始 token 在 host 启动时异步读。
+2. **每次写 `state.json` 都 fsync（文件+目录，macOS 上约 8 ms）**：约每秒 125 次状态写，每个事件都排在它们后面。现在：worker 的 report **原子写但不 fsync**（下一次 report 会覆盖它）；必须扛过崩溃的东西（pending 回复、用户的选择、job 怎么结束的）是**耐久**的，由 daemon **按组异步 fsync**（`lib/atomic.ts` `deferDurability(true)` + `durable()`；`DURABLE_KEYS` 在 `lib/store.ts`；并行 fsync 上限 32 个文件；同一文件/目录一批里只 sync 一次），**请求要等它的写落盘后才应答**；ack 不耐久（丢了就是重发，按 seq 丢弃）。
+3. **重启的 agent 重做已完成的回复**：agent 处理完回复、ack 到达 daemon 之前死了，新进程又做一遍。现在客户端把最后完成的 seq 存在 job 的 `agent.json`（先于 ack）并跳过它覆盖的部分（Step 30）。
+4. **丢了应答的回复被重发后处理两次**（chaos 里 2050 条有 46 条）：daemon 收了请求，应答随 daemon 一起丢了，客户端又发一遍。→ Step 35 的请求 ID。
+
+评审后补的：后台 sync 失败不会毒害后面的批（每批各自应答，失败只记日志）；崩溃后留下的**空 `state.json`**（report 不 fsync 所以可能为空）在启动时从 job 记录重建为 failed 且可再启动，而不是整个 job 消失。M38 实现期间又看到一次回归：每个空闲 report 都写 `crashRestarts:0`（已是耐久键）把回复吞吐从 5 s 拖到 8 s；修为"只有计数大于 0 才写，且非耐久"。
+
+**验收**：默认规模的 `npm run stress` 全绿；group commit 的单测；daemon 里"丢 ack 后重启"的测试；整套测试。
+
+### Step 35：请求 ID（M36，`docs/protocol.md` "Request ids" 节）
+
+解决：回复/派发的应答丢了（daemon 重启、连接断开）后客户端重发，会被处理两次。
+
+- `reply` 与 `dispatch` 带可选 `requestId`（1–64 个 `A-Za-z0-9_.:-`；`lib/protocol.ts`）。同一 id 重发 = 只处理一次：`reply` 回 `{duplicate:true, saved:true}` 且不再入队（但如果 job 已结束且那次本来要启动它，则现在启动）；`dispatch` 回**第一次**造出的那个 job，不管重发时其他参数是什么，只要那个 job 还在。
+- job 记住最近 `MAX_REQUEST_IDS`=100 个回复 ID，和回复**写在同一次 state 写里**（`requestIds` 是耐久键）——两者要么都在要么都不在；对终端 agent，ID 在文本打进去**之后**才记（崩在两者之间会再打一次，不是原子的）。
+- 用法：每个新请求新 ID，每次重发同一个 ID。**注意（核实结果）**：v0.1.12 里 hub、CLI 并不带 `requestId`——grep 只在 `stress/run.ts`、`evals/harness.ts` 和测试里看到它；它是留给"会重发的控制端"（脚本、第三方 hub、压测）的能力。移植时 hub/CLI 要不要带，自己决定。
+- 效果：chaos 场景里 50 次重发各只处理一次、没有重复。
+
+**验收**：`test/daemon.test.ts` "M36 request ids" 与 "M36 a resend after the daemon died before starting the job"。
+
+### Step 36：真模型 evals（M37 + M41，`docs/plans/m37-evals.md`）
+
+`npm run eval`（`evals/run.ts`）用真模型端到端跑 roost 的行为，按"roost 看到了什么"评分。**要花钱（默认模型上几美分）**，不属于 `npm test`；依赖只在 devDependencies 里的 `vitest-evals`，发布包不含。
+
+```text
+npm run eval                      # 每个用例一次，默认模型
+npm run eval -- --runs 5          # 每个五次：通过率、flaky 用例
+npm run eval -- --model anthropic/claude-sonnet-5-5 --thinking medium
+npm run eval -- --only steer      # 名字含 steer 的用例
+```
+环境变量 `ROOST_EVAL_MODEL`（默认 `anthropic/claude-haiku-5-5`）`ROOST_EVAL_THINKING`（默认 `low`）`ROOST_EVAL_RUNS` `ROOST_EVAL_SECOND_MODEL`（fan-out 的第二个模型）`ROOST_EVAL_DIR`（观测落盘目录，`run.ts` 设）`ROOST_EVAL_KEEP=1`（保留现场）。
+
+**每个用例怎么跑**（`evals/harness.ts` `runCase`）：
+- **每个用例一个独立的 roost**：临时 home / runtime / config 目录、自己的 daemon、自己的工作区（可选 git 仓库）；pi 经它的 worker 跑，扩展从**本仓库**加载（`adapters/pi/index.ts`）。步骤 `{when: "working"|"blocked"|"done"|"idle"|"stopped", reply, mode, afterMs, kill, stop}` 驱动：一次 `dispatch`，到点再发回复（带请求 ID），一路跟着 daemon 的事件看行，直到"沉寂"（该用例的所有 job，含子 agent，3 s 无 working 且无回复 pending）或超时。
+- **pi 自己的目录也是新的**：`PI_CODING_AGENT_DIR` 指向空临时目录（否则用户的设置、系统提示、扩展、skill 会让每次跑都变成"用户的"——第一次跑就发现 pi 用用户的语言回答）；其中 `auth.json` 是到用户那份的**符号链接而不是拷贝**（pi 会通过它写回刷新后的登录 token，拷贝会让用户自己的 pi 手里的 token 作废）。
+- roost 目录**两种拼写都设**（`ROOST_*` 压过 `PI_ROOST_*`），并校验 socket 应答的确实是自己启动的那个 daemon——用户自己的 `ROOST_HOME` 绝不能让用例及其清理指向用户的 roost；用例结束时它起的一切（job、daemon、遗留的 host/worker）无论如何都被停掉；对 daemon 的请求有时限。
+- 返回 `RoostOutcome`：行的状态序列（含其间发的回复）、最终行、记录、最后回答、工作区文件、子 agent、仍 pending 的回复、整个用例的花费与 token（含缓存和子 agent）、用时、从遥测来的回复 ack 延迟。
+
+**评分是确定性的**：`checks(name, {检查名: (outcome)=>boolean})` 是一个 `vitest-evals` judge，得分 = 通过的检查占比，rationale 点名失败项；**没跑完（超时、daemon 起不来）计 0，算"没打分"而不是"通过"**。检查匹配的是"句子里不会碰巧出现"的词（`SLEPT-4X`、随机 token），按原样在最后回答里找。**不让模型评判模型**。`evals/run.ts` 写 `evals/.runs/<时间>/`：`protocol.json`（模型、thinking、次数）、`observations.jsonl`（每次运行一行）、`report.json`/`report.txt`（每个用例通过数/次数，部分通过标 flaky，失败的检查及次数，错误，花费，用时 p50）；只跑一次的报告会声明"不是稳定性度量"。
+
+**用例**（`evals/core.eval.ts`，pi 经 worker）：任务做完（行以 done 结束、先 working 后 done、文件内容恰好是要求的、报了花费）；回复继续会话（第一答 42 在记录里、回复的答案 50 用到了会话上下文、回复被 ack）；steer（4 s 时对 12 s 的 `sleep` 发 steer，在**同一轮**里被接住，最终回答同时含工作的词和 steer 的词）；子 agent（`roost_spawn` 恰好起一个子、子 done、子读了一个父被告知不要读的文件里的随机 token、父的最终回答里有它）；**中断（M38）**：在 15 s 的 `sleep` 进行到 6 s 时 SIGKILL worker，它被自动重启一次并把活干完。
+
+**M41（`evals/agents.eval.ts`）**——跑 roost 除 pi worker 之外的东西，同一个真模型：`agent:"term"`（pi 自己当终端 agent，经档案：`pi -ne --session-dir …`，任务进 argv，`--continue` 续跑，`working: "Working ─"`，行只从屏幕读）、`agent:"protocol"`（`evals/fixtures/pi_agent.py` 建在 Python 客户端上：每条回复是 `pi -p --session …` 的一轮，pi 打印的就是 report）、`fanout:[模型…]`（每个模型一个 worktree，如 `/fanout`）；步骤可以 `stop` 再等 `stopped`。用例：fan-out（两个会话共享同一个 fan-out id、都 done、各在自己的 `roost/` 分支、各自 worktree 里写了文件而主树没动、`worktreeChange` 各看见一个文件、两个模型）；终端 agent（只凭屏幕看出 working→done、第一答在屏幕和会话里、打字回复被回答、`stop` 后回复用 `--continue` 重启且保留上下文）；协议 agent（hello 里名字 `pi-print` 和 capability `replies`、首条任务作为回复 1 报 working 再报 done、report 就是回答、回复答案用到第一轮上下文、报了模型、ack）。
+
+**结果（2026-11-05，haiku，thinking low，各 3 次）**：核心 4 例 12/12（整次不到 1 美分），M41 3 例 9/9（fan-out 约 $0.023；终端/协议 agent 不报花费，所以是 n/a；终端 agent 的 25 s 多半是"屏幕静止 2.5 s"的等待）。第一次跑出来并已修的：用户的 pi 设置串进用例、token 统计漏了缓存和子 agent、`ROOST_HOME` 会指到用户的 roost、跑得太快在子 agent 汇报前就"沉寂"、检查匹配到了普通词、抛错时遗留 daemon。
+
+**验收**：`npm run eval` 默认全过；`test/evals-judge.test.ts`（judge 本身，不花钱）。
+
+### Step 37：中断续跑（M38，`docs/plans/m38-resume.md`）
+
+解决：一次被截断的运行不该等用户发现，而是**有界地自己接着跑**。
+
+之前：worker 崩溃（非 0 退出）只重启一次；host 在运行中的 job 底下消失（被杀、OOM）直接 failed（"host vanished"）；机器或服务停掉时的运行 failed 并等回复；**被信号杀死的 worker 被当成 done**——node-pty 把信号死亡报成 **exit code 0 + signal 号**，原来只看了 code（新的 eval 发现的）。
+
+现在（用户级配置 `autoResume`，默认 `"interrupted"`）：
+
+| 取值 | 自动重启 |
+|---|---|
+| `"interrupted"`（默认） | worker 崩溃/被杀；host 在 working 的运行底下消失；机器或服务停掉时正在 working、且最后进展在 `RESUME_WINDOW_MS`（6 小时）内的运行 |
+| `"crash"` | 只有 worker 崩溃/被杀 |
+| `"off"` | 不自动重启 |
+
+- 重启时给会话发 `"Continue where you left off."`（从没写过盘的会话则重跑首条任务）。**预算**：连续最多 3 次，间隔 `RESUME_DELAYS_MS` = 1/5/15 s（`PI_ROOST_RESUME_DELAYS_MS="1000,5000,15000"` 可覆盖，测试用）；一轮正常结束且 worker 已稳定跑了一分钟（`CRASH_RESET_MS`）才把计数还回去。超过预算：行 failed 并写原因（`not restarted again after 3 automatic restarts in a row (reply to continue)`）。
+- **等待期间行保持 `working`**（不给"已结束"通知，因为运行本来就要继续），并写明（`worker killed by SIGKILL; continuing in 5 s (automatic restart 2 of 3)`）。`resumeAt` 作为**耐久写**存在 job 的 state 里（`DURABLE_KEYS`；注意它在 `state.json`，**不在 `JobRow` 上**）：
+  - `stop`（或 `/stop` 回复）取消它（行为 stopped），`rm` 也取消；父会话照常收到结束通知。
+  - 任何一次真正的启动取代它：attach / 连按 Enter 以 "Continue where you left off." 接着跑，回复则作为回复送进去；这**不计入**自动重启次数，也不把预算还回去；启动失败（会话被锁）则让等待中的重启继续。
+  - 服务在等待期间停了：下次启动接着等（`scheduleResume`）。
+  - 启动不了（会话被别的 pi 锁了、目录没了）：行 failed 并写明原因，不再试；父会话会收到。
+- 判定"崩溃"（`daemon/main.ts` `crashed()`）：退出码非 0，**或**带信号（`ex.signal` 非空且不为 `"0"`）——对命令和终端 agent 也一样；`exitText()` 把信号号译成 `killed by SIGKILL`。
+
+**验收**：测试——崩溃循环重启 3 次后 failed；`off` 不重启；服务停掉期间死掉的 host 恢复为 "Continue where you left off."；working 的运行底下 host 被杀会重启（`crash` 模式下是 failed）；等待中 stop；重启挂起跨服务重启；等待中来回复/attach/启动失败/`/stop`；信号死亡读成失败。评审发现并修的：等待期间启动失败会让行永远等着、attach 丢了"continue"、stop/rm 没通知父会话。真 pi eval：6 s 时 SIGKILL，pi 看到被打断的工具调用、重跑、写出文件，3/3。
+
+### Step 38：定时任务（M39，`docs/plans/m39-schedules.md`）
+
+解决：让任务按计划跑，**由后台服务持有**，不管有没有 pi 或 hub 开着。
+
+```text
+/schedule <name> <when> <task>
+/schedule                         列表（下次运行、上次运行、被跳过的原因）
+/schedule run|pause|resume|rm <name>
+pi-roost schedule [list] | run|pause|resume|rm <name>
+```
+`when`（**本地时间**）：`every 30m`（`m` `h` `d`，至少一分钟）、`daily 09:00`、`weekdays 09:00`、`cron "<分 时 日 月 周>"`（列表、范围、步长；周日 0 或 7；日与周都写了则任一满足，同 cron）。
+
+做法：
+- `lib/schedule.ts`（仅 node）：`parseCron`/`nextCron`、`parseWhen`/`nextRun`、`/schedule` 行的解析（`parseScheduleInput`）、每次运行的派发（`runLaunch`）：模板里的 `{{run}}`（`RUN_SLOT`）换成一个 pi 风格的会话文件名（`runSlot()` = `<ISO 时间>_<uuid>`）。
+- **模板在知道 pi 的地方生成**（`adapters/pi/hub-options.ts` `scheduleLaunch`）：就是视图会为这个任务发的那次 dispatch，带视图的模型、thinking、目录（含预设的目录），会话文件 `<该目录的 pi 会话目录>/{{run}}.jsonl`，不带 worktree。**只有会话文件那个参数会被填**；任务文字里自己写了 `{{run}}` 的原样不动。
+- daemon 持有 `schedules.json`（单写者、耐久写），每 `SCHEDULE_TICK_MS`=15 s 检查一次（`PI_ROOST_SCHEDULE_TICK_MS` 可覆盖）。新 op（`lib/protocol.ts`）：`schedules` `schedule-add {name, when, launch, task?, catchUp?}` `schedule-rm` `schedule-pause {name, paused}` `schedule-run`；一次运行就是一次以计划命名的 `dispatch`，job 上标 `schedule`（行上带）。
+- **先定下次再启动**，慢启动不会被重复运行；`every` 从创建（或恢复）时刻起算，间隔之后的一次落到下一个槽，**不补发一串**。
+- **本地时间且不倒退**：夏令时重复的那一小时里，下次永远在前方（以 epoch 毫秒步进；下次至少是 1 s 之后）；春季跳时那天不存在的时刻（02:30）改到次日。每个计划同一时刻只有一个运行在启动（并发的第二个请求得 `busy`）。手工改过的 `schedules.json` 缺的字段在加载时补齐。
+- **跳过**（写进 `lastSkip`）：到点时上一次运行还在 working / 启动中 / 等自动重启（M38）（`stillRunning()`）。上一次**已做完但 worker 还开着**的不算，那个 worker 会像子 agent 一样在 done 后被关闭（`scheduleAutoClose`，`AUTO_CLOSE_MS`）。
+- **到点没开机**：服务启动时发现某计划已过期，`catchUp`（默认）补跑**一次**，否则移到下一次。
+
+坑（真机跑 `tick every 1m` 时发现）：做完的 pi 运行 worker 仍开着（空闲），调度器以为还在跑——所以现在只有 `working` 算占着，并且做完的运行会被关闭。评审另外发现：cron 的下次在夏令时重复那小时会落到过去一小时（会每个 tick 都跑）、同一计划两次并发运行、任务文字里的 `{{run}}`、`*/n` 与日规则——都修了并加了测试（America/New_York）。
+
+**验收**：`test/schedule.test.ts`（cron 字段与错误、跨周末/月/年/2 月 29/日周任一/never、`every` 从锚点起、槽与模板检查、`/schedule` 行、时间显示）；`test/daemon.test.ts`（增删暂停恢复与拒绝、立即运行用自己的会话文件且从不并发、tick 到点、启动时补跑或不补、重启后保留、暂停的不跑、做完且 worker 在的不阻塞下一次并被关）；tmux 里独立 hub：`/schedule tick every 1m <往 ticks.txt 追加 UTC 时间>`，每分钟在 haiku 上跑，服务停了再起触发一次补跑，行依次命名为 `tick`、`tick (2)`…，做完被关闭。
+
+### Step 39：全 agent 的续跑与定时（M40，`docs/plans/m40-agents-resume.md`）
+
+M38/M39 先只做了 pi。M40 推广到档案 agent（级别 0）和协议 agent（级别 1），并在合理处推广到普通命令。
+
+**续跑（`autoResume`）**：
+
+| agent | 中途被截断（崩溃/被杀/host 没了/机器或服务停了） |
+|---|---|
+| pi 会话 | 同 M38 |
+| 协议 agent | 重启（用它的 `resume` argv，否则用不带首条任务的 `command`）；"Continue where you left off." 作为**回复**送达，排在仍 pending 的回复之后（M31 的重放） |
+| 带 `resume` 的终端 agent | 用 `resume` 启动，等它安静后把提示打进去 |
+| 不带 `resume` 的终端 agent | 保持 failed（重新开始无法接着做；回复它才会重新启动） |
+| 普通命令 | 保持 failed（命令只跑一次） |
+
+预算与规则同 M38（连续 3 次，1/5/15 s，等待期间行是 `working`，stop 或回复取消）。`DispatchArgs.resumable` 与 job 记录上的 `resumable` 表示档案有 `resume`（`buildProfileLaunch` 设）；协议 agent 总是可续跑（协议的设计：report、重放、`agent.json` 水位）。
+
+**定时**：`/schedule <name> <when> <task>` 用视图当前的选择跑：pi 会话如前；开着 `/profile x` 则跑那个 agent（模型与 thinking 照选，不带 worktree）；以 `!` 开头的任务是命令（`/schedule tests weekdays 18:00 ! npm test`）。模板就是视图会发的 dispatch（`launchProfile`、`launchShell`），没有逐次要填的东西，每次运行就是那条命令再来一次。`ScheduleRow.agent` 显示跑的是什么（`pi`/`shell`/档案名；`lib/schedule.ts` `templateAgent`）。
+
+**无人值守的细节**：
+- 一个定时的终端 agent **done 且安静**时和 pi 运行一样被关闭（行保留；回复会重新启动它：`resume`，否则 `command`）。
+- 定时运行没人在，所以会**通知**的 agent（Claude Code 做完会通知）在这里算 done，通知文字作为行的文本，而不是一个没人回答的 question（否则它永远开着，一次一个进程）；卡在对话框里（档案的 `waiting` 正则）仍然是对话框、留给用户（`profileTick` 里 `recs.get(id)?.schedule` 的分支）。
+- 命令的行照命令的规矩走。
+- 机器或服务停掉之后，一个原本 done 或在提问的终端 agent 事后仍显示为该状态，但没有进程（回复会启动它）；`finalize()` 不清它的行文本 summary（见 `kept` 分支）。
+
+**验收**：测试——服务停掉时 done/提问的终端 agent 事后仍显示原样；自动重启启动不了时不留 "continue" 排队；带 `resume` 的终端 agent 中途死掉（用 `resume` 重启、提示打进去、done）；不带的（failed、不重启）；协议 agent 在回复时死掉（重启，"continue" 作为回复被接住）；终端 agent 的定时（以计划命名、done 后被关、行保留）和命令的定时；带 worktree 的模板被拒；视图里 `/schedule` 配合 profile、`!`、视图的模型。压测与 evals 不变（pi 的路径只改了共用的 finalize 代码）。
+
+**未做**：不带 `resume` 的终端 agent 用首条任务从头再来（任务可能做了一半，所以没做）。
+
+### Step 40：一个压测用例的修复（M42，只改测试）
+
+没有产品代码的改动（提交 `d1f43f0` 只动了 `test/stress-attach.test.ts` 和文档）。教训对移植同样有用：Step 21 的"自己挂起的 worker 被下一次 attach 的 SIGCONT 救回"那个用例在整套 `npm test` 的负载下偶尔失败。原因是**测试替身和真 pi 的行为不一样**：假 worker 在"stopped"期间**丢键**；而 host 的 SIGCONT 和 attach 之后马上打的键，经同一个 node 事件循环到达，**顺序不定**。真 pi 在 stopped 期间是**停止读终端**，期间打的键留在终端里等着。现在假 worker 也这样做（`stdin` 暂停到 SIGCONT，并输出 `[stopped]` 标记让测试知道键被收到了）；测试等 tick 停止（而不是固定 300 ms）；PTY 输出超时时，报错信息写明终端最后显示了什么。
+
+移植提示：为你的宿主写假 worker 时，**模仿真宿主在异常状态下的 I/O 行为**（停止读 vs 丢弃），否则测的是替身而不是你的系统。
+
 ---
 
 ## 5. 配置项（`lib/config.ts`）
 
-用户级 `roost.json`，项目级 `.pi/roost.json` 可覆盖**部分**键：
+用户级 `roost.json`（`~/.config/roost/roost.json` 存在即用，否则 `~/.pi/agent/roost.json`；只读其一，不合并），项目级 `.roost/roost.json`（存在即用，否则 `.pi/roost.json`）可覆盖**部分**键：
 
 | 键 | 默认 | 仅用户级 |
 |---|---|---|
 | `fullscreen` | `true` | |
 | `rowDetails` | `true` | |
-| `worktreeIsolation` | `"off"` | |
+| `worktreeIsolation` | `"off"`（取值 `"off"` / `"children"` / `"all"`，M10） | |
 | `groupBy` | `"state"` | |
 | `summaryModel` | 无 | ✔ |
 | `dispatchModel` / `dispatchThinking` | 宿主默认 | |
@@ -590,8 +1004,11 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | `agentTools` | `true` | |
 | `agentExternalMessages` | `false` | ✔ |
 | `agentMaxDepth/Children/Tree/Total` | 3 / 8 / 16 / 32 | ✔ |
+| `autoResume`（M38） | `"interrupted"`（另有 `"crash"`、`"off"`） | |
+| `presets`（M27） | 无；`{名字: {model thinking worktree agent dir fanout profile}}`。**用户文件与项目文件都能写，按名字合并，项目的优先**；畸形条目跳过；`/preset save` 只写用户文件 | |
+| `agentProfiles`（M30） | 无；`{档案名: {command task model thinking resume working waiting submit settleMs env protocol}}`，见 Step 29 | ✔（项目文件不能定义，因为档案是 roost 要运行的命令） |
 
-> 表中"仅用户级"的集合就是 `lib/config.ts` 的 `USER_ONLY`：`envAllowList inheritEnv envDenyList workspaceEnv summaryModel agentExternalMessages agentMaxDepth agentMaxChildren agentMaxTree agentMaxTotal`。（v0.1.5 的旧表把 `agentTools` 也标成了仅用户级，那是错的。）`inheritEnv:false` 时 `envPolicy()` 会把 `workspaceEnv` 强制成 `"off"`。
+> 表中"仅用户级"的集合就是 `lib/config.ts` 的 `USER_ONLY`：`envAllowList inheritEnv envDenyList workspaceEnv summaryModel agentExternalMessages agentMaxDepth agentMaxChildren agentMaxTree agentMaxTotal agentProfiles`（v0.1.12 起含 `agentProfiles`，M30 加的）。`presets` 和 `autoResume` **不在**其中。（v0.1.5 的旧表把 `agentTools` 也标成了仅用户级，那是错的。）`inheritEnv:false` 时 `envPolicy()` 会把 `workspaceEnv` 强制成 `"off"`。
 
 "仅用户级"的原因：别人克隆来的仓库不能决定**你的环境变量**流向哪里、**会话记录**发给哪个模型、agent 能扩散多远。移植时保留这条规则。
 
@@ -637,8 +1054,32 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | 记录视图 Ctrl+O 二次确认窗口 / 提示显示（M19） | 2.5 s / 4 s | `transcript-view.ts` `ARM_MS` / `NOTICE_MS` |
 | 记录视图每个工具结果显示行数（M19） | 3 | `transcript-view.ts` `RESULT_LINES` |
 | 工作区环境探针总预算（M20） | 8000 ms（70% 给 shell） | `lib/workspace-env.ts` `PROBE_TIMEOUT_MS` |
+| 视图与 daemon 对账间隔（M22） | 15 s | `hub/agent-view.ts` `RESYNC_MS` |
+| `ensureLive` 里 respawn 的超时（M22） | 20 s | `lib/resume.ts` `RESPAWN_TIMEOUT_MS` |
+| Reporter 失败退避（M22） | 500 ms 翻倍至 5 s | `lib/agent-client.ts` `retryMs` |
+| Reporter 请求超时 / 关闭时最终 flush（M22/M31） | 4 s / 500 ms | `agent-client.ts` `REQUEST_TIMEOUT_MS` / `FINAL_FLUSH_MS` |
+| 每 session 用量里保留的模型数（M24） | 8（其余并入 `other`） | `lib/usage.ts` `USAGE_MODELS` |
+| 自动续跑间隔，连续最多几次（M38） | 1 s / 5 s / 15 s，共 3 次 | `daemon/main.ts` `RESUME_DELAYS_MS`（`PI_ROOST_RESUME_DELAYS_MS`，逗号分隔毫秒） |
+| 宕机/重启后仍会自动续跑的最长间隔（M38） | 6 h | `daemon/main.ts` `RESUME_WINDOW_MS` |
+| 定时任务检查间隔（M39） | 15 s | `daemon/main.ts` `SCHEDULE_TICK_MS`（`PI_ROOST_SCHEDULE_TICK_MS`） |
+| 定时运行/子 agent done 后自动关闭的等待（M13/M39/M40） | 3 s（需已 done 满一半） | `daemon/main.ts` `AUTO_CLOSE_MS`（`PI_ROOST_AUTO_CLOSE_MS`），`scheduleAutoClose()` 对定时运行同样适用 |
+| 一个计划的 `every` 最小间隔（M39） | 1 min | `lib/schedule.ts` `parseWhen` |
+| 下次运行至少领先现在（M39） | 1 s | `daemon/main.ts` `runSchedule`（`Math.max(next, now + 1000)`） |
+| 档案 `settleMs` 默认 / 范围（M30） | 3000 ms / 500–60000 | `lib/profiles.ts` |
+| host 写 `term.json` 的间隔（M30） | 1 s（有变化时） | `host/main.ts` `termTimer` |
+| host `input` op 单次上限（M30） | 64 KB | `host/main.ts` `MAX_INPUT` |
+| 打字回复里文本与 `submit` 的间隔（M30） | 约 150 ms | `daemon/main.ts` `typeInto` |
+| 每个 job 记住的回复请求 ID（M36） | 100 个 | `daemon/main.ts` `MAX_REQUEST_IDS` |
+| 待投递回复上限 | 50 条（`full` 错误码） | `docs/protocol.md` |
+| 对 live host 的 token 复查间隔（M35） | 30 s | `daemon/main.ts` `HOST_VERIFY_MS` |
+| 并行 fsync 的文件数上限（M35） | 32 | `lib/atomic.ts` `SYNC_PARALLEL` |
+| telemetry 文件写入批次（M34） | 250 ms 或满 1000 条 | `lib/telemetry.ts` `fileTelemetry` |
+| 压测预算（M35） | dispatch p95 3000 ms；全部就绪 30 s + 200 ms×job 数；ack p95 3000 ms；hub 事件延迟 p95 1000 ms；daemon RSS 400 MB | `stress/run.ts` `BUDGET` |
+| eval 单用例时限 / "沉寂"判定（M37） | 180 s / 3 s | `evals/harness.ts` `runCase` |
 
 调试用环境变量：`PI_ROOST_HOME` `PI_ROOST_RUNTIME_DIR` `PI_ROOST_CONFIG_DIR` `PI_ROOST_HOST_ENTRY` `PI_ROOST_REAP_MINUTES` `PI_ROOST_REAP_CHECK_MS` `PI_ROOST_SHELL_KEEP_MS` `PI_ROOST_PROGRESS_MS` `PI_ROOST_FIRST_PROGRESS_MS`；v0.1.7 新增：`PI_ROOST_AUTO_CLOSE_MS`（M13）、`PI_ROOST_CLEANUP_DAYS` `PI_ROOST_CLEANUP_CHECK_MS`（M15）、`PI_ROOST_PR_POLL_MS` `PI_ROOST_GH`（M16，`gh` 可执行文件路径）——测试全靠它们把时间缩短、把目录隔离到临时路径、用假的 `gh`。（内部标记变量 `PI_ROOST_RESTORE`、`PI_ROOST_CHILD` 见 §3。）
+
+v0.1.12 新增：`ROOST_HOME` `ROOST_RUNTIME_DIR` `ROOST_CONFIG_DIR`（M29，分别优先于 `PI_ROOST_*` 同名）；`PI_ROOST_RESUME_DELAYS_MS`（M38）；`PI_ROOST_SCHEDULE_TICK_MS`（M39）；`ROOST_TELEMETRY=<绝对路径.jsonl>`（M34，需在启动 daemon 前设）；`ROOST_PI_PACKAGE`（M33，独立 hub 找 pi 的包）；`ROOST_EVAL_MODEL` `ROOST_EVAL_THINKING` `ROOST_EVAL_RUNS` `ROOST_EVAL_SECOND_MODEL` `ROOST_EVAL_DIR` `ROOST_EVAL_KEEP`（M37/M41）；跑测试时的 `STRESS=1`（`test/stress-attach.test.ts` 从 60 轮加到 600 轮）。
 
 ---
 
@@ -648,13 +1089,18 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - 扩展由宿主直接加载 `.ts`；daemon/host/bin 由 `tsc -p tsconfig.build.json` 编译到 `dist/`（`rewriteRelativeImportExtensions` 把 `.ts` 导入改成 `.js`），`scripts/fix-dts.mjs` 修 `.d.ts` 里的导入。宿主不能直接加载 TS 时，扩展也一起编译。
 - `lib/client.ts` `packageRoot()` 从模块位置向上找 `package.json` 来定位 `dist/daemon/main.js`、`dist/host/main.js`——**打包目录结构变了要同步改**。
 - 本地安装（`scripts/install-local.sh`）：先在旁边建新副本再原子替换（daemon 是懒加载 node-pty 的，不能从半装好的目录运行）；替换前 `daemon stop --keep-workers`，后台会话不断。
-- 运行时依赖只有三个：`node-pty`、`@xterm/headless`、`@xterm/addon-serialize`（M21）。CLI、daemon、host 不能引用宿主的包（peer 依赖），`test/cli-deps.test.ts` 守着。
+- 运行时依赖只有三个：`node-pty`、`@xterm/headless`、`@xterm/addon-serialize`（M21）。CLI、daemon、host 不能引用宿主的包（peer 依赖），`test/cli-deps.test.ts` 守着（M32 起扩成整套分层检查，见 §2）。
+- **包导出（M32，`package.json` `exports`）**：`./api`（`dist/adapters/pi/api`，给别的 pi 扩展用）、`./agent`（`dist/lib/agent-client`，协议客户端）、`./client`（`dist/lib/client`，`DaemonClient`）、`./protocol`（`dist/lib/protocol`，类型）、`./package.json`。`bin`：`pi-roost` → `dist/bin/pi-roost.js`。peerDependencies：`@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui`、`typebox`（都是 `*`，不由 roost 安装）。
+- **`files` 字段**：`adapters hub extensions lib sdk dist README.md CHANGELOG.md LICENSE`——`extensions/` 只剩一行转发 shim，`sdk/` 带着 Python 客户端。`stress/` 和 `evals/` **不在**发布包里（`vitest-evals` 也只在 devDependencies）。
+- **`pi-roost hub` 的入口**（`bin/pi-roost.ts` `cmdHub`）：在**纯 node** 下运行：先 `findPiPackage()` 找 pi 的包（`ROOST_PI_PACKAGE` → PATH 上的 `pi` 沿目录向上 → `npm root -g`），`piCliOf()` 从包的 `bin.pi` 取 CLI，`usePiPackage()` 注册 `node:module` 解析钩子把 `@earendil-works/*` 指向用户的 pi，然后才按路径 `import("../adapters/pi/hub-main.{ts|js}")`（安装版是 `dist/` 里的 `.js`，checkout 里是 `.ts`）。找不到 pi 就报错（点名 `ROOST_PI_PACKAGE`）并以 1 退出。`pi-roost schedule` 子命令同样在纯 node 下，但**添加**计划要在 hub 里（`/schedule`，因为模板要 pi 来生成）。
+- **Python SDK**：`sdk/python/roost_agent.py` 单文件、纯标准库（`docs/protocol.md` 写 3.8+），不需要 pip 安装——复制文件或把 `sdk/python` 加进 `PYTHONPATH` 即可。
+- 构建：`npm run build` = `tsc -p tsconfig.build.json && node scripts/fix-dts.mjs`；`prepare` 会自动 build；`prepublishOnly` = `check` + `test` + `build`。`npm run stress` / `npm run eval` 都直接 `node stress/run.ts` / `node evals/run.ts`（Node ≥ 22.19 的类型剥离）。
 
 ---
 
 ## 8. 测试策略
 
-`test/` 下 25 个 vitest 文件（`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
+`test/` 下 **38 个** vitest 文件（v0.1.7 时 25 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
 
 | 测试 | 覆盖 | 移植难度 |
 |---|---|---|
@@ -664,6 +1110,28 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | `worktree` | 在临时 git 仓库上真跑：创建、状态、清理的各种情况、`.worktreeinclude` 复制与"是否算成果"的判断（M15） | 直接复用（需要 git） |
 | `daemon` `host` | 用临时目录 + 假 worker 起真 daemon/host；M13 自动关闭与 `parentOpen`、M11 的 `remoteAt` 不被回收、M21 attach 快照（序列截断、模式只计一次、备用屏不覆盖主屏）；`term-modes` 模式跟踪与未完序列 | 改路径/env 前缀即可 |
 | `reporter` `reply-queue` `summaries` `worker-wiring` `foreground` `agent-view` `mobile`（M11：只放行 `PI_MOBILE_*`）`subagent-panel`（M12/13：排序、树、`(+N)`、行生命周期、宽度 1–200 不溢出、按键） | 用假的 `ExtensionAPI` 驱动 | 换成你的适配器 mock |
+
+v0.1.8–v0.1.12 新增/扩充的测试（按 `ls test/` 核实）：
+
+| 测试 | 覆盖 | 移植难度 |
+|---|---|---|
+| `cli-deps`（M32/M33） | CLI/daemon/host 不 import pi 的包；`lib daemon host bin` 不 import `@earendil-works/*` 和 `adapters/`；`hub/` 只许 pi-tui；`extensions/` 只含转发；TS 客户端 import 图只含 node；旧路径加载同一扩展且只注册一次 | 改目录名即可，**强烈建议保留** |
+| `stress-attach`（M22/M42） | attach/takeover/断开/改尺寸/不读数据客户端的压力轮次；一个 PTY 在两个会话间用 Ctrl+Z 切换；自己挂起的 worker 被 SIGCONT 救回（`STRESS=1` 加大轮数） | 需要 PTY；假 worker 要像真宿主那样**停止读终端**而不是丢键 |
+| `attach-keys`、`client-order`（M22） | detach 键各种编码（`localDetachAt`）；list 回复与事件的顺序（`requestAt`/`position`） | 纯函数/小，直接复用 |
+| `term-modes`、`term-signals`（M21/M30） | 终端模式跟踪（含被截断的序列、`StreamTail`）；信号收集器对着真 xterm、`inferTermState` 的优先级 | 直接复用 |
+| `profiles`（M30） | 档案解析、校验、模板、配置只认用户级 | 直接复用 |
+| `identity`（M29）、`config` | `ROOST_*`/`PI_*` 并存与优先级、配置路径候选 | 直接复用 |
+| `usage`（M24）、`transcript`、`list-format`、`view-model` | 用量口径与列/面板、记录、行格式 | `usage` 的口径要按宿主的会话格式改 |
+| `schedule`（M39） | cron 字段与错误、下次运行（周末/月末/闰日/日周任一/never）、`every` 锚点、模板检查、夏令时 | 纯函数，直接复用 |
+| `telemetry`（M34） | span/指标/文件 sink、`percentiles` | 直接复用 |
+| `evals-judge`（M37） | `checks()` judge 本身（不花钱） | 直接复用 |
+| `hub-standalone`（M33） | 找 pi 的包、解析钩子（从 pi 解析、失败回退）、模型列表、配色与 `NO_COLOR`、CLI 错误 | 取决于宿主是否也做独立 hub |
+| `daemon`（大幅扩充） | M22 一会话一行；M30 档案 agent（用假终端 agent）；**M31 协议一致性：TS 与 Python 两个客户端各跑一个脚本化 agent 对着真 daemon**；M34 遥测；M35 丢 ack 后重启、崩溃后空 state 文件；M36 请求 ID；M38 续跑；M39 定时；M40 全 agent 续跑与定时 | 改路径/env 前缀即可；Python 一致性用例在没有 python 时跳过 |
+| `reporter`（M22 退避）、`reply-queue`（M28 steer）、`agent-view`（M23–M30 的键、`/preset` `/fanout` `/compare` `/usage` `/schedule` `/profile`）、`mobile`、`foreground`… | 用假的 `ExtensionAPI` 驱动 | 换成你的适配器 mock |
+
+**单列**：
+- `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos soak`，不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
+- `npm run eval`（M37/M41，`evals/run.ts`）：**真模型，要花钱，需要凭证**，不属于 `npm test`；每个用例一个隔离的 roost（见 Step 36）。`--runs N` 才能谈稳定性，一次通过不说明稳定。
 
 另外每个里程碑的 `docs/plans/m*-acceptance.md` 是**手工验收清单**（真实终端、tmux 里的操作步骤），重建完对着走一遍。
 
@@ -689,10 +1157,19 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 16. （M17）任务输入框不支持图片粘贴；长单行折行时 ↑↓ 仍按逻辑行在行间移动。
 17. （M18）只读 pi-subagents 的定义（`npm/node_modules` 里的包），不支持 chains、skills、runner、`package:` 名字；项目 agent 只能用 `@name` 选；没有选择器 UI 和每 agent 颜色。
 18. （M20）工作区环境只支持 zsh/bash/fish/tcsh/csh 的钩子和 direnv 后备，没有 nushell/xonsh/ksh；整份环境存进 `job.json`（0600），respawn 不重读派发者的环境，只重新求工作区那一层；探针运行你的 shell rc，慢 rc 会吃掉启动预算（8 s 封顶）。
+19. （M30）**档案 agent 的菜单不能靠打字选**：方向键菜单里打 `2` 不会选第二项，随后的 Enter 反而选了第一项；这类提示要 attach（→）自己回答。回复只适合文本提示。档案 agent 的模型/上下文/用量/记录视图/`/resume`/子 agent/peer 都没有（显示破折号）；档案状态是**推断**，没有正则和通知的 agent 只能靠"屏幕静止"，长时间不刷新屏幕时可能被判成"安静"（用 `working` 正则或调大 `settleMs`）。
+20. （M31）协议只是**草案 v1**，在有仓库之外的真实 agent 用过两个客户端之前不冻结；agent 间通信的 op（`handback peers send spawn peer_*`）还没在 `docs/protocol.md` 里完整写出。`hello` 对 M31 之前的 daemon 会得到 `bad_request`，客户端按 v1 行为继续。
+21. （M33）独立 hub 没有 pi 会话：没有"转后台"，pi 的斜杠命令（skill、prompt 模板）不能当首条提示；它用运行 pi-roost 的那个 node 去跑 pi，pi 若装在另一个 node 版本下且不能在这个 node 下运行就会失败；配色跟 pi 的暗色主题，不跟用户选的主题。
+22. （M37/M41）evals **要花钱、要有可用的模型凭证**（`auth.json` 以符号链接接进隔离的 pi 目录）；终端/协议 agent 的用例不报花费；只有 `--runs N` 才能说稳定性；不让模型评判模型，所以只能检查确定性的东西。
+23. （M36）请求 ID 只在客户端带了才有用：v0.1.12 的 hub 和 CLI 并不带（只有压测、evals 的控制端带）。
+24. （M38/M40）续跑**只重启，不恢复中途的工具调用**：重启后给会话发 "Continue where you left off."，由宿主自己看会话记录决定怎么继续（pi 会看到被打断的工具调用并重跑）；不带 `resume` 的终端 agent、普通命令中断后保持 failed；预算只有连续 3 次；宕机后只对最后进展在 6 小时内的运行自动续跑。
+25. （M39）定时**只认本地时间**，没有时区选项；cron 只有 5 个字段；夏令时重复的那一小时里不会重复运行，春季不存在的时刻改到次日；一个计划的上一次运行没做完就**跳过**而不是排队；定时模板不带 worktree，不带 fan-out；过去运行的行按 `cleanupDays` 清理。
+26. （M22）孤儿进程组的 SIGTSTP 被内核丢弃——宿主若有"Ctrl+Z 挂起自己"，后台 worker 里必须拦下，否则会永久冻结（见 Step 21）。
+27. （M29）设计文档（`any-agent.md`）与代码有出入的地方以代码为准：`kind` 仍是 `"pi" | "shell"` 加 `profile`，没有 `agent: string`；档案占位符只有 `{task} {model} {thinking}`，没有 `{session}`；档案状态经 `term.json` 文件由 daemon 读取，而不是 host 推的 `term` 事件。
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.7）
+## 附录 A：daemon op 一览（v0.1.12）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -709,6 +1186,20 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | `ack {id, token, seq, exact?}` | worker | 确认投递 |
 | `peer_register` `peers` `send` `spawn` `peer_ack` | 前台/worker（M9） | 通信 |
 | `handback` | 子 worker（M9） | 报告给父会话 |
+| `hello {protocol, agent?, capabilities?}` | agent 客户端（M31） | 每条新连接在第一个 `report` 之前发；回 `{protocol, daemon:{name,version}, capabilities}`；旧 daemon 回 `bad_request` |
+| `schedules` | hub/CLI（M39） | 列出计划（`ScheduleRow[]`：`name when task agent cwd model paused catchUp nextAt lastRunAt lastJob lastSkip`） |
+| `schedule-add {name, when, launch, task?, catchUp?}` | hub（M39） | 新增/覆盖计划；`launch` 是带 `{{run}}` 的 dispatch 模板 |
+| `schedule-rm {name}` `schedule-pause {name, paused}` | hub/CLI（M39） | 删除 / 暂停与恢复 |
+| `schedule-run {name}` | hub/CLI（M39） | 立即运行一次，返回 `{name, id}`；上一次还在跑则 `busy` |
+
+**v0.1.12 的 op 与字段变化**（在上表 v0.1.7 内容之上）：
+- **新增 op**：`hello`（M31）、`schedules` `schedule-add` `schedule-rm` `schedule-pause` `schedule-run`（M39）。`lib/protocol.ts` 的 `OpArgs`/`OpResults` 是权威清单。
+- **`reply`**：`mode?: "steer" | "followUp"`（M28；缺省 = 等待）、`requestId?`（M36；同 ID 重发只处理一次，应答带 `duplicate:true`）；结果多了 `duplicate?`。`deliver` 事件带 `mode`。
+- **`dispatch` 的 `DispatchArgs`** 新增：`fanout`（M26：同一次 fan-out 共享的 id）、`profile` `term` `resumeCommand` `taskInArgv`（M30）、`protocol`（M31）、`resumable`（M40）、`requestId`（M36）；`worktree` 的校验与 M10 相同。
+- **`JobRow`** 新增：`usage`（M24）、`fanout`（M26，且 `worktree` 多了 `base`）、`profile`（M29：`"pi"`/`"shell"`/档案名）、`schedule`（M39：由哪个计划起的）、`capabilities`（M31：agent 在 hello 里声明的）。**`resumeAt`、`agentInfo`、`requestIds` 在 `state.json` 里，不在 `JobRow` 上**。
+- **`WorkerReport`** 新增：`usage`（M24）；协议文档把 `context` `usage` `prLinks` `remoteAt` 列为 capability 字段，`attachSignal` `attachRepaint` `agentItems` 为 pi 专用。
+- **host 帧协议的 control op** 现在是 `detach input snapshot status terminate terminate-idle`：`input {data}`（M30，把文本写进 PTY，仅档案 job，≤64 KB）、`terminate-idle`（M22，只在没人 attach 时停止，由 host 原子判断，有人则回 `{ok:false, attached:true}`）。host 还写 `term.json`（M30）。
+- 推送事件 `deliver` 现在是 `{event:"deliver", id, seq, text, kind?, from?, relation?, ref?, mode?}`。
 
 **v0.1.7 没有新增 op**：M11–M20 的新功能都复用现有 op，只在字段上扩展——`list`/`job` 事件里的 `JobRow` 新增 `parentOpen`（M13）、`agent`（M18）、`prs`（M16，`PrInfo[]`），M10 的 `worktree`；`dispatch` 的 `DispatchArgs` 新增 `agent` `workspaceEnv` `envDeny` `envForce`；`report` 的 `WorkerReport` 新增 `attachRepaint`（M21 起只有旧 host 读）`remoteAt` `prLinks`。`reply`（M19 记录视图发消息、M12b 面板 `m`）、`respawn`（M13 唤醒休眠的子会话）、`rm`（M15 `.worktreeinclude` 感知的清理）语义不变。host 帧协议新增：attach 的首个回复帧 `HELLO {repaint}`（M14）/ `{replay:true}`（M21，之后第一帧 DATA 是快照），`attached.json` 的 `replay`（M21），数据流里的私有标记 `OSC 7700;pi-roost-repaint`（M21 起 host 只负责剔除）。
 
@@ -737,6 +1228,22 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | 17 | M18 agent 预设 | `agents.ts`（按宿主的定义格式改写） | 小到中 |
 | 18 | M19 记录视图 | `transcript.ts`（复用，要按宿主会话文件格式改）+ `transcript-view.ts` | 中 |
 | 19 | M20 shell 环境 | `workspace-env.ts`（复用）+ `dispatch.ts` + host | 小到中（需在真实 shell/direnv 上调） |
+| 20 | M21 attach 回放 | `host/main.ts` `snapshot/replay` + `lib/term-modes.ts` + `@xterm/addon-serialize` | 中（模式跟踪细节多，**取代**阶段 13 的重绘做法，建议直接做这个） |
+| 21 | M22 多窗口/频繁切换 | `lib/attach.ts` `localDetachAt`、host SIGCONT/`terminate-idle`、daemon `supersedeOthers`/`continuedElsewhere`、Reporter 退避、`stress-attach` 测试 | 小到中（**强烈建议**：不做会冻结） |
+| 22–26 | M23–M27 hub 功能（`/resume`+选模型、用量、批量、fan-out+`/compare`、预设） | `hub/agent-view.ts` + `hub-options.ts` + `usage.ts` + `config.ts` | 中（都在视图里；daemon 只多几个字段） |
+| 27 | M28 steer/follow-up | `protocol.ts` `ReplyMode` + worker `deliverAs` | 小 |
+| 28 | M29 中性内核 | `lib/identity.ts` + `paths.ts`/`config.ts` 的候选路径 | 小（改名为主） |
+| 29 | M30 档案（级别 0） | `profiles.ts` `term-signals.ts` + host `input`/`term.json` + daemon `profileTick` | 中（**移植到新宿主的最快路径**：零适配代码） |
+| 30 | M31 协议（级别 1） | `docs/protocol.md` + `agent-client.ts` + `sdk/python` + daemon `hello` | 中 |
+| 31 | M32 分层 | 目录搬迁 + `exports` + `cli-deps.test.ts` | 小 |
+| 32 | M33 独立 hub | `pi-resolve.ts` + `hub-main.ts` + `bin` 的 `hub` | 中（视宿主是否有 pi-tui 同类物；依赖宿主的 TUI 库能脱离宿主运行） |
+| 33–34 | M34 telemetry、M35 压测 | `lib/telemetry.ts`、`stress/` + daemon 的 group commit | 中（压测会逼出真问题，**值得做**） |
+| 35 | M36 请求 ID | daemon `reply`/`dispatch` + `requestIds` | 小 |
+| 36 | M37/M41 evals | `evals/` | 中（要真模型与凭证） |
+| 37 | M38 中断续跑 | daemon `finalize` + `RESUME_DELAYS_MS` | 中（要处理好"信号死亡报成 code 0"） |
+| 38 | M39 定时任务 | `lib/schedule.ts` + daemon ticker + hub `/schedule` | 中 |
+| 39 | M40 全 agent 续跑/定时 | daemon 的 `resumable`、`profileTick` 分支、`templateAgent` | 小到中 |
+| 40 | M42 | 仅测试 | — |
 
 ## 附录 C：版本对应
 
@@ -760,6 +1267,40 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 | `510c27b` | PR #29：M18 agent 预设 |
 | `4636ae9` | PR #30：M19 子 agent 记录视图 |
 | `fc62184` | PR #31：M20 shell 环境 |
-| `0d16cd4` | PR #32：发布 v0.1.7（本文依据，tag `v0.1.7`） |
+| `0d16cd4` | PR #32：发布 v0.1.7（v0.1.7 时的依据，tag `v0.1.7`） |
+| `84e4d2e` | PR #33：v0.1.7 的文档 |
+| `30e1dd8` | PR #34：修 CLI——pi-tui 不能在 pi 之外加载（并加了守边界的测试） |
+| `4cf69b9` | PR #35：发布 v0.1.8（tag `v0.1.8`） |
+| `e47ce4d` | PR #36：M21 attach 从 host 的屏幕开始（回放） |
+| `61c4615` | PR #37：发布 v0.1.9（tag `v0.1.9`） |
+| `b17d1c5` | PR #38：M22 不再冻结、多窗口下行保持真实 |
+| `5c1f7d7` | PR #39：发布 v0.1.10（tag `v0.1.10`） |
+| `11affd8` | PR #40：文档与测试里用中性的示例名字 |
+| `d2c2604` | PR #41：Linux 下压力测试的 SIGUSR2 竞态、符号链接清理 |
+| `6dc91f1` | PR #42：M23 `/resume` 与选模型 |
+| `aabbc5a` | PR #43：M24 用量与花费 |
+| `a933051` | PR #44：M25 多选批量 |
+| `1d573d7` | PR #45：M26 fan-out 与 `/compare` |
+| `5099af6` | PR #46：M27 启动预设 |
+| `199ae0b` | PR #47：发布 v0.1.11（tag `v0.1.11`） |
+| `cc67061` | PR #48：M28 steer 或等待 |
+| `ac4312b` | PR #49：设计——any agent（`docs/plans/any-agent.md`） |
+| `30865dd` | PR #50：M29 中性内核 |
+| `4f43256` | PR #51：M30 agent 档案（级别 0） |
+| `79e64ae` | PR #52：M31 agent 协议与 TS/Python 客户端 |
+| `c77c873` | PR #53：M34 telemetry（及压测、evals 的方案） |
+| `fbaa22f` | PR #54：M35 压测及它找出的修复 |
+| `6e5a271` | PR #55：M36 请求 ID |
+| `df39832` | PR #56：M37 真模型 evals |
+| `65b64d7` | PR #57：M32 按层分目录 |
+| `510c2f5` | PR #58：M33 独立 hub（`pi-roost hub`） |
+| `b90f1f4` | PR #59：M38 中断续跑 |
+| `ed74256` | PR #60：M39 定时任务 |
+| `bac1080` | PR #61：M40 全 agent 的续跑与定时 |
+| `6972c06` | PR #62：M41 更多 evals（fan-out、终端 agent、协议 agent） |
+| `d1f43f0` | PR #63：M42 压测用例不再在负载下失败 |
+| `871ed9a` | PR #64：发布 v0.1.12（本文依据，tag `v0.1.12`） |
 
-所需 pi 最低版本：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`）。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+
+所需 pi 最低版本（v0.1.12 仍以 **pi 1.5.0** 验证：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
