@@ -33,6 +33,12 @@ steps; Sunday 0 or 7; day of month and day of week both given: either, as cron d
 - The next run is set before a run starts, so a slow start is never run twice. `every`
   counts from when the schedule was made (or resumed): a run after a gap goes to the next
   slot, never a burst.
+- Local time without going back: in the hour a DST change repeats, the next run is
+  always ahead (steps in epoch time; a run is never set to less than a second ahead).
+  On a spring-forward day a time that does not exist (02:30) runs the next day.
+- One run starting at a time per schedule (two requests at once: the second is busy).
+- Only the session file's own argument is filled: a task that says `{{run}}` is left as
+  written. A hand-edited `schedules.json` has what it lacks made good on load.
 - Skipped, and said in `lastSkip`: a due run while the previous one is still working
   (starting, working, or waiting for its automatic restart, M38). A finished run whose
   worker is still up does not count; that worker is closed once done, as a subagent's.
@@ -54,7 +60,9 @@ steps; Sunday 0 or 7; day of month and day of week both given: either, as cron d
   stopped and started, the rows named `tick`, `tick (2)`, ..., closed when done.
   The first try found that a finished pi run keeps its worker up (idle), which the
   scheduler took for still running: only `working` holds a run now, and finished runs
-  are closed.
+  are closed. The review found a cron next run landing an hour in the past in the hour
+  DST repeats (it would have run on every tick), two runs at once, `{{run}}` in task text
+  and `*/n` in the day rule: fixed, with tests (America/New_York).
 
 ## Not yet
 

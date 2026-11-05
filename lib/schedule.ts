@@ -63,7 +63,8 @@ function field(text: string, min: number, max: number, name: string): { set: Fie
 		if (step < 1 || lo < min || hi > max || lo > hi) throw new Error(`cron ${name}: ${part} (${min}-${max})`);
 		for (let v = lo; v <= hi; v += step) set.add(v);
 	}
-	return { set, any: text === "*" };
+	// a leading * (with a step too) leaves the day rule as "and", as cron does
+	return { set, any: text.startsWith("*") };
 }
 
 export function parseCron(expr: string): Cron {
@@ -87,37 +88,50 @@ export function parseCron(expr: string): Cron {
 	};
 }
 
-/** The first minute after `after` the cron matches (local time), within ~5 years. */
+/**
+ * The first minute after `after` the cron matches (local time), within ~5 years. Steps
+ * never go back: in the hour a DST change repeats, a local setter can land an hour
+ * earlier; a step that would is made a minute forward instead.
+ */
 export function nextCron(c: Cron, after: number): number | null {
-	const t = new Date(after);
-	t.setSeconds(0, 0);
-	t.setMinutes(t.getMinutes() + 1);
+	// the next whole minute, in epoch time (a local setter could land in the other occurrence of a repeated hour)
+	let t = new Date(Math.floor(after / 60_000) * 60_000 + 60_000);
 	const limit = after + 5 * 366 * 24 * 3600_000;
 	const dayOk = (d: Date) => {
 		const dom = c.dom.has(d.getDate());
 		const dow = c.dow.has(d.getDay());
 		return c.domAndDow ? dom || dow : dom && dow;
 	};
+	const step = (move: (d: Date) => void) => {
+		const prev = t.getTime();
+		const d = new Date(prev);
+		move(d);
+		t = d.getTime() > prev ? d : new Date(prev + 60_000);
+	};
 	while (t.getTime() <= limit) {
 		if (!c.month.has(t.getMonth() + 1)) {
-			t.setMonth(t.getMonth() + 1, 1);
-			t.setHours(0, 0, 0, 0);
+			step((d) => {
+				d.setMonth(d.getMonth() + 1, 1);
+				d.setHours(0, 0, 0, 0);
+			});
 			continue;
 		}
 		if (!dayOk(t)) {
-			t.setDate(t.getDate() + 1);
-			t.setHours(0, 0, 0, 0);
+			step((d) => {
+				d.setDate(d.getDate() + 1);
+				d.setHours(0, 0, 0, 0);
+			});
 			continue;
 		}
 		if (!c.hour.has(t.getHours())) {
-			t.setHours(t.getHours() + 1, 0, 0, 0);
+			step((d) => d.setHours(d.getHours() + 1, 0, 0, 0));
 			continue;
 		}
 		if (!c.minute.has(t.getMinutes())) {
-			t.setMinutes(t.getMinutes() + 1, 0, 0);
+			t = new Date(t.getTime() + 60_000);
 			continue;
 		}
-		return t.getTime();
+		return t.getTime() > after ? t.getTime() : null;
 	}
 	return null;
 }
@@ -165,8 +179,9 @@ export function runSlot(now: number = Date.now()): string {
 
 /** The dispatch for one run: `{{run}}` filled in the session file and the command. */
 export function runLaunch(template: DispatchArgs, slot: string): DispatchArgs {
-	const fill = (s: string) => s.split(RUN_SLOT).join(slot);
-	return { ...template, sessionFile: fill(template.sessionFile), command: template.command.map(fill) };
+	const file = template.sessionFile.split(RUN_SLOT).join(slot);
+	// the session file's own argument only: a task that says {{run}} is left as written
+	return { ...template, sessionFile: file, command: template.command.map((x) => (x === template.sessionFile ? file : x)) };
 }
 
 /** A template a schedule may keep: a pi job whose session file has the run slot. */
@@ -175,6 +190,7 @@ export function checkTemplate(t: unknown): asserts t is DispatchArgs {
 	if (!a || typeof a !== "object") throw new Error("launch: missing");
 	if (a.kind === "shell") throw new Error("launch: a pi session (scheduled commands are not supported yet)");
 	if (typeof a.sessionFile !== "string" || !a.sessionFile.includes(RUN_SLOT)) throw new Error(`launch: its sessionFile must hold ${RUN_SLOT}`);
+	if (Array.isArray(a.command) && !a.command.includes(a.sessionFile)) throw new Error("launch: its command must name its sessionFile");
 	if (!Array.isArray(a.command) || a.command.length === 0 || !a.command.every((x) => typeof x === "string")) throw new Error("launch: command");
 	if (typeof a.cwd !== "string" || !a.cwd.startsWith("/")) throw new Error("launch: cwd");
 }

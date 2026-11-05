@@ -1331,7 +1331,11 @@ describe("M38: interrupted runs carry on", () => {
 });
 
 describe("M39: scheduled tasks", () => {
-	const template = (script: string) => args(script, { sessionFile: join(work, "{{run}}.jsonl") });
+	// the session file in the command, as pi's has it (`sh -c script <file>`: its $0)
+	const template = (script: string) => {
+		const file = join(work, "{{run}}.jsonl");
+		return args(script, { sessionFile: file, command: ["/bin/sh", "-c", script, file] });
+	};
 	const writeSchedules = (list: unknown[]) => writeFileSync(join(home, "schedules.json"), JSON.stringify(list));
 	const saved = (over: Record<string, unknown>) => ({
 		name: "nightly",
@@ -1443,6 +1447,15 @@ describe("M39: scheduled tasks", () => {
 		await waitFor(async () => ((await find(client, id))?.pid === null ? true : undefined), 10000);
 		expect((await find(client, id))?.state).toBe("done");
 		await client.request("stop", { id: second.id });
+	});
+
+	it("two runs asked at once start one", async () => {
+		const { client } = await startDaemon();
+		await client.request("schedule-add", { name: "twice", when: "daily 03:00", launch: template("sleep 2") });
+		const both = await Promise.allSettled([client.request("schedule-run", { name: "twice" }), client.request("schedule-run", { name: "twice" })]);
+		expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+		expect(both.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "busy" } });
+		expect((await client.request("list", {})).jobs.filter((j) => j.schedule === "twice")).toHaveLength(1);
 	});
 });
 

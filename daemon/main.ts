@@ -764,6 +764,8 @@ function exitText(ex: { code: number | null; signal: string | null }, what: stri
 const schedulesPath = () => join(roostHome(), "schedules.json");
 const schedules = new Map<string, Schedule>();
 const SCHEDULE_TICK_MS = Number(process.env.PI_ROOST_SCHEDULE_TICK_MS) || 15_000;
+/** Schedules whose run is being started (two requests at once start one). */
+const startingRuns = new Set<string>();
 
 function loadSchedules(): void {
 	const saved = readJson<Schedule[]>(schedulesPath());
@@ -771,8 +773,16 @@ function loadSchedules(): void {
 	for (const s of saved) {
 		try {
 			if (!s || !SCHEDULE_NAME.test(s.name)) continue;
-			parseWhen(s.when);
+			const when = parseWhen(s.when);
 			checkTemplate(s.launch);
+			// a file edited by hand: what is missing or not a number is made good
+			const now = Date.now();
+			if (!Number.isFinite(s.createdAt)) s.createdAt = now;
+			if (!Number.isFinite(s.anchor)) s.anchor = s.createdAt;
+			s.paused = s.paused === true;
+			s.catchUp = s.catchUp !== false;
+			if (s.paused) s.nextAt = null;
+			else if (!Number.isFinite(s.nextAt)) s.nextAt = nextRun(when, now, s.anchor);
 			schedules.set(s.name, s);
 		} catch (err) {
 			log("warn", "schedule dropped", { name: s?.name, error: String(err) });
@@ -828,13 +838,19 @@ function stillRunning(id: string | undefined): boolean {
 async function runSchedule(s: Schedule, now: number, why: "due" | "catch-up" | "now"): Promise<string> {
 	return telemetry.startSpan({ name: "roost.schedule.run", attributes: { schedule: s.name, why } }, async (span) => {
 		// the next one first: an await below must not let a tick start this one twice
-		if (why !== "now") s.nextAt = nextRun(parseWhen(s.when), now, s.anchor);
+		// (and never one not ahead: it would run again on the next tick)
+		if (why !== "now") {
+			const next = nextRun(parseWhen(s.when), now, s.anchor);
+			s.nextAt = next === null ? null : Math.max(next, now + 1000);
+		}
+		if (startingRuns.has(s.name)) throw new OpError("busy", "a run of it is starting");
 		if (stillRunning(s.lastJob)) {
 			s.lastSkip = { at: now, why: `the previous run (${s.lastJob}) is still going` };
 			saveSchedules();
 			span.setAttributes({ skipped: true });
 			throw new OpError("busy", s.lastSkip.why);
 		}
+		startingRuns.add(s.name);
 		try {
 			const r = await dispatch({ ...runLaunch(s.launch, runSlot(now)), name: s.name, requestId: undefined }, { schedule: s.name });
 			s.lastRunAt = now;
@@ -847,6 +863,7 @@ async function runSchedule(s: Schedule, now: number, why: "due" | "catch-up" | "
 			log("warn", "schedule run failed", { schedule: s.name, error: String(err) });
 			throw err;
 		} finally {
+			startingRuns.delete(s.name);
 			saveSchedules();
 		}
 	});

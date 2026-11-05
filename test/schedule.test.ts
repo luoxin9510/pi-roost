@@ -94,4 +94,36 @@ describe("M39: schedules", () => {
 		expect(untilText(now + 125 * 60_000, now)).toBe("in 2h 05m");
 		expect(untilText(now + 50 * 3600_000, now)).toBe("in 2d 2h");
 	});
+
+	it("never goes back in the hour a DST change repeats, nor skips past", () => {
+		const tz = process.env.TZ;
+		process.env.TZ = "America/New_York";
+		try {
+			// 2026-11-01: 01:00-02:00 happens twice (EDT, then EST); 06:30Z is 01:30 EST, the second time
+			const after = Date.UTC(2026, 10, 1, 6, 30);
+			for (const expr of ["* * * * *", "*/5 * * * *", "0 * * * *", "30 1 * * *"]) {
+				const next = nextCron(parseCron(expr), after);
+				expect(next, expr).not.toBeNull();
+				expect(next! > after, expr).toBe(true);
+				expect(next! - after, expr).toBeLessThan(25 * 3600_000);
+			}
+			expect(nextCron(parseCron("* * * * *"), after)).toBe(after + 60_000);
+			// spring forward (2026-03-08, 02:00-03:00 does not exist): a 02:30 run waits a day
+			const spring = nextCron(parseCron("30 2 * * *"), Date.UTC(2026, 2, 8, 5, 0));
+			expect(new Date(spring!).toISOString()).toBe("2026-03-09T06:30:00.000Z");
+		} finally {
+			if (tz === undefined) delete process.env.TZ;
+			else process.env.TZ = tz;
+		}
+	});
+
+	it("a leading * keeps cron's day rule (and); a task saying {{run}} is left alone", () => {
+		expect(parseCron("0 0 */2 * 1").domAndDow).toBe(false);
+		expect(parseCron("0 0 1 * 1").domAndDow).toBe(true);
+		const file = `/s/${RUN_SLOT}.jsonl`;
+		const t = { kind: "pi" as const, cwd: "/w", sessionFile: file, command: ["pi", "--session", file, "--", `explain ${RUN_SLOT}`], env: {}, name: "n", origin: "dispatch" as const };
+		const r = runLaunch(t, "SLOT");
+		expect(r.command).toEqual(["pi", "--session", "/s/SLOT.jsonl", "--", `explain ${RUN_SLOT}`]);
+		expect(() => checkTemplate({ ...t, command: ["pi", "--", "x"] })).toThrow(/name its sessionFile/);
+	});
 });
