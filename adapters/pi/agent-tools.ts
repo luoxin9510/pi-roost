@@ -1,5 +1,5 @@
 // M9: tools an agent uses to talk to other pi sessions (roost_agents, roost_send,
-// roost_spawn) and the renderer for the messages it receives.
+// roost_spawn; M43: roost_watch) and the renderer for the messages it receives.
 import { existsSync, statSync } from "node:fs";
 import { discoverAgents, findAgent } from "../../lib/agents.ts";
 import { resolve } from "node:path";
@@ -37,6 +37,8 @@ export function sendLine(r: SendResult): string {
 			return `${who} had ended; it is starting again to read the message.`;
 		case "stopped":
 			return `${who} was stopped by the user and was not woken; the message was not sent.`;
+		case "duplicate":
+			return `Not sent: the same message went to ${who} less than a minute ago. It has it; wait for its answer instead of repeating.`;
 		default:
 			return `${who} is not running; the message was not delivered.`;
 	}
@@ -53,7 +55,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 		const d = message.details ?? {};
 		const content = typeof message.content === "string" ? message.content : message.content.map((c) => ("text" in c ? c.text : "")).join("");
 		const body = envelopeBody(content);
-		const head = `✉ ${d.kind === "report" ? "report" : "message"} from ${d.from ?? "an agent"}${d.relation ? ` (${d.relation})` : ""}`;
+		const head = `✉ ${d.kind === "report" ? "report" : d.kind === "notice" ? "notice" : "message"} from ${d.from ?? "an agent"}${d.relation ? ` (${d.relation})` : ""}`;
 		const lines = body.split("\n");
 		const shown = opts.expanded || lines.length <= 8 ? body : `${lines.slice(0, 8).join("\n")}\n… (${lines.length - 8} more lines)`;
 		return new Text(`${theme.fg("accent", head)}\n${theme.fg("muted", shown)}`, 1, 0);
@@ -85,6 +87,22 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 		}),
 		async execute(_id, params) {
 			return text(sendLine(await link.call("send", { to: params.to, message: params.message })));
+		},
+	});
+
+	pi.registerTool({
+		name: "roost_watch",
+		label: "Watch agent",
+		description:
+			"Be told once, as a message here, when another session is next idle (its turn finished, or it waits for an answer; when: idle) or has ended (failed, stopped or removed; when: ended). Use it instead of polling roost_agents. A child's report comes by itself; watch a session you are not the parent of. The notice comes once; a watch that never fires expires after 12 hours.",
+		parameters: Type.Object({
+			to: Type.String({ description: "Session id (or exact name) from roost_agents" }),
+			when: Type.Optional(Type.Union([Type.Literal("idle"), Type.Literal("ended")], { description: "idle (default): its next stop, for any reason; ended: only when it is gone" })),
+		}),
+		async execute(_id, params) {
+			const r = await link.call("watch", { id: params.to, when: params.when ?? "idle" });
+			if (r.fired) return text(`${r.name} (${r.id}) is already ${r.when === "ended" ? "ended" : "idle"}: the notice is on its way as a message here.`);
+			return text(`Watching ${r.name} (${r.id}): a message comes here once it is ${r.when === "ended" ? "ended" : "idle"}. Keep working meanwhile.`);
 		},
 	});
 

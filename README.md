@@ -120,6 +120,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `/model`, `/thinking` | model and thinking level for sessions started from this view (bare: pick from a list you can search) | 设置从这个视图新开的会话所用的模型和 thinking 级别（不带参数则从可搜索的列表里选） |
 | Ctrl+L · Ctrl+P · Shift+Tab | as in pi: pick the model for new sessions (type to search, Tab: enabled or all models), cycle the enabled models (`enabledModels`), cycle the thinking level; the line under the header always says what a new session runs | 和 pi 一样：给新会话选模型（打字搜索，Tab 切换"已启用 / 全部"模型）、在已启用的模型（`enabledModels`）间轮换、轮换 thinking 级别；标题下面一行始终显示新会话会用什么 |
 | `/usage` | what the sessions spent: today and all in the header, per row, and here by model and by session (subscription use counted as if billed per token, marked `(sub)`) | 各会话的花费：标题行显示今天和全部合计，每行显示自己的，这里按模型、按会话列出（订阅额度按 token 计价折算，标 `(sub)`） |
+| `/log` | what happened lately across the sessions, newest first: tasks started, questions, results, failures, messages between sessions, replies (`r` reloads) | 最近各会话发生了什么，最新在前：启动的任务、提问、结果、失败、会话之间的消息、回复（按 `r` 刷新） |
 | `/fanout a/x b/y`, `/compare` | the next task runs once per model, each in its own git worktree (bare `/fanout`: pick the models; `off` cancels); `/compare` on one of them puts them side by side (state, cost, the change in each worktree, the last reply): ← → choose, Enter open, `k` twice keeps one and deletes the others | 下一个任务按每个模型各跑一份，各自在独立的 git worktree 里（不带参数的 `/fanout` 从列表选模型，`off` 取消）；在其中一行上用 `/compare` 并排对比（状态、花费、各自 worktree 的改动、最后的回复）：← → 选择，Enter 进入，`k` 按两次保留这一个并删除其余 |
 | `/preset [name]` | launch presets: model, thinking, worktree, agent, directory and fan-out together; bare: pick one; `save name` keeps what new sessions use now, `rm name`, `off` | 启动预设：模型、thinking、worktree、agent、目录和多模型并跑一起切换；不带参数则从列表里选；`save name` 把当前新会话的设置存成预设，另有 `rm name`、`off` |
 | `/profile [name]` | new sessions run one of your [other agents](#other-agents--其他-agent) (`pi` goes back); bare: pick one | 新会话改用你的某个[其他 agent](#other-agents--其他-agent)（`pi` 换回）；不带参数则从列表里选 |
@@ -173,15 +174,16 @@ the session, so a session that is restarted later keeps it.
 
 ## Agents talking to each other · agent 之间通信
 
-Every pi session with pi-roost gets three tools, modelled on Claude Code's background agents:
+Every pi session with pi-roost gets four tools, modelled on Claude Code's background agents:
 
-装了 pi-roost 的每个 pi 会话都会多出三个工具，仿照 Claude Code 的后台 agent 设计：
+装了 pi-roost 的每个 pi 会话都会多出四个工具，仿照 Claude Code 的后台 agent 设计：
 
 | Tool · 工具 | What it does | 作用 |
 |---|---|---|
 | `roost_spawn` | start a background child session on a task; its report (final reply, question or failure) comes back by itself when it finishes | 派一个后台子会话去做任务；它完成时，汇报（最终回复、提问或失败原因）会自动送回来 |
 | `roost_send` | message another session by id or exact name; it arrives at that session's next step | 按 id 或准确名字给另一个会话发消息，对方在下一步就会收到 |
 | `roost_agents` | list the sessions you can reach, with state and what each is doing or asking | 列出能通信的会话，以及各自的状态、正在做什么或在问什么 |
+| `roost_watch` | be told once, as a message, when another session is next idle (finished, or waiting for an answer) or has ended, instead of polling | 另一个会话下次空闲（做完或等回答）或结束时收到一条通知消息，不用轮询 |
 
 So a session can fan work out to children and gather their results, the way subagent
 workflows do, except that every child is a full pi session you can open, answer or message
@@ -232,8 +234,10 @@ How it behaves · 运行方式：
   that moved to the background (←) keeps getting its children's reports.<br>
   对方没在运行时消息不会丢：后台任务会一直保留消息，直到读取（已结束的任务会为此重新启动，你手动停掉的不会被唤醒）。前台父会话按 ← 转到后台后，仍然能收到子会话的汇报。
 - Limits: 3 levels deep, 8 running children per session, 16 per tree, 32 overall, 30
-  messages and 10 spawns a minute.<br>
-  限制：最多 3 层；每个会话最多 8 个运行中的子会话，每棵树最多 16 个，全局最多 32 个；每分钟最多 30 条消息、10 次派发。
+  messages and 10 spawns a minute, 20 messages waiting per session. The same message to
+  the same session again within a minute is dropped (two sessions repeating themselves
+  stop by themselves).<br>
+  限制：最多 3 层；每个会话最多 8 个运行中的子会话，每棵树最多 16 个，全局最多 32 个；每分钟最多 30 条消息、10 次派发；每个会话最多积压 20 条消息。一分钟内给同一个会话再发同样的消息会被丢弃（两个会话互相重复就会自己停下来）。
 
 Design notes: [`docs/plans/m9-agent-comms.md`](docs/plans/m9-agent-comms.md).
 
@@ -527,6 +531,9 @@ pi-roost list [--all] [--subagents]     list sessions as a table           以�
 pi-roost --json [--all] [--cwd <dir>]   list sessions as JSON              以 JSON 列出会话
 pi-roost attach <id|name>               open a session (Ctrl+Z detaches)   进入会话（Ctrl+Z 退出）
 pi-roost logs <id|name>                 print its current or last screen   打印它当前或最后的屏幕
+pi-roost log [-n 50] [--follow] [<id|name>]
+                                        what happened lately (tasks, questions, results, messages)
+                                        最近发生了什么（任务、提问、结果、消息）；--follow 持续打印
 pi-roost reply <id|name> <text>         send a reply                       发送回复
 pi-roost stop <id|name>                 stop it                            停止
 pi-roost rm <id|name>                   stop it and delete its record      停止并删除记录

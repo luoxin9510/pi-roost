@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { AgentView, type AgentViewOptions } from "../hub/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
+import type { RoostEvent } from "../lib/events.ts";
 import { modelFacts, rowDetailsOf, takesReplies } from "../lib/view-model.ts";
 
 let n = 0;
@@ -48,6 +49,8 @@ class FakeClient {
 	rows: JobRow[];
 	dispatchDelay = 0;
 	replyResult: unknown = { delivered: true, saved: false };
+	/** M43: what /log shows. */
+	log: RoostEvent[] = [];
 	constructor(rows: JobRow[]) {
 		this.rows = rows;
 	}
@@ -87,6 +90,7 @@ class FakeClient {
 		if (op === "reply") return this.replyResult;
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		if (op === "schedule-add") return { ...(args as object), paused: false, nextAt: Date.now() + 3600_000 };
+		if (op === "events") return { events: this.log, cursor: this.log.length };
 		return {};
 	}
 }
@@ -931,6 +935,38 @@ describe("M23 review", () => {
 		view.handleInput("\r");
 		view.dispose();
 		expect(disposed).toBe(1);
+	});
+});
+
+describe("M43: /log in the hub", () => {
+	it("lists what happened, newest first, and closes on Esc; an empty feed says so", async () => {
+		const { view, client } = setup([row({ name: "fix tests" })]);
+		await view.start();
+		type(view, "/log");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("nothing happened yet");
+		const at = Date.now();
+		client.log = [
+			{ seq: 1, at: at - 120_000, kind: "dispatch", id: "j1", name: "fix tests", who: "user" },
+			{ seq: 2, at: at - 60_000, kind: "state", id: "j1", name: "fix tests", state: "blocked", from: "working", waitingFor: "question", text: "Which branch?" },
+			{ seq: 3, at: at - 1000, kind: "message", id: "j1", name: "fix tests", who: "lead", text: "use main" },
+		];
+		type(view, "/log");
+		view.handleInput("\r");
+		await sleep(20);
+		const panel = view.render(120).join("\n");
+		expect(panel).toContain("Log · what happened lately");
+		expect(panel).toContain("1m  fix tests asks: Which branch?");
+		expect(panel).toContain("lead → fix tests: use main");
+		expect(panel.indexOf("use main")).toBeLessThan(panel.indexOf("started fix tests"));
+		expect(client.requests.filter((r) => r.op === "events")).toHaveLength(2);
+		view.handleInput("r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "events")).toHaveLength(3);
+		view.handleInput("\x1b");
+		expect(view.render(120).join("\n")).not.toContain("Log · what happened lately");
+		view.dispose();
 	});
 });
 

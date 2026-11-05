@@ -57,7 +57,7 @@ export function registerForegroundPeer(pi: ExtensionAPI): void {
 			// Only this pi's registration gets deliveries on this connection; one can arrive
 			// before the peer_register response has been read, so do not filter by id.
 			fresh.onEvent((e) => {
-				if (e.event === "deliver" && (e.kind === "message" || e.kind === "report")) receive(e);
+				if (e.event === "deliver" && (e.kind === "message" || e.kind === "report" || e.kind === "notice")) receive(e);
 			});
 			fresh.onClose(() => {
 				if (client !== fresh) return;

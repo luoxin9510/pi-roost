@@ -10,6 +10,7 @@ import { cleanupText } from "../lib/worktree.ts";
 import { daemonLogPath, hostSocketPath, runtimeDir } from "../lib/paths.ts";
 import { findPiPackage, piCliOf, usePiPackage } from "../lib/pi-resolve.ts";
 import { agoText, untilText } from "../lib/schedule.ts";
+import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
@@ -26,6 +27,9 @@ usage:
   pi-roost attach <id|name>        open a background session (Ctrl+Z detaches);
                                    an ended one is started again first
   pi-roost logs <id|name>          print its current or last screen
+  pi-roost log [-n <count>] [--follow] [<id|name>]
+                                   what happened lately (tasks, questions, results,
+                                   messages), oldest first; --follow keeps printing
   pi-roost reply <id|name> <text>  send a reply (queued as a follow-up while it works)
   pi-roost stop <id|name>          stop it
   pi-roost rm <id|name>            stop it and delete its record
@@ -193,6 +197,31 @@ async function cmdSchedule(args: string[]): Promise<void> {
 	});
 }
 
+/** M43: the event feed, oldest first; --follow polls for more (Ctrl+C ends it). */
+async function cmdLog(args: string[]): Promise<void> {
+	const follow = args.includes("--follow") || args.includes("-f");
+	const nAt = args.indexOf("-n");
+	const limit = nAt === -1 ? 50 : Number(args[nAt + 1]);
+	if (nAt !== -1 && !(limit > 0)) throw new UsageError("-n needs a count");
+	const rest = args.filter((a, i) => a !== "--follow" && a !== "-f" && i !== nAt && i !== nAt + 1);
+	if (rest.length > 1) throw new UsageError("log [-n <count>] [--follow] [<id|name>]");
+	await withDaemon(async (c) => {
+		const id = rest[0] ? (await c.request("resolve", { query: rest[0] })).id : undefined;
+		const print = (events: RoostEvent[]) => {
+			const now = Date.now();
+			for (const e of events) process.stdout.write(`${eventAgo(e.at, now).padStart(4)} ago  ${eventLine(e)}\n`);
+		};
+		let { events, cursor } = await c.request("events", { limit, id });
+		print(events);
+		if (events.length === 0 && !follow) process.stdout.write("nothing happened yet\n");
+		while (follow) {
+			await new Promise((r) => setTimeout(r, 1000));
+			({ events, cursor } = await c.request("events", { after: cursor, id }));
+			print(events);
+		}
+	});
+}
+
 async function cmdList(args: string[]): Promise<void> {
 	const rows = await listRows(args);
 	process.stdout.write(formatList(rows, { subagents: args.includes("--subagents") || args.includes("--all"), width: process.stdout.columns || 100 }));
@@ -307,6 +336,9 @@ async function main(argv: string[]): Promise<number> {
 			case "list":
 			case "ls":
 				await cmdList(rest);
+				break;
+			case "log":
+				await cmdLog(rest);
 				break;
 			case "--json":
 				await cmdJson(rest);

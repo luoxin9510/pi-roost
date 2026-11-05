@@ -560,7 +560,7 @@ function thinkingOf(pi: ExtensionAPI): string | null {
 }
 
 
-const isAgentKind = (k: DeliverItem["kind"]) => k === "message" || k === "report";
+const isAgentKind = (k: DeliverItem["kind"]) => k === "message" || k === "report" || k === "notice";
 const MAX_MESSAGE_REPORTS = 3;
 
 function lastAssistant(ctx: ExtensionContext): { content?: unknown; stopReason?: string; errorMessage?: string } | undefined {

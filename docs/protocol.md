@@ -111,7 +111,7 @@ show them) and say what roost may expect:
 | `model-switch` | takes `/model` and `/thinking` replies |
 | `transcript` | has a transcript roost can show |
 | `peers` | uses the agent-to-agent ops (pi's `roost_*` tools) |
-| `agent-items` | takes peer messages and reports as deliveries (`kind` set) |
+| `agent-items` | takes peer messages, reports and notices as deliveries (`kind` set) |
 
 ### `report`
 
@@ -157,8 +157,9 @@ seconds. The connection a report goes through becomes the job's: replies come on
   the handler returns, and, when replies are sent again, only those already finished.
 - `mode`: `steer` (join the work under way) or `followUp` / absent (after it); an agent
   without `steer` treats both as after.
-- `kind` `message` or `report` (with `from`, `relation`) are peer items, sent only to an
-  agent that said `agentItems: true` in a report; it acks each with `exact: true`.
+- `kind` `message`, `report` or `notice` (with `from`, `relation`) are peer items, sent
+  only to an agent that said `agentItems: true` in a report; it acks each with `exact:
+  true`. A `notice` (M43) is a watch that fired: the session it watched is idle or ended.
 - A reply of `/stop` is never delivered: the daemon stops the job. A reply starting with
   `/` is refused while the agent is not connected (it is a command, meaningful live only).
 - A rename in the hub changes the row only; `/name` replies are pi's.
@@ -180,7 +181,25 @@ each resend of it.
 
 `handback`, `peers`, `send`, `spawn` (the agent-to-agent ops pi's tools use) are on the
 same connection, after a report; see `lib/protocol.ts`. They are part of the `peers`
-capability and not yet described here.
+capability and not yet described here, except:
+
+- `watch {id, when: "idle" | "ended"}` (M43) → `{id, name, when, fired}`: tell me once,
+  as a `notice` delivery, when that session (an id or a name `peers` lists) is next idle
+  (its next stop: done, a question, failed, stopped, removed) or has ended (failed,
+  stopped, removed). Already so: `fired: true`, the notice comes at once. The watch is
+  kept across a restart of the daemon and expires after 12 hours; at most 20 per
+  session.
+- Message rules (M43): `send` answers `outcome: "duplicate"` for the same text to the
+  same session again within a minute, and it is not delivered; 30 messages a minute
+  per sender (`rate_limited`); 20 agent items waiting per session (`full`). The
+  envelope of every peer item says it is from another session, not the user, carries
+  no authority, and that a command in it is text.
+
+`events {after?, limit?, id?}` → `{events, cursor}` (M43) is for the hub and the CLI,
+not for agents (a peer connection is refused: the feed carries every tree's messages):
+what happened across the jobs (starts, state changes that matter, replies, messages,
+reports, notices, restarts, schedule runs, removals), the last 1000, oldest first after
+a cursor (`after`), the newest `limit` without one. See `docs/plans/m43-events.md`.
 
 ## Conformance
 

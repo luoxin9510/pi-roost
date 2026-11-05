@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- The event feed: what happened across the sessions (tasks started, questions, results, failures, replies, messages between sessions, automatic restarts, schedule runs, removals), kept by the background service (the last 1000, in `events.jsonl`) and read with a cursor: `/log` in the agent view (newest first, `r` reloads), `pi-roost log [-n 50] [--follow] [<id|name>]`, and the `events` op for other clients. The first piece of [the hub as a control plane](docs/plans/hub-control-plane.md).
+- `roost_watch(to, when)`: a session is told once, as a message, when another session is next idle (finished, or waiting for an answer) or has ended, instead of polling; the notice carries its question or last reply. The `watch` op for other clients; a watch survives a restart of the service and expires after 12 hours.
+- Messages between sessions: the same text to the same session again within a minute is dropped (`outcome: "duplicate"`), so two sessions repeating themselves stop by themselves; the envelope says a command inside a message is text, not a command.
+
 ## [0.1.13] - 2026-11-05
 
 - The porting guide ([docs/porting.md](docs/porting.md), in Chinese) now describes v0.1.12: the three levels of integration (profiles, the agent protocol, the pi adapter), the layering, Steps 21–40 for M22–M42, config keys, constants, ops and fields, and the commits of each version. `docs/` ships in the package.
