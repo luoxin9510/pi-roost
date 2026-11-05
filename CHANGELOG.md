@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-05
+
 - More evals (`evals/agents.eval.ts`): one task on two models, each in its own worktree (what `/fanout` and `/compare` rest on); pi as a terminal agent (a profile: its row read from its screen, a typed reply, stop and a resume with `--continue`); a protocol agent on the Python client, each reply one turn of pi's print mode. The eval harness takes `agent: "term" | "protocol"`, `fanout: [models]` and a `stop` step.
 
 - Interrupted runs carry on, and schedules run, for the agents of `agentProfiles` too: a protocol agent or a terminal agent with `resume` that dies mid-work is started again and told to continue (one without `resume` stays failed, as before); `/schedule` with `/profile x` on runs that agent, and a task starting with `!` runs a command on the schedule. A scheduled terminal agent is closed once it is done and quiet.
