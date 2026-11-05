@@ -35,21 +35,21 @@ Claude Code's documented behaviour.
 | M25 | [marking rows, batch actions](m25-batch.md) | 0.1.11 |
 | M26 | [one task, several models, compared](m26-fanout.md) | 0.1.11 |
 | M27 | [launch presets](m27-presets.md) | 0.1.11 |
-| M28 | [steer or wait, as in pi](m28-steer.md) | next |
-| M29 | [a neutral core](m29-neutral-core.md) | next |
-| M30 | [agent profiles: terminal agents besides pi](m30-profiles.md) | next |
-| M31 | [the agent protocol, TypeScript and Python clients](m31-protocol.md) | next |
-| M34 | [telemetry](evals.md) (first of: telemetry, stress, evals) | next |
-| M35 | [the stress run, and what it found](m35-stress.md) | next |
-| M36 | request ids: a resent reply or dispatch is taken once ([protocol](../protocol.md#request-ids-for-the-clients-that-send-replies-and-start-jobs)) | next |
-| M37 | [evals with real models](m37-evals.md) | next |
-| M32 | [folders by layer: `adapters/pi/`, package exports](m32-layers.md) | next |
-| M33 | [the hub on its own: `pi-roost hub`](m33-hub.md) | next |
-| M38 | [interrupted runs carry on; a crash loop is bounded](m38-resume.md) | next |
-| M39 | [scheduled tasks](m39-schedules.md) | next |
-| M40 | [interrupted runs and schedules for every agent](m40-agents-resume.md) | next |
-| M41 | [more evals: a fan-out, a terminal agent, a protocol agent](m37-evals.md#m41-the-other-agents) | next |
-| M42 | a stress test that failed under load: the fake worker kept keys as pi does ([M22 tests](m22-multi-window.md#tests)) | next |
+| M28 | [steer or wait, as in pi](m28-steer.md) | 0.1.12 |
+| M29 | [a neutral core](m29-neutral-core.md) | 0.1.12 |
+| M30 | [agent profiles: terminal agents besides pi](m30-profiles.md) | 0.1.12 |
+| M31 | [the agent protocol, TypeScript and Python clients](m31-protocol.md) | 0.1.12 |
+| M34 | [telemetry](evals.md) (first of: telemetry, stress, evals) | 0.1.12 |
+| M35 | [the stress run, and what it found](m35-stress.md) | 0.1.12 |
+| M36 | request ids: a resent reply or dispatch is taken once ([protocol](../protocol.md#request-ids-for-the-clients-that-send-replies-and-start-jobs)) | 0.1.12 |
+| M37 | [evals with real models](m37-evals.md) | 0.1.12 |
+| M32 | [folders by layer: `adapters/pi/`, package exports](m32-layers.md) | 0.1.12 |
+| M33 | [the hub on its own: `pi-roost hub`](m33-hub.md) | 0.1.12 |
+| M38 | [interrupted runs carry on; a crash loop is bounded](m38-resume.md) | 0.1.12 |
+| M39 | [scheduled tasks](m39-schedules.md) | 0.1.12 |
+| M40 | [interrupted runs and schedules for every agent](m40-agents-resume.md) | 0.1.12 |
+| M41 | [more evals: a fan-out, a terminal agent, a protocol agent](m37-evals.md#m41-the-other-agents) | 0.1.12 |
+| M42 | a stress test that failed under load: the fake worker kept keys as pi does ([M22 tests](m22-multi-window.md#tests)) | 0.1.12 |
 
 Next: see [any agent](any-agent.md); measured by the stress run and the evals.
 
