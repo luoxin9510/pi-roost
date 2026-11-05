@@ -46,7 +46,9 @@ terminal, as a terminal agent's; after that its reports set the row.
 Both find the job in the environment, connect on the first report, say hello on every
 connection, resend the latest report after a reconnect, and hand replies over once each,
 in order, one at a time, acking each after its handler returns. Report first: a
-connection, and so a reply, starts with a report.
+connection, and so a reply, starts with a report. `close()` sends the latest report; a
+reply whose handler is still running when it is called is acked only if it finishes
+first (otherwise it comes again on the next start).
 
 ## The job's identity
 
@@ -127,9 +129,9 @@ The core fields:
 | `status` | `busy`, `waiting`, `idle` |
 | `waitingFor` | null, `question`, `dialog`, `first-prompt` (with `blocked`) |
 | `summary` | the row's text (≤ 500) |
-| `question`, `choices` | what it asks (≤ 2000), and the answers it offers (≤ 20) |
-| `tool`, `error` | the tool running; what went wrong (with `failed`) |
-| `name` | the session's name (null: roost names it) |
+| `question`, `choices` | what it asks (≤ 2000), and the answers it offers (≤ 20, each ≤ 200) |
+| `tool`, `error` | the tool running (≤ 100); what went wrong, with `failed` (≤ 1000) |
+| `name` | the session's name (≤ 200; null: roost names it) |
 | `model`, `thinking` | what it runs |
 
 Capability fields: `context` (`{tokens, window, percent}`), `usage` (see
@@ -147,12 +149,16 @@ seconds. The connection a report goes through becomes the job's: replies come on
 - Replies are numbered per job (`seq`, from 1, never reused, continued across restarts).
 - Each stays pending until acked; on every new reporting connection all pending ones
   are sent again. Drop a `seq` you have handled already (ack it again).
-- An ack covers every user reply up to that `seq`.
+- An ack covers every user reply up to that `seq` (peer items below are acked one by one).
+  So ack a reply only once it and every one before it are handled: the clients ack after
+  the handler returns, and, when replies are sent again, only those already finished.
 - `mode`: `steer` (join the work under way) or `followUp` / absent (after it); an agent
   without `steer` treats both as after.
 - `kind` `message` or `report` (with `from`, `relation`) are peer items, sent only to an
   agent that said `agentItems: true` in a report; it acks each with `exact: true`.
-- A reply of `/stop` is never delivered: the daemon stops the job.
+- A reply of `/stop` is never delivered: the daemon stops the job. A reply starting with
+  `/` is refused while the agent is not connected (it is a command, meaningful live only).
+- A rename in the hub changes the row only; `/name` replies are pi's.
 
 ### Others
 

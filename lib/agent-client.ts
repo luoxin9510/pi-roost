@@ -177,7 +177,12 @@ export class Reporter {
 				});
 				this.client = fresh;
 				// M31: a daemon from before the protocol does not know hello: it reports all the same
-				if (this.hello) this.daemonHello = await fresh.request("hello", this.hello).catch(() => undefined);
+				if (this.hello) {
+					this.daemonHello = await Promise.race([
+						fresh.request("hello", this.hello),
+						new Promise<undefined>((r) => setTimeout(() => r(undefined), REQUEST_TIMEOUT_MS).unref?.()),
+					]).catch(() => undefined);
+				}
 			}
 			const client = this.client;
 			await Promise.race([
@@ -240,7 +245,9 @@ const STATUS_OF: Record<WorkerReport["state"], WorkerReport["status"]> = { worki
  */
 export class RoostAgent {
 	private reporter: Reporter;
+	/** Highest seq handed to the handler, and highest whose handler has returned (acked). */
 	private handled = 0;
+	private completed = 0;
 	private queue: Promise<void> = Promise.resolve();
 	private onReply: RoostAgentOptions["onReply"];
 
@@ -292,7 +299,8 @@ export class RoostAgent {
 		// agent items (peer messages) are pi's; a plain agent takes user replies only
 		if (item.kind === "message" || item.kind === "report") return;
 		if (item.seq <= this.handled) {
-			this.reporter.ack(item.seq);
+			// sent again (a reconnect): ack only what is finished; the rest is acked when it is
+			if (item.seq <= this.completed) this.reporter.ack(item.seq);
 			return;
 		}
 		this.handled = item.seq;
@@ -303,6 +311,9 @@ export class RoostAgent {
 					await this.onReply?.(reply);
 				} catch {}
 			})
-			.then(() => this.reporter.ack(reply.seq));
+			.then(() => {
+				this.completed = reply.seq;
+				this.reporter.ack(reply.seq);
+			});
 	}
 }

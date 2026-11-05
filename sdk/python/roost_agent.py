@@ -72,7 +72,9 @@ class RoostAgent:
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._next_id = 0
-        self._handled = 0
+        self._handled = 0  # handed to on_reply
+        self._completed = 0  # on_reply returned (acked)
+        self._send_lock = threading.Lock()
         self._closed = False
         self._wake = threading.Event()
         self._replies: List[Reply] = []
@@ -106,6 +108,7 @@ class RoostAgent:
             "model": None,
         }
         report.update(fields)
+        json.dumps(report)  # raises here, not in the connection thread, if a field cannot be sent
         with self._lock:
             self._latest = report
         self._wake.set()
@@ -133,7 +136,10 @@ class RoostAgent:
             rid = self._next_id
         if sock is None:
             raise ConnectionError("not connected")
-        sock.sendall((json.dumps({"id": rid, "op": op, "args": args}) + "\n").encode())
+        line = (json.dumps({"id": rid, "op": op, "args": args}) + "\n").encode()
+        # three threads send (reports, acks from the reader and the reply thread): one line at a time
+        with self._send_lock:
+            sock.sendall(line)
         return rid
 
     def _drop(self):
@@ -159,7 +165,7 @@ class RoostAgent:
             try:
                 self._session()
                 retry = 0.5
-            except (OSError, ValueError):
+            except Exception:  # the connection thread never dies: it connects again
                 pass
             self._drop()
             if self._closed:
@@ -212,7 +218,9 @@ class RoostAgent:
             if not isinstance(seq, int):
                 return
             if seq <= self._handled:
-                self._ack(seq)
+                # sent again (a reconnect): ack only what is finished; the rest is acked when it is
+                if seq <= self._completed:
+                    self._ack(seq)
                 return
             self._handled = seq
             with self._replies_ready:
@@ -243,4 +251,5 @@ class RoostAgent:
                     self._on_reply(reply)
             except Exception:  # an agent's handler failing must not stop the client
                 pass
+            self._completed = reply.seq
             self._ack(reply.seq)

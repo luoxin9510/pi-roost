@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -960,12 +960,19 @@ describe("M31 the agent protocol", () => {
 		await expect(client.request("hello", { protocol: "one" } as never)).rejects.toMatchObject({ code: "bad_request" });
 	});
 
+	const hasPython = (() => {
+		try {
+			return spawnSync("python3", ["--version"]).status === 0;
+		} catch {
+			return false;
+		}
+	})();
 	const agents = [
 		{ lang: "TypeScript", command: () => [process.execPath, resolve("test/fixtures/agent-ts.ts")], name: "scripted-ts" },
-		{ lang: "Python", command: () => ["python3", resolve("test/fixtures/agent-py.py")], name: "scripted-py" },
+		{ lang: "Python", command: () => ["python3", resolve("test/fixtures/agent-py.py")], name: "scripted-py", python: true },
 	];
 	for (const a of agents) {
-		it(`conformance (${a.lang} client): first task as a reply, reports, acks, a daemon restart, exit`, async () => {
+		it.skipIf("python" in a && !hasPython)(`conformance (${a.lang} client): first task as a reply, reports, acks, a daemon restart, exit`, async () => {
 			const first = await startDaemon();
 			const { id } = await first.client.request("dispatch", {
 				cwd: work,

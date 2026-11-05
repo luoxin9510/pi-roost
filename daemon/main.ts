@@ -491,7 +491,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	if (recs.get(id)?.kind === "shell") {
 		// DI-6: stopped, or the command's exit status; the row goes away a while later
 		if (stopReq) patch.state = "stopped";
-		else {
+		else if (isProtocolJob(recs.get(id)) && ex?.code === 0 && st.state === "failed" && typeof st.reportedAt === "number") {
+			// M31: an agent that said it failed and then exited cleanly failed
+			patch.state = "failed";
+		} else {
 			patch.state = ex && ex.code === 0 ? "done" : "failed";
 			if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
 		}
@@ -865,6 +868,12 @@ async function respawn(
 		const shell = rec.kind === "shell";
 		// M30: a level 0 agent takes its prompt typed in, once it is up and quiet
 		const typeTask = isTermJob(rec) && opts.prompt ? opts.prompt : undefined;
+		// M31: a protocol agent takes the prompt as a reply, waiting for its first report
+		if (isProtocolJob(rec) && opts.prompt) {
+			const cur = readState(id);
+			const seq = (typeof cur?.replySeq === "number" ? cur.replySeq : 0) + 1;
+			updateState(id, { replySeq: seq, pendingReplies: [...pendingReplies(id), { seq, text: opts.prompt }] });
+		}
 		let prompt = shell ? undefined : opts.prompt;
 		if (roster.has(id)) {
 			// a running command is never killed to be run again (respawn --all after an upgrade)
@@ -1372,6 +1381,13 @@ function rename(args: { id?: unknown; name?: unknown } | undefined): { id: strin
 	const next = { ...rec, name };
 	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
 	recs.set(id, next);
+	// M31: only pi takes /name; another agent's row is named by the daemon alone
+	if (rec.kind === "shell") {
+		updateState(id, { displayName: name });
+		pushJob(id);
+		log("info", "rename", { id, name });
+		return { id, name };
+	}
 	// The session takes the name too, whenever its worker next runs (now, or after a
 	// respawn): until it reports that name, the daemon's name wins over the report.
 	const st = readState(id);
