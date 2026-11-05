@@ -70,6 +70,7 @@ process.stdin.on("data", (d) => {
 		stopped = true;
 		process.stdin.pause();
 		process.once("SIGCONT", () => { stopped = false; process.stdin.resume(); });
+		process.stdout.write("[stopped]\\r\\n"); // (so a test knows the key was taken)
 		try { process.kill(0, "SIGTSTP"); } catch {}
 		return;
 	}
@@ -312,7 +313,8 @@ describe("M22: a worker that suspended itself", () => {
 		await responsive(c, "before");
 		// a Ctrl+Z that reached the worker (sent past the client's own detach key check)
 		c.sock.write(encodeFrame(FrameType.DATA, "\x1a"));
-		// stopped: the ticks end (once the worker gets to the key; a loaded machine takes a while)
+		// the worker took the key (a loaded machine takes a while), then no ticks
+		await waitFor(() => c.text().includes("[stopped]"), 5000, "worker stopped");
 		await still(c, 300, 5000);
 		const d = await attach(id);
 		await responsive(d, "after");
