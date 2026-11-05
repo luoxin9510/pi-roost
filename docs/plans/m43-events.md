@@ -21,7 +21,8 @@ roost_watch(to, when)     in a session: a message here once that session is idle
   never goes back, across restarts. The file is rewritten to the window once it holds
   twice that; nothing is fsynced (a crash loses the last lines: the feed is a
   convenience, the rows are the record).
-- Kinds: `dispatch` (who started it: `user`, the parent's name), `state` (a change that
+- Kinds: `dispatch` (who started it: `user`, the parent's name; the task's first line),
+  `state` (a change that
   matters: into blocked/done/failed/stopped, or back to working from one of those; a
   blocked session changing what it waits for), `reply` (the user's, first line),
   `message` (`roost_send`, who and the first line), `report` (a child's hand-back, to
@@ -33,8 +34,11 @@ roost_watch(to, when)     in a session: a message here once that session is idle
   so what changed while the service was down is one event and a restart is none.
 - Op `events {after?, limit?, id?}` → `{events, cursor}`: after a cursor, oldest first
   (at most `limit`, default 100); without one, the newest `limit`. `id` keeps one job's.
-  Any client (the socket is owner-only); the hub's `/log` and `pi-roost log` read it,
-  the concierge (M44) will keep a cursor.
+  A cursor ahead of the log (its file was deleted, the numbering started over) is
+  treated as absent. For the hub and the CLI (the socket is owner-only), not for
+  sessions: a connection that is a peer (a worker, a foreground pi) is refused, as the
+  feed carries the first line of every tree's messages and replies; the concierge
+  (M44) will be the one session allowed to read it.
 
 ## Watches
 
@@ -50,11 +54,15 @@ state) is watched once.
   queue, acknowledged by seq; a foreground pi at once), with the envelope of a peer
   message (`from` the watched session, `relation` as the watcher sees it) and a body
   from `noticeBody`: what it waits for and its question, or its state, its last reply,
-  and that the notice comes once. A watcher that ended is started again for it, as for
-  a message; one the user stopped is not.
+  and that the notice comes once. So a watch reads a little more of a session than a
+  message does (its question and last reply); it reaches the same sessions `send`
+  does (the tree; outside it only with `agentExternalMessages` and the exact id). A
+  watcher that ended is started again for it, as for a message; one the user stopped
+  is not; one that is gone (a closed pi) is not told, and the feed does not say it was.
 - Kept in `watches.json` (the daemon's, durable): a watch survives a restart of the
   service. One per (watcher, session, when); at most 20 per watcher; one that never
-  fires expires after 12 hours (`WATCH_TTL_MS`; swept with the reaper's tick).
+  fires expires after 12 hours (`WATCH_TTL_MS`; swept with the reaper's tick); a
+  watcher removed with its session takes its watches with it.
 - `roost_watch(to, when?)` is the pi tool; the renderer shows `✉ notice from …`.
   `agent-items` clients (the TypeScript and Python agent clients) pass a `notice` as
   they pass a message.
@@ -63,7 +71,11 @@ state) is watched once.
 
 - **Repeats dropped**: the same text from the same sender to the same session within
   60 s answers `outcome: "duplicate"` and is not delivered (two sessions repeating
-  themselves stop); the tool says to wait for the answer instead.
+  themselves stop); the tool says to wait for the answer instead. Only a message that
+  went (delivered, queued or started) counts: one refused (the session stopped, its
+  queue full) may be sent again at once. Short acknowledgements ("ok", "continue")
+  repeated within a minute are dropped too; that is the trade-off, and the tool's
+  answer says so.
 - **Rates and queues** (unchanged, now documented together): 30 messages a minute per
   sender, 10 spawns a minute per tree, 20 agent items queued per session (`full`), 50
   user replies.

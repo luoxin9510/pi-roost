@@ -226,6 +226,8 @@ const messageLimiter = new RateLimiter(MESSAGES_PER_MINUTE);
 const spawnLimiter = new RateLimiter(SPAWNS_PER_MINUTE);
 /** M43: the last text each sender sent each session (an identical one soon after is dropped). */
 const lastSent = new Map<string, { hash: string; at: number }>();
+/** An agent item with this outcome is with the session, or kept for it. */
+const reached = (outcome: SendResult["outcome"]) => outcome === "delivered" || outcome === "queued" || outcome === "started";
 
 // ---- M43: the event feed ---------------------------------------------------------------
 
@@ -244,8 +246,10 @@ function noteState(job: JobRow): void {
 	const prev = lastSeen.get(job.id);
 	lastSeen.set(job.id, { state: job.state, waitingFor: job.waitingFor });
 	if (!prev) return;
-	const changed = prev.state !== job.state || (job.state === "blocked" && prev.waitingFor !== job.waitingFor);
-	if (!changed) return;
+	// what a blocked session waits for changing (a question, then a dialog) matters; a row
+	// going quiet (no worker: waitingFor null) or being restored is not a change
+	const waits = job.state === "blocked" && prev.state === "blocked" && !!prev.waitingFor && !!job.waitingFor && prev.waitingFor !== job.waitingFor;
+	if (prev.state === job.state && !waits) return;
 	if (stateMatters(prev.state, job.state) || job.state === "blocked") {
 		const text = job.state === "blocked" ? job.question : job.state === "failed" ? job.error : job.state === "done" ? job.summary : null;
 		record({ kind: "state", id: job.id, name: job.name, state: job.state, from: prev.state, waitingFor: job.waitingFor, text: clipText(text) });
@@ -322,7 +326,8 @@ async function fireWatch(w: Watch, job: JobRow | { id: string; name: string; sta
 	try {
 		const r = await deliverAgent(w.watcher, "notice", text, { from: job.name, relation });
 		log("info", "watch fired", { id: job.id, watcher: w.watcher, when: w.when, outcome: r.outcome });
-		record({ kind: "notice", id: job.id, name: job.name, who: w.watcherName, text: when === "ended" ? "ended" : "is idle" });
+		// a watcher that is gone (a closed pi, a stopped job) is not told: the notice is lost, as a message would be
+		if (reached(r.outcome)) record({ kind: "notice", id: job.id, name: job.name, who: w.watcherName, text: when === "ended" ? "ended" : "is idle" });
 	} catch (err) {
 		log("warn", "watch notice failed", { id: job.id, watcher: w.watcher, error: String(err) });
 	}
@@ -601,6 +606,11 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 	record({ kind: "removed", id, name });
 	lastSeen.delete(id);
 	recs.delete(id);
+	// M43: its own watches go with it when nothing holds its session any more
+	if (file && !holderOf(file) && watches.some((w) => w.watcher === file)) {
+		watches = watches.filter((w) => w.watcher !== file);
+		saveWatches();
+	}
 	replyAt.delete(id);
 	shellPids.delete(id);
 	stopping.delete(id);
@@ -1345,11 +1355,18 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	lastSeen.set(id, { state: "working", waitingFor: null });
 	if (!extra.schedule) {
 		const parent = extra.parentSession ? holderOf(extra.parentSession) : undefined;
-		record({ kind: "dispatch", id, name, who: parent ? holderName(parent) : "user", why: origin === "dispatch" ? null : origin });
+		record({ kind: "dispatch", id, name, who: parent ? holderName(parent) : "user", why: origin === "dispatch" ? null : origin, text: clipText(taskOf(a)) });
 	}
 	if (!shell) supersedeOthers(id);
 	if (!shell) pushChildrenOf(rec.sessionFile); // M13: an adopted session's children have a parent row now
 	return { id, name };
+}
+
+/** M43: the task a dispatch carries, for the feed: the argument after "--", or what a terminal agent is to be given. */
+function taskOf(a: DispatchArgs): string | null {
+	const i = a.command.indexOf("--");
+	if (i >= 0 && str(a.command[i + 1])) return a.command[i + 1]!;
+	return str(a.term?.typeTask) ? a.term.typeTask : null;
 }
 
 /** M22: a job whose session another job took over (while that one is there). */
@@ -2271,15 +2288,18 @@ async function sendMessage(conn: Conn, args: { to?: unknown; message?: unknown }
 		return { outcome: "duplicate", id: target.id, name: target.name, relation: target.relation };
 	}
 	if (!messageLimiter.take(me)) throw new OpError("rate_limited", `at most ${MESSAGES_PER_MINUTE} messages a minute`);
-	lastSent.set(pair, { hash, at: now });
-	if (lastSent.size > 1000) for (const [k, v] of lastSent) if (now - v.at > DUPLICATE_WINDOW_MS) lastSent.delete(k);
 	// the receiver sees the sender from its own side of the tree
 	const relation = relationOf(treeNode(target.key), treeNode(me));
 	const from = peerName(peer);
 	const text = envelope({ from, id: peer.id, relation, kind: "message", body: message });
 	const r = await deliverAgent(target.key, "message", text, { from, relation });
 	log("info", "agent message", { from: peer.id, to: r.id || target.id, outcome: r.outcome });
-	if (r.outcome !== "not running" && r.outcome !== "stopped") record({ kind: "message", id: r.id || target.id, name: r.name || target.name, who: from, text: clipText(message) });
+	if (reached(r.outcome)) {
+		// only a message that went counts as sent: one refused may be sent again at once
+		lastSent.set(pair, { hash, at: now });
+		if (lastSent.size > 1000) for (const [k, v] of lastSent) if (now - v.at > DUPLICATE_WINDOW_MS) lastSent.delete(k);
+		record({ kind: "message", id: r.id || target.id, name: r.name || target.name, who: from, text: clipText(message) });
+	}
 	return { ...r, id: r.id || target.id, name: r.name || target.name, relation: target.relation };
 }
 
@@ -2621,6 +2641,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "peer_ack":
 			return peerAck(conn, args);
 		case "events": {
+			// the feed is the hub's and the CLI's: a session reads other trees' messages otherwise
+			if (conn.peer) throw new OpError("unsupported", "the event feed is read by the hub and the CLI, not by sessions");
 			const after = args?.after;
 			const limit = args?.limit;
 			const id = args?.id;

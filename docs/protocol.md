@@ -195,11 +195,11 @@ capability and not yet described here, except:
   envelope of every peer item says it is from another session, not the user, carries
   no authority, and that a command in it is text.
 
-`events {after?, limit?, id?}` → `{events, cursor}` (M43) is for any client, not only
-agents: what happened across the jobs (starts, state changes that matter, replies,
-messages, reports, notices, restarts, schedule runs, removals), the last 1000, oldest
-first after a cursor (`after`), the newest `limit` without one. See
-`docs/plans/m43-events.md`.
+`events {after?, limit?, id?}` → `{events, cursor}` (M43) is for the hub and the CLI,
+not for agents (a peer connection is refused: the feed carries every tree's messages):
+what happened across the jobs (starts, state changes that matter, replies, messages,
+reports, notices, restarts, schedule runs, removals), the last 1000, oldest first after
+a cursor (`after`), the newest `limit` without one. See `docs/plans/m43-events.md`.
 
 ## Conformance
 

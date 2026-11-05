@@ -489,7 +489,8 @@ describe("M43: the event feed, watches and message rules", () => {
 	it("what happened is a feed with a cursor: starts, messages, reports, questions, ends, removals", async () => {
 		await startDaemon();
 		const p = await foreground("lead");
-		const before = (await p.c.request("events", {})).cursor;
+		const { c: hub } = await connect(); // the hub's own connection: the feed is not read on a peer's
+		const before = (await hub.request("events", {})).cursor;
 		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
 		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
 		const w = await worker(childId);
@@ -503,7 +504,7 @@ describe("M43: the event feed, watches and message rules", () => {
 		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
 		await p.c.request("stop", { id: childId });
 		await waitFor(() => delivered(p.events, "report").find((e) => e.text.includes("ended (stopped)")));
-		const { events, cursor } = await p.c.request("events", { after: before });
+		const { events, cursor } = await hub.request("events", { after: before });
 		expect(cursor).toBeGreaterThan(before);
 		expect(events.map((e) => [e.kind, e.name, e.who ?? null, e.state ?? null, e.text ?? null])).toEqual([
 			["dispatch", "worker", "lead", null, null],
@@ -519,14 +520,17 @@ describe("M43: the event feed, watches and message rules", () => {
 		expect(events[2]!.from).toBe("working");
 		expect(events[2]!.waitingFor).toBe("question");
 		// after the cursor: nothing new; then the removal
-		expect((await p.c.request("events", { after: cursor })).events).toEqual([]);
+		expect((await hub.request("events", { after: cursor })).events).toEqual([]);
 		await p.c.request("rm", { id: childId });
-		const tail = (await p.c.request("events", { after: cursor })).events;
+		const tail = (await hub.request("events", { after: cursor })).events;
 		expect(tail.map((e) => e.kind)).toEqual(["removed"]);
 		// one job's only, and the newest few
-		expect((await p.c.request("events", { id: "nope" })).events).toEqual([]);
-		expect((await p.c.request("events", { limit: 2 })).events.map((e) => e.kind)).toEqual(["report", "removed"]);
-		await expect(p.c.request("events", { after: "x" as unknown as number })).rejects.toMatchObject({ code: "bad_request" });
+		expect((await hub.request("events", { id: "nope" })).events).toEqual([]);
+		expect((await hub.request("events", { limit: 2 })).events.map((e) => e.kind)).toEqual(["report", "removed"]);
+		await expect(hub.request("events", { after: "x" as unknown as number })).rejects.toMatchObject({ code: "bad_request" });
+		// not for sessions: a foreground pi or a worker reads other trees' messages otherwise
+		await expect(p.c.request("events", {})).rejects.toMatchObject({ code: "unsupported" });
+		await expect(w.c.request("events", {})).rejects.toMatchObject({ code: "unsupported" });
 		// the feed survives a restart of the service (its file), numbering on
 		daemons[0]!.kill("SIGKILL");
 		await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
@@ -539,6 +543,7 @@ describe("M43: the event feed, watches and message rules", () => {
 	it("a watch tells the watcher once when the session is next idle: a question, or done", async () => {
 		await startDaemon();
 		const p = await foreground("lead");
+		const { c: hub } = await connect();
 		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
 		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
 		const w = await worker(childId);
@@ -561,7 +566,7 @@ describe("M43: the event feed, watches and message rules", () => {
 		await settle();
 		expect(notices(p.events)).toHaveLength(1);
 		// the feed says who was told
-		const told = (await p.c.request("events", { id: childId })).events.filter((e) => e.kind === "notice");
+		const told = (await hub.request("events", { id: childId })).events.filter((e) => e.kind === "notice");
 		expect(told).toEqual([expect.objectContaining({ who: "lead", name: "worker", text: "is idle" })]);
 		// already idle: said at once
 		expect(await p.c.request("watch", { id: childId, when: "idle" })).toMatchObject({ fired: true });
@@ -647,6 +652,7 @@ describe("M43: the event feed, watches and message rules", () => {
 	it("the same message to the same session within a minute is not sent twice", async () => {
 		await startDaemon();
 		const p = await foreground("lead");
+		const { c: hub } = await connect();
 		const { id: childId } = await p.c.request("spawn", { launch: launch("sleep 30", "worker") });
 		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
 		const w = await worker(childId);
@@ -657,8 +663,13 @@ describe("M43: the event feed, watches and message rules", () => {
 		await settle(200);
 		expect(delivered(w.events, "message").map((e) => e.text.includes("are you done now?"))).toEqual([false, true]);
 		// the feed has the two that went
-		const sent = (await p.c.request("events", { id: childId })).events.filter((e) => e.kind === "message");
+		const sent = (await hub.request("events", { id: childId })).events.filter((e) => e.kind === "message");
 		expect(sent.map((e) => e.text)).toEqual(["are you done?", "are you done now?"]);
+		// one that did not go (the child was stopped) is not a duplicate when sent again
+		await p.c.request("stop", { id: childId });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.state === "stopped");
+		expect(await p.c.request("send", { to: childId, message: "still there?" })).toMatchObject({ outcome: "stopped" });
+		expect(await p.c.request("send", { to: childId, message: "still there?" })).toMatchObject({ outcome: "stopped" });
 	});
 });
 

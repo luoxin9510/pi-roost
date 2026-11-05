@@ -139,11 +139,15 @@ export class EventLog {
 		return ev;
 	}
 
-	/** Events after `after` (oldest first), or the newest `limit` when `after` is absent. */
+	/**
+	 * Events after `after` (oldest first), or the newest `limit` when `after` is absent. A
+	 * cursor ahead of the log (its file was deleted, the numbering started over) is treated
+	 * as absent: the newest `limit`, and the cursor returned is the new one.
+	 */
 	since(q: EventQuery = {}): { events: RoostEvent[]; cursor: number } {
 		const limit = Math.max(1, Math.min(this.max, Math.floor(q.limit ?? 100)));
 		let list = q.id ? this.events.filter((e) => e.id === q.id) : this.events;
-		if (typeof q.after === "number") list = list.filter((e) => e.seq > q.after!).slice(0, limit);
+		if (typeof q.after === "number" && q.after <= this.seq) list = list.filter((e) => e.seq > q.after!).slice(0, limit);
 		else list = list.slice(-limit);
 		return { events: list, cursor: this.seq };
 	}

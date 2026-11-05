@@ -25,6 +25,8 @@ describe("M43: the event log", () => {
 		// after a cursor: only what came after it, oldest first
 		expect(log.since({ after: 1 }).events.map((e) => e.seq)).toEqual([2, 3]);
 		expect(log.since({ after: 3 }).events).toEqual([]);
+		// a cursor from a log that was lost (numbering started over): the newest, not nothing forever
+		expect(log.since({ after: 99, limit: 2 })).toEqual({ events: log.all().slice(-2), cursor: 3 });
 		// no cursor: the newest `limit`
 		expect(log.since({ limit: 2 }).events.map((e) => e.seq)).toEqual([2, 3]);
 		// one job's
