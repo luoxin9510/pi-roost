@@ -1062,6 +1062,12 @@ describe("M46: standing orders in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		expect(view.render(200).join("\n")).toContain("/concierge orders add [every 30m | daily 18:00 | weekdays 09:00 | cron");
+		// starts like a clock but is not one in roost's words: said, not kept as prose
+		type(view, "/concierge orders add every 10s say what is blocked");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(200).join("\n")).toContain("that starts like a clock but is not one in roost's words");
+		expect(client.requests.filter((r) => r.op === "concierge-order" && (r.args as { action: string }).action === "add")).toHaveLength(2);
 		// the list: an overlay, newest first, the user's marked, the ones on a clock with their when and count
 		const now = Date.now();
 		client.orders = [

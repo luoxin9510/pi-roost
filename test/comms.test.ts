@@ -1090,13 +1090,13 @@ describe("M44: the concierge", () => {
 			await waitFor(() => digests(wc.events)[0]);
 			// the tick wakes it for the order (or, on a slow machine, the on-wake carries it: whichever comes first)
 			const due = await waitFor(() => digests(wc.events).find((d) => d.text.includes("Due now")), 8000);
-			if (due.text.includes('why="order"')) expect(due.text).toMatch(/^<roost-digest why="order">\n1 standing order due, \d+ events?/);
+			// the tick's own wake (the on-wake carried it only when it came later than the 3 s: a slow machine)
+			if (due !== digests(wc.events)[0]) expect(due.text).toMatch(/^<roost-digest why="order">\n1 standing order due, \d+ events?/);
 			expect(due.text).toContain("Due now (carry these out, then hub_note_done each):");
 			expect(due.text).toContain("- #3 every 1m · say what is blocked");
 			expect(due.text).toContain("Standing orders (apply one when what is above meets it, once per occurrence):");
-			// once: its next time is a minute on; no second order wake follows
-			const o = (await hub.request("concierge-order", { action: "list" })).orders[0]!;
-			expect(o.nextAt).toBeGreaterThan(Date.now() + 30_000);
+			// once: its next time is a minute on (set once the digest reached it: after the delivery); no second order wake follows
+			await waitFor(async () => ((await hub.request("concierge-order", { action: "list" })).orders[0]?.nextAt ?? 0) > Date.now() + 30_000);
 			await settle(500);
 			expect(digests(wc.events).filter((d) => d.text.includes("Due now"))).toHaveLength(1);
 		} finally {

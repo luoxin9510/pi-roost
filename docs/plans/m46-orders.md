@@ -32,9 +32,10 @@ evening" into `daily 18:00`.
 
 ### The store
 
-`orders.json` in the roost home: `{ id, text, when: string | null, by: "user" |
-"concierge", at, lastAt: number | null, nextAt: number | null, count }`, at most 50,
-`text` at most 500 characters. `concierge-order {action: "add", text, when?}` (the
+`orders.json` in the roost home: `{ next, orders: [{ id, text, when: string | null, by:
+"user" | "concierge", at, lastAt: number | null, nextAt: number | null, count }] }`
+(a bare list is read too), at most 50, `text` at most 500 characters; `next` is the
+next id, so an id is never reused (the concierge's `#5` stays `#5`). `concierge-order {action: "add", text, when?}` (the
 concierge's connection, and the hub's), `{action: "rm", id}` (the hub's, and the
 concierge's for its own), `{action: "list"}` (both). `when` is validated with
 `parseWhen`; `nextAt` from M39's `nextRun`. The status carries `orders: number`.
@@ -51,10 +52,11 @@ policy (an order cannot approve an answer the policy forbids, or start work with
 ### On a clock
 
 `conciergeTick` also looks at orders with a `nextAt` due: a wake with `why: "order"`
-and the due orders first ("Due now: #3 daily 18:00 · say what finished …"), `lastAt`,
-`count` and the next `nextAt` set when the digest reached it (the cap and the budget
-hold it like any wake; a missed one is applied at the next tick, once). The heartbeat
-stays as it is.
+and the due orders first ("Due now: #3 daily 18:00 · say what finished …"); their next
+`nextAt` is set when the digest reached it (the cap and the budget hold it like any
+wake; a missed one is carried by the next wake, once; a retry whose orders an earlier
+wake took meanwhile is an events wake). `lastAt` and `count` change only when the
+concierge says it applied one (`hub_note_done`). The heartbeat stays as it is.
 
 ### Applied
 

@@ -1301,6 +1301,10 @@ export class AgentView implements Component {
 					const words = more.join(" ").trim();
 					if (!words) return this.say('/concierge orders add [every 30m | daily 18:00 | weekdays 09:00 | cron "…"] <the rule, in your words>', "warning");
 					const m = /^(every\s+\d+\s*[mhd]|daily\s+\d{1,2}:\d{2}|weekdays\s+\d{1,2}:\d{2}|cron\s+"[^"]+")\s+(.+)$/i.exec(words);
+					// starts like a clock but is not one in roost's words: said, not kept as prose by mistake
+					if (!m && /^(every|daily|weekdays|cron)\b/i.test(words)) {
+						return this.say('that starts like a clock but is not one in roost\'s words: every 30m | daily 18:00 | weekdays 09:00 | cron "m h dom mon dow" (one minute at least), then the rule; or word the rule differently', "warning");
+					}
 					const when = m?.[1];
 					const { order } = await client.request("concierge-order", { action: "add", text: m ? m[2]! : words, ...(when ? { when } : {}) });
 					return this.say(`kept standing order #${order?.id}${when ? ` (${when})` : ""}; the concierge sees it on its next wake`, "success");

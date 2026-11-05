@@ -529,6 +529,11 @@ async function wakeConcierge(why: WakeWhy): Promise<boolean> {
 	const cfg = conciergeConfig();
 	const { events: all, cursor } = eventLog.since({ after: concierge.cursor, limit: EVENT_LOG_MAX });
 	const events = all.filter((e) => !conciergeOwn(e));
+	const now = Date.now();
+	// M46: the orders on a clock due now (carried by whatever wake comes first); an order wake
+	// whose orders an earlier wake took meanwhile (a retry, a nudge) is an events wake
+	const due = ordersDue(now);
+	if (why === "order" && due.length === 0) why = "events";
 	if (why === "events" && events.length === 0) {
 		if (cursor !== concierge.cursor) {
 			concierge.cursor = cursor;
@@ -536,7 +541,6 @@ async function wakeConcierge(why: WakeWhy): Promise<boolean> {
 		}
 		return false;
 	}
-	const now = Date.now();
 	if (conciergeBudget(now)) return false;
 	concierge.wakes = concierge.wakes.filter((t) => now - t < 3600_000);
 	if (concierge.wakes.length >= cfg.wakesPerHour) {
@@ -545,8 +549,6 @@ async function wakeConcierge(why: WakeWhy): Promise<boolean> {
 		return false;
 	}
 	const rows = list(undefined).filter((r) => r.id !== id);
-	// M46: the orders it keeps, and the ones on a clock due now (carried by whatever wake comes first)
-	const due = ordersDue(now);
 	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now, orders: [...orders.values()], due });
 	// an `on` during the wake starts it over (its cursor is not this wake's to set)
 	const epoch = concierge.onAt;
@@ -765,10 +767,14 @@ async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; la
 
 const ordersPath = () => join(roostHome(), "orders.json");
 const orders = new Map<number, StandingOrder>();
+/** The next order's id: never one that was used (a dropped #5 is not the next order's). */
+let orderNext = 1;
 
 function loadOrders(): void {
-	const saved = readJson<StandingOrder[]>(ordersPath());
-	if (!Array.isArray(saved)) return;
+	const raw = readJson<StandingOrder[] | { next?: unknown; orders?: unknown }>(ordersPath());
+	// `{next, orders}`; a bare list (an older file, a hand-written one) is taken too
+	const saved = Array.isArray(raw) ? raw : raw && Array.isArray(raw.orders) ? (raw.orders as StandingOrder[]) : null;
+	if (!saved) return;
 	const now = Date.now();
 	for (const o of saved) {
 		try {
@@ -791,11 +797,13 @@ function loadOrders(): void {
 			log("warn", "standing order dropped", { id: o?.id, error: String(err) });
 		}
 	}
+	const kept = !Array.isArray(raw) && Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
+	orderNext = Math.max(kept, Math.max(0, ...orders.keys()) + 1);
 }
 
 function saveOrders(): void {
 	try {
-		writeJsonAtomic(ordersPath(), [...orders.values()]);
+		writeJsonAtomic(ordersPath(), { next: orderNext, orders: [...orders.values()] });
 	} catch (err) {
 		log("error", "standing orders not saved", { error: String(err) });
 	}
@@ -829,7 +837,7 @@ function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: un
 			}
 		}
 		const now = Date.now();
-		const id = Math.max(0, ...orders.keys()) + 1;
+		const id = orderNext++;
 		const order: StandingOrder = { id, text, when, by, at: now, lastAt: null, nextAt: when ? nextRun(parseWhen(when), now, now) : null, count: 0 };
 		orders.set(id, order);
 		saveOrders();
