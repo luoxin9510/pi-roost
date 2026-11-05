@@ -37,6 +37,7 @@ Claude Code's documented behaviour.
 | M27 | [launch presets](m27-presets.md) | 0.1.11 |
 | M28 | [steer or wait, as in pi](m28-steer.md) | next |
 | M29 | [a neutral core](m29-neutral-core.md) | next |
+| M30 | [agent profiles: terminal agents besides pi](m30-profiles.md) | next |
 
 Next: [any agent](any-agent.md), the design for M29–M33 (roost for agents other than pi, pi staying the baseline).
 

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { AgentView, type AgentViewOptions } from "../extensions/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
+import { modelFacts, rowDetailsOf, takesReplies } from "../lib/view-model.ts";
 
 let n = 0;
 function row(over: Partial<JobRow> = {}): JobRow {
@@ -1460,5 +1461,86 @@ describe("AgentView presets (M27)", () => {
 		expect(user.has("duo")).toBe(false);
 		expect(view.render(120).join("\n")).not.toContain("new sessions: preset duo");
 		view.dispose();
+	});
+});
+
+describe("AgentView agent profiles (M30)", () => {
+	function withProfiles(presets: Record<string, import("../lib/config.ts").Preset> = {}) {
+		const profiled: { profile: string; task: string; opts: unknown }[] = [];
+		const s = setup([], {
+			extra: {
+				profiles: () => ["codex", "aider"],
+				launchProfile: (profile, task, o) => {
+					profiled.push({ profile, task, opts: o });
+					return { kind: "shell", profile, cwd: o.cwd, sessionFile: "", command: [profile, task], env: {}, name: task, origin: "dispatch" };
+				},
+				presets: () => presets,
+			},
+		});
+		return { ...s, profiled };
+	}
+
+	it("/profile picks the agent new sessions run; tasks go to it, with any model id; /profile pi goes back", async () => {
+		const { view, client, profiled } = withProfiles();
+		await view.start();
+		type(view, "/profile nope");
+		view.handleInput("\r");
+		expect(view.render(100).join("\n")).toContain("no profile nope");
+		view.handleInput("\u0003");
+		type(view, "/profile codex");
+		view.handleInput("\r");
+		type(view, "/model o3-mini");
+		view.handleInput("\r");
+		expect(view.render(120).find((l) => l.startsWith("new sessions:"))).toBe("new sessions: runs codex · model o3-mini");
+		const before = launches.length;
+		type(view, "fix the flaky test");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(launches.length).toBe(before);
+		expect(profiled[0]).toMatchObject({ profile: "codex", task: "fix the flaky test", opts: { cwd: "/w", model: "o3-mini" } });
+		expect(client.requests.find((r) => r.op === "dispatch")?.args).toMatchObject({ kind: "shell", profile: "codex" });
+		// fan-out runs pi sessions only
+		type(view, "/fanout a/one b/two");
+		view.handleInput("\r");
+		type(view, "another task here");
+		view.handleInput("\r");
+		expect(view.render(120).join("\n")).toContain("fan-out runs pi sessions");
+		view.handleInput("\u0003");
+		type(view, "/fanout off");
+		view.handleInput("\r");
+		type(view, "/profile pi");
+		view.handleInput("\r");
+		type(view, "/model default");
+		view.handleInput("\r");
+		type(view, "a task for pi");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(launches.length).toBe(before + 1);
+	});
+
+	it("a preset may run a profile; /preset off goes back to pi", async () => {
+		const { view, profiled } = withProfiles({ quick: { profile: "aider", model: "sonnet" } });
+		await view.start();
+		type(view, "/preset quick");
+		view.handleInput("\r");
+		expect(view.render(140).find((l) => l.startsWith("new sessions:"))).toBe("new sessions: preset quick · runs aider · model sonnet");
+		type(view, "tidy up the readme");
+		view.handleInput("\r");
+		await sleep(10);
+		expect(profiled[0]).toMatchObject({ profile: "aider", opts: { model: "sonnet" } });
+		type(view, "/preset off");
+		view.handleInput("\r");
+		expect(view.render(140).some((l) => l.includes("runs aider"))).toBe(false);
+	});
+
+	it("a profile's row takes replies and shows which agent it is; a plain command's does not", () => {
+		const agentRow = row({ kind: "shell", profile: "codex", model: "o3" });
+		const cmd = row({ kind: "shell", profile: "shell", model: null });
+		expect(takesReplies(agentRow)).toBe(true);
+		expect(takesReplies(cmd)).toBe(false);
+		expect(rowDetailsOf(agentRow)).toMatchObject({ model: "codex o3", context: null });
+		expect(rowDetailsOf({ ...agentRow, model: null })).toMatchObject({ model: "codex" });
+		expect(rowDetailsOf(cmd)).toBeNull();
+		expect(modelFacts(agentRow)).toEqual(["agent codex", "o3"]);
 	});
 });

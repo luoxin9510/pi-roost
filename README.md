@@ -116,6 +116,7 @@ waiting for you, and the terminal notifies you when one asks a question or finis
 | `/usage` | what the sessions spent: today and all in the header, per row, and here by model and by session (subscription use counted as if billed per token, marked `(sub)`) | 各会话的花费：标题行显示今天和全部合计，每行显示自己的，这里按模型、按会话列出（订阅额度按 token 计价折算，标 `(sub)`） |
 | `/fanout a/x b/y`, `/compare` | the next task runs once per model, each in its own git worktree (bare `/fanout`: pick the models; `off` cancels); `/compare` on one of them puts them side by side (state, cost, the change in each worktree, the last reply): ← → choose, Enter open, `k` twice keeps one and deletes the others | 下一个任务按每个模型各跑一份，各自在独立的 git worktree 里（不带参数的 `/fanout` 从列表选模型，`off` 取消）；在其中一行上用 `/compare` 并排对比（状态、花费、各自 worktree 的改动、最后的回复）：← → 选择，Enter 进入，`k` 按两次保留这一个并删除其余 |
 | `/preset [name]` | launch presets: model, thinking, worktree, agent, directory and fan-out together; bare: pick one; `save name` keeps what new sessions use now, `rm name`, `off` | 启动预设：模型、thinking、worktree、agent、目录和多模型并跑一起切换；不带参数则从列表里选；`save name` 把当前新会话的设置存成预设，另有 `rm name`、`off` |
+| `/profile [name]` | new sessions run one of your [other agents](#other-agents--其他-agent) (`pi` goes back); bare: pick one | 新会话改用你的某个[其他 agent](#other-agents--其他-agent)（`pi` 换回）；不带参数则从列表里选 |
 | `/resume` | pi's own session list (search, this directory or all with Tab, sort): the session you pick opens at once, in the background | 打开 pi 自己的会话列表（可搜索，Tab 切换当前目录 / 全部，可排序）：选中的会话立刻在后台接上并进入 |
 | Shift+Enter | a new line in the task (the input is pi's editor: long pastes fold, Ctrl+Z… undo as in pi) | 在任务里换行（输入框就是 pi 的编辑器：长粘贴会折叠，撤销等操作和 pi 一样） |
 | Ctrl+G | write a long task in `$VISUAL` / `$EDITOR` | 在 `$VISUAL` / `$EDITOR` 里写长任务 |
@@ -267,6 +268,21 @@ typed with `--bg`, wins over the agent's; the agent's wins over `dispatchModel`.
 `/model`、`/thinking` 选的，或 `--bg` 时命令行上写的 `--model`，优先于 agent 的；agent 的又优先于
 `dispatchModel`。
 
+## Other agents · 其他 agent
+
+pi-roost can also run terminal agents it has no code for (Claude Code, Codex, your own
+CLI): describe one in `agentProfiles` in your `roost.json`, then `/profile name` in the
+agent view (or a preset's `profile`). Its row is read from its terminal (its title,
+notifications, bell, whether the screen still moves, and patterns you give); replies are
+typed into it; attach, stop, delete, worktrees and presets work as for pi. Model,
+context, cost and transcript are not known for it. See [docs/profiles.md](docs/profiles.md).
+
+pi-roost 也能运行它没有专门代码的终端 agent（Claude Code、Codex、你自己的 CLI）：在你的
+`roost.json` 的 `agentProfiles` 里描述它，然后在 agent 视图里 `/profile 名字`（或在预设里写
+`profile`）。它的行状态从终端读出（标题、通知、响铃、屏幕是否还在动，以及你给的正则）；回复会被
+打进它的终端；进入、停止、删除、worktree 和预设都和 pi 一样。它的模型、上下文、花费和记录无从得知。
+详见 [docs/profiles.md](docs/profiles.md)。
+
 ## Worktrees · 独立 worktree
 
 A new background session can work in its own git worktree and branch, so several
@@ -414,6 +430,7 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `dispatchModel`, `dispatchThinking` | pi's defaults · pi 的默认值 | for sessions started from the view | 从视图新开的会话所用的模型和 thinking 级别 |
 | `dispatchAgent` | none · 无 | run tasks started from the view and `--bg` as this agent ([presets](#agent-presets--agent-预设)) | 从视图和 `--bg` 新开的任务以这个 agent 运行（见[预设](#agent-presets--agent-预设)） |
 | `presets` | none · 无 | launch presets by name: `{ "review": { "model": "provider/id", "thinking": "high", "worktree": true, "agent": "reviewer", "dir": "api", "fanout": ["a/x", "b/y"] } }` (all optional, what one leaves out is the default; `dir` stays under the hub's directory; a project's file adds its own, its own winning by name); `/preset name` in the view uses one, `/preset save name` and `rm name` change the user's file | 按名字保存的启动预设，例如 `{ "review": { "model": "provider/id", "thinking": "high", "worktree": true, "agent": "reviewer", "dir": "api", "fanout": ["a/x", "b/y"] } }`（每项都可省略，省略的项用默认值；`dir` 必须在 hub 目录之内；项目的配置文件可以加自己的预设，同名时以项目的为准）；在视图里 `/preset name` 使用，`/preset save name`、`rm name` 修改用户自己的配置文件 |
+| `agentProfiles` | none · 无 | terminal agents besides pi, by name: `{ "claude": { "command": ["claude"], "model": ["--model", "{model}"], "resume": ["claude", "--continue"] } }` (your file only; see [docs/profiles.md](docs/profiles.md)) | pi 以外的终端 agent，按名字定义，例如 `{ "claude": { "command": ["claude"], "model": ["--model", "{model}"], "resume": ["claude", "--continue"] } }`（只能写在你自己的配置文件里；见 [docs/profiles.md](docs/profiles.md)） |
 | `reapIdleMinutes` | `60` | stop the process of a session idle this long (it restarts on demand) | 会话空闲这么久后停掉进程（需要时自动重启） |
 | `cleanupDays` | `30` | remove the records of sessions that ended this many days ago (`0`: never); session files stay for `/resume`; pinned ones, and ones whose worktree holds uncommitted work, are kept | 结束超过这么多天的会话记录会被移除（`0` 表示从不）；会话文件保留，`/resume` 仍可用；被 pin 的、worktree 里有未提交工作的会保留 |
 | `notify` | `"auto"` | `"osc9"`, `"osc777"`, `"bell"` or `"off"` | 通知方式：`"osc9"`、`"osc777"`、`"bell"` 或 `"off"` |
@@ -431,10 +448,10 @@ Inside a session, ← on an empty prompt, `/exit` or Ctrl+Z goes back to the lis
 | `agentExternalMessages` | `false` | agents may message sessions outside their spawn tree (by exact id) | 允许 agent 给会话树之外的会话发消息（需准确 id） |
 | `agentMaxDepth`, `agentMaxChildren`, `agentMaxTree`, `agentMaxTotal` | `3`, `8`, `16`, `32` | spawn limits | 派发子会话的数量限制 |
 
-A project's `.pi/roost.json` cannot set the environment keys, `summaryModel` or the
-`agent*` reach and limit keys.
+A project's `.pi/roost.json` cannot set the environment keys, `summaryModel`, the
+`agent*` reach and limit keys or `agentProfiles` (a command roost would run).
 
-项目的 `.pi/roost.json` 不能设置环境变量相关的配置项、`summaryModel` 以及 `agent*` 开头的通信范围和数量限制，这样别人克隆来的仓库没法决定你的环境变量和会话记录发往哪里，也没法放宽 agent 的通信范围。
+项目的 `.pi/roost.json` 不能设置环境变量相关的配置项、`summaryModel` 、`agent*` 开头的通信范围和数量限制以及 `agentProfiles`（roost 会执行的命令），这样别人克隆来的仓库没法决定你的环境变量和会话记录发往哪里，没法放宽 agent 的通信范围，也没法让 roost 运行它指定的命令。
 
 ### Environment · 环境变量
 

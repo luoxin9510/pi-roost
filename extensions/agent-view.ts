@@ -39,6 +39,8 @@ import {
 	sentenceOf,
 	titleText,
 	type Tone,
+	isProfileRow,
+	takesReplies,
 } from "../lib/view-model.ts";
 
 const MIN_TASK = 4; // DI-1
@@ -81,6 +83,10 @@ export interface AgentViewOptions {
 	defaultAgent?: string;
 	/** DI-6: a shell job (no model). */
 	launchShell?: (command: string, cwd: string) => DispatchArgs;
+	/** M30: the user's agent profiles (terminal agents besides pi), by name. */
+	profiles?: () => string[];
+	/** M30: a new session of a profile's agent. */
+	launchProfile?: (profile: string, task: string, opts: { cwd: string; model?: string; thinking?: string; worktree?: boolean }) => LaunchRequest;
 	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
 	commands?: () => { name: string; source: string }[];
 	/** M10: new sessions get a worktree unless /worktree off (config worktreeIsolation "all"). */
@@ -260,6 +266,8 @@ export class AgentView implements Component {
 	private fanout: string[] | undefined;
 	/** M27: the preset in use: its name, and what the view has no setting of its own for. */
 	private preset: { name: string; agent?: string; dir?: string } | undefined;
+	/** M30: new sessions run this profile's agent instead of pi. */
+	private profile: string | undefined;
 	private dispatching = false;
 	/** The job a reply is typed for; replies never retarget to another row. */
 	private peekId: string | undefined;
@@ -791,7 +799,12 @@ export class AgentView implements Component {
 			case "model": {
 				if (arg) {
 					const known = this.o.models?.() ?? [];
-					if (arg !== "default" && known.length > 0 && !known.includes(arg)) {
+					// a profile's model is an argument of its own: never one that reads as a flag
+					if (arg !== "default" && this.profile && (arg.startsWith("-") || /\s/.test(arg))) {
+						this.say(`not a model: ${arg}`, "warning");
+						return true;
+					}
+					if (arg !== "default" && !this.profile && known.length > 0 && !known.includes(arg)) {
 						this.say(`unknown model ${arg} (bare /model lists them)`, "warning");
 						return true;
 					}
@@ -867,11 +880,34 @@ export class AgentView implements Component {
 			case "preset":
 				if (this.presetCommand(arg)) return done();
 				return true;
+			case "profile": {
+				const names = this.o.profiles?.() ?? [];
+				if (!arg) {
+					if (names.length === 0) this.say("no agent profiles: add agentProfiles to your roost.json (docs/profiles.md)", "warning");
+					else this.openPicker("Agent for new sessions", ["pi", ...names], this.profile ?? "pi", (v) => this.setProfile(v));
+					return done();
+				}
+				if (arg !== "pi" && arg !== "off" && !names.includes(arg)) {
+					this.say(`no profile ${arg} (bare /profile lists them)`, "warning");
+					return true;
+				}
+				this.setProfile(arg);
+				return done();
+			}
 		}
 		const known = this.o.commands?.().find((c) => c.name === name);
 		if (known && (known.source === "prompt" || known.source === "skill")) return false;
 		this.say(`/${name} isn't available in agent view`, "warning");
 		return true; // the text stays in the input
+	}
+
+	/** M30: the agent new sessions run (pi unless a profile is chosen). */
+	private setProfile(v: string): void {
+		const was = this.profile;
+		this.profile = v === "pi" || v === "off" ? undefined : v;
+		// a model id is the agent's own: it does not carry over to another agent
+		if (was !== this.profile && this.model && (this.profile !== undefined || !this.model.includes("/"))) this.model = undefined;
+		this.say(this.profile ? `new sessions run ${this.profile}` : "new sessions run pi");
 	}
 
 	private openPicker(title: string, values: string[], current: string, pick: (v: string) => void | Promise<void>): void {
@@ -1292,7 +1328,8 @@ export class AgentView implements Component {
 		// (read once per Enter: it scans the agent folders)
 		let found: ReadonlyMap<string, AgentDef> | undefined;
 		const agents = () => (found ??= this.o.agents?.() ?? new Map());
-		const picked = this.o.agents && !/^[!/]/.test(typed.trim()) ? pickAgent(typed, agents()) : undefined;
+		// M30: a profile's agent has no pi agents to pick from
+		const picked = this.o.agents && !this.profile && !/^[!/]/.test(typed.trim()) ? pickAgent(typed, agents()) : undefined;
 		const parsed = parseInput(picked ? picked.task : typed, base);
 		if (parsed.kind === "command") {
 			if (picked && this.isViewCommand(parsed.name)) return this.say(`${picked.agent.name} runs a task, not /${parsed.name}`, "warning");
@@ -1316,15 +1353,25 @@ export class AgentView implements Component {
 			const dir = typedDir ? undefined : this.presetDir();
 			if (dir && "error" in dir) return this.say(dir.error, "warning");
 			const cwd = typedDir ?? dir?.path ?? base;
-			const fallback = this.preset?.agent ?? this.o.defaultAgent;
-			const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
-			if (fallback && !agent) return this.say(`${this.preset?.agent ? "the preset's agent" : "dispatchAgent"} ${fallback} is not an agent here`, "warning");
-			// M26: one session per model
-			if (this.fanout) return this.dispatchFanout(task, cwd, agent, typed, attach);
-			try {
-				args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree, ...(agent ? { agent } : {}) });
-			} catch (err) {
-				return this.say((err as Error).message, "error");
+			if (this.profile) {
+				if (this.fanout) return this.say(`fan-out runs pi sessions (/profile pi, or /fanout off for one ${this.profile})`, "warning");
+				if (!this.o.launchProfile) return this.say("agent profiles are not available here", "warning");
+				try {
+					args = this.o.launchProfile(this.profile, task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree });
+				} catch (err) {
+					return this.say((err as Error).message, "error");
+				}
+			} else {
+				const fallback = this.preset?.agent ?? this.o.defaultAgent;
+				const agent = picked?.agent ?? (fallback ? findAgent(agents(), fallback) : undefined);
+				if (fallback && !agent) return this.say(`${this.preset?.agent ? "the preset's agent" : "dispatchAgent"} ${fallback} is not an agent here`, "warning");
+				// M26: one session per model
+				if (this.fanout) return this.dispatchFanout(task, cwd, agent, typed, attach);
+				try {
+					args = this.o.launch(task, { cwd, model: this.model, thinking: this.thinking, worktree: this.worktree, ...(agent ? { agent } : {}) });
+				} catch (err) {
+					return this.say((err as Error).message, "error");
+				}
 			}
 		}
 		const { discard, note, ...request } = args;
@@ -1379,7 +1426,7 @@ export class AgentView implements Component {
 
 	/** M8: switch a session's model or thinking level from its peek. */
 	private sessionSetting(row: JobRow, which: "model" | "thinking", arg: string): void {
-		if (row.kind === "shell") return this.say("a shell job has no model", "warning");
+		if (row.kind === "shell") return this.say(isProfileRow(row) ? `${row.profile} takes its model when it starts` : "a shell job has no model", "warning");
 		const values: string[] = which === "model" ? (this.o.models?.() ?? []) : [...THINKING_LEVELS];
 		const apply = async (v: string) => void (await this.sendSetting(row, which, v));
 		if (arg) {
@@ -1559,10 +1606,11 @@ export class AgentView implements Component {
 				...(this.preset?.agent ? { agent: this.preset.agent } : {}),
 				...(this.preset?.dir ? { dir: this.preset.dir } : {}),
 				...(this.fanout && this.fanout.length >= 2 ? { fanout: this.fanout } : {}),
+				...(this.profile ? { profile: this.profile } : {}),
 			};
 			// what would not read back (a model without its provider) is not saved
-			if (verb === "save" && JSON.stringify(presetFrom(p)) !== JSON.stringify(p)) {
-				this.say("these choices do not make a preset (a model needs provider/id)", "warning");
+			if (verb === "save" && !samePreset(presetFrom(p), p)) {
+				this.say(`these choices do not make a preset (a pi model needs provider/id)`, "warning");
 				return false;
 			}
 			try {
@@ -1600,6 +1648,7 @@ export class AgentView implements Component {
 		this.thinking = p.thinking;
 		this.worktree = p.worktree;
 		this.fanout = p.fanout ? [...p.fanout] : undefined;
+		this.profile = p.profile && p.profile !== "pi" ? p.profile : undefined;
 		this.preset = { name, ...(p.agent ? { agent: p.agent } : {}), ...(p.dir ? { dir: p.dir } : {}) };
 		const dir = this.presetDir();
 		const missing = dir && "error" in dir ? ` · ${dir.error}` : "";
@@ -1612,6 +1661,7 @@ export class AgentView implements Component {
 		this.thinking = undefined;
 		this.worktree = undefined;
 		this.fanout = undefined;
+		this.profile = undefined;
 		this.say("new sessions use the defaults");
 	}
 
@@ -1895,7 +1945,8 @@ export class AgentView implements Component {
 		if (text.startsWith("/") && this.isViewCommand(text.slice(1).split(/\s/)[0] ?? "")) {
 			return this.say("only /model, /thinking and /compare act on marked sessions (Esc unmarks)", "warning");
 		}
-		const pi = rows.filter((r) => r.kind !== "shell");
+		// M30: a profile's agent takes replies typed in; a plain command takes none
+		const pi = rows.filter(takesReplies);
 		if (pi.length === 0) return this.say("the marked rows are shell jobs: nothing to send to", "warning");
 		let sent = 0;
 		let later = 0;
@@ -2020,7 +2071,7 @@ export class AgentView implements Component {
 			if (!row.reaped && (this.restartAsk?.id !== id || now - this.restartAsk.at > RESTART_ASK_MS)) {
 				this.restartAsk = { id, at: now };
 				return this.say(
-					row.kind === "shell"
+					row.kind === "shell" && !isProfileRow(row)
 						? `${row.name} has ended · Enter again to run the command again`
 						: `${row.name} is ${row.state} · Enter again to start it`,
 					"warning",
@@ -2102,10 +2153,11 @@ export class AgentView implements Component {
 		const wt = this.worktree ?? this.o.worktreeDefault === true;
 		// M23: always says what a new session runs (Ctrl+L, Ctrl+P and Shift+Tab change it)
 		const def = this.o.defaultModel?.();
-		if (this.model || this.thinking || wt || def || this.preset) {
-			const model = this.model ? `model ${this.model}` : def ? `model ${def} (default)` : undefined;
+		if (this.model || this.thinking || wt || def || this.preset || this.profile) {
+			// M30: a profile's agent has no pi default model
+			const model = this.model ? `model ${this.model}` : def && !this.profile ? `model ${def} (default)` : undefined;
 			const pr = this.preset;
-			const d = [pr && `preset ${pr.name}`, model, this.thinking && `thinking ${this.thinking}`, wt && "own worktree", pr?.agent && `as ${pr.agent}`, pr?.dir && `in @${pr.dir}`]
+			const d = [pr && `preset ${pr.name}`, this.profile && `runs ${this.profile}`, model, this.thinking && `thinking ${this.thinking}`, wt && "own worktree", pr?.agent && `as ${pr.agent}`, pr?.dir && `in @${pr.dir}`]
 				.filter(Boolean)
 				.join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
@@ -2371,6 +2423,7 @@ export class AgentView implements Component {
 			["s: n: o:", "filter by state, name, result; combine with spaces"],
 			["@dir task", "start the task in that directory (Tab completes)"],
 			["! command", "run a shell command as a job"],
+			["/profile", "the agent new sessions run: pi or one of your agentProfiles"],
 			["/model /thinking", "defaults for new sessions (bare: pick; default resets)"],
 			["Ctrl+L", "pick the model for new sessions (in a peek: for that session)"],
 			["Ctrl+P Shift+Ctrl+P", "next / previous enabled model for new sessions"],
@@ -2402,8 +2455,15 @@ export class AgentView implements Component {
 }
 
 /** M27: what a preset sets, short. */
+/** Whether a preset reads back as written (key order aside). */
+function samePreset(a: Preset | undefined, b: Preset): boolean {
+	const norm = (p: Preset) => JSON.stringify(Object.fromEntries(Object.entries(p).sort(([x], [y]) => x.localeCompare(y))));
+	return !!a && norm(a) === norm(b);
+}
+
 export function presetText(p: Preset): string {
 	return [
+		p.profile && p.profile !== "pi" && `runs ${p.profile}`,
 		p.model && shortModel(p.model),
 		p.thinking && `thinking ${p.thinking}`,
 		p.worktree === true ? "own worktree" : p.worktree === false ? "no worktree" : undefined,

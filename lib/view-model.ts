@@ -260,8 +260,17 @@ export interface RowDetails {
 	tone: Tone;
 }
 
+/** M30: a level 0 agent run from a profile (a shell-kind job that is an agent). */
+export const isProfileRow = (row: Pick<JobRow, "kind" | "profile">): boolean =>
+	row.kind === "shell" && typeof row.profile === "string" && row.profile !== "" && row.profile !== "shell";
+
+/** Whether a reply can reach it: pi, or a profile's agent (typed in); not a plain command. */
+export const takesReplies = (row: Pick<JobRow, "kind" | "profile">): boolean => row.kind !== "shell" || isProfileRow(row);
+
 /** The short right-hand column of a row; null when there is nothing to show (shell jobs). */
 export function rowDetailsOf(row: JobRow): RowDetails | null {
+	// M30: a profile's agent shows which agent it is (and its model when chosen); no context
+	if (isProfileRow(row)) return { model: row.model ? `${row.profile} ${shortModel(row.model)}` : row.profile!, context: null, tone: contextToneOf(null) };
 	if (row.kind === "shell") return null;
 	const model = row.model ? shortModel(row.model) : null;
 	const c = row.context;
@@ -273,6 +282,7 @@ export function rowDetailsOf(row: JobRow): RowDetails | null {
 /** The peek's full line: "anthropic/claude-opus-5-5 · thinking high · ctx 86k / 200k (43%)". */
 export function modelFacts(row: JobRow): string[] {
 	const out: string[] = [];
+	if (isProfileRow(row)) out.push(`agent ${row.profile}`);
 	if (row.model) out.push(row.model);
 	if (row.thinking) out.push(`thinking ${row.thinking}`);
 	const c = row.context;
@@ -297,7 +307,7 @@ export function sentenceOf(row: JobRow): string {
 	if (row.state !== "working") return "done";
 	// a command that prints nothing has no line to show
 	if (row.pid === null) return "starting…";
-	return row.kind === "shell" ? "running" : "working…";
+	return row.kind === "shell" && !isProfileRow(row) ? "running" : "working…";
 }
 
 function waitingLabel(row: JobRow): string {

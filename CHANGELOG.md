@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Run terminal agents besides pi: `agentProfiles` in your `roost.json` (an argv, how it takes a task, its model and resume arguments, patterns for working and waiting); `/profile name` in the agent view (or a preset's `profile`) starts new sessions with it. Its row is read from its terminal (its title, notifications, bell, whether the screen still moves, your patterns); replies are typed into it; a reply to an ended one starts it again. See [docs/profiles.md](docs/profiles.md).
+
 - Neutral names, the first step towards agents other than pi: `ROOST_HOME`, `ROOST_RUNTIME_DIR`, `ROOST_CONFIG_DIR` (the `PI_ROOST_*` names still work), settings in `~/.config/roost/roost.json` when that file exists (else `~/.pi/agent/roost.json`, as before) and a project's `.roost/roost.json` (else `.pi/roost.json`); a job's worker also gets `ROOST_JOB_ID`, `ROOST_JOB_TOKEN`, `ROOST_SOCKET`; rows say which agent runs them (`profile`).
 
 - Replies steer or wait, as in pi: in a peek Enter joins the work the session is doing (after its current tool calls), Alt+Enter waits until it is done; the same for marked rows.

@@ -2,6 +2,7 @@
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { type AgentProfile, profileName, profilesFrom } from "./profiles.ts";
 import { homedir } from "node:os";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
 import { roostEnv } from "./identity.ts";
@@ -51,6 +52,8 @@ export interface RoostConfig {
 	agentMaxTotal: number;
 	/** M27: saved choices for new sessions, by name (the user's and a project's, merged). */
 	presets?: Record<string, Preset>;
+	/** M30: terminal agents roost can run besides pi, by name (user config only). */
+	agentProfiles?: Record<string, AgentProfile>;
 }
 
 /** M27: what a preset sets for new sessions; everything is optional. */
@@ -64,6 +67,8 @@ export interface Preset {
 	dir?: string;
 	/** Two to six models: the next task runs once per model (M26). */
 	fanout?: string[];
+	/** M30: an agent profile by name (or "pi"); the profile itself is the user's. */
+	profile?: string;
 }
 
 export const PRESET_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
@@ -80,13 +85,16 @@ export function presetFrom(v: unknown): Preset | undefined {
 	const o = v as Record<string, unknown>;
 	const model = (m: unknown): m is string => typeof m === "string" && m.includes("/") && m.length <= 200;
 	const p: Preset = {};
-	if (model(o.model)) p.model = o.model;
+	// M30: a profile's agent names its models its own way (no provider/id)
+	const other = typeof o.profile === "string" && o.profile !== "pi" && profileName(o.profile);
+	if (model(o.model) || (other && typeof o.model === "string" && /^[^\s\x00-\x1f-][^\s\x00-\x1f]{0,199}$/.test(o.model))) p.model = o.model as string;
 	if (typeof o.thinking === "string" && /^[a-z]{1,16}$/.test(o.thinking)) p.thinking = o.thinking;
 	if (typeof o.worktree === "boolean") p.worktree = o.worktree;
 	if (typeof o.agent === "string" && AGENT_NAME.test(o.agent)) p.agent = o.agent;
 	// a directory under the hub's: a cloned project's preset cannot point elsewhere
 	// (the view checks again, after links, that it stays under the hub's directory)
 	if (typeof o.dir === "string" && o.dir && o.dir.length <= 200 && relativeDir(o.dir)) p.dir = o.dir;
+	if (typeof o.profile === "string" && (o.profile === "pi" || profileName(o.profile))) p.profile = o.profile;
 	if (Array.isArray(o.fanout)) {
 		const list = [...new Set(o.fanout.filter(model))];
 		if (list.length >= 2 && list.length <= 6) p.fanout = list;
@@ -121,6 +129,8 @@ const USER_ONLY = [
 	"agentMaxChildren",
 	"agentMaxTree",
 	"agentMaxTotal",
+	// M30: a profile is a command to run: a cloned project cannot define one
+	"agentProfiles",
 ] as const;
 
 export const DEFAULTS: RoostConfig = {
@@ -181,6 +191,8 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	}
 	const presets = presetsFrom(r.presets);
 	if (presets) out.presets = presets;
+	const profiles = profilesFrom(r.agentProfiles);
+	if (profiles) out.agentProfiles = profiles;
 	if (r.notify === "auto" || r.notify === "osc9" || r.notify === "osc777" || r.notify === "bell" || r.notify === "off") {
 		out.notify = r.notify;
 	}

@@ -12,7 +12,8 @@ import { FrameDecoder, FrameType, encodeFrame, encodeJsonFrame, parseJsonPayload
 import { REPAINT_MARKER } from "../lib/attach.ts";
 import { ModeTracker, StreamTail } from "../lib/term-modes.ts";
 import { daemonSocketPath, ensureDirs, hostSocketPath, jobDir } from "../lib/paths.ts";
-import { launchCommand, readJob, readState, screenPath, writeExit, writeWorker } from "../lib/store.ts";
+import { isProfileJob, launchCommand, readJob, readState, screenPath, termPath, writeExit, writeWorker } from "../lib/store.ts";
+import { TermSignalCollector } from "../lib/term-signals.ts";
 import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
 import { jobEnv } from "../lib/identity.ts";
 
@@ -150,6 +151,29 @@ const screenTimer = setInterval(() => {
 	if (dirty) flushScreen();
 }, 2000);
 
+// M30: a level 0 agent tells roost nothing itself: its terminal's signals and whether its
+// screen still moves go to term.json for the daemon (checked every second)
+let termDirty = false;
+let termChanged = true;
+const signals = isProfileJob(job) ? new TermSignalCollector(term, () => (termChanged = true)) : undefined;
+function flushTerm(): void {
+	if (!signals) return;
+	if (termDirty) {
+		termDirty = false;
+		// the daemon reads both together: the screen it matches goes with these signals
+		if (dirty) flushScreen();
+		if (signals.screen(screenText())) termChanged = true;
+	}
+	if (!termChanged) return;
+	termChanged = false;
+	try {
+		writeJsonAtomic(termPath(id!), signals.signals());
+	} catch (err) {
+		log("term write failed", { error: String(err) });
+	}
+}
+const termTimer = signals ? setInterval(flushTerm, 1000) : undefined;
+
 function resizeAll(c: number, r: number): void {
 	if (!Number.isInteger(c) || !Number.isInteger(r) || c < 1 || r < 1 || c > 1000 || r > 1000) return;
 	cols = c;
@@ -198,6 +222,7 @@ proc.onData((data) => {
 	try {
 		term.write(data, () => {
 			dirty = true;
+			termDirty = true;
 		});
 	} catch (err) {
 		// xterm throws once far behind (tens of MB): the mirror misses this, the client does not
@@ -299,9 +324,28 @@ function terminateWorker(): void {
 	}, 5000);
 }
 
-function control(sock: Socket, op: string): void {
+/** M30: the most a typed reply carries in one input op. */
+const MAX_INPUT = 64 * 1024;
+
+function control(sock: Socket, req: { op: string; data?: unknown }): void {
 	let reply: unknown;
+	const op = req.op;
 	switch (op) {
+		case "input":
+			// M30: a reply typed into the terminal, as if from an attached keyboard
+			// only a level 0 agent is typed into this way (pi takes replies from its worker)
+			if (!signals) reply = { error: "input is for agent profiles" };
+			else if (typeof req.data !== "string" || req.data.length === 0 || req.data.length > MAX_INPUT) reply = { error: "bad input" };
+			else if (!workerAlive) reply = { ok: false, alive: false };
+			else {
+				try {
+					proc.write(req.data);
+					reply = { ok: true };
+				} catch (err) {
+					reply = { ok: false, error: String(err) };
+				}
+			}
+			break;
 		case "snapshot":
 			reply = { text: screenText() };
 			break;
@@ -383,7 +427,7 @@ const server = createServer((sock) => {
 						resizeAll(r.cols, r.rows);
 					} else throw new Error(`unexpected frame ${frame.type}`);
 				} else if (role === "control" && frame.type === FrameType.CONTROL) {
-					control(sock, parseJsonPayload<{ op: string }>(frame).op);
+					control(sock, parseJsonPayload<{ op: string; data?: unknown }>(frame));
 				} else throw new Error(`unexpected frame ${frame.type}`);
 			}
 		} catch (err) {
@@ -409,8 +453,11 @@ function finish(): void {
 	if (finishing) return;
 	finishing = true;
 	clearInterval(screenTimer);
+	if (termTimer) clearInterval(termTimer);
 	if (killTimer) clearTimeout(killTimer);
 	flushScreen();
+	termDirty = true;
+	flushTerm();
 	if (attached) kick(attached, "exit");
 	server.close();
 	try {

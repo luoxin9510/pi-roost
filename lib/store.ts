@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
 import { jobDir, jobTmpDir, jobsDir } from "./paths.ts";
+import type { ProfileTerm } from "./profiles.ts";
 
 export interface JobRecord {
 	id: string;
@@ -25,6 +26,12 @@ export interface JobRecord {
 	origin: "bg" | "dispatch" | "adopt" | "fork";
 	/** DI-6: a shell command instead of pi; absent means pi. */
 	kind?: "pi" | "shell";
+	/** M30: a level 0 agent run from this profile (kind "shell": no worker, no session file). */
+	profile?: string;
+	/** M30: how its screen is read and how replies are typed into it. */
+	term?: ProfileTerm;
+	/** M30: the argv that reopens it (a reply to it once it has ended). */
+	resumeCommand?: string[];
 	createdAt: number; // ms epoch
 	piVersion?: string;
 	roostVersion: string;
@@ -56,6 +63,8 @@ const jobFile = (id: string) => join(jobDir(id), "job.json");
 const stateFile = (id: string) => join(jobDir(id), "state.json");
 export const screenPath = (id: string) => join(jobDir(id), "screen.txt");
 export const exitPath = (id: string) => join(jobDir(id), "exit.json");
+/** M30: a level 0 agent's terminal signals, written by its host. */
+export const termPath = (id: string) => join(jobDir(id), "term.json");
 
 export function createJob(record: JobRecord, state: JobState): void {
 	mkdirSync(jobDir(record.id), { recursive: true, mode: 0o700 });
@@ -154,3 +163,6 @@ export function listJobIds(): string[] {
 export function removeJob(id: string): void {
 	rmSync(jobDir(id), { recursive: true, force: true });
 }
+
+/** M30: a level 0 agent (a profile job), as opposed to a plain shell command. */
+export const isProfileJob = (rec: Pick<JobRecord, "kind" | "profile"> | undefined): boolean => rec?.kind === "shell" && typeof rec.profile === "string" && rec.profile !== "";
