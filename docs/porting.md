@@ -997,7 +997,7 @@ hub 自己的 agent：一个 pi 会话作为 **role** 而不是普通行（`JobR
 
 - **启动**：`/concierge on`（hub 先 `buildLaunch` 一个 pi 启动参数，env 里带 `ROOST_ROLE=concierge`，`CONCIERGE_ROLE_ENV`），op `concierge {action: on | off | status}`；`off` 停掉它的 job，再 `on` 重启同一个 job（保留会话）。状态 `ConciergeStatus {on, id, state, live, model, wakesLastHour, lastWakeAt, behind, costToday, budget, overBudget, notice, policy, orders, answered, answer}` 以 `{event:"concierge", status}` 推给订阅的 hub（`pushConcierge`）。
 - **唤醒**（`wakeConcierge`，`daemon/main.ts`）：事件进来后合并 5 s（`CONCIERGE_COALESCE_MS`，`PI_ROOST_CONCIERGE_COALESCE_MS`）再发一条 `digest` 投递（`deliverAgent(..., "digest", ...)`，`<roost-digest why="events|heartbeat|order">`：自上次以来的事件 + 当前 fleet 一行一会话 + M46 起的常备指令 + M47 起的任务板）；每小时最多 `wakesPerHour`（默认 60）次，超了就攒着；没事发生时按 `heartbeat`（默认 `every 15m`，`lib/schedule.ts` 的词汇）发一次心跳；当天花费超过 `dailyBudgetUsd`（默认 1 美元）就不再唤醒（`overBudget`）；投递失败 60 s 后重试（`CONCIERGE_RETRY_MS`）；检查节拍 30 s（`CONCIERGE_TICK_MS`）。它自己产生的事件不进它的摘要。
-- **pi 侧角色**（`adapters/pi/concierge.ts`，`isConciergeRole(env)`）：换掉 system prompt（`conciergeSystemPrompt(policy)`，`lib/concierge.ts`），关掉 pi 自己的工具（没有 shell/文件），只注册 hub 工具：`hub_sessions`（list+events）、`hub_events`、`hub_read(id, what)`（记录尾/屏幕/提问）、`hub_send(to, text)`、`hub_notify(text, level: info|need)`（op `concierge-say`，在 hub 标题下显示一行、`need` 用警告色）、`hub_watch`。用户在 hub 里 `? 问题`（op `concierge-ask`）：它的下一条纯文本回答交回 hub（`answerText()`：用户问题之后的最后一段助手文本；摘要混进同一轮的也能分开），以浮层显示，两分钟没答就提示。
+- **pi 侧角色**（`adapters/pi/concierge.ts`，`isConciergeRole(env)`）：换掉 system prompt（`conciergeSystemPrompt(policy)`，`lib/concierge.ts`），关掉 pi 自己的工具（没有 shell/文件），只注册 hub 工具：`hub_sessions`（当前 fleet，每会话一行）、`hub_events`、`hub_read(id, what)`（记录尾/屏幕/提问）、`hub_send(to, text)`、`hub_notify(text, level: info|need)`（op `concierge-say`，在 hub 标题下显示一行、`need` 用警告色）、`hub_watch`。用户在 hub 里 `? 问题`（op `concierge-ask`）：它的下一条纯文本回答交回 hub（`answerText()`：用户问题之后的最后一段助手文本；摘要混进同一轮的也能分开），以浮层显示，两分钟没答就提示。
 - **配置**：`roost.json` 的 `concierge {model, thinking, wakesPerHour, heartbeat, dailyBudgetUsd, answer, act}`（**仅用户级**，`USER_ONLY` 加了 `concierge`；`conciergeFrom()` 校验）。
 - evals：`evals/concierge.eval.ts`（真模型：三个会话，一个结束、一个失败、一个提问——它在头几次唤醒里报出来、把提问标成"需要你"且不代答；按要求把一个会话的发现传给另一个）；harness 新增 `concierge`、`extra`（同时起的其他会话）和 `ask` 步骤。
 
@@ -1041,7 +1041,7 @@ hub 自己的 agent：一个 pi 会话作为 **role** 而不是普通行（`JobR
 - **工具**：会话 `roost_tasks` `roost_task_claim` `roost_task_done` `roost_task_release` `roost_task_add`；值班 agent `hub_tasks` `hub_task_add` `hub_task_assign` `hub_task_done` `hub_task_drop` `hub_task_release`（`BOARD_TOOLS`，总是激活；prompt：它是组长不是工人——有空闲会话且有开放任务就交出去、任务完成就告诉用户、会话结束就再交出去、从不自己认领）。
 - **hub**：`/tasks`（浮层：open 强调色、blocked 警告色带依赖、claimed 弱化、done 最新在前最多 30 条；是打开那一刻的快照）、`/tasks add <title> [after #n …] [-- detail]`（`after` 要带 `#`，"retry after 3" 是标题；正则无嵌套量词）、`assign <id> <session>`、`done <id> [result]`、`rm <id>`、`release <id>`；板上有东西时标题下一行 `tasks 1 open · 1 blocked · /tasks`（来自 `board` 事件，启动时 `task list` 取一次）。
 - **SDK**：TS `RoostAgent.call(op, args)` + `tasks/claimTask/taskDone/releaseTask/addTask`；Python `request(op, args, timeout)`（按请求 id 路由应答：`_send(..., waiter)` 在锁内登记、`_message` 先匹配 id、`_drop` 让等待者以 `disconnected` 失败、发送失败时撤销登记；要在第一次 `report()` 建立连接之后用）+ `RoostError(code, message)` + `tasks/claim_task/task_done/release_task/add_task`。协议一致性测试里 TS 与 Python 两个脚本化 agent 各自在板上挂一个任务、认领、完成。
-- evals：`evals/tasks.eval.ts`（一个会话按板工作：两个任务、第二个依赖第一个，事件顺序证明 #2 在 #1 完成后才被认领；值班 agent 把任务交给空闲会话、对方认领并完成、它自己一次都没认领）。harness 新增 `tasks`（按位置写依赖），结果带 `board`、`taskEvents`。首轮 2/2、2/2。
+- evals：`evals/tasks.eval.ts`（一个会话按板工作：两个任务、第二个依赖第一个，事件顺序证明 #2 在 #1 完成后才被认领；值班 agent 把任务交给空闲会话、对方认领并完成、它自己一次都没认领）。harness 新增 `tasks`（按位置写依赖），结果带 `board`、`taskEvents`。首轮 2/2、2/2（`docs/plans/m37-evals.md` 的 M47 节）。
 
 移植提示：认领是"活着的会话持有的锁"，关键在 `ownerLive()` 与四处释放（失败/停止、删除、前台断开、启动清扫）；忘了任何一处，任务就会卡死。独立审核在这一步抓出的问题值得记住：没有 peer 的连接默认当 hub（agent 在 report 被接受前就能冒充）、投递 `await` 之后不复查状态、正则嵌套量词回溯。
 
@@ -1162,7 +1162,7 @@ hub 自己的 agent：一个 pi 会话作为 **role** 而不是普通行（`JobR
 
 v0.1.12 新增：`ROOST_HOME` `ROOST_RUNTIME_DIR` `ROOST_CONFIG_DIR`（M29，分别优先于 `PI_ROOST_*` 同名）；`PI_ROOST_RESUME_DELAYS_MS`（M38）；`PI_ROOST_SCHEDULE_TICK_MS`（M39）；`ROOST_TELEMETRY=<绝对路径.jsonl>`（M34，需在启动 daemon 前设）；`ROOST_PI_PACKAGE`（M33，独立 hub 找 pi 的包）；`ROOST_EVAL_MODEL` `ROOST_EVAL_THINKING` `ROOST_EVAL_RUNS` `ROOST_EVAL_SECOND_MODEL` `ROOST_EVAL_DIR` `ROOST_EVAL_KEEP`（M37/M41）；跑测试时的 `STRESS=1`（`test/stress-attach.test.ts` 从 60 轮加到 600 轮）。
 
-v0.1.14 新增：`PI_ROOST_WATCH_TTL_MS`（M43）；`PI_ROOST_CONCIERGE_COALESCE_MS` `PI_ROOST_CONCIERGE_RETRY_MS` `PI_ROOST_CONCIERGE_TICK_MS` `PI_ROOST_CONCIERGE_HEARTBEAT_MS`（M44）；`ROOST_ROLE=concierge`（M44，daemon 给值班 agent 的 job 设的，扩展据此换角色）；`PI_ROOST_FG_CLAIM_GRACE_MS`（M47）。
+v0.1.14 新增：`PI_ROOST_WATCH_TTL_MS`（M43）；`PI_ROOST_CONCIERGE_COALESCE_MS` `PI_ROOST_CONCIERGE_RETRY_MS` `PI_ROOST_CONCIERGE_TICK_MS` `PI_ROOST_CONCIERGE_HEARTBEAT_MS`（M44）；`ROOST_ROLE=concierge`（M44，hub 为值班 agent 构造启动参数时写进 env，`adapters/pi/hub-options.ts`；pi 扩展据此换成值班角色，`isConciergeRole()`；daemon 在 `concierge-act` 里会把它从代启动的 env 中去掉）；`PI_ROOST_FG_CLAIM_GRACE_MS`（M47）。
 
 ---
 
