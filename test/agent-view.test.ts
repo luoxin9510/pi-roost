@@ -9,6 +9,7 @@ import type { DaemonClient } from "../lib/client.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import type { RoostEvent } from "../lib/events.ts";
 import type { ConciergeStatus, StandingOrder } from "../lib/concierge.ts";
+import type { BoardTask } from "../lib/board.ts";
 import { modelFacts, rowDetailsOf, takesReplies } from "../lib/view-model.ts";
 
 let n = 0;
@@ -121,9 +122,30 @@ class FakeClient {
 			}
 			return { orders: this.orders };
 		}
+		// M47: the task board
+		if (op === "task") {
+			const a = args as { action: string; id?: number; title?: string; detail?: string; after?: number[]; result?: string; to?: string };
+			if (a.action === "list") return { tasks: this.tasks };
+			if (a.action === "add") {
+				const task: BoardTask = { id: this.tasks.length + 1, title: a.title ?? "", detail: a.detail ?? null, state: "open", after: a.after ?? [], by: { who: "user", whoId: null }, at: Date.now(), owner: null, claimedAt: null, doneAt: null, result: null, assigned: null };
+				this.tasks = [...this.tasks, task];
+				return { tasks: this.tasks, task };
+			}
+			const task = this.tasks.find((t) => t.id === a.id);
+			if (!task) throw Object.assign(new Error(`no task #${a.id}`), { code: "not_found" });
+			if (a.action === "assign") {
+				task.assigned = { id: "w1", name: a.to ?? "", at: Date.now() };
+				return { tasks: this.tasks, task, sent: "delivered" };
+			}
+			if (a.action === "done") Object.assign(task, { state: "done", doneAt: Date.now(), result: a.result ?? null });
+			if (a.action === "drop") task.state = "dropped";
+			if (a.action === "release") task.state = "open";
+			return { tasks: this.tasks, task };
+		}
 		return {};
 	}
 	orders: StandingOrder[] = [];
+	tasks: BoardTask[] = [];
 }
 
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
@@ -1843,6 +1865,84 @@ describe("AgentView agent profiles (M30)", () => {
 		expect(rowDetailsOf({ ...agentRow, model: null })).toMatchObject({ model: "codex" });
 		expect(rowDetailsOf(cmd)).toBeNull();
 		expect(modelFacts(agentRow)).toEqual(["agent codex", "o3"]);
+	});
+});
+
+describe("M47: the task board in the hub", () => {
+	it("/tasks shows the board (an overlay); add, assign, done, rm act on it; the header counts what is on it", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })]);
+		await view.start();
+		expect(client.requests.filter((r) => r.op === "task").map((r) => r.args)).toEqual([{ action: "list" }]);
+		// nothing on it: no header line, an empty overlay
+		expect(view.render(120).join("\n")).not.toContain("tasks ");
+		type(view, "/tasks");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("the board is empty");
+		view.handleInput("\x1b");
+		// add: a title, the tasks it waits on, the detail after --
+		type(view, "/tasks add the schema");
+		view.handleInput("\r");
+		await sleep(20);
+		type(view, "/tasks add write the tests after #1 -- the unit tests for the board");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action === "add").map((r) => r.args)).toEqual([
+			{ action: "add", title: "the schema", detail: undefined, after: undefined },
+			{ action: "add", title: "write the tests", detail: "the unit tests for the board", after: [1] },
+		]);
+		expect(view.render(120).join("\n")).toContain("task #2 added: write the tests (after #1)");
+		type(view, "/tasks add");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("/tasks add <title> [after #n] [-- detail]");
+		// the counts come as an event: the header says them while something is on the board
+		client.emit({ event: "board", board: { open: 1, claimed: 0, blocked: 1, done: 0 } });
+		expect(view.render(120).join("\n")).toContain("tasks 1 open · 1 blocked · /tasks");
+		// the overlay: open, blocked (with its detail), the keys
+		type(view, "/tasks");
+		view.handleInput("\r");
+		await sleep(20);
+		const screen = view.render(120).join("\n");
+		expect(screen).toContain("Task board · 1 open · 1 blocked");
+		expect(screen).toContain("#1 open · the schema");
+		expect(screen).toContain("#2 blocked on #1 · write the tests");
+		expect(screen).toContain("the unit tests for the board");
+		expect(screen).toContain("/tasks add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id>");
+		view.handleInput("\x1b");
+		// assign, done, rm (by number, # or not)
+		type(view, "/tasks assign 1 lint");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("task #1 handed to lint");
+		type(view, "/tasks done #1 applied v2");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "task").map((r) => r.args)).toContainEqual({ action: "done", id: 1, result: "applied v2" });
+		expect(view.render(120).join("\n")).toContain("task #1 done");
+		type(view, "/tasks rm 2");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "task").map((r) => r.args)).toContainEqual({ action: "drop", id: 2 });
+		expect(view.render(120).join("\n")).toContain("task #2 dropped");
+		// the done one is listed, dim, after the live ones; a dropped one is gone
+		type(view, "/tasks");
+		view.handleInput("\r");
+		await sleep(20);
+		const again = view.render(120).join("\n");
+		expect(again).toContain("every task is done");
+		expect(again).toContain("· the schema → applied v2");
+		expect(again).not.toContain("write the tests");
+		view.handleInput("\x1b");
+		// what the hub cannot parse, and what the daemon refuses, are said
+		type(view, "/tasks assign x");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("/tasks assign <id> <session id or name>");
+		type(view, "/tasks done 9");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("no task #9");
 	});
 });
 

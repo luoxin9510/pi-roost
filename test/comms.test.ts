@@ -1149,6 +1149,164 @@ describe("worktrees through the daemon (M10)", () => {
 	});
 });
 
+describe("M47: the shared task board", () => {
+	it("tasks are added, claimed by sessions (a lock), done, released, dropped; the hub leads; the counts are pushed; the feed says who did what", async () => {
+		const hub = await startDaemon();
+		const { c: sub, events } = await connect();
+		await sub.request("subscribe", {});
+		// add: ids from 1; after must name tasks on the board; a title is needed
+		const a = await hub.request("task", { action: "add", title: "the schema", detail: "v2" });
+		expect(a.task).toMatchObject({ id: 1, state: "open", detail: "v2", by: { who: "user", whoId: null }, after: [] });
+		const b = await hub.request("task", { action: "add", title: "the tests", after: [1] });
+		expect(b.task).toMatchObject({ id: 2, after: [1] });
+		await expect(hub.request("task", { action: "add", title: "x", after: [9] })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(hub.request("task", { action: "add", title: "   " })).rejects.toMatchObject({ code: "bad_request" });
+		// the counts went to the subscribers (#2 waits on #1: blocked)
+		await waitFor(() => events.find((e) => e.event === "board" && e.board.open === 1 && e.board.blocked === 1));
+		// the hub hands tasks over; it does not claim
+		await expect(hub.request("task", { action: "claim", id: 1 })).rejects.toMatchObject({ code: "unsupported" });
+		// two sessions: a foreground pi and a job's worker
+		const p = await foreground("lead");
+		const { id: jobId } = await p.c.request("spawn", { launch: launch("sleep 30", "api") });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === jobId)?.pid);
+		const w = await worker(jobId);
+		// #2 waits on #1
+		await expect(w.c.request("task", { action: "claim", id: 2 })).rejects.toMatchObject({ code: "blocked" });
+		// the worker claims #1: a lock; the other session is refused; the owner again is fine
+		const c1 = await w.c.request("task", { action: "claim", id: 1 });
+		expect(c1.task).toMatchObject({ state: "claimed", owner: { id: jobId, name: "api" } });
+		await expect(p.c.request("task", { action: "claim", id: 1 })).rejects.toMatchObject({ code: "conflict" });
+		expect((await w.c.request("task", { action: "claim", id: 1 })).task?.state).toBe("claimed");
+		// not the owner: neither release nor done
+		await expect(p.c.request("task", { action: "release", id: 1 })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(p.c.request("task", { action: "done", id: 1 })).rejects.toMatchObject({ code: "unsupported" });
+		// done by its owner, with the result: #2 is claimable now
+		const d = await w.c.request("task", { action: "done", id: 1, result: "applied v2" });
+		expect(d.task).toMatchObject({ state: "done", result: "applied v2", owner: { name: "api" } });
+		await expect(w.c.request("task", { action: "done", id: 1 })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(w.c.request("task", { action: "claim", id: 1 })).rejects.toMatchObject({ code: "bad_request" });
+		const c2 = await p.c.request("task", { action: "claim", id: 2 });
+		expect(c2.task).toMatchObject({ state: "claimed", owner: { name: "lead" } });
+		// released by its owner: open again; the hub may release one too
+		expect((await p.c.request("task", { action: "release", id: 2 })).task?.state).toBe("open");
+		await p.c.request("task", { action: "claim", id: 2 });
+		expect((await hub.request("task", { action: "release", id: 2 })).task?.state).toBe("open");
+		await expect(hub.request("task", { action: "release", id: 2 })).rejects.toMatchObject({ code: "bad_request" });
+		// a session gives back, it does not drop; the hub drops; a dropped task holds nothing
+		await expect(w.c.request("task", { action: "drop", id: 2 })).rejects.toMatchObject({ code: "unsupported" });
+		await hub.request("task", { action: "add", title: "later", after: [2] });
+		expect((await hub.request("task", { action: "drop", id: 2 })).task?.state).toBe("dropped");
+		expect((await w.c.request("task", { action: "claim", id: 3 })).task?.state).toBe("claimed");
+		await expect(hub.request("task", { action: "claim", id: 99 })).rejects.toMatchObject({ code: "not_found" });
+		await expect(hub.request("task", { action: "nope" as "list" })).rejects.toMatchObject({ code: "bad_request" });
+		// the feed: who did what
+		const feed = (await hub.request("events", { limit: 100 })).events.filter((e) => e.kind === "task");
+		expect(feed.map((e) => `${e.who} ${e.why} ${e.text}`)).toEqual([
+			"user add #1 the schema",
+			"user add #2 the tests",
+			"api claim #1 the schema",
+			"api done #1 the schema: applied v2",
+			"lead claim #2 the tests",
+			"lead release #2 the tests: given back",
+			"lead claim #2 the tests",
+			"user release #2 the tests: released by user",
+			"user add #3 later",
+			"user drop #2 the tests",
+			"api claim #3 later",
+		]);
+		expect(feed.find((e) => e.why === "claim")).toMatchObject({ whoId: jobId, id: jobId });
+		// the store: the next id never reuses one
+		const saved = JSON.parse(readFileSync(join(home, "tasks.json"), "utf8")) as { next: number; tasks: { id: number; state: string }[] };
+		expect(saved.next).toBe(4);
+		expect(saved.tasks.map((t) => [t.id, t.state])).toEqual([
+			[1, "done"],
+			[2, "dropped"],
+			[3, "claimed"],
+		]);
+		const { tasks } = await hub.request("task", { action: "list" });
+		expect(tasks.map((t) => t.id)).toEqual([1, 2, 3]);
+	});
+
+	it("a claim goes with its session (stopped, removed, gone); the board survives a restart; the concierge hands over, never claims; the digest carries it", async () => {
+		const hub = await startDaemon();
+		const p = await foreground("lead");
+		for (const title of ["one", "two", "three"]) await hub.request("task", { action: "add", title });
+		const taskState = async (id: number) => (await hub.request("task", { action: "list" })).tasks.find((t) => t.id === id)?.state;
+		const spawnWorker = async (name: string, via = p.c) => {
+			const { id } = await via.request("spawn", { launch: launch("sleep 30", name) });
+			await waitFor(async () => (await via.request("list", {})).jobs.find((j) => j.id === id)?.pid);
+			return { id, w: await worker(id) };
+		};
+		// stopped: released, and the feed says why
+		const a = await spawnWorker("a");
+		await a.w.c.request("task", { action: "claim", id: 1 });
+		await p.c.request("stop", { id: a.id });
+		await waitFor(async () => (await taskState(1)) === "open");
+		// done (its claim stays: a result may still be on its way), then removed: released
+		const { id: bId } = await p.c.request("spawn", { launch: launch("sleep 1", "b") });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === bId)?.pid);
+		const bw = await worker(bId);
+		await bw.c.request("task", { action: "claim", id: 2 });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === bId)?.state === "done");
+		expect(await taskState(2)).toBe("claimed");
+		await p.c.request("rm", { id: bId });
+		expect(await taskState(2)).toBe("open");
+		const feed = (await hub.request("events", { limit: 100 })).events.filter((e) => e.kind === "task" && e.why === "release");
+		expect(feed.map((e) => `${e.who} ${e.text}`)).toEqual(["roost #1 one: a stopped", "roost #2 two: b removed"]);
+		// a foreground pi that went away (its connection closed) holds nothing: another session takes the task over
+		const other = await foreground("other");
+		await other.c.request("task", { action: "claim", id: 3 });
+		const c = await spawnWorker("c");
+		await expect(c.w.c.request("task", { action: "claim", id: 3 })).rejects.toMatchObject({ code: "conflict" });
+		other.c.close();
+		const taken = await waitFor(async () => {
+			try {
+				return (await c.w.c.request("task", { action: "claim", id: 3 })).task;
+			} catch {
+				return undefined;
+			}
+		});
+		expect(taken).toMatchObject({ state: "claimed", owner: { name: "c" } });
+		// the board survives a restart of the service: the claim of a job still there stays, the ids go on
+		daemons[0]!.kill("SIGKILL");
+		await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
+		const hub2 = await startDaemon();
+		const after = (await hub2.request("task", { action: "list" })).tasks;
+		expect(after.map((t) => [t.id, t.state, t.owner?.name ?? null])).toEqual([
+			[1, "open", null],
+			[2, "open", null],
+			[3, "claimed", "c"],
+		]);
+		expect((await hub2.request("task", { action: "add", title: "four" })).task?.id).toBe(4);
+		// the concierge: it hands a task over (a message to the session, with the task), it does not claim
+		const st = await hub2.request("concierge", { action: "on", launch: { ...launch("sleep 30", "concierge"), env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge" } } });
+		await waitFor(async () => (await hub2.request("list", {})).jobs.find((j) => j.id === st.id)?.pid);
+		const cw = await worker(st.id!);
+		await expect(cw.c.request("task", { action: "claim", id: 4 })).rejects.toMatchObject({ code: "unsupported" });
+		const p2 = await foreground("lead2");
+		await expect(p2.c.request("task", { action: "assign", id: 4, to: "c" })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(cw.c.request("task", { action: "assign", id: 4, to: "nobody" })).rejects.toMatchObject({ code: "not_found" });
+		const c2 = await spawnWorker("d", p2.c);
+		const handed = await cw.c.request("task", { action: "assign", id: 4, to: c2.id });
+		expect(handed.sent).toBe("delivered");
+		expect(handed.task).toMatchObject({ state: "open", assigned: { id: c2.id, name: "d" } });
+		const msg = await waitFor(() => delivered(c2.w.events, "message")[0]);
+		expect(msg.text).toContain("Task #4 on the board: four");
+		expect(msg.text).toContain("roost_task_claim");
+		expect(msg.from).toBe("concierge");
+		await expect(cw.c.request("task", { action: "assign", id: 3, to: "d" })).rejects.toMatchObject({ code: "bad_request" });
+		// once claimed, the hand-over is history
+		expect((await c2.w.c.request("task", { action: "claim", id: 4 })).task).toMatchObject({ state: "claimed", assigned: null });
+		const events = (await hub2.request("events", { limit: 100 })).events.filter((e) => e.kind === "task");
+		expect(events.map((e) => `${e.who} ${e.why} ${e.text}`)).toContain("concierge assign #4 four: to d");
+		// the digest carries the board
+		const digest = await waitFor(() => delivered(cw.events, "digest").find((d) => d.text.includes("#4 claimed by d")), 15000);
+		expect(digest.text).toContain("The board (");
+		expect(digest.text).toContain("#3 claimed by c");
+		expect(digest.text).toContain("- #1 open · one");
+	});
+});
+
 describe("M48: the row's task and queued replies", () => {
 	it("list rows carry the task after -- and the user replies waiting for the session", async () => {
 		await startDaemon();

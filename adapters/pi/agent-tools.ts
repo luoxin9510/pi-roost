@@ -1,11 +1,12 @@
 // M9: tools an agent uses to talk to other pi sessions (roost_agents, roost_send,
-// roost_spawn; M43: roost_watch) and the renderer for the messages it receives.
+// roost_spawn; M43: roost_watch; M47: roost_task_*) and the renderer for the messages it receives.
 import { existsSync, statSync } from "node:fs";
 import { discoverAgents, findAgent } from "../../lib/agents.ts";
 import { resolve } from "node:path";
 import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { blockedOn, boardListing } from "../../lib/board.ts";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../../lib/comms.ts";
 import { envPolicy, loadConfig } from "../../lib/config.ts";
 import { buildLaunch, fallbackName, isolationDefault, prepareIsolation, refusedByDaemon } from "../../lib/dispatch.ts";
@@ -166,6 +167,72 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 				if (refusedByDaemon(err)) iso.discard();
 				throw err;
 			}
+		},
+	});
+
+	// M47: the shared task board. A session takes work from it: claim (a lock only this
+	// session holds, until it is done or given back), do it, mark it done with the result.
+	pi.registerTool({
+		name: "roost_tasks",
+		label: "The task board",
+		description: "The shared task board: open tasks (take one with roost_task_claim), blocked ones (they wait on another task), claimed ones (a session works on them), done ones. Read it when you are free, or were handed a task.",
+		parameters: Type.Object({}),
+		async execute() {
+			const { tasks } = await link.call("task", { action: "list" });
+			return text(boardListing(tasks).join("\n"));
+		},
+	});
+
+	pi.registerTool({
+		name: "roost_task_add",
+		label: "Add a task",
+		description: "Put a task on the board for any session to take: a piece of your work you hand off, or follow-up work you found. after: task numbers it waits on (claimable once those are done).",
+		parameters: Type.Object({
+			title: Type.String({ description: "One line (at most 200 characters)" }),
+			detail: Type.Optional(Type.String({ description: "What doing it means (at most 2000 characters)" })),
+			after: Type.Optional(Type.Array(Type.Number(), { description: "Task numbers it waits on" })),
+		}),
+		async execute(_id, params) {
+			const r = await link.call("task", { action: "add", title: params.title, detail: params.detail, after: params.after });
+			return text(`Added #${r.task?.id}: ${r.task?.title}. It is open for any session (claim it yourself with roost_task_claim if it is yours to do).`);
+		},
+	});
+
+	pi.registerTool({
+		name: "roost_task_claim",
+		label: "Claim a task",
+		description: "Take an open task: it is yours until roost_task_done or roost_task_release. Refused when another live session holds it (conflict), when it waits on tasks not done yet (blocked), or when it is done or dropped.",
+		parameters: Type.Object({ id: Type.Number({ description: "The task's number" }) }),
+		async execute(_id, params) {
+			const r = await link.call("task", { action: "claim", id: params.id });
+			const t = r.task;
+			return text(`#${params.id} is yours: ${t?.title ?? ""}${t?.detail ? `\n${t.detail}` : ""}\nWhen it is done: roost_task_done(${params.id}, result). If you cannot do it: roost_task_release(${params.id}).`);
+		},
+	});
+
+	pi.registerTool({
+		name: "roost_task_done",
+		label: "Task done",
+		description: "Mark the task you hold done, with its result (what came of it, where it is: a line or two). Tasks that waited on it become claimable.",
+		parameters: Type.Object({
+			id: Type.Number({ description: "The task's number" }),
+			result: Type.String({ description: "One or two lines: what came of it" }),
+		}),
+		async execute(_id, params) {
+			const r = await link.call("task", { action: "done", id: params.id, result: params.result });
+			const open = r.tasks.filter((t) => t.state === "open" && blockedOn(t, r.tasks).length === 0);
+			return text(`#${params.id} is done.${open.length > 0 ? ` Open on the board: ${open.map((t) => `#${t.id} ${t.title}`).join("; ")}.` : " Nothing is open on the board."}`);
+		},
+	});
+
+	pi.registerTool({
+		name: "roost_task_release",
+		label: "Give a task back",
+		description: "Give the task you hold back to the board (open again), when you cannot do it. Say why in your report or to the user.",
+		parameters: Type.Object({ id: Type.Number({ description: "The task's number" }) }),
+		async execute(_id, params) {
+			await link.call("task", { action: "release", id: params.id });
+			return text(`#${params.id} is open again.`);
 		},
 	});
 }

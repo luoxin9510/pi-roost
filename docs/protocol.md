@@ -245,6 +245,41 @@ moves on when that digest reached the concierge). `concierge` events: `why: "ord
 (applied: `#id what`), `"order-kept"`, `"order-dropped"`. The status carries `orders`
 (their number). See `docs/plans/m46-orders.md`.
 
+### The task board (M47): the `tasks` capability
+
+`task {action}` is the shared task board, on any connection: the hub's (the actor is
+`user`), the concierge's, a job's (after its report; the actor is the job) or a
+foreground pi's. The result is `{tasks: BoardTask[], task?, sent?}`, the tasks oldest
+first, with `{id, title, detail, state: open | claimed | done | dropped, after: ids,
+by: {who, whoId}, at, owner: {id, name} | null, claimedAt, doneAt, result, assigned:
+{id, name, at} | null}`.
+
+- `{action: "list"}`: the lot (done and dropped ones too; at most 200 are kept, the
+  done and dropped ones going first when it is full).
+- `{action: "add", title, detail?, after?: ids}`: a new task, `open`; `after` names
+  tasks on the board (`bad_request` otherwise); `full` at 200.
+- `{action: "claim", id}`: a session takes it (the hub and the concierge may not:
+  `unsupported`). `blocked` while a task in `after` is neither done nor dropped;
+  `conflict` while another live session holds it (one whose session is gone, failed,
+  stopped or removed holds nothing: the task is released, with a `task` event, and taken
+  over); `bad_request` when done or dropped; one's own claim again is fine.
+- `{action: "done", id, result?}` and `{action: "release", id}`: the owner's (the hub
+  and the concierge may too); `unsupported` for another session.
+- `{action: "drop", id}` and `{action: "assign", id, to}`: the hub's and the
+  concierge's only. `assign` sends the session (an id or a unique name; `not_found`)
+  a `message` delivery with the task and how to claim it, marks the task `assigned`
+  (cleared by the claim) and answers `sent` (the `send` outcome); an open task only.
+
+A job that fails, is stopped or is removed holds nothing: its claims are released
+(a `task` event with `why: "release"`). The counts go to subscribed hubs as a `board`
+event `{open, claimed, blocked, done}` on every change; each change is a `task` event
+in the feed (`why: add | claim | release | done | drop | assign`, `text: "#id title"`,
+with `: result` or `: to name`). The TypeScript client has `call(op, args)` and
+`tasks() / claimTask(id) / taskDone(id, result?) / releaseTask(id) / addTask(title,
+{detail?, after?})`; the Python one `request(op, args, timeout)` and `tasks() /
+claim_task / task_done / release_task / add_task` (a refusal is a `RoostError` with
+`code`). See `docs/plans/m47-tasks.md`.
+
 ## Conformance
 
 `test/daemon.test.ts` ("the agent protocol") runs a scripted agent on each client

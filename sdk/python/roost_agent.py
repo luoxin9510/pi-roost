@@ -40,6 +40,15 @@ _ENV = {
 _STATUS = {"working": "busy", "blocked": "waiting", "done": "idle", "failed": "idle"}
 
 
+class RoostError(Exception):
+    """The daemon refused a request: code (conflict, blocked, not_found, bad_request, unsupported, …) and message."""
+
+    def __init__(self, code, message):
+        super().__init__("%s: %s" % (code, message))
+        self.code = code
+        self.message = message
+
+
 @dataclass
 class Reply:
     seq: int
@@ -73,6 +82,7 @@ class RoostAgent:
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._next_id = 0
+        self._waiters = {}  # request id -> (Event, box) for an answer awaited (request)
         self._handled = 0  # handed to on_reply
         self._completed = 0  # on_reply returned (acked)
         self._send_lock = threading.Lock()
@@ -138,13 +148,64 @@ class RoostAgent:
             self._replies_ready.notify_all()
         self._drop()
 
+    # ---- any op (M47) ----------------------------------------------------------
+
+    def request(self, op, args=None, timeout=15.0):
+        """Any op of the protocol (docs/protocol.md), as this job: its result (a dict), or
+        RoostError when the daemon refuses it; TimeoutError when no answer comes in time."""
+        event = threading.Event()
+        box = {}
+        self._send(op, args or {}, waiter=(event, box))
+        if not event.wait(timeout):
+            with self._lock:
+                self._waiters = {k: v for k, v in self._waiters.items() if v[1] is not box}
+            raise TimeoutError("%s: no answer in %ss" % (op, timeout))
+        msg = box["msg"]
+        if not msg.get("ok"):
+            raise RoostError(msg.get("code") or "error", msg.get("message") or op)
+        return msg.get("result") or {}
+
+    # ---- the shared task board (M47) ------------------------------------------
+
+    def tasks(self):
+        """The board: every task (dicts as in docs/protocol.md), oldest first."""
+        return self.request("task", {"action": "list"})["tasks"]
+
+    def claim_task(self, task_id):
+        """Take an open task: this job holds it until task_done or release_task. RoostError
+        conflict (another live session holds it), blocked (it waits on tasks not done),
+        bad_request (done or dropped), not_found."""
+        return self.request("task", {"action": "claim", "id": task_id})["task"]
+
+    def task_done(self, task_id, result=None):
+        """Mark the task this job holds done, with its result."""
+        args = {"action": "done", "id": task_id}
+        if result:
+            args["result"] = result
+        return self.request("task", args)["task"]
+
+    def release_task(self, task_id):
+        """Give the task this job holds back to the board."""
+        return self.request("task", {"action": "release", "id": task_id})["task"]
+
+    def add_task(self, title, detail=None, after=None):
+        """Put a task on the board for any session; after: the ids it waits on."""
+        args = {"action": "add", "title": title}
+        if detail:
+            args["detail"] = detail
+        if after:
+            args["after"] = list(after)
+        return self.request("task", args)["task"]
+
     # ---- the connection ------------------------------------------------------
 
-    def _send(self, op, args):
+    def _send(self, op, args, waiter=None):
         with self._lock:
             sock = self._sock
             self._next_id += 1
             rid = self._next_id
+            if waiter is not None and sock is not None:
+                self._waiters[rid] = waiter  # before the line goes: the answer may come at once
         if sock is None:
             raise ConnectionError("not connected")
         line = (json.dumps({"id": rid, "op": op, "args": args}) + "\n").encode()
@@ -157,6 +218,11 @@ class RoostAgent:
         with self._lock:
             sock, self._sock = self._sock, None
             self._sent = None
+            waiters, self._waiters = self._waiters, {}
+        # an answer awaited over this connection will not come
+        for event, box in waiters.values():
+            box["msg"] = {"ok": False, "code": "disconnected", "message": "the connection was lost"}
+            event.set()
         if sock is not None:
             try:
                 sock.close()
@@ -221,6 +287,15 @@ class RoostAgent:
                 self._message(msg)
 
     def _message(self, msg):
+        # an answer to a request (M47): handed to the thread that waits for it
+        if "event" not in msg and isinstance(msg.get("id"), int):
+            with self._lock:
+                waiter = self._waiters.pop(msg["id"], None)
+            if waiter is not None:
+                event, box = waiter
+                box["msg"] = msg
+                event.set()
+                return
         if msg.get("event") == "deliver" and msg.get("id") == self.job_id:
             # agent items (peer messages) are pi's; a plain agent takes user replies only
             if msg.get("kind") in ("message", "report", "notice"):

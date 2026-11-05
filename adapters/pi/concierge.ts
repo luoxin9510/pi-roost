@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { boardListing } from "../../lib/board.ts";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../../lib/comms.ts";
 import { CONCIERGE_DEFAULTS, CONCIERGE_ROLE_ENV, type ConciergePolicy, conciergeSystemPrompt, fleetLine } from "../../lib/concierge.ts";
 import { envPolicy, loadConfig, loadUserConfig } from "../../lib/config.ts";
@@ -24,6 +25,8 @@ export const ANSWER_TOOLS = ["hub_reply"] as const;
 export const ACT_TOOLS = ["hub_stop", "hub_respawn", "hub_dispatch"] as const;
 /** M46: standing orders: always. */
 export const ORDER_TOOLS = ["hub_note", "hub_note_done", "hub_note_drop"] as const;
+/** M47: the task board, as the lead: always. */
+export const BOARD_TOOLS = ["hub_tasks", "hub_task_add", "hub_task_assign", "hub_task_done", "hub_task_drop", "hub_task_release"] as const;
 
 export function isConciergeRole(env: NodeJS.ProcessEnv): boolean {
 	return env[CONCIERGE_ROLE_ENV] === "concierge";
@@ -31,7 +34,7 @@ export function isConciergeRole(env: NodeJS.ProcessEnv): boolean {
 
 /** The tools the policy in force lets it use (the rest stay registered, inactive). */
 export function activeTools(p: ConciergePolicy): string[] {
-	return [...HUB_TOOLS, ...ORDER_TOOLS, ...(p.answer === "never" ? [] : ANSWER_TOOLS), ...(p.act ? ACT_TOOLS : [])];
+	return [...HUB_TOOLS, ...ORDER_TOOLS, ...BOARD_TOOLS, ...(p.answer === "never" ? [] : ANSWER_TOOLS), ...(p.act ? ACT_TOOLS : [])];
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -402,6 +405,86 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 		async execute(_id, params) {
 			await link.call("concierge-order", { action: "rm", id: params.id });
 			return text(`Dropped #${params.id}.`);
+		},
+	});
+
+	// M47: the shared task board. The concierge is the lead: it reads the board, puts the
+	// user's tasks on it, hands them to idle sessions, and marks them when the user says
+	// so; it never claims one (the daemon refuses).
+	pi.registerTool({
+		name: "hub_tasks",
+		label: "The task board",
+		description: "The shared task board: what is open (a session may take it), blocked (waits on another task), claimed (a session works on it), done. Every digest carries it; read it here for the details.",
+		parameters: Type.Object({}),
+		async execute() {
+			const { tasks } = await link.call("task", { action: "list" });
+			return text(boardListing(tasks).join("\n"));
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_task_add",
+		label: "Add a task",
+		description: "Put a task on the board, when the user asks for one. A task may wait on others (after: their numbers): it is claimable once those are done.",
+		parameters: Type.Object({
+			title: Type.String({ description: "One line (at most 200 characters)" }),
+			detail: Type.Optional(Type.String({ description: "What doing it means, for the session that takes it (at most 2000 characters)" })),
+			after: Type.Optional(Type.Array(Type.Number(), { description: "Task numbers it waits on" })),
+		}),
+		async execute(_id, params) {
+			const r = await link.call("task", { action: "add", title: params.title, detail: params.detail, after: params.after });
+			return text(`Added #${r.task?.id}: ${r.task?.title}${params.after?.length ? ` (after ${params.after.map((i) => `#${i}`).join(", ")})` : ""}.`);
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_task_assign",
+		label: "Hand a task over",
+		description: "Hand an open task to a session: it gets a message with the task and claims it with roost_task_claim. Pick an idle session (hub_sessions), or one that works on something related; a blocked task is handed over with its waits named.",
+		parameters: Type.Object({
+			id: Type.Number({ description: "The task's number" }),
+			to: Type.String({ description: "Session id or exact name" }),
+		}),
+		async execute(_id, params) {
+			const r = await link.call("task", { action: "assign", id: params.id, to: params.to });
+			const who = r.task?.assigned?.name ?? params.to;
+			return text(r.sent === "delivered" || r.sent === "queued" || r.sent === "started" ? `Handed #${params.id} to ${who}; it claims it when it reads the message.` : `#${params.id} was not handed over: ${who} is not running (${r.sent ?? "no answer"}).`);
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_task_done",
+		label: "Mark a task done",
+		description: "Mark a task done, with its result, when the user says it is (a session marks its own with roost_task_done).",
+		parameters: Type.Object({
+			id: Type.Number({ description: "The task's number" }),
+			result: Type.Optional(Type.String({ description: "One or two lines: what came of it" })),
+		}),
+		async execute(_id, params) {
+			await link.call("task", { action: "done", id: params.id, result: params.result });
+			return text(`#${params.id} is done.`);
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_task_drop",
+		label: "Drop a task",
+		description: "Take a task off the board, when the user says so (a claimed one is taken from its session).",
+		parameters: Type.Object({ id: Type.Number({ description: "The task's number" }) }),
+		async execute(_id, params) {
+			await link.call("task", { action: "drop", id: params.id });
+			return text(`Dropped #${params.id}.`);
+		},
+	});
+
+	pi.registerTool({
+		name: "hub_task_release",
+		label: "Release a task",
+		description: "Give a claimed task back to the board (open again), when its session is stuck on it or the user says so.",
+		parameters: Type.Object({ id: Type.Number({ description: "The task's number" }) }),
+		async execute(_id, params) {
+			await link.call("task", { action: "release", id: params.id });
+			return text(`#${params.id} is open again.`);
 		},
 	});
 }

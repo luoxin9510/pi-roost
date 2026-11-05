@@ -2,6 +2,7 @@ import type { ConciergeAnswer, ConciergePolicy, ConciergeStatus, StandingOrder }
 import type { RoostEvent } from "./events.ts";
 import type { PrInfo } from "./pr.ts";
 import type { UsageInfo } from "./usage.ts";
+import type { BoardSummary, BoardTask } from "./board.ts";
 import type { ProfileTerm } from "./profiles.ts";
 import { StringDecoder } from "node:string_decoder";
 
@@ -303,6 +304,20 @@ export interface OpArgs {
 	 * mark one applied (the concierge's).
 	 */
 	"concierge-order": { action: "add"; text: string; when?: string } | { action: "rm"; id: number } | { action: "list" } | { action: "applied"; id: number; text?: string };
+	/**
+	 * M47: the shared task board (the hub's, the concierge's and the sessions' connections): list
+	 * it, add a task, claim one (a session's; refused `conflict` when another live session holds
+	 * it, `blocked` while one it waits on is not done), give one back, mark one done, drop one
+	 * (the hub's, the concierge's), hand one to a session (a message there).
+	 */
+	task:
+		| { action: "list" }
+		| { action: "add"; title: string; detail?: string; after?: number[] }
+		| { action: "claim"; id: number }
+		| { action: "release"; id: number }
+		| { action: "done"; id: number; result?: string }
+		| { action: "drop"; id: number }
+		| { action: "assign"; id: number; to: string };
 }
 
 export interface OpResults {
@@ -347,6 +362,8 @@ export interface OpResults {
 	"concierge-reply": { id: string; name: string };
 	"concierge-act": { id: string; name: string };
 	"concierge-order": { orders: StandingOrder[]; order?: StandingOrder };
+	/** M47: the board as it stands (and the task acted on; `sent`: how the hand-over message went). */
+	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"] };
 }
 
 export type Op = keyof OpArgs;
@@ -365,6 +382,8 @@ export type Event =
 	| { event: "removed"; id: string }
 	/** M44: the concierge's status changed (on, off, a notice, an answer, its budget). */
 	| { event: "concierge"; status: ConciergeStatus }
+	/** M47: the task board changed (its counts; `task list` has the tasks). */
+	| { event: "board"; board: BoardSummary }
 	/** Daemon → worker, on the connection the worker reports on. */
 	| {
 			event: "deliver";

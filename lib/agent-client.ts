@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readJobEnv } from "./identity.ts";
 import { writeJsonAtomic } from "./atomic.ts";
+import type { BoardTask } from "./board.ts";
 import { DaemonClient } from "./client.ts";
 import { type ArgsOf, type Event, type HelloArgs, type HelloResult, type Op, PROTOCOL_VERSION, type ResultOf, type WorkerReport } from "./protocol.ts";
 import { sameUsage } from "./usage.ts";
@@ -307,6 +308,38 @@ export class RoostAgent {
 	/** Send what is pending, then disconnect. */
 	close(): Promise<void> {
 		return this.reporter.close();
+	}
+
+	/** M47: any op of the protocol (docs/protocol.md), as this job: answered, or refused by the daemon (an Error with its message). */
+	call<O extends Op>(op: O, args: ArgsOf<O>): Promise<ResultOf<O>> {
+		return this.reporter.call(op, args);
+	}
+
+	// M47: the shared task board (the `tasks` capability): open, blocked, claimed and done tasks
+
+	/** The board, every task (open, claimed, done, dropped), oldest first. */
+	async tasks(): Promise<BoardTask[]> {
+		return (await this.call("task", { action: "list" })).tasks;
+	}
+
+	/** Take an open task: this job holds it until taskDone or releaseTask. Refused when another live session holds it (conflict), when it waits on tasks not done (blocked), or when it is done or dropped. */
+	async claimTask(id: number): Promise<BoardTask> {
+		return (await this.call("task", { action: "claim", id })).task!;
+	}
+
+	/** Mark the task this job holds done, with its result; tasks that waited on it become claimable. */
+	async taskDone(id: number, result?: string): Promise<BoardTask> {
+		return (await this.call("task", { action: "done", id, ...(result ? { result } : {}) })).task!;
+	}
+
+	/** Give the task this job holds back to the board (open again). */
+	async releaseTask(id: number): Promise<BoardTask> {
+		return (await this.call("task", { action: "release", id })).task!;
+	}
+
+	/** Put a task on the board for any session; after: task ids it waits on. */
+	async addTask(title: string, opts: { detail?: string; after?: number[] } = {}): Promise<BoardTask> {
+		return (await this.call("task", { action: "add", title, ...(opts.detail ? { detail: opts.detail } : {}), ...(opts.after?.length ? { after: opts.after } : {}) })).task!;
 	}
 
 	private deliver(item: DeliverItem): void {
