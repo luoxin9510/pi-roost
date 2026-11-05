@@ -29,7 +29,9 @@ const EXT = join(ROOT, "adapters", "pi", "index.ts");
 export interface Step {
 	/** The row's state that triggers it ("working" waits `afterMs` into the work). */
 	when: "working" | "blocked" | "done";
-	reply: string;
+	/** What the user sends; or, instead, `kill`: the worker is killed (SIGKILL), as a crash. */
+	reply?: string;
+	kill?: "worker";
 	mode?: ReplyMode;
 	afterMs?: number;
 }
@@ -60,6 +62,8 @@ export interface RoostOutcome {
 	files: Record<string, string>;
 	children: { name: string; state: string; summary: string | null }[];
 	repliesPending: number;
+	/** Automatic restarts of the case's job (M38). */
+	restarts: number;
 	costUsd: number | null;
 	tokens: number | null;
 	ms: number;
@@ -231,10 +235,24 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				if (ready) {
 					steps.shift();
 					const seen = states().length;
+					if (next.kill) {
+						const pid = readWorkerPid(id);
+						states().push("kill");
+						if (pid) process.kill(pid, "SIGKILL");
+						// it went down and came back (or the case times out)
+						const until = Date.now() + 60_000;
+						while (Date.now() < until && Date.now() < deadline) {
+							const w = readWorkerPid(id);
+							if (w && w !== pid && rows.get(id)?.state === "working") break;
+							await sleep(100);
+						}
+						workingSince = 0;
+						continue;
+					}
 					// before the request: the row may move before its answer comes
 					states().push(`reply${next.mode === "steer" ? " (steer)" : ""}`);
 					await within(
-						cl.request("reply", { id, text: next.reply, ...(next.mode ? { mode: next.mode } : {}), requestId: `${label}-${steps.length}` }),
+						cl.request("reply", { id, text: next.reply ?? "", ...(next.mode ? { mode: next.mode } : {}), requestId: `${label}-${steps.length}` }),
 						left(),
 						"reply",
 					);
@@ -302,6 +320,14 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			files,
 			children,
 			repliesPending: pending,
+			restarts: (() => {
+				try {
+					const n = jobId ? readState(jobId)?.crashRestarts : 0;
+					return typeof n === "number" ? n : 0;
+				} catch {
+					return 0;
+				}
+			})(),
 			costUsd: used.length ? used.reduce((a, u) => a + u.cost, 0) : null,
 			tokens: used.length ? used.reduce((a, u) => a + u.input + u.output + u.cacheRead + u.cacheWrite, 0) : null,
 			ms: Date.now() - t0,

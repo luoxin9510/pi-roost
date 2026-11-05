@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { homedir } from "node:os";
+import { constants as osConstants, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
@@ -74,6 +74,16 @@ import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type Work
 
 const WAIT_MS = 6000;
 const CONTINUE = "Continue where you left off.";
+/**
+ * M38: automatic restarts of a run cut short, in a row, and the pause before each
+ * (PI_ROOST_RESUME_DELAYS_MS="1000,5000,15000" changes them; tests shorten them).
+ */
+const RESUME_DELAYS_MS = (process.env.PI_ROOST_RESUME_DELAYS_MS ?? "1000,5000,15000")
+	.split(",")
+	.map(Number)
+	.filter((n) => Number.isFinite(n) && n >= 0);
+/** M38: a run interrupted longer ago than this (by the machine or the service) is not resumed by itself. */
+const RESUME_WINDOW_MS = 6 * 60 * 60 * 1000;
 /** DM-7: a run that last made progress within this long ago ended by surprise. */
 const RECENT_MS = 48 * 60 * 60 * 1000;
 const REAP_CHECK_MS = 30_000;
@@ -415,6 +425,7 @@ function pushJob(id: string): void {
 
 /** rm: stop the job, drop its records, then its worktree when that holds no work (M10). */
 async function removeRecord(id: string): Promise<{ id: string; worktree?: CleanupResult }> {
+	cancelResume(id);
 	// a live child's end is reported by finalize, as a removal
 	if (roster.has(id)) removing.add(id);
 	if (roster.has(id)) {
@@ -563,8 +574,8 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 			// M31: an agent that said it failed and then exited cleanly failed
 			patch.state = "failed";
 		} else {
-			patch.state = ex && ex.code === 0 ? "done" : "failed";
-			if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
+			patch.state = ex && !crashed(ex) ? "done" : "failed";
+			if (patch.state === "failed") patch.error = ex ? exitText(ex, "exited") : "host vanished";
 		}
 		// M30: a level 0 agent's row stays, as an agent's does; a command's goes a while later
 		const rec = recs.get(id);
@@ -600,6 +611,8 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 			if (now - progress < RECENT_MS) {
 				patch.state = "failed";
 				patch.error = "the session ended while it was working (machine restart?); reply or press Enter twice to resume";
+				// M38: a recent one carries on by itself
+				if (autoResume() === "interrupted" && now - progress < RESUME_WINDOW_MS) restart = true;
 			} else {
 				patch.state = "stopped";
 				patch.error = "ended while the background service was off";
@@ -609,18 +622,37 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		patch.state = "failed";
 		patch.error = "host vanished";
 		daemonEnded = true;
-	} else if (ex.code !== 0) {
-		// DM-5: one automatic restart for a worker that crashed mid-run
-		const restarts = typeof st.crashRestarts === "number" ? st.crashRestarts : 0;
-		restart = st.state === "working" && restarts < 1;
+		// M38: a host gone under a working run (killed, out of memory) is a crash, not an end
+		if (st.state === "working" && autoResume() === "interrupted") restart = true;
+	} else if (crashed(ex)) {
+		// DM-5, M38: a worker that crashed mid-run restarts, a few times in a row at most
+		restart = st.state === "working" && autoResume() !== "off";
 		daemonEnded = !restart;
 		patch.state = "failed";
-		if (!st.error) patch.error = `worker exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}`;
+		if (!st.error) patch.error = exitText(ex, "worker exited");
 	} else if (st.state === "failed" || (st.state === "blocked" && st.waitingFor === "question")) {
 		// The worker's last word stands for a failed turn or an open question (answered
 		// by restarting the session); a dialog or a missing first prompt dies with it.
 		patch.state = st.state;
 	} else patch.state = "done";
+	// M38: the restart budget: a run that keeps crashing stops being restarted
+	let resumeIn: number | undefined;
+	if (restart) {
+		const n = typeof st.crashRestarts === "number" ? st.crashRestarts : 0;
+		const why = patch.error ?? st.error ?? "it ended";
+		if (n < RESUME_DELAYS_MS.length && !shuttingDown) {
+			resumeIn = RESUME_DELAYS_MS[n]!;
+			// still the user's run: working, not a failure to be told about
+			patch.state = "working";
+			patch.resumeAt = now + resumeIn;
+			patch.error = `${why}; continuing in ${Math.ceil(resumeIn / 1000)} s (automatic restart ${n + 1} of ${RESUME_DELAYS_MS.length})`;
+			daemonEnded = false;
+		} else {
+			restart = false;
+			daemonEnded = true;
+			if (n >= RESUME_DELAYS_MS.length) patch.error = `${why}; not restarted again after ${n} automatic restarts in a row (reply to continue)`;
+		}
+	}
 	try {
 		updateState(id, patch);
 	} catch (err) {
@@ -634,17 +666,65 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		// a reply arrived while the idle worker was going away: start it again for it
 		void respawn(id).catch((err: unknown) => log("error", "wake after reap failed", { id, error: String(err) }));
 	}
-	if (restart && !shuttingDown) {
-		void respawn(id, { prompt: CONTINUE, crash: true }).catch((err: unknown) =>
-			log("error", "crash restart failed", { id, error: String(err) }),
-		);
-	}
+	if (resumeIn !== undefined) scheduleResume(id, resumeIn, why);
 	if (daemonEnded && !shuttingDown && recs.get(id)?.parentSession) {
 		const why = removing.has(id) ? "removed by the user" : patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
 		// a removal cleans the worktree up at the same time: its state would be stale
 		const body = reportBody({ state: "ended", error: why });
 		void (removing.has(id) ? Promise.resolve(body) : withWorktreeLine(id, body)).then((b) => routeReport(id, b));
 	}
+}
+
+// ---- M38: automatic restarts -------------------------------------------------------
+
+const autoResume = () => loadUserConfig().autoResume;
+const resumeTimers = new Map<string, NodeJS.Timeout>();
+
+/** Start the run again after `ms`, unless the user stopped, removed or restarted it meanwhile. */
+function scheduleResume(id: string, ms: number, why: string): void {
+	clearTimeout(resumeTimers.get(id));
+	telemetry.counter("roost.auto_resume").add(1, { why: why.slice(0, 40) });
+	log("info", "resume scheduled", { id, ms, why });
+	const t = setTimeout(() => {
+		resumeTimers.delete(id);
+		if (shuttingDown || roster.has(id) || !recs.has(id) || typeof readState(id)?.resumeAt !== "number") return;
+		void respawn(id, { prompt: CONTINUE, crash: true }).catch((err: unknown) => {
+			log("error", "automatic restart failed", { id, error: String(err) });
+			// it cannot run (a locked session, its directory gone): say why, stop trying
+			try {
+				updateState(id, { state: "failed", resumeAt: undefined, error: `could not restart it: ${(err as Error).message}` });
+			} catch {}
+			pushJob(id);
+		});
+	}, ms);
+	t.unref?.();
+	resumeTimers.set(id, t);
+}
+
+/** A waiting automatic restart is called off (stop, rm, a restart by other means). Whether one was. */
+function cancelResume(id: string): boolean {
+	const t = resumeTimers.get(id);
+	if (t) clearTimeout(t);
+	resumeTimers.delete(id);
+	return typeof readState(id)?.resumeAt === "number";
+}
+
+/**
+ * M38: an exit that was not the program's own: a non-zero code, or a signal. node-pty
+ * gives a process killed by a signal (SIGKILL: the out-of-memory killer, a kill -9) code
+ * 0 and the signal's number, which read as a clean end before.
+ */
+function crashed(ex: { code: number | null; signal: string | null }): boolean {
+	return ex.code !== 0 || (!!ex.signal && ex.signal !== "0");
+}
+
+function exitText(ex: { code: number | null; signal: string | null }, what: string): string {
+	if (ex.signal && ex.signal !== "0") {
+		const n = Number(ex.signal);
+		const name = Number.isInteger(n) ? Object.entries(osConstants.signals).find(([, v]) => v === n)?.[0] : ex.signal;
+		return `${what === "exited" ? "killed" : "worker killed"} by ${name ?? `signal ${ex.signal}`}`;
+	}
+	return `${what} with code ${ex.code}`;
 }
 
 function checkHosts(): void {
@@ -683,6 +763,12 @@ function loadJobs(): void {
 			}
 		}
 		if (st && st.endedAt === undefined && !roster.has(id)) finalize(id, "orphaned", { startup: true });
+		// M38: a restart that was waiting when the service went down
+		else if (st && typeof st.resumeAt === "number" && !roster.has(id)) {
+			if (autoResume() === "off") {
+				updateState(id, { state: "failed", resumeAt: undefined, error: "the background service stopped before its automatic restart; reply to continue" });
+			} else scheduleResume(id, Math.max(0, Math.min(st.resumeAt - Date.now(), RESUME_DELAYS_MS.at(-1) ?? 0)), "restart pending at startup");
+		}
 	}
 	persistRoster();
 }
@@ -977,6 +1063,9 @@ async function respawnNow(
 	if (starting.has(id) || respawning.has(id)) return { id, started: false };
 	respawning.add(id);
 	try {
+		// M38: any start of it takes the place of an automatic restart still waiting
+		clearTimeout(resumeTimers.get(id));
+		resumeTimers.delete(id);
 		const shell = rec.kind === "shell";
 		// M30: a level 0 agent takes its prompt typed in, once it is up and quiet
 		const typeTask = isTermJob(rec) && opts.prompt ? opts.prompt : undefined;
@@ -1045,6 +1134,7 @@ async function respawnNow(
 			attachSignal: false,
 			attachRepaint: false,
 			restartedAt: now,
+			resumeAt: undefined,
 			command,
 			restore,
 			crashRestarts: opts.crash ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + 1 : 0,
@@ -1509,7 +1599,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		...(Array.isArray(r.prLinks) ? { prLinks: mergeLinks(st.prLinks, r.prLinks) } : {}),
 		// a turn that ends normally clears the crash budget (DM-5)
 		// (only once the worker has stayed up a while, so a crash loop stays bounded)
-		...(r.state !== "working" && Date.now() - (typeof st.restartedAt === "number" ? st.restartedAt : 0) > CRASH_RESET_MS
+		// (written only when there is a count: a report is not otherwise a durable write)
+		...(r.state !== "working" && typeof st.crashRestarts === "number" && st.crashRestarts > 0 && Date.now() - (typeof st.restartedAt === "number" ? st.restartedAt : 0) > CRASH_RESET_MS
 			? { crashRestarts: 0 }
 			: {}),
 	});
@@ -1948,6 +2039,9 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	log("info", "shutdown", { keepWorkers });
+	// M38: a waiting restart stays in the job's state (resumeAt); the next start takes it up
+	for (const t of resumeTimers.values()) clearTimeout(t);
+	resumeTimers.clear();
 	clearInterval(watcher);
 	clearInterval(shellWatcher);
 	clearInterval(reaper);
@@ -2000,6 +2094,11 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			if (roster.has(id)) {
 				log("info", "stop", { id });
 				await terminateHost(id);
+			} else if (cancelResume(id)) {
+				// M38: between a crash and its automatic restart
+				log("info", "stop", { id, resume: "cancelled" });
+				updateState(id, { state: "stopped", resumeAt: undefined, error: null, stateSince: Date.now() });
+				pushJob(id);
 			}
 			return { id };
 		}

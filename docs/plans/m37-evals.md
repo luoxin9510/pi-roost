@@ -60,6 +60,7 @@ cost, time p50). A report of one run each says it is not a measure of stability.
 | reply continues | done; the first answer (42) is in the transcript; the reply's answer (50) uses the session's context; the reply was acked |
 | steer | a steer sent 4 s into a 12 s `sleep` is taken in the same run (one done after it, not two); the sleep ran and the last answer has both the work's word and the steer's; acked |
 | subagent | `roost_spawn` starts exactly one child; it ends done; the child reads a random token from a file the parent is told not to read (and does not); the parent's last answer has the token |
+| interrupted (M38) | the pi worker is SIGKILLed 6 s into a 15 s `sleep`; it is restarted once by itself and the work is finished (the file written) |
 
 ## First results (2026-11-05)
 

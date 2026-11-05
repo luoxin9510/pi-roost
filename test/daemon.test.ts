@@ -9,7 +9,7 @@ import { daemonSocketPath, jobDir } from "../lib/paths.ts";
 import { isAlive, processStartToken } from "../lib/proc.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
-import { listJobIds, readState } from "../lib/store.ts";
+import { listJobIds, readJob, readState } from "../lib/store.ts";
 
 const DAEMON = resolve("daemon/main.ts");
 const HOST = resolve("host/main.ts");
@@ -69,6 +69,7 @@ afterEach(() => {
 		["PI_ROOST_HOST_ENTRY", saved.host],
 		["PI_ROOST_CONFIG_DIR", undefined],
 		["PI_ROOST_REAP_MINUTES", undefined],
+		["PI_ROOST_RESUME_DELAYS_MS", undefined],
 		["PI_ROOST_REAP_CHECK_MS", undefined],
 		["PI_ROOST_SHELL_KEEP_MS", undefined],
 		["PI_ROOST_CLEANUP_DAYS", undefined],
@@ -227,7 +228,8 @@ describe("daemon", () => {
 		await waitFor(async () => (await find(second.client, id))?.state === "stopped");
 	});
 
-	it("finalizes jobs whose host died while the daemon was down", async () => {
+	it("finalizes jobs whose host died while the daemon was down (autoResume crash)", async () => {
+		writeFileSync(join(home, "roost.json"), JSON.stringify({ autoResume: "crash" }));
 		const first = await startDaemon();
 		const { id } = await first.client.request("dispatch", args("sleep 30"));
 		await waitFor(async () => (await find(first.client, id))?.pid);
@@ -587,15 +589,31 @@ describe("lifecycle", () => {
 		await waitFor(async () => (await find(client, id))?.state === "done");
 	});
 
-	it("DM-5: a worker that crashes mid-run restarts once, then fails", async () => {
+	it("DM-5, M38: a worker that keeps crashing mid-run is restarted 3 times, then left failed", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "50,50,50";
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", args("sleep 0.3; exit 3"));
 		const row = await waitFor(async () => {
 			const r = await find(client, id);
-			return r?.endedAt && readState(id)?.crashRestarts === 1 ? r : undefined;
+			return r?.state === "failed" && readState(id)?.crashRestarts === 3 ? r : undefined;
 		}, 15000);
-		expect(row.state).toBe("failed");
-		expect(row.error).toMatch(/code 3/);
+		expect(row.error).toMatch(/code 3.*not restarted again after 3 automatic restarts/);
+		expect(readState(id)?.resumeAt).toBeUndefined();
+	});
+
+	it("M38: autoResume off restarts nothing", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "50,50,50";
+		writeFileSync(join(home, "roost.json"), JSON.stringify({ autoResume: "off" }));
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.3; exit 3"));
+		const row = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.endedAt ? r : undefined;
+		});
+		await new Promise((r) => setTimeout(r, 500));
+		expect((await find(client, id))?.state).toBe("failed");
+		expect(row.error).toMatch(/code 3$/);
+		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
 	});
 
 	it("DM-4: reaps an idle unattached worker, keeps the row, and wakes it on reply", async () => {
@@ -1149,4 +1167,121 @@ describe("M36 a resend after the daemon died before starting the job", () => {
 		await waitFor(async () => (await find(client, id))?.summary === "did kept (#1)", 15000);
 		await client.request("stop", { id });
 	}, 40000);
+});
+
+describe("M38: interrupted runs carry on", () => {
+	const kill = (pid: number) => {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {}
+	};
+
+	it("a run whose host died while the service was down starts again by itself", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "50,50,50";
+		const first = await startDaemon();
+		const { id } = await first.client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(first.client, id))?.pid);
+		const hostPid = readState(id)!.hostPid!;
+		// a session pi has written: it carries on where it left off
+		writeFileSync(readJob(id)!.sessionFile, "{}\n");
+		await first.client.request("shutdown", { keepWorkers: true });
+		await waitFor(() => exited(first.proc));
+		kill(hostPid);
+		const second = await startDaemon();
+		const row = await waitFor(async () => {
+			const r = await find(second.client, id);
+			return r?.pid && r.pid !== hostPid ? r : undefined;
+		});
+		expect(row.state).toBe("working");
+		expect(readState(id)?.crashRestarts).toBe(1);
+		expect(readState(id)?.resumeAt).toBeUndefined();
+		expect((readState(id)?.command as string[]).at(-1)).toBe("Continue where you left off.");
+		await second.client.request("stop", { id });
+	});
+
+	it("a host killed under a working run is a crash: restarted (autoResume crash: not)", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "50,50,50";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, id))?.pid);
+		const hostPid = readState(id)!.hostPid!;
+		kill(hostPid);
+		await waitFor(async () => {
+			const st = readState(id);
+			return st?.crashRestarts === 1 && typeof st.hostPid === "number" && st.hostPid !== hostPid && (await find(client, id))?.pid ? true : undefined;
+		}, 15000);
+		await client.request("stop", { id });
+
+		writeFileSync(join(home, "roost.json"), JSON.stringify({ autoResume: "crash" }));
+		const other = await client.request("dispatch", args("sleep 30"));
+		await waitFor(async () => (await find(client, other.id))?.pid);
+		kill(readState(other.id)!.hostPid!);
+		const r = await waitFor(async () => {
+			const x = await find(client, other.id);
+			return x?.endedAt ? x : undefined;
+		}, 15000);
+		expect(r.state).toBe("failed");
+		expect(r.error).toBe("host vanished");
+	});
+
+	it("a stop while a restart waits calls it off", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "3000";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.2; exit 3"));
+		const waiting = await waitFor(async () => {
+			const r = await find(client, id);
+			return r?.endedAt && typeof readState(id)?.resumeAt === "number" ? r : undefined;
+		});
+		expect(waiting.state).toBe("working");
+		expect(waiting.error).toMatch(/continuing in 3 s \(automatic restart 1 of 1\)/);
+		await client.request("stop", { id });
+		expect((await find(client, id))?.state).toBe("stopped");
+		await new Promise((r) => setTimeout(r, 3500));
+		const after = await find(client, id);
+		expect(after?.state).toBe("stopped");
+		expect(after?.pid).toBeNull();
+		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
+	});
+
+	it("a restart waiting when the service went down is taken up by the next start", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "2000";
+		const first = await startDaemon();
+		const { id } = await first.client.request("dispatch", args("sleep 0.2; exit 3"));
+		await waitFor(() => (typeof readState(id)?.resumeAt === "number" ? true : undefined));
+		await first.client.request("shutdown", { keepWorkers: true });
+		await waitFor(() => exited(first.proc));
+		const second = await startDaemon();
+		await waitFor(async () => (readState(id)?.crashRestarts === 1 && (await find(second.client, id))?.pid ? true : undefined), 8000);
+		expect(readState(id)?.resumeAt).toBeUndefined();
+		await second.client.request("stop", { id });
+	});
+
+	it("a reply while a restart waits starts it at once, with the reply instead", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "5000";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.2; exit 3"));
+		await waitFor(() => (typeof readState(id)?.resumeAt === "number" ? true : undefined));
+		await client.request("reply", { id, text: "try another way" });
+		await waitFor(async () => ((await find(client, id))?.pid ? true : undefined), 4000);
+		expect(readState(id)?.resumeAt).toBeUndefined();
+		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
+		await client.request("stop", { id });
+	});
+
+	it("a worker killed by a signal is a crash, not a clean end (node-pty reports it as code 0)", async () => {
+		writeFileSync(join(home, "roost.json"), JSON.stringify({ autoResume: "off" }));
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.2; kill -9 $$"));
+		const r = await waitFor(async () => {
+			const x = await find(client, id);
+			return x?.endedAt ? x : undefined;
+		});
+		expect(r).toMatchObject({ state: "failed", error: "worker killed by SIGKILL" });
+		const sh = await client.request("dispatch", { ...args("sleep 0.2; kill -9 $$"), kind: "shell", sessionFile: "" });
+		const r2 = await waitFor(async () => {
+			const x = await find(client, sh.id);
+			return x?.endedAt ? x : undefined;
+		});
+		expect(r2).toMatchObject({ state: "failed", error: "killed by SIGKILL" });
+	});
 });

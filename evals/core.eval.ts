@@ -79,4 +79,21 @@ describeEval("roost core", { harness: roostHarness, judgeThreshold: null }, (it)
 			{ threshold: null },
 		);
 	});
+
+	it.for(runs)("a run killed mid-work carries on by itself ($run)", async (_, { run }) => {
+		const r = await run({
+			task: "Use the bash tool to run `sleep 15`. After it, create a file named result.txt whose whole content is exactly: carried on",
+			steps: [{ when: "working", afterMs: 6000, kill: "worker" }],
+			timeoutMs: 240_000,
+		});
+		await expect(r).toSatisfyJudge(
+			checks("interrupted", {
+				"done": ended,
+				"killed, then working again": (o) => o.states.indexOf("kill") >= 0 && o.states.slice(o.states.indexOf("kill")).includes("done"),
+				"one automatic restart": (o) => o.restarts === 1,
+				"the work finished": (o) => o.files["result.txt"]?.trim() === "carried on",
+			}),
+			{ threshold: null },
+		);
+	});
 });

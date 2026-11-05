@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Interrupted sessions carry on by themselves (`autoResume`, default `"interrupted"`): a session whose worker crashed or was killed, whose host went away, or that was working when the machine or the background service went down (in the last 6 hours) is started again with "Continue where you left off.", up to 3 times in a row after 1, 5 and 15 seconds; then it waits for you. While it waits, the row stays working and says so; stop or a reply calls the restart off. `"crash"` restarts after worker crashes only, `"off"` never.
+- Fixed: a session whose worker was killed by a signal (out of memory, `kill -9`) showed as finished instead of failed.
+
 - `pi-roost hub [dir]`: the agent view in a terminal of its own, without a pi session around it. The same view, keys and commands (/model from pi's model list, /resume with pi's session picker, attach and back); new sessions run the pi on your PATH.
 
 - The pi extension moved to `adapters/pi/` (the old `extensions/index.ts` still loads it, for sessions started before). New package exports: `pi-roost/client` (talk to the background service) and `pi-roost/protocol` (its types).

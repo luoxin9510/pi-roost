@@ -37,6 +37,12 @@ export interface RoostConfig {
 	subagentPanelRows: number;
 	/** M13: stop a subagent's worker once it finished and reported (a message starts it again). */
 	subagentAutoClose: boolean;
+	/**
+	 * M38: what the background service restarts by itself: "interrupted" (a run cut short by
+	 * a crash, its host going away, or the machine or the service going down), "crash" (a
+	 * worker crashing mid-run only), "off". Bounded: a few times in a row, with a pause.
+	 */
+	autoResume: "interrupted" | "crash" | "off";
 	/** M13: as in Claude Code, subagents a session spawns are not rows of the agent view (inline: they are). */
 	agentViewSubagents: "hide" | "inline";
 	/** M10: new sessions in their own git worktree: none, roost_spawn children, or every pi dispatch. */
@@ -150,6 +156,7 @@ export const DEFAULTS: RoostConfig = {
 	subagentPanel: true,
 	subagentPanelRows: 5,
 	subagentAutoClose: true,
+	autoResume: "interrupted",
 	agentViewSubagents: "hide",
 	agentTools: true,
 	agentExternalMessages: false,
@@ -182,6 +189,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 		out.subagentPanelRows = r.subagentPanelRows;
 	}
 	if (typeof r.subagentAutoClose === "boolean") out.subagentAutoClose = r.subagentAutoClose;
+	if (r.autoResume === "interrupted" || r.autoResume === "crash" || r.autoResume === "off") out.autoResume = r.autoResume;
 	if (r.agentViewSubagents === "hide" || r.agentViewSubagents === "inline") out.agentViewSubagents = r.agentViewSubagents;
 	if (r.worktreeIsolation === "off" || r.worktreeIsolation === "children" || r.worktreeIsolation === "all") out.worktreeIsolation = r.worktreeIsolation;
 	for (const k of ["agentTools", "agentExternalMessages"] as const) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
