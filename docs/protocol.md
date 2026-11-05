@@ -232,6 +232,19 @@ session is steered, or replied to, to disregard it). `concierge-act {what: stop 
 respawn, id} | {what: dispatch, launch}` needs `act`. The status carries `policy` and
 `answered`. See `docs/plans/m45-policy.md`.
 
+M46: `concierge-order {action: "add", text, when?}` keeps a standing order (the hub's
+connection: `by: "user"`; the concierge's: `by: "concierge"`; `when` is a schedule's
+vocabulary, `every 30m | daily 18:00 | weekdays 09:00 | cron "…"`, else `bad_request`;
+at most 50, `full`), `{action: "rm", id}` drops one (the concierge only its own:
+`unsupported`), `{action: "list"}` the lot, `{action: "applied", id, text?}` (the
+concierge's) marks one applied (`lastAt`, `count`). A session's connection is refused.
+The result is `{orders: StandingOrder[], order?}` with `{id, text, when, by, at,
+lastAt, nextAt, count}`. Every digest lists them; one on a clock whose `nextAt` has
+come is a `digest` delivery with `why: "order"` and a "Due now" section (its `nextAt`
+moves on when that digest reached the concierge). `concierge` events: `why: "order"`
+(applied: `#id what`), `"order-kept"`, `"order-dropped"`. The status carries `orders`
+(their number). See `docs/plans/m46-orders.md`.
+
 ## Conformance
 
 `test/daemon.test.ts` ("the agent protocol") runs a scripted agent on each client

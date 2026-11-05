@@ -155,6 +155,25 @@ examples. Then 0.94 twice (the fleet question still ended in a period), then 3/3
 the seven `routine` runs, none of the 35 careful questions was answered; `never` 4/4;
 about two cents a `routine` run (nine sessions), under a cent a `never` run.
 
+## M46: standing orders
+
+`evals/orders.eval.ts`: the case takes `orders` (the user's, kept through
+`concierge-order add` before the sessions start) and a `waitMs` step (time for a clock
+order to come due); the outcome adds `concierge.orders` (as the case ended) and
+`applied` (the `#id what` it marked with `hub_note_done`). Three cases: "when A ends,
+tell B its result" with a `build` session that ends with a value and a `deploy` one
+told to wait for it (the message sent once, with the value, after `build` ended;
+`deploy` took it up; `#1` said; the order still kept); a rule told in a question
+("every minute, say which sessions are blocked"), kept with `every 1m` in roost's
+words and carried out when roost woke it with it due; an order that would start a
+session under `act: false` (nothing started; a `need` line saying the order needs
+`act`). First runs (2026-11-05, haiku): "when A ends, tell B" and "on a clock" 1/1 at
+once (the clock case takes 105 s: the order kept, the tick a minute on, the wake); "needs
+act" 0/1 for the check, not the concierge: it said "#1 says start deploy, but I can't
+start sessions: please start it yourself", and the check wanted the word `act`, so the
+check takes "can't", "cannot", "not allowed" and the like with `#1`. Then 2/2, 2/2, 2/2;
+the policy and concierge cases again 1/1 each; under a cent a run.
+
 ## Next cases
 
 A question answered by a reply (`blocked` → reply → done), once a case makes pi ask

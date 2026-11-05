@@ -1031,6 +1031,78 @@ describe("M44: the concierge", () => {
 			restore();
 		}
 	});
+
+	// ---- M46: standing orders ----
+	it("keeps standing orders (the user's and its own), lists them in every digest, drops them as told, keeps them over a restart", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { id, w: wc } = await conciergeOn(hub);
+			await waitFor(() => digests(wc.events)[0]);
+			const p = await foreground("lead");
+			await expect(p.c.request("concierge-order", { action: "list" })).rejects.toMatchObject({ code: "unsupported" });
+			await expect(hub.request("concierge-order", { action: "add", text: "" })).rejects.toMatchObject({ code: "bad_request" });
+			await expect(hub.request("concierge-order", { action: "add", text: "x", when: "whenever" })).rejects.toMatchObject({ code: "bad_request" });
+			// the user's, from the hub; the concierge's own, with a clock
+			const mine = await hub.request("concierge-order", { action: "add", text: "when build ends, tell deploy its result" });
+			expect(mine.order).toMatchObject({ id: 1, by: "user", when: null, nextAt: null, count: 0 });
+			const its = await wc.c.request("concierge-order", { action: "add", text: "say what is blocked", when: "every 1m" });
+			expect(its.order).toMatchObject({ id: 2, by: "concierge", when: "every 1m" });
+			expect(its.order?.nextAt).toBeGreaterThan(Date.now());
+			expect((await hub.request("concierge", { action: "status" })).orders).toBe(2);
+			expect((await hub.request("events", { id })).events.filter((e) => e.why === "order-kept").map((e) => e.text)).toEqual(["#1 when build ends, tell deploy its result", "#2 every 1m · say what is blocked"]);
+			// in the next digest
+			await p.c.request("spawn", { launch: launch("sleep 30", "build") });
+			const d = await waitFor(() => digests(wc.events)[1]);
+			expect(d.text).toContain("Standing orders (apply one when what is above meets it, once per occurrence):");
+			expect(d.text).toContain("- #1 when build ends, tell deploy its result");
+			expect(d.text).toContain("- #2 every 1m · say what is blocked");
+			// applied: noted; the user's order is the user's to drop; its own it may drop
+			await wc.c.request("concierge-order", { action: "applied", id: 1, text: "told deploy: build passed" });
+			expect((await hub.request("concierge-order", { action: "list" })).orders.find((o) => o.id === 1)).toMatchObject({ count: 1 });
+			expect((await hub.request("events", { id })).events.filter((e) => e.why === "order").map((e) => e.text)).toEqual(["#1 told deploy: build passed"]);
+			await expect(wc.c.request("concierge-order", { action: "rm", id: 1 })).rejects.toMatchObject({ code: "unsupported" });
+			await expect(hub.request("concierge-order", { action: "rm", id: 9 })).rejects.toMatchObject({ code: "not_found" });
+			await wc.c.request("concierge-order", { action: "rm", id: 2 });
+			expect((await hub.request("concierge-order", { action: "list" })).orders.map((o) => o.id)).toEqual([1]);
+			// a restart keeps them
+			daemons[0]!.kill("SIGKILL");
+			await waitFor(() => daemons[0]!.exitCode !== null || daemons[0]!.signalCode !== null);
+			const c2 = await startDaemon();
+			expect((await c2.request("concierge-order", { action: "list" })).orders).toEqual([expect.objectContaining({ id: 1, text: "when build ends, tell deploy its result", count: 1 })]);
+			await c2.request("concierge-order", { action: "rm", id: 1 });
+			expect((await c2.request("concierge", { action: "status" })).orders).toBe(0);
+		} finally {
+			restore();
+		}
+	});
+
+	it("an order on a clock wakes it when due (once; held wakes carry it later) and moves on to its next time", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100", PI_ROOST_CONCIERGE_TICK_MS: "100" });
+		try {
+			// an order whose time comes soon (the file as the daemon keeps it; `every 1m` is the least a user can ask)
+			const soon = Date.now() + 3000;
+			writeFileSync(join(home, "orders.json"), JSON.stringify([{ id: 3, text: "say what is blocked", when: "every 1m", by: "user", at: soon - 60_000, lastAt: null, nextAt: soon, count: 0 }]));
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { w: wc } = await conciergeOn(hub);
+			await waitFor(() => digests(wc.events)[0]);
+			// the tick wakes it for the order (or, on a slow machine, the on-wake carries it: whichever comes first)
+			const due = await waitFor(() => digests(wc.events).find((d) => d.text.includes("Due now")), 8000);
+			// the tick's own wake (the on-wake carried it only when it came later than the 3 s: a slow machine)
+			if (due !== digests(wc.events)[0]) expect(due.text).toMatch(/^<roost-digest why="order">\n1 standing order due, \d+ events?/);
+			expect(due.text).toContain("Due now (carry these out, then hub_note_done each):");
+			expect(due.text).toContain("- #3 every 1m · say what is blocked");
+			expect(due.text).toContain("Standing orders (apply one when what is above meets it, once per occurrence):");
+			// once: its next time is a minute on (set once the digest reached it: after the delivery); no second order wake follows
+			await waitFor(async () => ((await hub.request("concierge-order", { action: "list" })).orders[0]?.nextAt ?? 0) > Date.now() + 30_000);
+			await settle(500);
+			expect(digests(wc.events).filter((d) => d.text.includes("Due now"))).toHaveLength(1);
+		} finally {
+			restore();
+		}
+	});
 });
 
 describe("worktrees through the daemon (M10)", () => {

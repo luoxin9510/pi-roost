@@ -20,7 +20,7 @@ import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
-import type { ConciergeStatus } from "../lib/concierge.ts";
+import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -1292,7 +1292,35 @@ export class AgentView implements Component {
 				const a = this.concierge.answered;
 				return this.say(a ? `withdrawn: the answer to ${a.name} («${oneLine(a.text).slice(0, 60)}»); it is told to disregard it and ask you` : "nothing to undo", "success");
 			}
-			this.say("/concierge on | off | status | log | attach | ask <question> | answer never|routine|always | act on|off | undo", "warning");
+			// M46: the standing orders: the list, one more (the concierge keeps it, in its words), one less
+			if (verb === "orders") {
+				const [sub, ...more] = rest;
+				if (sub === "add") {
+					// the user's own (the concierge may not drop it); a clock first, in roost's words
+					// (a clock in plain words, "every evening", is for `? remember …`: the concierge keeps it)
+					const words = more.join(" ").trim();
+					if (!words) return this.say('/concierge orders add [every 30m | daily 18:00 | weekdays 09:00 | cron "…"] <the rule, in your words>', "warning");
+					const m = /^(every\s+\d+\s*[mhd]|daily\s+\d{1,2}:\d{2}|weekdays\s+\d{1,2}:\d{2}|cron\s+"[^"]+")\s+(.+)$/i.exec(words);
+					// starts like a clock but is not one in roost's words: said, not kept as prose by mistake
+					if (!m && /^(every|daily|weekdays|cron)\b/i.test(words)) {
+						return this.say('that starts like a clock but is not one in roost\'s words: every 30m | daily 18:00 | weekdays 09:00 | cron "m h dom mon dow" (one minute at least), then the rule; or word the rule differently', "warning");
+					}
+					const when = m?.[1];
+					const { order } = await client.request("concierge-order", { action: "add", text: m ? m[2]! : words, ...(when ? { when } : {}) });
+					return this.say(`kept standing order #${order?.id}${when ? ` (${when})` : ""}; the concierge sees it on its next wake`, "success");
+				}
+				if (sub === "rm") {
+					const id = Number(more[0]);
+					if (!Number.isInteger(id)) return this.say("/concierge orders rm <id>", "warning");
+					await client.request("concierge-order", { action: "rm", id });
+					return this.say(`dropped standing order #${id}`, "success");
+				}
+				if (sub) return this.say("/concierge orders | orders add <rule> | orders rm <id>", "warning");
+				const { orders } = await client.request("concierge-order", { action: "list" });
+				if (orders.length === 0) return this.say("no standing orders · /concierge orders add <rule> (or tell the concierge: ? remember …)", "muted");
+				return this.showOrders(orders);
+			}
+			this.say("/concierge on | off | status | log | attach | ask <question> | answer never|routine|always | act on|off | undo | orders [add <rule> | rm <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -1372,6 +1400,38 @@ export class AgentView implements Component {
 			this.input.focused = false;
 		}
 		fill(this.reply, row.suggested.text);
+		this.o.tui.requestRender();
+	}
+
+	/** M46: the standing orders, newest first. */
+	private showOrders(orders: StandingOrder[]): void {
+		let top = 0;
+		const view = this;
+		const lines = (width: number): string[] => {
+			const t = view.o.theme;
+			const now = Date.now();
+			const out = [t.bold(truncateToWidth("Standing orders · what the concierge keeps in mind", width)), ""];
+			for (const o of [...orders].reverse()) {
+				const by = o.by === "concierge" ? "" : t.fg("dim", " · yours");
+				out.push(truncateToWidth(`  ${t.fg(o.when ? "accent" : "muted", oneLine(orderLine(o, now)))}${by}`, width));
+			}
+			out.push("", t.fg("dim", truncateToWidth("/concierge orders add <rule> · /concierge orders rm <id>", width)));
+			return out;
+		};
+		this.overlay = {
+			render(width: number) {
+				const all = lines(width);
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				top = Math.max(0, Math.min(top, all.length - room));
+				return [...all.slice(top, top + room), "", view.o.theme.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
+			},
+		};
 		this.o.tui.requestRender();
 	}
 
@@ -2869,6 +2929,7 @@ export class AgentView implements Component {
 			["/log", "what happened lately: tasks, questions, results, messages (newest first)"],
 			["/concierge on|off|log", "the hub's own agent: watches the sessions, tells you what needs you, relays between them"],
 			["/concierge answer|act|undo", "may it answer routine questions itself (never|routine|always), start/stop sessions (on|off); withdraw its last answer"],
+			["/concierge orders [add|rm]", "the standing orders it keeps (rules in your words, some on a clock); add one, drop one"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
 			["Ctrl+Y · Ctrl+E", "send the concierge's suggested answer to the session that waits · edit it first (the banner under the header)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],
