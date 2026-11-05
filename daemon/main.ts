@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute } from "node:path";
@@ -399,11 +399,12 @@ let cleaning = false;
 /** Whether a record may go now (asked again after every await: anything may have changed). */
 function cleanable(id: string, days: number, now: number): boolean {
 	const rec = recs.get(id);
-	if (!rec || rec.kind === "shell" || roster.has(id) || starting.has(id) || respawning.has(id) || stopping.has(id) || removing.has(id)) return false;
+	// M30: an ended level 0 agent is cleaned up as a pi job is (a command's row expires by itself)
+	if (!rec || (rec.kind === "shell" && !isProfileJob(rec)) || roster.has(id) || starting.has(id) || respawning.has(id) || stopping.has(id) || removing.has(id)) return false;
 	const st = readState(id);
 	if (!st || typeof st.endedAt !== "number" || now - st.endedAt < days * DAY_MS) return false;
 	if (st.pinned === true || st.state === "blocked" || pendingReplies(id).length > 0 || heldReports(id).length > 0) return false;
-	return ![...recs.values()].some((r) => r.parentSession === rec.sessionFile && roster.has(r.id));
+	return !rec.sessionFile || ![...recs.values()].some((r) => r.parentSession === rec.sessionFile && roster.has(r.id));
 }
 
 async function cleanupOld(): Promise<void> {
@@ -876,6 +877,11 @@ async function respawn(
 		const written = !shell && existsSync(rec.sessionFile);
 		// M8: the model and thinking level it last reported running win over the dispatch's;
 		// before any report, the ones it was dispatched with (a hand-off's live values)
+		if (isProfileJob(rec)) {
+			// the last run's screen and signals would read as the new one's for a moment
+			rmSync(termPath(id), { force: true });
+			rmSync(screenPath(id), { force: true });
+		}
 		const command = isProfileJob(rec)
 			? (rec.resumeCommand ?? rec.command)
 			: respawnCommand(rec, written, prompt, { model: st?.model ?? rec.model, thinking: st?.thinking ?? rec.thinking });
@@ -1012,8 +1018,16 @@ async function typeInto(id: string, text: string, submit: string): Promise<boole
 	try {
 		const a = (await hostControl(id, "input", 3000, { data: text })) as { ok?: boolean } | undefined;
 		if (a?.ok !== true) return false;
+		// the text is in its input now: from here on it is never typed again, only submitted
 		await new Promise((r) => setTimeout(r, 150));
-		await hostControl(id, "input", 3000, { data: submit });
+		for (let tries = 0; tries < 2; tries++) {
+			try {
+				const b = (await hostControl(id, "input", 3000, { data: submit })) as { ok?: boolean } | undefined;
+				if (b?.ok === true) break;
+			} catch (err) {
+				log("warn", "submitting into agent failed", { id, error: String(err) });
+			}
+		}
 		const now = Date.now();
 		updateState(id, { termInputAt: now, termTyped: true, state: "working", status: "busy", waitingFor: null, question: null, stateSince: now });
 		pushJob(id);
@@ -1041,6 +1055,8 @@ function lastScreenLine(id: string): string | undefined {
 
 /** When an idle job became idle, if it may be reaped now. */
 function reapable(id: string, now: number, minutes: number): number | undefined {
+	// M30: a level 0 agent's session lives in its process (a resume may not bring it back)
+	if (isProfileJob(recs.get(id))) return undefined;
 	const st = readState(id);
 	if (!st || st.pinned === true || st.state === "working") return undefined;
 	if (st.waitingFor === "dialog" || (st.status !== "idle" && st.status !== "waiting")) return undefined;
@@ -1225,6 +1241,9 @@ async function reply(
 async function replyToProfile(id: string, text: string, live: boolean): Promise<{ delivered: boolean; saved: boolean; respawned?: boolean; error?: string }> {
 	const term = termFrom(recs.get(id)?.term);
 	if (!term) throw new OpError("unsupported", "this agent takes no replies; attach to type into it");
+	// a task or reply waiting to be typed in goes first; a start under way has no input yet
+	if (str(readState(id)?.typeTask)) throw new OpError("busy", "what it was last given is not typed in yet; try again in a moment");
+	if (starting.has(id) || respawning.has(id)) throw new OpError("busy", "it is starting; try again in a moment");
 	if (live) {
 		if (typing.has(id)) throw new OpError("busy", "still typing the last reply");
 		const ok = await typeInto(id, text, term.submit);

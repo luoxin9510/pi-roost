@@ -4,7 +4,7 @@ A profile lets roost run a terminal agent it has no code for (level 0 of
 [any agent](plans/any-agent.md)). roost starts it in a terminal of its own, as it does a
 pi session, and reads what state it is in from that terminal: whether its screen still
 moves, what it tells the terminal, and patterns you give. You can attach, detach, stop,
-delete and reply to it, give it a worktree, and put it in a preset.
+delete and reply to it, give it a worktree, and put it in a preset. It is never stopped for being idle (its session lives in its process); an ended one is cleaned up after `cleanupDays`, as a pi session is.
 
 ## Defining one
 
@@ -32,7 +32,7 @@ choose one.
 | `command` | the argv it starts with. An array, never a shell line: no shell, no `$VARS`, no globbing. |
 | `task` | how the first task reaches it: `"argv"` (default: added as the last argument), `"type"` (typed in once it is first quiet), or `"none"`. |
 | `model`, `thinking` | argv added when `/model` or `/thinking` chose a value; leave one out and the agent takes no such choice. |
-| `resume` | argv that reopens its last session; a reply to an ended one starts this and types the reply in. Without it the reply starts `command` again. |
+| `resume` | argv that reopens its last session; a reply to an ended one starts this and types the reply in. Without it, the reply starts `command` again (with the model, without the first task). |
 | `working` | a regex (case-insensitive, over the whole screen) meaning it is working, whatever else the screen says. |
 | `waiting` | a regex meaning it waits for you; the line it matched is the row's question. |
 | `submit` | what is typed after a reply (default `"\r"`). |
@@ -74,7 +74,7 @@ launch; context, cost, transcript, `/resume`, subagents and peers are not known 
 ## Replies
 
 A reply is typed into its terminal, then `submit`. Steer or wait (Alt+Enter) does not
-apply: it goes wherever its input is. A reply suits a text prompt; a menu (pick with the
+apply: it goes wherever its input is. A reply waits while a first task or an earlier reply is still to be typed in, or while it starts (you are told to try again). A reply suits a text prompt; a menu (pick with the
 arrow keys) wants an attach (→), where you answer it as you would anywhere. An ended
 one is started again (`resume`, else `command`) and the reply typed in once it is quiet;
 if it exits first, the row says what was not typed in.

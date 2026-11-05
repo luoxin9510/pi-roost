@@ -230,7 +230,9 @@ export function buildProfileLaunch(i: ProfileLaunchInput): DispatchArgs {
 	const env = workerEnv(i.env, i);
 	const forced = new Set(i.extraEnv ?? []);
 	for (const [k, v] of Object.entries(i.def.env ?? {})) if (envKept(k, forced.has(k) ? [] : i.envDenyList)) env[k] = v;
-	const resume = profileResume(i.def, values);
+	// starting again never repeats the first task: its resume argv, else its command without it
+	const { task: _task, ...again } = values;
+	const resume = profileResume(i.def, again) ?? profileCommand(i.def, again);
 	const taskInArgv = i.def.task === "argv" && !!i.task;
 	return {
 		kind: "shell",
@@ -246,7 +248,7 @@ export function buildProfileLaunch(i: ProfileLaunchInput): DispatchArgs {
 		...(i.envDenyList?.length ? { envDeny: i.envDenyList, ...(i.extraEnv?.length ? { envForce: i.extraEnv } : {}) } : {}),
 		origin: i.origin ?? "dispatch",
 		term: profileTerm(i.def, i.task),
-		...(resume ? { resumeCommand: resume } : {}),
+		...(resume.length > 0 ? { resumeCommand: resume } : {}),
 		...(taskInArgv ? { taskInArgv } : {}),
 	};
 }

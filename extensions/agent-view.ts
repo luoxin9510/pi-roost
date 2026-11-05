@@ -799,6 +799,11 @@ export class AgentView implements Component {
 			case "model": {
 				if (arg) {
 					const known = this.o.models?.() ?? [];
+					// a profile's model is an argument of its own: never one that reads as a flag
+					if (arg !== "default" && this.profile && (arg.startsWith("-") || /\s/.test(arg))) {
+						this.say(`not a model: ${arg}`, "warning");
+						return true;
+					}
 					if (arg !== "default" && !this.profile && known.length > 0 && !known.includes(arg)) {
 						this.say(`unknown model ${arg} (bare /model lists them)`, "warning");
 						return true;
@@ -898,7 +903,10 @@ export class AgentView implements Component {
 
 	/** M30: the agent new sessions run (pi unless a profile is chosen). */
 	private setProfile(v: string): void {
+		const was = this.profile;
 		this.profile = v === "pi" || v === "off" ? undefined : v;
+		// a model id is the agent's own: it does not carry over to another agent
+		if (was !== this.profile && this.model && (this.profile !== undefined || !this.model.includes("/"))) this.model = undefined;
 		this.say(this.profile ? `new sessions run ${this.profile}` : "new sessions run pi");
 	}
 
@@ -1601,7 +1609,7 @@ export class AgentView implements Component {
 				...(this.profile ? { profile: this.profile } : {}),
 			};
 			// what would not read back (a model without its provider) is not saved
-			if (verb === "save" && JSON.stringify(presetFrom(p)) !== JSON.stringify(p)) {
+			if (verb === "save" && !samePreset(presetFrom(p), p)) {
 				this.say(`these choices do not make a preset (a pi model needs provider/id)`, "warning");
 				return false;
 			}
@@ -2447,6 +2455,12 @@ export class AgentView implements Component {
 }
 
 /** M27: what a preset sets, short. */
+/** Whether a preset reads back as written (key order aside). */
+function samePreset(a: Preset | undefined, b: Preset): boolean {
+	const norm = (p: Preset) => JSON.stringify(Object.fromEntries(Object.entries(p).sort(([x], [y]) => x.localeCompare(y))));
+	return !!a && norm(a) === norm(b);
+}
+
 export function presetText(p: Preset): string {
 	return [
 		p.profile && p.profile !== "pi" && `runs ${p.profile}`,

@@ -87,7 +87,7 @@ export function presetFrom(v: unknown): Preset | undefined {
 	const p: Preset = {};
 	// M30: a profile's agent names its models its own way (no provider/id)
 	const other = typeof o.profile === "string" && o.profile !== "pi" && profileName(o.profile);
-	if (model(o.model) || (other && typeof o.model === "string" && /^[^\s\x00-\x1f]{1,200}$/.test(o.model))) p.model = o.model as string;
+	if (model(o.model) || (other && typeof o.model === "string" && /^[^\s\x00-\x1f-][^\s\x00-\x1f]{0,199}$/.test(o.model))) p.model = o.model as string;
 	if (typeof o.thinking === "string" && /^[a-z]{1,16}$/.test(o.thinking)) p.thinking = o.thinking;
 	if (typeof o.worktree === "boolean") p.worktree = o.worktree;
 	if (typeof o.agent === "string" && AGENT_NAME.test(o.agent)) p.agent = o.agent;

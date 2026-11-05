@@ -915,7 +915,6 @@ describe("M30 level 0 agents (profiles)", () => {
 		await client.request("reply", { id, text: "y" });
 		await waitFor(() => screen(id).includes("you said y"));
 		// it exits: the row stays (a command's would go), done
-		process.env.PI_ROOST_SHELL_KEEP_MS = "300";
 		await client.request("reply", { id, text: "quit" });
 		const ended = await until(client, id, (r) => r.endedAt !== null);
 		expect(ended).toMatchObject({ state: "done", waitingFor: null, question: null, summary: "fake agent" });
@@ -927,11 +926,19 @@ describe("M30 level 0 agents (profiles)", () => {
 		await client.request("stop", { id });
 	}, 40000);
 
-	it("types a first task in once it is quiet, and a profile job may have a worktree check (no session, no lock)", async () => {
+	it("types a first task in once it is quiet; a reply waits for it; it is never reaped", async () => {
+		process.env.PI_ROOST_REAP_MINUTES = "0.001";
+		process.env.PI_ROOST_REAP_CHECK_MS = "200";
 		const { client } = await startDaemon();
 		const { id } = await client.request("dispatch", agent({ command: [process.execPath, FAKE], taskInArgv: undefined, term: { submit: "\r", settleMs: 600, typeTask: "typed task" } }));
+		await expect(client.request("reply", { id, text: "too early" })).rejects.toMatchObject({ code: "busy" });
 		await waitFor(() => screen(id).includes("answer: typed task"), 15000);
 		expect(readState(id)?.typeTask ?? null).toBeNull();
+		// idle far past the reap time: a level 0 agent keeps running
+		await until(client, id, (r) => r.state !== "working");
+		await new Promise((r) => setTimeout(r, 1500));
+		expect(await find(client, id)).toMatchObject({ endedAt: null });
+		expect(readState(id)?.reaped ?? false).toBe(false);
 		await client.request("stop", { id });
 	}, 30000);
 

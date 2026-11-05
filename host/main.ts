@@ -333,7 +333,9 @@ function control(sock: Socket, req: { op: string; data?: unknown }): void {
 	switch (op) {
 		case "input":
 			// M30: a reply typed into the terminal, as if from an attached keyboard
-			if (typeof req.data !== "string" || req.data.length === 0 || req.data.length > MAX_INPUT) reply = { error: "bad input" };
+			// only a level 0 agent is typed into this way (pi takes replies from its worker)
+			if (!signals) reply = { error: "input is for agent profiles" };
+			else if (typeof req.data !== "string" || req.data.length === 0 || req.data.length > MAX_INPUT) reply = { error: "bad input" };
 			else if (!workerAlive) reply = { ok: false, alive: false };
 			else {
 				try {

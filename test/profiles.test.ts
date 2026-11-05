@@ -51,6 +51,9 @@ describe("M30 agent profiles", () => {
 		expect(l).toMatchObject({ kind: "shell", profile: "codex", sessionFile: "", command: ["agent", "--model", "o3", "do it"], model: "o3", taskInArgv: true, term: { submit: "\r" } });
 		expect(l.env).toEqual({ PATH: "/bin", AGENT_MODE: "fast" });
 		expect(l.thinking).toBeUndefined(); // the profile takes no thinking level
+		// starting again: its command without the first task (no resume argv)
+		expect(l.resumeCommand).toEqual(["agent", "--model", "o3"]);
+		expect(presetFrom({ profile: "codex", model: "--danger" })).toEqual({ profile: "codex" });
 	});
 });
 

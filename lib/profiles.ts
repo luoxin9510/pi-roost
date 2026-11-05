@@ -14,7 +14,7 @@ export interface AgentProfile {
 	model?: string[];
 	/** argv added when a thinking level is chosen (`{thinking}` in it). */
 	thinking?: string[];
-	/** argv that reopens its last session (`{task}` allowed); null or absent: start again. */
+	/** argv that reopens its last session; null or absent: its command again, without the first task. */
 	resume?: string[] | null;
 	/** Regex over the whole screen: it is waiting for you. */
 	waiting?: string;
