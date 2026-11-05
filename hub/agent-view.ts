@@ -20,7 +20,7 @@ import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
-import { CONCIERGE_NAME, type ConciergeStatus } from "../lib/concierge.ts";
+import type { ConciergeStatus } from "../lib/concierge.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -264,9 +264,12 @@ export class AgentView implements Component {
 	private attached = false;
 	private closed = false;
 	private connectError: string | undefined;
-	/** M44: the concierge as the daemon last said; asking: a `? …` whose answer is awaited. */
+	/** M44: the concierge as the daemon last said; asking: a `? …` whose answer is awaited (two minutes at most). */
 	private concierge: ConciergeStatus | undefined;
 	private asking = false;
+	private askTimer: NodeJS.Timeout | undefined;
+	/** An answer that came while another overlay was open: shown once it closes. */
+	private pendingAnswer: string | undefined;
 	private nameWidth = 16;
 	/** M8: the model / context column, the same for every row of a render so it lines up. */
 	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0, costW: 0 };
@@ -321,6 +324,8 @@ export class AgentView implements Component {
 		this.closed = true;
 		clearInterval(this.spinner);
 		clearInterval(this.resync);
+		this.pendingAnswer = undefined;
+		this.asked(false);
 		this.closeOverlay();
 		for (const s of this.switches.values()) clearTimeout(s.timer);
 		this.switches.clear();
@@ -357,6 +362,7 @@ export class AgentView implements Component {
 				if (this.client !== live) return;
 				clearInterval(this.resync);
 				this.client = undefined;
+				this.asked(false);
 				this.connectError = "reconnecting…";
 				this.render0();
 				setTimeout(() => void this.connect(), 500).unref?.();
@@ -445,9 +451,14 @@ export class AgentView implements Component {
 			const prev = this.concierge;
 			this.concierge = e.status;
 			const s = e.status;
+			if (!s.on) this.asked(false);
 			if (this.asking && s.answer && s.answer.at !== prev?.answer?.at) {
-				this.asking = false;
-				this.showAnswer(s.answer.text);
+				this.asked(false);
+				// not over what is open (a confirm, a picker): after it
+				if (this.overlay) {
+					this.pendingAnswer = s.answer.text;
+					this.say(`concierge answered: ${oneLine(s.answer.text).slice(0, 80)} (opens when this closes)`, "muted");
+				} else this.showAnswer(s.answer.text);
 			}
 			if (s.notice && s.notice.at !== prev?.notice?.at && s.notice.kind === "need") this.say(`concierge: ${s.notice.text}`, "warning");
 		}
@@ -1226,13 +1237,14 @@ export class AgentView implements Component {
 			}
 			if (verb === "off") {
 				this.concierge = await client.request("concierge", { action: "off" });
+				this.asked(false);
 				return this.say("concierge off", "muted");
 			}
 			if (verb === "status") {
 				this.concierge = await client.request("concierge", { action: "status" });
 				return this.say(this.concierge.on ? this.conciergeLine() : "concierge off · /concierge on starts it", "muted");
 			}
-			if (verb === "log") return await this.showLog((e) => e.kind === "concierge" || e.who === CONCIERGE_NAME || e.id === this.concierge?.id, "Concierge · what it did and said (newest first)");
+			if (verb === "log") return await this.showLog((e) => e.kind === "concierge" || (!!this.concierge?.id && (e.whoId === this.concierge.id || e.id === this.concierge.id)), "Concierge · what it did and said (newest first)");
 			if (verb === "attach") {
 				if (!this.concierge?.id) return this.say("no concierge session yet (/concierge on)", "warning");
 				return await this.attachTo(this.concierge.id);
@@ -1266,12 +1278,27 @@ export class AgentView implements Component {
 		if (!this.concierge?.on) return this.say("the concierge is off: /concierge on starts it", "warning");
 		try {
 			await this.client.request("concierge-ask", { text: q });
-			this.asking = true;
+			this.asked(true);
 			this.input.setValue("");
 			this.say("asked the concierge; its answer opens here", "muted");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
+	}
+
+	/** A question is awaited, or not (an answer came; it went off; two minutes passed). */
+	private asked(on: boolean): void {
+		clearTimeout(this.askTimer);
+		this.askTimer = undefined;
+		this.asking = on;
+		if (!on) return;
+		this.askTimer = setTimeout(() => {
+			this.askTimer = undefined;
+			if (!this.asking) return;
+			this.asking = false;
+			this.say("the concierge has not answered (/concierge attach to see why)", "warning");
+		}, 120_000);
+		this.askTimer.unref?.();
 	}
 
 	private showAnswer(answer: string): void {
@@ -1334,6 +1361,13 @@ export class AgentView implements Component {
 			this.overlay?.dispose?.();
 		} catch {}
 		this.overlay = undefined;
+		// M44: the concierge's answer that waited for this to close
+		if (this.pendingAnswer !== undefined) {
+			const answer = this.pendingAnswer;
+			this.pendingAnswer = undefined;
+			this.showAnswer(answer);
+			return;
+		}
 		this.o.tui.requestRender();
 	}
 
@@ -1606,8 +1640,8 @@ export class AgentView implements Component {
 		if (this.dispatching) return;
 		if (this.filter()) return this.say("that is a filter; Enter attaches to the selected row", "warning");
 		const typed = this.input.getValue();
-		// M44: a question for the concierge, not a task
-		if (typed.trim().startsWith("?")) return this.ask(typed.trim().slice(1).trim());
+		// M44: `? …` is a question for the concierge, not a task (`?foo` is a task)
+		if (typed.trim() === "?" || typed.trimStart().startsWith("? ")) return this.ask(typed.trim().slice(1).trim());
 		const base = this.dispatchCwd();
 		// M18 (Claude Code): a first word or `@name` naming an agent runs the task as it
 		// (read once per Enter: it scans the agent folders)

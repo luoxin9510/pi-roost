@@ -60,17 +60,24 @@ by the extension itself, so the hub shows whatever it answered.
 
 ### Wakes
 
+- `on` wakes it at once with the fleet as it stands (a heartbeat digest), so a session
+  that already waits is reported then; what happened while it was off is not its
+  concern (its cursor moves to the end). A daemon restart keeps the cursor: what
+  happened while the service was off is its first digest after.
 - Every event the daemon records nudges the concierge, except its own (events on its
-  job, or with `who: "concierge"`); a burst is one wake (`CONCIERGE_COALESCE_MS`, 5 s).
+  job, or caused by it: `whoId`, the job's id, since a name can be shared); a burst is
+  one wake (`CONCIERGE_COALESCE_MS`, 5 s); one wake at a time, what happens during one
+  is the next.
 - A wake reads the feed after the cursor, leaves its own events out, and delivers
   `digestText(...)` as an agent item of `kind: "digest"` (the M9 path: its queue,
   acknowledged by seq; an ended concierge is started again for it; one the user
   stopped is not, and that counts as off). The digest: the events one line each, then
   the fleet one line each, in `<roost-digest why="events|heartbeat">`.
 - The cursor moves only when the digest reached it. `wakesPerHour` (60): past the cap a
-  wake waits (`CONCIERGE_RETRY_MS`, 60 s) and the events with it. `dailyBudgetUsd` (1):
-  once its row's cost today reaches it, it is not woken (`overBudget` in its status;
-  the hub's line says so); 0 means no limit.
+  wake waits (`CONCIERGE_RETRY_MS`, 60 s) and the events with it; so does one its queue
+  refused. `dailyBudgetUsd` (1): once its row's cost today reaches it, it is not woken
+  (`overBudget` in its status, looked at on every tick; the hub's line says so); 0
+  means no limit. A `? …` question is the user's and goes through regardless.
 - A heartbeat (`heartbeat`, `every 15m`; `off` for none) wakes it when nothing did for
   that long, with "nothing happened since" and the fleet, so a stuck fleet is noticed.
   The daemon checks every 30 s (`CONCIERGE_TICK_MS`).
@@ -92,9 +99,15 @@ by the extension itself, so the hub shows whatever it answered.
 
 The concierge sees every session's question, summary and transcript, messages any
 session and reads the feed: that is its job, and why its settings are the user's only.
-It cannot start, stop or remove sessions, run commands or touch files (no such tools),
-and in v0 it is told never to answer a session's question; a message it sends is framed
-as from the concierge, not the user, and cannot approve anything. Its sends are in the
+Enforced by the daemon: it cannot start, stop or remove sessions, run commands or touch
+files (no such tools); only the hub can start, stop or question it (`concierge`,
+`concierge-ask` refuse a session's connection); only it says things to the hub
+(`concierge-say`); its name is its own (a session cannot take or be renamed to
+`concierge`); what it causes is told apart by its job id, not its name; a session's
+text cannot close the `<roost-digest>` early. Prompt rules, not enforced: in v0 it is
+told never to answer a session's question or tell one to proceed; a message it sends
+is framed as from the concierge, not the user, and told it cannot approve anything, but
+the receiving model decides what to make of that. Its sends and notices are in the
 feed (`/concierge log`).
 
 ## Tests

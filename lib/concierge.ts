@@ -3,6 +3,7 @@
 // sessions, message them and tell the user. The pure pieces: its settings, the digest
 // it is woken with, its system prompt. The daemon wakes it; adapters/pi/concierge.ts
 // is its role in pi; the hub shows its status line.
+import { THINKING_LEVELS } from "./dispatch-input.ts";
 import { eventAgo, eventLine, type RoostEvent } from "./events.ts";
 import type { JobRow } from "./protocol.ts";
 import { parseWhen } from "./schedule.ts";
@@ -38,8 +39,9 @@ export function conciergeFrom(raw: unknown): ConciergeConfig | undefined {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
 	const r = raw as Record<string, unknown>;
 	const out: ConciergeConfig = { ...CONCIERGE_DEFAULTS };
-	if (typeof r.model === "string" && r.model.includes("/") && r.model.length <= 200) out.model = r.model;
-	if (typeof r.thinking === "string" && /^[a-z]{1,16}$/.test(r.thinking)) out.thinking = r.thinking;
+	// a provider and a model, as pi takes them; a thinking level pi knows
+	if (typeof r.model === "string" && /^[a-z0-9][a-z0-9._-]*\/[^\s/]+$/i.test(r.model) && r.model.length <= 200) out.model = r.model;
+	if (typeof r.thinking === "string" && (THINKING_LEVELS as readonly string[]).includes(r.thinking)) out.thinking = r.thinking;
 	if (typeof r.wakesPerHour === "number" && Number.isInteger(r.wakesPerHour) && r.wakesPerHour >= 1 && r.wakesPerHour <= 3600) out.wakesPerHour = r.wakesPerHour;
 	if (typeof r.heartbeat === "string") {
 		const h = r.heartbeat.trim();
@@ -105,8 +107,9 @@ export function digestText(d: DigestInput): string {
 	lines.push("", `The fleet (${d.rows.length} session${d.rows.length === 1 ? "" : "s"}):`);
 	if (d.rows.length === 0) lines.push("- none");
 	for (const r of d.rows) lines.push(`- ${fleetLine(r, now)}`);
-	lines.push("</roost-digest>");
-	return lines.join("\n");
+	// a session's text cannot close the digest early
+	const [open, ...body] = lines;
+	return [open, ...body.map((l) => l.replace(/<\/?roost-digest/gi, "roost-digest")), "</roost-digest>"].join("\n");
 }
 
 /** The concierge's system prompt: what it is, what it may do, how to behave. */

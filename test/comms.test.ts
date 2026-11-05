@@ -731,7 +731,11 @@ describe("M44: the concierge", () => {
 			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === childId)?.pid);
 			const w = await worker(childId);
 			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Which branch?" }) });
-			const d = await waitFor(() => digests(wc.events)[0]);
+			// its first digest (at on) is the fleet as it stood: empty; the second, what happened
+			const first = await waitFor(() => digests(wc.events)[0]);
+			expect(first.text).toContain('<roost-digest why="heartbeat">');
+			expect(first.text).toContain("- none");
+			const d = await waitFor(() => digests(wc.events)[1]);
 			expect(d.from).toBe("roost");
 			expect(d.text).toContain('<roost-digest why="events">');
 			expect(d.text).toContain("started worker ← lead");
@@ -740,8 +744,8 @@ describe("M44: the concierge", () => {
 			expect(d.text).toContain("worker  waits for question");
 			expect(d.text).not.toContain("concierge");
 			await wc.c.request("ack", { id, token: wc.token, seq: d.seq, exact: true });
-			await waitFor(async () => (await hub.request("concierge", { action: "status" })).wakesLastHour === 1);
-			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ wakesLastHour: 1, behind: 0 });
+			await waitFor(async () => (await hub.request("concierge", { action: "status" })).wakesLastHour === 2);
+			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ wakesLastHour: 2, behind: 0 });
 			// it reaches every session, by name; what it does is not news to it (not behind on it)
 			expect(await wc.c.request("send", { to: "worker", message: "lead's finding: use main" })).toMatchObject({ outcome: "delivered", relation: "external" });
 			expect((await hub.request("concierge", { action: "status" })).behind).toBe(0);
@@ -749,13 +753,14 @@ describe("M44: the concierge", () => {
 			expect(got.from).toBe("concierge");
 			await wc.c.request("report", { id, token: wc.token, report: report({ state: "done", status: "idle", summary: "nothing to report" }) });
 			await settle(500);
-			expect(digests(wc.events)).toHaveLength(1);
+			expect(digests(wc.events)).toHaveLength(2);
 			// the feed is its to read; a foreground pi still may not
 			expect((await wc.c.request("events", { id: childId })).events.map((e) => e.kind)).toEqual(["dispatch", "state", "message"]);
+			expect((await wc.c.request("events", { id: childId })).events[2]).toMatchObject({ who: "concierge", whoId: id });
 			await expect(p.c.request("events", {})).rejects.toMatchObject({ code: "unsupported" });
-			// the next thing that happens is a second digest, with that alone
+			// the next thing that happens is a third digest, with that alone
 			await p.c.request("reply", { id: childId, text: "main" });
-			const d2 = await waitFor(() => digests(wc.events)[1]);
+			const d2 = await waitFor(() => digests(wc.events)[2]);
 			expect(d2.text).toContain("user → worker: main");
 			expect(d2.text).not.toContain("started worker");
 			expect(d2.text).toContain("since your last wake");
@@ -784,17 +789,88 @@ describe("M44: the concierge", () => {
 		await expect(wc.c.request("concierge-say", { kind: "shout" as "info", text: "x" })).rejects.toMatchObject({ code: "bad_request" });
 	});
 
-	it("a heartbeat wakes it when nothing happened; wakes over the hourly cap wait; over its budget it is not woken", async () => {
-		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100", PI_ROOST_CONCIERGE_HEARTBEAT_MS: "400", PI_ROOST_CONCIERGE_TICK_MS: "100", PI_ROOST_CONCIERGE_RETRY_MS: "200" });
+	it("a heartbeat wakes it when nothing happened for a while", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_HEARTBEAT_MS: "300", PI_ROOST_CONCIERGE_TICK_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { w: wc } = await conciergeOn(hub);
+			// at on: the fleet; then nothing happens, and the heartbeat says so
+			const first = await waitFor(() => digests(wc.events)[0]);
+			expect(first.text).toContain('why="heartbeat"');
+			expect(first.text).not.toContain("since your last wake");
+			const hb = await waitFor(() => digests(wc.events)[1], 5000);
+			expect(hb.text).toContain('why="heartbeat"');
+			expect(hb.text).toContain("Nothing happened since.");
+			expect(hb.text).toContain("since your last wake");
+		} finally {
+			restore();
+		}
+	});
+
+	it("the hub's alone: a session cannot start, stop or ask it; its name is its own; what a namesake does is news", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const p = await foreground("lead");
+			await expect(p.c.request("concierge", { action: "status" })).rejects.toMatchObject({ code: "unsupported" });
+			await expect(p.c.request("concierge-ask", { text: "hi" })).rejects.toMatchObject({ code: "unsupported" });
+			// a session asking for the name gets the next one; renaming to it is refused
+			const { id: fake } = await p.c.request("spawn", { launch: launch("sleep 30", "concierge") });
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === fake)?.name).toBe("concierge (2)");
+			await expect(hub.request("rename", { id: fake, name: "concierge" })).rejects.toMatchObject({ code: "bad_request" });
+			const { id, w: wc } = await conciergeOn(hub);
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === id)?.name).toBe("concierge");
+			await waitFor(() => digests(wc.events)[0]);
+			// the namesake's doings are not the concierge's: they wake it
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === fake)?.pid);
+			const w = await worker(fake);
+			await w.c.request("report", { id: fake, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Who am I?" }) });
+			const d = await waitFor(() => digests(wc.events)[1]);
+			expect(d.text).toContain("concierge (2) asks: Who am I?");
+		} finally {
+			restore();
+		}
+	});
+
+	it("on after off: what happened meanwhile is not its concern; its first wake is the fleet as it stands, at once", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
+		try {
+			await startDaemon();
+			const { c: hub } = await connect();
+			const { id, w: wc } = await conciergeOn(hub);
+			const d0 = await waitFor(() => digests(wc.events)[0]);
+			await wc.c.request("ack", { id, token: wc.token, seq: d0.seq, exact: true });
+			await hub.request("concierge", { action: "off" });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.state === "stopped");
+			const p = await foreground("lead");
+			const { id: a } = await p.c.request("spawn", { launch: launch("sleep 30", "a") });
+			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === a)?.pid);
+			await settle(300);
+			expect(await hub.request("concierge", { action: "on" })).toMatchObject({ on: true, id, behind: 0 });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.pid);
+			const wc2 = await worker(id);
+			const d = await waitFor(() => digests(wc2.events)[0]);
+			expect(d.text).toContain('why="heartbeat"');
+			expect(d.text).toContain("The fleet (1 session):");
+			expect(d.text).toContain("- " + a + "  a  working");
+			expect(d.text).not.toContain("started a");
+			expect(digests(wc.events)).toHaveLength(1);
+		} finally {
+			restore();
+		}
+	});
+
+	it("wakes over the hourly cap wait; over its budget it is not woken", async () => {
+		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100", PI_ROOST_CONCIERGE_TICK_MS: "100", PI_ROOST_CONCIERGE_RETRY_MS: "200" });
 		try {
 			writeFileSync(join(home, "roost.json"), JSON.stringify({ concierge: { wakesPerHour: 2, dailyBudgetUsd: 0.05 } }));
 			await startDaemon();
 			const { c: hub, events } = await connect();
 			await hub.request("subscribe", {});
 			const { id, w: wc } = await conciergeOn(hub);
-			const hb = await waitFor(() => digests(wc.events)[0], 5000);
-			expect(hb.text).toContain('why="heartbeat"');
-			expect(hb.text).toContain("Nothing happened since.");
+			await waitFor(() => digests(wc.events)[0]);
 			// a second wake (an event) is the last the cap allows; a third waits
 			const p = await foreground("lead");
 			await p.c.request("spawn", { launch: launch("sleep 30", "a") });
@@ -803,7 +879,7 @@ describe("M44: the concierge", () => {
 			await p.c.request("spawn", { launch: launch("sleep 30", "b") });
 			await settle(700);
 			expect(digests(wc.events)).toHaveLength(2);
-			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ wakesLastHour: 2, overBudget: false });
+			expect(await hub.request("concierge", { action: "status" })).toMatchObject({ wakesLastHour: 2, overBudget: false, behind: 1 });
 			// over its budget for the day: not woken, and the hub is told
 			const midnight = new Date();
 			midnight.setHours(0, 0, 0, 0);

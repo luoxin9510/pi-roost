@@ -306,7 +306,9 @@ question; a message between sessions; your reply) and the fleet as it stands. It
 you what needs you, in one line under the header (`concierge · needs you: api-fix asks
 which schema to use (2m ago) · $0.02 today`), relays a finding from one session to
 another when you ask, and answers questions about the fleet: `?` on an empty input
-starts one (`? what is blocked and why`); its answer opens over the list. It never
+starts one (`? what is blocked and why`; `?` then a space, so `?foo` is still a task);
+its answer opens over the list. `/concierge on` wakes it at once with the fleet as it
+stands, so a session that already waits for you is reported right away. It never
 answers a session's question in your place, cannot start, stop or remove sessions, and
 has no shell or file tools. `/concierge off` stops it (its session stays; `on` starts the
 same one again), `/concierge log` shows what it said and sent, `/concierge attach` opens

@@ -476,7 +476,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				concierge = {
 					notices: feed.filter((e) => e.kind === "concierge" && e.why !== "answer").map((e) => ({ kind: e.why ?? "info", text: e.text ?? "" })),
 					answers: feed.filter((e) => e.kind === "concierge" && e.why === "answer").map((e) => e.text ?? ""),
-					sent: feed.filter((e) => e.kind === "message" && e.who === "concierge").map((e) => ({ to: e.name, text: e.text ?? "" })),
+					sent: feed.filter((e) => e.kind === "message" && !!status.id && e.whoId === status.id).map((e) => ({ to: e.name, text: e.text ?? "" })),
 					wakes: status.wakesLastHour,
 					costUsd: status.costToday,
 					transcript: ct,

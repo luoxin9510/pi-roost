@@ -40,6 +40,8 @@ export interface RoostEvent {
 	text?: string | null;
 	/** Who caused it: a session's name, "user", a schedule's name. */
 	who?: string | null;
+	/** The job that caused it, when a job did (names can be shared; ids cannot). */
+	whoId?: string | null;
 	why?: string | null;
 }
 

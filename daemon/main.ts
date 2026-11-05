@@ -238,7 +238,7 @@ const eventLog = new EventLog(join(roostHome(), "events.jsonl"), { warn: (msg) =
 function record(e: Omit<RoostEvent, "seq" | "at">): void {
 	eventLog.append(e);
 	// M44: what the concierge itself caused is not news to it
-	if (!(concierge.id && (e.id === concierge.id || e.who === CONCIERGE_NAME))) nudgeConcierge();
+	if (!(concierge.id && conciergeOwn(e))) nudgeConcierge();
 }
 
 // ---- M44: the concierge ---------------------------------------------------------------
@@ -271,6 +271,11 @@ const CONCIERGE_TICK_MS = Number(process.env.PI_ROOST_CONCIERGE_TICK_MS) || 30_0
 const CONCIERGE_HEARTBEAT_MS = Number(process.env.PI_ROOST_CONCIERGE_HEARTBEAT_MS) || 0;
 let conciergeTimer: NodeJS.Timeout | undefined;
 let conciergeOverBudget = false;
+/** One wake at a time; something that happened during one is a wake after it. */
+let conciergeWaking = false;
+let conciergeNudged = false;
+/** One `on` at a time. */
+let conciergeOnPending: Promise<ConciergeStatus> | undefined;
 
 const conciergeConfig = () => loadUserConfig().concierge ?? CONCIERGE_DEFAULTS;
 const isConcierge = (id: string | undefined | null): boolean => !!id && id === concierge.id;
@@ -304,9 +309,33 @@ function saveConcierge(): void {
 	}
 }
 
-/** An event of the concierge's own doing: on its job, or sent by it. Not in its digests. */
-function conciergeOwn(e: RoostEvent): boolean {
-	return e.id === concierge.id || e.who === CONCIERGE_NAME;
+/** An event of the concierge's own doing: on its job, or caused by it (by id: a name can be shared). Not in its digests. */
+function conciergeOwn(e: Pick<RoostEvent, "id" | "whoId">): boolean {
+	return !!concierge.id && (e.id === concierge.id || e.whoId === concierge.id);
+}
+
+/** Over its budget for the day? Said once when it changes (the hub shows it). */
+function conciergeBudget(now: number): boolean {
+	const cfg = conciergeConfig();
+	const row = concierge.id ? rowOf(concierge.id) : undefined;
+	const spent = row?.usage ? todayOf(row.usage, now) : 0;
+	const over = cfg.dailyBudgetUsd > 0 && spent >= cfg.dailyBudgetUsd;
+	if (over !== conciergeOverBudget) {
+		conciergeOverBudget = over;
+		log("info", over ? "concierge over budget" : "concierge within budget", { spent, budget: cfg.dailyBudgetUsd });
+		pushConcierge();
+	}
+	return over;
+}
+
+/** A wake that could not go now (the cap, a full queue) is tried again later. */
+function conciergeRetry(why: "events" | "heartbeat"): void {
+	if (conciergeTimer) return;
+	conciergeTimer = setTimeout(() => {
+		conciergeTimer = undefined;
+		void wakeConcierge(why).catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
+	}, CONCIERGE_RETRY_MS);
+	conciergeTimer.unref?.();
 }
 
 function conciergeStatus(): ConciergeStatus {
@@ -335,7 +364,7 @@ function pushConcierge(): void {
 	push({ event: "concierge", status: conciergeStatus() });
 }
 
-/** The `concierge` op: on (a launch from the hub, or the job it has), off, status. */
+/** The `concierge` op (the hub's, never a session's): on (a launch from the hub, or the job it has), off, status. */
 async function conciergeOp(args: { action?: unknown; launch?: unknown } | undefined): Promise<ConciergeStatus> {
 	const action = args?.action;
 	if (action === "status") return conciergeStatus();
@@ -343,6 +372,7 @@ async function conciergeOp(args: { action?: unknown; launch?: unknown } | undefi
 		concierge.on = false;
 		clearTimeout(conciergeTimer);
 		conciergeTimer = undefined;
+		conciergeNudged = false;
 		saveConcierge();
 		if (concierge.id && roster.has(concierge.id)) await terminateHost(concierge.id);
 		log("info", "concierge off", { id: concierge.id });
@@ -350,38 +380,55 @@ async function conciergeOp(args: { action?: unknown; launch?: unknown } | undefi
 		return conciergeStatus();
 	}
 	if (action !== "on") throw new OpError("bad_request", "action must be on, off or status");
+	if (conciergeOnPending) return conciergeOnPending;
+	conciergeOnPending = conciergeOn(args?.launch).finally(() => {
+		conciergeOnPending = undefined;
+	});
+	return conciergeOnPending;
+}
+
+/**
+ * On: the job it has (its session is its memory), started again if it ended, or a new
+ * one from the hub's launch. What happened while it was off is not its concern: its
+ * first wake is the fleet as it stands, at once.
+ */
+async function conciergeOn(launch: unknown): Promise<ConciergeStatus> {
 	const now = Date.now();
-	if (concierge.id && recs.has(concierge.id)) {
-		// the job it has (its session is its memory): started again if it ended
-		concierge.on = true;
-		concierge.onAt = now;
+	const had = concierge.id;
+	if (had && recs.has(had)) {
+		concierge = { ...concierge, on: true, onAt: now, cursor: eventLog.cursor(), lastWakeAt: null };
 		saveConcierge();
-		if (!roster.has(concierge.id)) await respawn(concierge.id).catch((err: unknown) => log("warn", "concierge restart failed", { error: String(err) }));
-		log("info", "concierge on", { id: concierge.id });
-		pushConcierge();
-		nudgeConcierge();
-		return conciergeStatus();
+		if (!roster.has(had)) await respawn(had).catch((err: unknown) => log("warn", "concierge restart failed", { error: String(err) }));
+		log("info", "concierge on", { id: had });
+	} else {
+		const l = launch as DispatchArgs | undefined;
+		if (!l || typeof l !== "object" || l.kind === "shell" || l.profile) throw new OpError("bad_request", "the concierge is a pi session: the hub builds its launch");
+		const r = await dispatch({ ...l, name: CONCIERGE_NAME, requestId: undefined }, { role: "concierge" });
+		concierge = { ...concierge, id: r.id, on: true, cursor: eventLog.cursor(), onAt: now, lastWakeAt: null, wakes: [], notice: null, answer: null };
+		conciergeOverBudget = false;
+		saveConcierge();
+		log("info", "concierge started", { id: r.id });
 	}
-	const launch = args?.launch as DispatchArgs | undefined;
-	if (!launch || typeof launch !== "object" || launch.kind === "shell" || launch.profile) throw new OpError("bad_request", "the concierge is a pi session: the hub builds its launch");
-	const r = await dispatch({ ...launch, name: CONCIERGE_NAME, requestId: undefined }, { role: "concierge" });
-	// what happened before it existed is not its concern
-	concierge = { ...concierge, id: r.id, on: true, cursor: eventLog.cursor(), onAt: now, lastWakeAt: null, wakes: [], notice: null, answer: null };
-	conciergeOverBudget = false;
-	saveConcierge();
-	log("info", "concierge started", { id: r.id });
 	pushConcierge();
+	void wakeConcierge("heartbeat").catch((err: unknown) => log("error", "concierge first wake failed", { error: String(err) }));
 	return conciergeStatus();
 }
 
-/** Something happened: wake the concierge once the burst is over. */
+/** Something happened: wake the concierge once the burst is over (after the wake under way, if one is). */
 function nudgeConcierge(): void {
-	if (!concierge.on || !concierge.id || shuttingDown || conciergeTimer) return;
+	if (!concierge.on || !concierge.id || shuttingDown) return;
+	if (conciergeWaking) {
+		conciergeNudged = true;
+		return;
+	}
+	if (conciergeTimer) return;
 	conciergeTimer = setTimeout(() => {
 		conciergeTimer = undefined;
 		void wakeConcierge("events").catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
 	}, CONCIERGE_COALESCE_MS);
 	conciergeTimer.unref?.();
+	// the hub's line says how much is new
+	pushConcierge();
 }
 
 /**
@@ -392,6 +439,10 @@ function nudgeConcierge(): void {
 async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 	const id = concierge.id;
 	if (!concierge.on || !id || !recs.has(id) || shuttingDown) return false;
+	if (conciergeWaking) {
+		conciergeNudged = true;
+		return false;
+	}
 	const cfg = conciergeConfig();
 	const { events: all, cursor } = eventLog.since({ after: concierge.cursor, limit: EVENT_LOG_MAX });
 	const events = all.filter((e) => !conciergeOwn(e));
@@ -403,52 +454,63 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 		return false;
 	}
 	const now = Date.now();
-	const row = rowOf(id);
-	const spent = row?.usage ? todayOf(row.usage, now) : 0;
-	const over = cfg.dailyBudgetUsd > 0 && spent >= cfg.dailyBudgetUsd;
-	if (over !== conciergeOverBudget) {
-		conciergeOverBudget = over;
-		pushConcierge();
-	}
-	if (over) {
-		log("info", "concierge over budget", { spent, budget: cfg.dailyBudgetUsd });
-		return false;
-	}
+	if (conciergeBudget(now)) return false;
 	concierge.wakes = concierge.wakes.filter((t) => now - t < 3600_000);
 	if (concierge.wakes.length >= cfg.wakesPerHour) {
 		log("info", "concierge wake held", { wakes: concierge.wakes.length, cap: cfg.wakesPerHour });
-		if (!conciergeTimer) {
-			conciergeTimer = setTimeout(() => {
-				conciergeTimer = undefined;
-				void wakeConcierge(why).catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
-			}, CONCIERGE_RETRY_MS);
-			conciergeTimer.unref?.();
-		}
+		conciergeRetry(why);
 		return false;
 	}
 	const rows = list(undefined).filter((r) => r.id !== id);
 	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now });
-	const r = await deliverAgent(recs.get(id)!.sessionFile, "digest", text, { from: "roost", relation: "external" });
-	log("info", "concierge woken", { why, events: events.length, outcome: r.outcome });
-	if (r.outcome === "stopped") {
-		// the user stopped it: that is off
-		concierge.on = false;
+	conciergeWaking = true;
+	let r: Awaited<ReturnType<typeof deliverAgent>>;
+	try {
+		r = await deliverAgent(recs.get(id)!.sessionFile, "digest", text, { from: "roost", relation: "external" });
+	} catch (err) {
+		// its queue full, say: later
+		conciergeWaking = false;
+		log("warn", "concierge not woken", { why, error: String(err) });
+		conciergeRetry(why);
+		return false;
+	} finally {
+		conciergeWaking = false;
+	}
+	try {
+		log("info", "concierge woken", { why, events: events.length, outcome: r.outcome });
+		if (!concierge.on || concierge.id !== id) {
+			// turned off (or replaced) while the wake started it: not left running
+			if (!concierge.on && roster.has(id)) await terminateHost(id).catch(() => {});
+			return false;
+		}
+		if (r.outcome === "stopped") {
+			// the user stopped it: that is off
+			concierge.on = false;
+			saveConcierge();
+			pushConcierge();
+			return false;
+		}
+		if (!reached(r.outcome)) return false;
+		concierge.cursor = cursor;
+		concierge.lastWakeAt = now;
+		concierge.wakes.push(now);
 		saveConcierge();
 		pushConcierge();
-		return false;
+		return true;
+	} finally {
+		// what happened during the wake is the next one
+		if (conciergeNudged) {
+			conciergeNudged = false;
+			nudgeConcierge();
+		}
 	}
-	if (!reached(r.outcome)) return false;
-	concierge.cursor = cursor;
-	concierge.lastWakeAt = now;
-	concierge.wakes.push(now);
-	saveConcierge();
-	pushConcierge();
-	return true;
 }
 
 /** The heartbeat: a wake when nothing woke it for a while, so a stuck fleet is noticed. */
 function conciergeTick(now = Date.now()): void {
-	if (!concierge.on || !concierge.id || shuttingDown || conciergeTimer) return;
+	if (!concierge.on || !concierge.id || shuttingDown || conciergeTimer || conciergeWaking) return;
+	// the budget is looked at here too, so the hub's flag is right across midnight
+	if (conciergeBudget(now)) return;
 	const hb = CONCIERGE_HEARTBEAT_MS || heartbeatMs(conciergeConfig());
 	if (hb === null) return;
 	const last = concierge.lastWakeAt ?? concierge.onAt ?? now;
@@ -466,7 +528,7 @@ function conciergeSay(conn: Conn, args: { kind?: unknown; text?: unknown } | und
 	const now = Date.now();
 	if (kind === "answer") concierge.answer = { text: text.slice(0, 4000), at: now };
 	else concierge.notice = { kind, text: text.slice(0, 500), at: now };
-	record({ kind: "concierge", id: peer.id, name: CONCIERGE_NAME, who: CONCIERGE_NAME, why: kind, text: clipText(text) });
+	record({ kind: "concierge", id: peer.id, name: CONCIERGE_NAME, who: CONCIERGE_NAME, whoId: peer.id, why: kind, text: clipText(text) });
 	saveConcierge();
 	pushConcierge();
 	return {};
@@ -504,6 +566,8 @@ function noteState(job: JobRow): void {
 interface Watch {
 	watcher: string;
 	watcherName: string;
+	/** The watching job, when a job watches (null: a foreground session). */
+	watcherId?: string | null;
 	id: string;
 	when: "idle" | "ended";
 	at: number;
@@ -570,7 +634,7 @@ async function fireWatch(w: Watch, job: JobRow | { id: string; name: string; sta
 		const r = await deliverAgent(w.watcher, "notice", text, { from: job.name, relation });
 		log("info", "watch fired", { id: job.id, watcher: w.watcher, when: w.when, outcome: r.outcome });
 		// a watcher that is gone (a closed pi, a stopped job) is not told: the notice is lost, as a message would be
-		if (reached(r.outcome)) record({ kind: "notice", id: job.id, name: job.name, who: w.watcherName, text: when === "ended" ? "ended" : "is idle" });
+		if (reached(r.outcome)) record({ kind: "notice", id: job.id, name: job.name, who: w.watcherName, whoId: w.watcherId ?? null, text: when === "ended" ? "ended" : "is idle" });
 	} catch (err) {
 		log("warn", "watch notice failed", { id: job.id, watcher: w.watcher, error: String(err) });
 	}
@@ -589,7 +653,7 @@ async function addWatch(conn: Conn, args: { id?: unknown; when?: unknown } | und
 	if (target.role !== "job") throw new OpError("unsupported", "a foreground session is not watched (it has no job state)");
 	const row = rowOf(target.id);
 	if (!row) throw new OpError("not_found", `no such job: ${target.id}`);
-	const w: Watch = { watcher: me, watcherName: peerName(peer), id: row.id, when, at: Date.now() };
+	const w: Watch = { watcher: me, watcherName: peerName(peer), watcherId: peer.kind === "job" ? peer.id : null, id: row.id, when, at: Date.now() };
 	// already so: said at once, nothing kept
 	if (watchFires(when, row.state)) {
 		await fireWatch(w, row);
@@ -1552,6 +1616,8 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	const base = str(a.name) ? a.name : id;
 	// M22: a job this one takes the session from gives up its name (one row per session)
 	const taken = new Set([...recs.values()].filter((r) => !(!shell && foldsInto(r, a.sessionFile)) && !hiddenJob(r.id)).map((r) => r.name));
+	// M44: the concierge's name is its own
+	if (extra.role !== "concierge") taken.add(CONCIERGE_NAME);
 	let name = base;
 	for (let n = 2; taken.has(name); n++) name = `${base} (${n})`;
 
@@ -2317,6 +2383,8 @@ function rename(args: { id?: unknown; name?: unknown } | undefined): { id: strin
 	const id = requireJob(args);
 	const name = typeof args?.name === "string" ? args.name.replace(/\s+/g, " ").trim().slice(0, 200) : "";
 	if (!name) throw new OpError("bad_request", "empty name");
+	// M44: the concierge's name is its own (a session could pass for it otherwise)
+	if (name === CONCIERGE_NAME && !isConcierge(id)) throw new OpError("bad_request", `${CONCIERGE_NAME} is the concierge's name`);
 	const rec = recs.get(id)!;
 	const next = { ...rec, name };
 	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
@@ -2550,7 +2618,7 @@ async function sendMessage(conn: Conn, args: { to?: unknown; message?: unknown }
 		// only a message that went counts as sent: one refused may be sent again at once
 		lastSent.set(pair, { hash, at: now });
 		if (lastSent.size > 1000) for (const [k, v] of lastSent) if (now - v.at > DUPLICATE_WINDOW_MS) lastSent.delete(k);
-		record({ kind: "message", id: r.id || target.id, name: r.name || target.name, who: from, text: clipText(message) });
+		record({ kind: "message", id: r.id || target.id, name: r.name || target.name, who: from, whoId: peer.kind === "job" ? peer.id : null, text: clipText(message) });
 	}
 	return { ...r, id: r.id || target.id, name: r.name || target.name, relation: target.relation };
 }
@@ -2908,8 +2976,11 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "watch":
 			return addWatch(conn, args);
 		case "concierge":
+			// the hub's (a session cannot start, stop or question the concierge)
+			if (conn.peer) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
 			return conciergeOp(args);
 		case "concierge-ask":
+			if (conn.peer) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
 			return conciergeAsk(args);
 		case "concierge-say":
 			return conciergeSay(conn, args);

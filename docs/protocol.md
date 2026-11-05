@@ -213,7 +213,11 @@ in `lib/concierge.ts`); `concierge-ask {text}` from the hub is a reply to it;
 `concierge-say {kind: info | need | answer, text}` on its own connection is what it
 tells the user (a `concierge` event in the feed) or its answer. Hubs get `{"event":
 "concierge", "status": …}` pushes. The concierge may `send` to any session, by id or
-name, and read `events`. See `docs/plans/m44-concierge.md`.
+name, and read `events`. `concierge` and `concierge-ask` are the hub's: a session's
+connection is refused. An event a job caused (a message, a notice, what the concierge
+said) carries `whoId`, that job's id, besides `who`, its name: names can be shared
+(`concierge` itself cannot be taken by a session, by `dispatch` or `rename`). See
+`docs/plans/m44-concierge.md`.
 
 ## Conformance
 

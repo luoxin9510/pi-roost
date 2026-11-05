@@ -23,21 +23,38 @@ export function isConciergeRole(env: NodeJS.ProcessEnv): boolean {
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
 
-/** The last assistant message's text, for the answer handed to the hub. */
-function lastAssistantText(ctx: ExtensionContext): string {
-	const branch = ctx.sessionManager.getBranch();
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const e = branch[i]!;
-		if (e.type !== "message" || e.message.role !== "assistant") continue;
-		const c = e.message.content;
-		if (typeof c === "string") return c;
-		if (!Array.isArray(c)) return "";
-		return c
-			.map((p) => (p && typeof p === "object" && (p as { type?: string }).type === "text" ? String((p as { text?: unknown }).text ?? "") : ""))
-			.filter(Boolean)
-			.join("\n");
+function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((p) => (p && typeof p === "object" && (p as { type?: string }).type === "text" ? String((p as { text?: unknown }).text ?? "") : ""))
+		.filter(Boolean)
+		.join("\n");
+}
+
+/**
+ * The answer handed to the hub: the assistant's last text after the user's question. A
+ * digest steered into the same turn (a custom message after the question) is answered
+ * too, to nobody; the text before it is the answer.
+ */
+function answerText(ctx: ExtensionContext): string {
+	const branch = ctx.sessionManager.getBranch().filter((e) => e.type === "message");
+	let user = -1;
+	for (let i = branch.length - 1; i >= 0 && user < 0; i--) if (branch[i]!.message.role === "user") user = i;
+	if (user < 0) return "";
+	let answer = "";
+	for (let i = user + 1; i < branch.length; i++) {
+		const m = branch[i]!.message;
+		if (m.role === "custom") {
+			if (answer) break;
+			continue;
+		}
+		if (m.role === "assistant") {
+			const t = textOf(m.content).trim();
+			if (t) answer = t;
+		}
 	}
-	return "";
+	return answer;
 }
 
 export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
@@ -77,7 +94,7 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 		if (!answering) return;
 		answering = false;
 		if (event.aborted) return;
-		const answer = lastAssistantText(ctx).trim();
+		const answer = answerText(ctx);
 		if (!answer) return;
 		void link.call("concierge-say", { kind: "answer", text: answer }).catch(() => {});
 	});
