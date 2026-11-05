@@ -1,6 +1,6 @@
 # Measuring roost: telemetry, stress tests, evals
 
-Status: design (2026-11-05). Comes before M32–M33: what follows is measured.
+Status: built (2026-11-05): telemetry M34, stress [M35](m35-stress.md), request ids M36, evals [M37](m37-evals.md). Comes before M32–M33: what follows is measured.
 
 ## What pi has
 

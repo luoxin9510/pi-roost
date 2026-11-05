@@ -17,6 +17,7 @@
     "spikes",
     "lib",
     "stress",
+    "evals",
     "daemon",
     "host",
     "bin",

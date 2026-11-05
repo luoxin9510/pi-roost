@@ -42,7 +42,8 @@ Claude Code's documented behaviour.
 | M34 | [telemetry](evals.md) (first of: telemetry, stress, evals) | next |
 | M35 | [the stress run, and what it found](m35-stress.md) | next |
 | M36 | request ids: a resent reply or dispatch is taken once ([protocol](../protocol.md#request-ids-for-the-clients-that-send-replies-and-start-jobs)) | next |
+| M37 | [evals with real models](m37-evals.md) | next |
 
-Next: [measuring roost](evals.md) (telemetry, stress tests, evals), then the rest of [any agent](any-agent.md) (M32–M33).
+Next: the rest of [any agent](any-agent.md) (M32–M33), each measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).
