@@ -39,7 +39,8 @@ Claude Code's documented behaviour.
 | M29 | [a neutral core](m29-neutral-core.md) | next |
 | M30 | [agent profiles: terminal agents besides pi](m30-profiles.md) | next |
 | M31 | [the agent protocol, TypeScript and Python clients](m31-protocol.md) | next |
+| M34 | [telemetry](evals.md) (first of: telemetry, stress, evals) | next |
 
-Next: [any agent](any-agent.md), the design for M29–M33 (roost for agents other than pi, pi staying the baseline).
+Next: [measuring roost](evals.md) (telemetry, stress tests, evals), then the rest of [any agent](any-agent.md) (M32–M33).
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

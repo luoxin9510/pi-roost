@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Telemetry: `ROOST_TELEMETRY=file.jsonl` makes the background service and its hosts record spans and metrics (requests, reply latency, reports, state changes, events, host start, attach replay) in the shape of pi's `pi-telemetry` contract, without depending on it. Off by default.
+
 - The roost agent protocol, written down ([docs/protocol.md](docs/protocol.md), draft v1): `hello` with protocol version and capabilities, reports, replies and acks. Clients: TypeScript (`pi-roost/agent`, which pi's worker now uses) and Python (`sdk/python/roost_agent.py`, standard library only). A profile with `"protocol": true` runs an agent that speaks it: its reports set the row, replies reach it as protocol replies.
 
 - Run terminal agents besides pi: `agentProfiles` in your `roost.json` (an argv, how it takes a task, its model and resume arguments, patterns for working and waiting); `/profile name` in the agent view (or a preset's `profile`) starts new sessions with it. Its row is read from its terminal (its title, notifications, bell, whether the screen still moves, your patterns); replies are typed into it; a reply to an ended one starts it again. See [docs/profiles.md](docs/profiles.md).

@@ -29,6 +29,7 @@ import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/loc
 import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, rosterPath, runtimeDir } from "../lib/paths.ts";
 import { isAlive, processStartToken, sameProcess } from "../lib/proc.ts";
 import { JOB_ENV_NAMES } from "../lib/identity.ts";
+import { telemetryFromEnv } from "../lib/telemetry.ts";
 import {
 	type DaemonStatus,
 	type DispatchArgs,
@@ -85,6 +86,47 @@ class OpError extends Error {
 		super(message);
 		this.code = code;
 	}
+}
+
+// M34: spans and metrics where the daemon's time goes (ROOST_TELEMETRY=path; off by default)
+const telemetry = telemetryFromEnv("daemon");
+const metric = {
+	events: telemetry.counter("roost.events"),
+	replies: telemetry.counter("roost.replies"),
+	ackLatency: telemetry.histogram("roost.reply.ack_latency"),
+	deliverLatency: telemetry.histogram("roost.reply.deliver_latency"),
+	reports: telemetry.counter("roost.reports"),
+	stateChanges: telemetry.counter("roost.state_changes"),
+	reaped: telemetry.counter("roost.reaped"),
+	cleaned: telemetry.counter("roost.cleaned"),
+	hostStart: telemetry.histogram("roost.host.start"),
+};
+/** M34: when each pending reply came in (job id → seq), for its deliver and ack latency. */
+const replyAt = new Map<string, Map<number, { at: number; sent: boolean }>>();
+function replyIn(id: string, seq: number, kind = "reply"): void {
+	if (!telemetry.enabled) return;
+	let m = replyAt.get(id);
+	if (!m) replyAt.set(id, (m = new Map()));
+	m.set(seq, { at: Date.now(), sent: false });
+	metric.replies.add(1, { kind });
+}
+function replySent(id: string, seq: number): void {
+	const r = replyAt.get(id)?.get(seq);
+	if (!r || r.sent) return;
+	r.sent = true;
+	metric.deliverLatency.record(Date.now() - r.at);
+}
+function repliesAcked(id: string, gone: number[]): void {
+	const m = replyAt.get(id);
+	if (!m) return;
+	const now = Date.now();
+	for (const seq of gone) {
+		const r = m.get(seq);
+		if (!r) continue;
+		metric.ackLatency.record(now - r.at);
+		m.delete(seq);
+	}
+	if (m.size === 0) replyAt.delete(id);
 }
 
 function log(level: "info" | "warn" | "error", msg: string, extra: Record<string, unknown> = {}): void {
@@ -340,7 +382,13 @@ function send(conn: Conn, value: unknown): void {
 }
 
 function push(event: Event): void {
-	for (const c of conns) if (c.subscribed) send(c, event);
+	let n = 0;
+	for (const c of conns) {
+		if (!c.subscribed) continue;
+		send(c, event);
+		n++;
+	}
+	if (n > 0) metric.events.add(n, { event: event.event });
 }
 
 function pushJob(id: string): void {
@@ -438,7 +486,9 @@ async function cleanupOld(): Promise<void> {
 			}
 			const st = readState(id);
 			log("info", "cleanup", { id, endedDaysAgo: Math.floor((Date.now() - Number(st?.endedAt)) / DAY_MS) });
-			await removeRecord(id).catch((err: unknown) => log("warn", "cleanup failed", { id, error: String(err) }));
+			await removeRecord(id)
+				.then(() => metric.cleaned.add(1))
+				.catch((err: unknown) => log("warn", "cleanup failed", { id, error: String(err) }));
 		}
 	} finally {
 		cleaning = false;
@@ -827,6 +877,12 @@ function continuedElsewhere(session: string): void {
 }
 
 async function startHost(rec: JobRecord): Promise<void> {
+	const t0 = Date.now();
+	await startHostNow(rec);
+	metric.hostStart.record(Date.now() - t0, { kind: rec.kind ?? "pi" });
+}
+
+async function startHostNow(rec: JobRecord): Promise<void> {
 	const id = rec.id;
 	starting.add(id);
 	let hostPid: number;
@@ -856,7 +912,15 @@ async function startHost(rec: JobRecord): Promise<void> {
  * AT-1, DM-5, flow 5.7: start an ended job again from its session file. `restart`
  * stops a live one first (respawn --all after an upgrade).
  */
-async function respawn(
+function respawn(id: string, opts: { prompt?: string; crash?: boolean; restart?: boolean } = {}): Promise<{ id: string; started: boolean }> {
+	return telemetry.startSpan({ name: "roost.respawn", attributes: { job: id, crash: !!opts.crash, restart: !!opts.restart, prompt: !!opts.prompt } }, async (span) => {
+		const r = await respawnNow(id, opts);
+		span.setAttributes({ started: r.started });
+		return r;
+	});
+}
+
+async function respawnNow(
 	id: string,
 	opts: { prompt?: string; crash?: boolean; restart?: boolean } = {},
 ): Promise<{ id: string; started: boolean }> {
@@ -1139,6 +1203,7 @@ async function reapIdle(): Promise<void> {
 			continue;
 		}
 		log("info", "reap", { id, idleMinutes: Math.round((now - since) / 60_000) });
+		metric.reaped.add(1);
 		if (!(await terminateIfIdle(id))) reaping.delete(id);
 	}
 }
@@ -1201,12 +1266,14 @@ function acknowledge(args: { id?: unknown; token?: unknown; seq?: unknown } | un
 	const acked = args.seq;
 	// user replies are acknowledged up to a seq; an agent item only by its own seq, once pi has it
 	const exact = (args as { exact?: unknown }).exact === true;
-	updateState(id, {
-		pendingReplies: pendingReplies(id).filter((r) => (exact ? r.seq !== acked : r.seq > acked || isAgentItem(r))),
-	});
+	const before = pendingReplies(id);
+	const after = before.filter((r) => (exact ? r.seq !== acked : r.seq > acked || isAgentItem(r)));
+	updateState(id, { pendingReplies: after });
+	if (telemetry.enabled) repliesAcked(id, before.filter((r) => !after.includes(r)).map((r) => r.seq));
 }
 
 function deliverEvent(id: string, r: PendingReply): Event {
+	replySent(id, r.seq);
 	return {
 		event: "deliver",
 		id,
@@ -1247,6 +1314,7 @@ async function reply(
 	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
 	const item: PendingReply = { seq, text, ...(steer ? { mode: "steer" as const } : {}) };
 	updateState(id, { replySeq: seq, pendingReplies: [...pending, item] });
+	replyIn(id, seq);
 	if (connected) {
 		send(conn!, deliverEvent(id, item));
 		return { delivered: true, saved: false };
@@ -1367,6 +1435,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 			: {}),
 	});
 	if (before !== r.state) log("info", "state", { id, from: before, to: r.state, waitingFor: r.waitingFor ?? null });
+	metric.reports.add(1);
+	if (before !== r.state) metric.stateChanges.add(1, { to: r.state ?? null });
 	pushJob(id);
 	// M13: a subagent that finished closes (each report while done and idle starts the wait again)
 	if (r.state === "done" && r.status === "idle" && recs.get(id)?.parentSession) scheduleAutoClose(id);
@@ -1558,6 +1628,7 @@ async function deliverAgent(
 	const seq = (typeof st?.replySeq === "number" ? st.replySeq : 0) + 1;
 	const item: PendingReply = { seq, text, kind, from: sanitizeName(meta.from), relation: meta.relation };
 	updateState(id, { replySeq: seq, pendingReplies: [...pending, item] });
+	replyIn(id, seq, kind);
 	const dialog = st?.waitingFor === "dialog" ? { dialog: true } : {};
 	const conn = workerConns.get(id);
 	if (live && conn && !conn.sock.destroyed) {
@@ -1933,7 +2004,8 @@ async function onLine(conn: Conn, line: string): Promise<void> {
 		return;
 	}
 	try {
-		const result = await handle(conn, msg!.op, msg!.args);
+		// M34: every request a span (its op, its time, ok or its error)
+		const result = await telemetry.startSpan({ name: `roost.op.${typeof msg!.op === "string" ? msg!.op.slice(0, 32) : "?"}` }, () => handle(conn, msg!.op as string, msg!.args));
 		send(conn, { id: reqId, ok: true, result });
 	} catch (err) {
 		const e = err as Partial<OpError> & Error;
