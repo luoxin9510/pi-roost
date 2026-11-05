@@ -1343,13 +1343,19 @@ export class AgentView implements Component {
 		const row = this.escalation();
 		if (!row?.suggested || !this.client) return;
 		const text = row.suggested.text;
-		// once: a second press before the row moves would answer its next question
-		this.dismissed.add(`${row.id}:${row.suggested.at}`);
+		// once: a second press before the row moves would answer its next question (the
+		// banner is back if the send did not go)
+		const key = `${row.id}:${row.suggested.at}`;
+		this.dismissed.add(key);
 		try {
-			const r = await this.client.request("reply", { id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}` });
+			const r = await this.client.request("reply", { id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
 			if (r.delivered || r.saved) this.say(`sent to ${row.name}: ${oneLine(text).slice(0, 80)}`, "success");
-			else this.say(`not delivered: ${row.name} is not running`, "error");
+			else {
+				this.dismissed.delete(key);
+				this.say(`not delivered: ${row.name} is not running`, "error");
+			}
 		} catch (err) {
+			this.dismissed.delete(key);
 			this.say((err as Error).message, "error");
 		}
 	}

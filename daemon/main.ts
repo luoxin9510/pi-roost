@@ -391,7 +391,8 @@ function conciergePolicy(): ConciergePolicy {
 /** M45: the concierge's suggestion for a row, while the row waits with the question it was for. */
 function suggestedFor(id: string, st: { state?: unknown; question?: unknown }): JobRow["suggested"] {
 	const s = concierge.suggestions[id];
-	if (!s || st.state !== "blocked" || (st.question ?? null) !== s.question) return null;
+	const question = typeof st.question === "string" && st.question ? st.question : null;
+	if (!s || st.state !== "blocked" || question !== s.question) return null;
 	return { text: s.text, why: s.why, at: s.at };
 }
 
