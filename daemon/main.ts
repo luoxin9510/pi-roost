@@ -28,7 +28,7 @@ import {
 	WATCH_TTL_MS,
 } from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
-import { CONCIERGE_DEFAULTS, CONCIERGE_NAME, type ConciergeStatus, digestText, heartbeatMs } from "../lib/concierge.ts";
+import { CONCIERGE_ANSWERS, CONCIERGE_DEFAULTS, CONCIERGE_NAME, type ConciergeAnswer, type ConciergePolicy, type ConciergeStatus, digestText, heartbeatMs, undoText } from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
 import { hostControl } from "../lib/hostclient.ts";
@@ -259,9 +259,15 @@ interface ConciergeState {
 	wakes: number[];
 	notice: ConciergeStatus["notice"];
 	answer: ConciergeStatus["answer"];
+	/** M45: the policy `/concierge answer|act` set (null: the setting's). */
+	policy: ConciergePolicy | null;
+	/** M45: its suggested answers, by the job that waits. */
+	suggestions: Record<string, { text: string; why: string | null; at: number }>;
+	/** M45: the answers it gave sessions in the user's place, newest last (the last 20). */
+	answered: NonNullable<ConciergeStatus["answered"]>[];
 }
 const conciergePath = () => join(roostHome(), "concierge.json");
-let concierge: ConciergeState = { id: null, on: false, cursor: 0, onAt: null, lastWakeAt: null, wakes: [], notice: null, answer: null };
+let concierge: ConciergeState = { id: null, on: false, cursor: 0, onAt: null, lastWakeAt: null, wakes: [], notice: null, answer: null, policy: null, suggestions: {}, answered: [] };
 /** A burst of events is one wake. */
 const CONCIERGE_COALESCE_MS = Number(process.env.PI_ROOST_CONCIERGE_COALESCE_MS) || 5000;
 /** A wake held back by the hourly cap is tried again after this. */
@@ -295,6 +301,16 @@ function loadConcierge(): void {
 		wakes: Array.isArray(s.wakes) ? s.wakes.filter((t): t is number => typeof t === "number") : [],
 		notice: s.notice && typeof s.notice === "object" && str(s.notice.text) ? s.notice : null,
 		answer: s.answer && typeof s.answer === "object" && str(s.answer.text) ? s.answer : null,
+		policy:
+			s.policy && typeof s.policy === "object" && (CONCIERGE_ANSWERS as readonly string[]).includes(String(s.policy.answer)) && typeof s.policy.act === "boolean"
+				? { answer: s.policy.answer, act: s.policy.act }
+				: null,
+		suggestions: Object.fromEntries(
+			Object.entries(s.suggestions && typeof s.suggestions === "object" ? s.suggestions : {}).filter(
+				([id, v]) => recs.has(id) && v && typeof v === "object" && str((v as { text?: unknown }).text) && typeof (v as { at?: unknown }).at === "number",
+			),
+		) as ConciergeState["suggestions"],
+		answered: Array.isArray(s.answered) ? s.answered.filter((a) => a && typeof a === "object" && str(a.id) && str(a.text) && typeof a.at === "number").slice(-20) : [],
 	};
 	// its job was removed while the service was off
 	if (concierge.id && !recs.has(concierge.id)) {
@@ -358,8 +374,30 @@ function conciergeStatus(): ConciergeStatus {
 		budget: cfg.dailyBudgetUsd,
 		overBudget: conciergeOverBudget,
 		notice: concierge.notice,
+		policy: conciergePolicy(),
+		answered: concierge.answered.at(-1) ?? null,
 		answer: concierge.answer,
 	};
+}
+
+/** M45: the policy in force: what `/concierge answer|act` set, else the setting. */
+function conciergePolicy(): ConciergePolicy {
+	if (concierge.policy) return concierge.policy;
+	const cfg = conciergeConfig();
+	return { answer: cfg.answer, act: cfg.act };
+}
+
+/** M45: the concierge's suggestion for a row, while the row waits for an answer. */
+function suggestedFor(id: string, state: string | undefined): JobRow["suggested"] {
+	const s = concierge.suggestions[id];
+	return s && state === "blocked" ? s : null;
+}
+
+function dropSuggestion(id: string): boolean {
+	if (!(id in concierge.suggestions)) return false;
+	delete concierge.suggestions[id];
+	saveConcierge();
+	return true;
 }
 
 function pushConcierge(): void {
@@ -381,7 +419,29 @@ async function conciergeOp(args: { action?: unknown; launch?: unknown } | undefi
 		pushConcierge();
 		return conciergeStatus();
 	}
-	if (action !== "on") throw new OpError("bad_request", "action must be on, off or status");
+	// M45: the policy, and the undo
+	if (action === "answer") {
+		const answer = args && "answer" in args ? (args as { answer?: unknown }).answer : undefined;
+		if (!(CONCIERGE_ANSWERS as readonly string[]).includes(String(answer))) throw new OpError("bad_request", "answer must be never, routine or always");
+		concierge.policy = { ...conciergePolicy(), answer: answer as ConciergeAnswer };
+		saveConcierge();
+		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: "user", why: "policy", text: `answer: ${answer}` });
+		log("info", "concierge policy", { ...concierge.policy });
+		pushConcierge();
+		return conciergeStatus();
+	}
+	if (action === "act") {
+		const act = args && "act" in args ? (args as { act?: unknown }).act : undefined;
+		if (typeof act !== "boolean") throw new OpError("bad_request", "act must be true or false");
+		concierge.policy = { ...conciergePolicy(), act };
+		saveConcierge();
+		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: "user", why: "policy", text: `act: ${act ? "on" : "off"}` });
+		log("info", "concierge policy", { ...concierge.policy });
+		pushConcierge();
+		return conciergeStatus();
+	}
+	if (action === "undo") return conciergeUndo();
+	if (action !== "on") throw new OpError("bad_request", "action must be on, off, status, answer, act or undo");
 	if (conciergeOnPending) return conciergeOnPending;
 	conciergeOnPending = conciergeOn(args?.launch).finally(() => {
 		conciergeOnPending = undefined;
@@ -551,6 +611,107 @@ async function conciergeAsk(args: { text?: unknown } | undefined): Promise<{ id:
 	return { id: concierge.id };
 }
 
+// ---- M45: escalation and policy ---------------------------------------------------------
+
+function requireConcierge(conn: Conn): PeerIdentity {
+	const peer = requirePeer(conn);
+	if (!isConciergePeer(peer)) throw new OpError("unsupported", "only the concierge does this");
+	return peer;
+}
+
+/** The job a concierge op names, by id or exact name; never the concierge itself. */
+function conciergeTarget(args: { id?: unknown } | undefined): JobRow {
+	const id = typeof args?.id === "string" ? args.id.trim() : "";
+	if (!id) throw new OpError("bad_request", "id required");
+	const row = rowOf(id) ?? list(undefined).find((r) => r.name === id);
+	if (!row) throw new OpError("not_found", `no session ${id}`);
+	if (isConcierge(row.id)) throw new OpError("bad_request", "that is you");
+	return row;
+}
+
+const conciergeText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " ").trim().slice(0, max) : "");
+
+/** `concierge-policy`: what it may do now (its tools follow it). */
+function conciergePolicyOp(conn: Conn): ConciergePolicy {
+	requireConcierge(conn);
+	return conciergePolicy();
+}
+
+/** `concierge-suggest`: the answer it would give a session that waits for one; on the row, for the hub. */
+function conciergeSuggest(conn: Conn, args: { id?: unknown; text?: unknown; why?: unknown } | undefined): { id: string; name: string } {
+	const peer = requireConcierge(conn);
+	const row = conciergeTarget(args);
+	const text = conciergeText(args?.text, 2000);
+	if (!text) throw new OpError("bad_request", "empty suggestion");
+	if (row.state !== "blocked") throw new OpError("bad_request", `${row.name} is not waiting for an answer (${row.state})`);
+	const why = conciergeText(args?.why, 500) || null;
+	concierge.suggestions[row.id] = { text, why, at: Date.now() };
+	saveConcierge();
+	record({ kind: "concierge", id: row.id, name: row.name, who: CONCIERGE_NAME, whoId: peer.id, why: "suggest", text: clipText(text) });
+	pushJob(row.id);
+	return { id: row.id, name: row.name };
+}
+
+/** `concierge-reply`: an answer in the user's place, if the policy lets it; kept, so the user can undo it. */
+async function conciergeReply(conn: Conn, args: { id?: unknown; text?: unknown; why?: unknown } | undefined): Promise<{ id: string; name: string }> {
+	const peer = requireConcierge(conn);
+	const policy = conciergePolicy();
+	if (policy.answer === "never") throw new OpError("policy", "the user answers questions (answer: never): suggest the answer instead (hub_suggest)");
+	const row = conciergeTarget(args);
+	const text = conciergeText(args?.text, 4000);
+	if (!text) throw new OpError("bad_request", "empty answer");
+	if (text.startsWith("/") || text.startsWith("!")) throw new OpError("bad_request", "an answer is plain text, not a command");
+	if (row.state !== "blocked" || row.waitingFor !== "question") throw new OpError("bad_request", `${row.name} is not waiting for an answer to a question (${row.state}${row.waitingFor ? `, ${row.waitingFor}` : ""})`);
+	const r = await reply({ id: row.id, text }, { who: CONCIERGE_NAME, whoId: peer.id });
+	if (!(r.delivered || r.saved)) throw new OpError("unavailable", `not delivered to ${row.name}${r.error ? `: ${r.error}` : ""}`);
+	concierge.answered = [...concierge.answered, { id: row.id, name: row.name, text, at: Date.now(), undone: false }].slice(-20);
+	delete concierge.suggestions[row.id];
+	saveConcierge();
+	log("info", "concierge answered", { id: row.id, why: conciergeText(args?.why, 200) || undefined });
+	pushJob(row.id);
+	pushConcierge();
+	return { id: row.id, name: row.name };
+}
+
+/** `concierge {action: "undo"}`: the last answer it gave is withdrawn: the session is told to disregard it. */
+async function conciergeUndo(): Promise<ConciergeStatus> {
+	const last = [...concierge.answered].reverse().find((a) => !a.undone);
+	if (!last) throw new OpError("not_found", "nothing to undo: the concierge has answered no session");
+	last.undone = true;
+	saveConcierge();
+	const row = rowOf(last.id);
+	if (row && recs.has(last.id) && !["done", "failed", "stopped"].includes(row.state)) {
+		// waiting again: a reply; at work: a steer
+		await reply({ id: last.id, text: undoText(last.text), ...(row.state === "working" ? { mode: "steer" } : {}) }).catch((err: unknown) => log("warn", "concierge undo not delivered", { id: last.id, error: String(err) }));
+	}
+	record({ kind: "concierge", id: last.id, name: last.name, who: "user", why: "undo", text: clipText(last.text) });
+	log("info", "concierge answer undone", { id: last.id, delivered: !!row });
+	pushConcierge();
+	return conciergeStatus();
+}
+
+/** `concierge-act`: stop, restart or start a session, if the policy lets it. */
+async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; launch?: unknown; why?: unknown } | undefined): Promise<{ id: string; name: string }> {
+	const peer = requireConcierge(conn);
+	if (!conciergePolicy().act) throw new OpError("policy", "the concierge may not start, stop or restart sessions (act: off): ask the user to");
+	const what = args?.what;
+	const why = conciergeText(args?.why, 200);
+	if (what === "stop" || what === "respawn") {
+		const row = conciergeTarget(args);
+		await handle(conn, what, { id: row.id });
+		record({ kind: "concierge", id: row.id, name: row.name, who: CONCIERGE_NAME, whoId: peer.id, why: "act", text: `${what === "stop" ? "stopped" : "restarted"} ${row.name}${why ? `: ${why}` : ""}` });
+		return { id: row.id, name: row.name };
+	}
+	if (what === "dispatch") {
+		const launch = args?.launch as DispatchArgs | undefined;
+		if (!launch || typeof launch !== "object" || !Array.isArray(launch.command)) throw new OpError("bad_request", "launch required");
+		const r = await dispatch({ ...launch, origin: "dispatch", requestId: undefined });
+		record({ kind: "concierge", id: r.id, name: r.name, who: CONCIERGE_NAME, whoId: peer.id, why: "act", text: `started ${r.name}${why ? `: ${why}` : ""}` });
+		return r;
+	}
+	throw new OpError("bad_request", "what must be stop, respawn or dispatch");
+}
+
 /** The state each job was last seen in: a change into one that matters is recorded, and fires watches. */
 const lastSeen = new Map<string, { state: JobStateName; waitingFor: JobRow["waitingFor"] }>();
 
@@ -562,6 +723,8 @@ function noteState(job: JobRow): void {
 	// what a blocked session waits for changing (a question, then a dialog) matters; a row
 	// going quiet (no worker: waitingFor null) or being restored is not a change
 	const waits = job.state === "blocked" && prev.state === "blocked" && !!prev.waitingFor && !!job.waitingFor && prev.waitingFor !== job.waitingFor;
+	// M45: a suggestion is for the question the row waited with
+	if ((prev.state === "blocked" && job.state !== "blocked") || waits) dropSuggestion(job.id);
 	if (prev.state === job.state && !waits) return;
 	if (stateMatters(prev.state, job.state) || job.state === "blocked") {
 		const text = job.state === "blocked" ? job.question : job.state === "failed" ? job.error : job.state === "done" ? job.summary : null;
@@ -747,6 +910,8 @@ function rowOf(id: string): JobRow | undefined {
 		schedule: rec.schedule ?? null,
 		...(agentCaps(st) ? { capabilities: agentCaps(st) } : {}),
 		...(rec.role ? { role: rec.role } : {}),
+		// M45: the concierge's suggested answer, while it waits for one
+		...(id in concierge.suggestions ? { suggested: suggestedFor(id, st.state) } : {}),
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
 }
@@ -927,12 +1092,12 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 		watches = watches.filter((w) => w.watcher !== file);
 		saveWatches();
 	}
-	// M44: the concierge removed is the concierge off
+	// M44: the concierge removed is the concierge off; M45: a suggestion for a removed row goes with it
 	if (isConcierge(id)) {
 		concierge = { ...concierge, id: null, on: false };
 		saveConcierge();
 		pushConcierge();
-	}
+	} else dropSuggestion(id);
 	replyAt.delete(id);
 	shellPids.delete(id);
 	stopping.delete(id);
@@ -2196,8 +2361,15 @@ function deliverEvent(id: string, r: PendingReply): Event {
 
 async function reply(
 	args: { id?: unknown; text?: unknown; mode?: unknown } | undefined,
+	// M45: the concierge answers in the user's place: the feed says so
+	by: { who: string; whoId: string | null } = { who: "user", whoId: null },
 ): Promise<{ delivered: boolean; saved: boolean; stopped?: boolean; respawned?: boolean; error?: string; duplicate?: boolean }> {
 	const id = requireJob(args);
+	const recordReply = (text: string) => {
+		record({ kind: "reply", id, name: rowOf(id)?.name ?? id, who: by.who, whoId: by.whoId, text: clipText(text) });
+		// an answer reached it: the concierge's suggestion for it is spent
+		if (dropSuggestion(id)) pushJob(id);
+	};
 	const text = typeof args?.text === "string" ? args.text.trim() : "";
 	const steer = args?.mode === "steer";
 	if (!text) throw new OpError("bad_request", "empty reply");
@@ -2225,7 +2397,7 @@ async function reply(
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
 	if (isTermJob(recs.get(id))) {
 		const r = await replyToProfile(id, text, live);
-		if (r.delivered || r.saved) record({ kind: "reply", id, name: rowOf(id)?.name ?? id, who: "user", text: clipText(text) });
+		if (r.delivered || r.saved) recordReply(text);
 		// typed in first, then kept: a crash in between types it again on a resend (not atomic)
 		if (rid && (r.delivered || r.saved) && readState(id)) updateState(id, { requestIds: withRequest(readState(id), rid) });
 		return r;
@@ -2246,7 +2418,7 @@ async function reply(
 	// the request id goes in the same write as the reply: both are kept, or neither
 	updateState(id, { replySeq: seq, pendingReplies: [...pending, item], ...(rid ? { requestIds: withRequest(st, rid) } : {}) });
 	replyIn(id, seq);
-	record({ kind: "reply", id, name: rowOf(id)?.name ?? id, who: "user", text: clipText(text) });
+	recordReply(text);
 	if (connected) {
 		send(conn!, deliverEvent(id, item));
 		return { delivered: true, saved: false };
@@ -2992,6 +3164,15 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return conciergeAsk(args);
 		case "concierge-say":
 			return conciergeSay(conn, args);
+		// M45: the concierge's policy, suggestions, answers and acts (its own connection)
+		case "concierge-policy":
+			return conciergePolicyOp(conn);
+		case "concierge-suggest":
+			return conciergeSuggest(conn, args);
+		case "concierge-reply":
+			return conciergeReply(conn, args);
+		case "concierge-act":
+			return conciergeAct(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
 	}

@@ -270,6 +270,8 @@ export class AgentView implements Component {
 	private askTimer: NodeJS.Timeout | undefined;
 	/** An answer that came while another overlay was open: shown once it closes. */
 	private pendingAnswer: string | undefined;
+	/** M45: suggestions the user dismissed (Esc), by row and time: the banner skips them. */
+	private dismissed = new Set<string>();
 	private nameWidth = 16;
 	/** M8: the model / context column, the same for every row of a render so it lines up. */
 	private columns: Columns = { mode: "none", modelW: 0, shareW: 0, ageW: 0, costW: 0 };
@@ -656,6 +658,13 @@ export class AgentView implements Component {
 			case "space":
 				if (!text) return this.togglePeek();
 				break;
+			case "ctrl+y":
+				// M45: the concierge's suggested answer goes as the reply (on an empty input)
+				if (!text && !this.peek && this.escalation()) return void this.acceptSuggestion();
+				break;
+			case "ctrl+e":
+				if (!text && !this.peek && this.escalation()) return this.editSuggestion();
+				break;
 			case "?":
 				if (!text) {
 					// M44: with the concierge on, ? starts a question to it (help: /help)
@@ -727,6 +736,13 @@ export class AgentView implements Component {
 		if (this.markedRows().length > 0) {
 			this.marked.clear();
 			this.say("marks cleared");
+			return;
+		}
+		// M45: the banner's suggestion is dismissed (it comes back with the next one)
+		const esc = this.concierge?.on ? this.escalation() : undefined;
+		if (esc?.suggested) {
+			this.dismissed.add(`${esc.id}:${esc.suggested.at}`);
+			this.say(`dismissed; ${esc.name} still waits (/concierge log has the suggestion)`);
 			return;
 		}
 		const origin = this.origin;
@@ -1250,7 +1266,33 @@ export class AgentView implements Component {
 				return await this.attachTo(this.concierge.id);
 			}
 			if (verb === "ask") return await this.ask(rest.join(" "));
-			this.say("/concierge on | off | status | log | attach | ask <question>", "warning");
+			// M45: the policy, and the undo
+			if (verb === "answer") {
+				const answer = rest[0];
+				if (!answer) return this.say(`concierge answers: ${this.concierge?.policy.answer ?? "never"} · /concierge answer never|routine|always`, "muted");
+				if (answer !== "never" && answer !== "routine" && answer !== "always") return this.say("/concierge answer never | routine | always", "warning");
+				this.concierge = await client.request("concierge", { action: "answer", answer });
+				return this.say(
+					answer === "never"
+						? "concierge answers: never (it suggests; you answer)"
+						: answer === "routine"
+							? "concierge answers: routine questions by itself (proceed/confirm, the obvious default, what is in the fleet); the rest it suggests · /concierge undo withdraws one"
+							: "concierge answers: whatever it can; irreversible questions it still suggests · /concierge undo withdraws one",
+					"success",
+				);
+			}
+			if (verb === "act") {
+				const v = rest[0];
+				if (v !== "on" && v !== "off") return this.say(`concierge act: ${this.concierge?.policy.act ? "on" : "off"} · /concierge act on|off (may it start, stop and restart sessions)`, "muted");
+				this.concierge = await client.request("concierge", { action: "act", act: v === "on" });
+				return this.say(v === "on" ? "concierge may start, stop and restart sessions (when you ask it to)" : "concierge may not start, stop or restart sessions", "success");
+			}
+			if (verb === "undo") {
+				this.concierge = await client.request("concierge", { action: "undo" });
+				const a = this.concierge.answered;
+				return this.say(a ? `withdrawn: the answer to ${a.name} («${oneLine(a.text).slice(0, 60)}»); it is told to disregard it and ask you` : "nothing to undo", "success");
+			}
+			this.say("/concierge on | off | status | log | attach | ask <question> | answer never|routine|always | act on|off | undo", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -1262,12 +1304,61 @@ export class AgentView implements Component {
 		if (!c?.on) return "";
 		const now = Date.now();
 		const parts = ["concierge"];
+		const a = c.answered;
 		if (c.overBudget) parts.push(`over its budget for today (${formatCost(c.budget)}): not woken`);
+		// M45: an answer it gave in the user's place, for a minute, with the undo
+		else if (a && !a.undone && now - a.at < 60_000) parts.push(`answered ${a.name}: ${oneLine(a.text).slice(0, 80)} (${eventAgo(a.at, now)} ago) · /concierge undo`);
 		else if (c.notice) parts.push(`${c.notice.kind === "need" ? "needs you: " : ""}${oneLine(c.notice.text)} (${eventAgo(c.notice.at, now)} ago)`);
 		else parts.push(c.lastWakeAt ? `quiet · last wake ${eventAgo(c.lastWakeAt, now)} ago` : "quiet");
 		if (c.behind > 0 && !c.overBudget) parts.push(`${c.behind} new`);
+		if (c.policy.answer !== "never") parts.push(`answers ${c.policy.answer}`);
+		if (c.policy.act) parts.push("acts");
 		if (c.costToday > 0) parts.push(`${formatCost(c.costToday)} today`);
 		return parts.join(" · ");
+	}
+
+	/** M45: the row the banner is about: the selected one if it waits with a suggestion, else the longest waiting. */
+	private escalation(): JobRow | undefined {
+		const has = (r: JobRow | undefined): r is JobRow => !!r?.suggested && r.state === "blocked" && !this.dismissed.has(`${r.id}:${r.suggested.at}`);
+		const sel = this.selectedRow();
+		if (has(sel)) return sel;
+		return [...this.rows.values()].filter(has).sort((a, b) => a.stateSince - b.stateSince)[0];
+	}
+
+	private escalationLine(row: JobRow, now: number): string {
+		const s = row.suggested!;
+		const q = row.question ? `asks: ${oneLine(row.question)}` : `waits for ${row.waitingFor ?? "input"}`;
+		const why = s.why ? ` (${oneLine(s.why)})` : "";
+		return `needs you · ${row.name} ${q} (${formatDuration(now - row.stateSince)}) · concierge suggests: ${oneLine(s.text)}${why} · Ctrl+Y sends it · Ctrl+E edits · Esc dismisses`;
+	}
+
+	/** Ctrl+Y: the suggestion goes as the user's reply. */
+	private async acceptSuggestion(): Promise<void> {
+		const row = this.escalation();
+		if (!row?.suggested || !this.client) return;
+		const text = row.suggested.text;
+		try {
+			const r = await this.client.request("reply", { id: row.id, text });
+			if (r.delivered || r.saved) this.say(`sent to ${row.name}: ${oneLine(text).slice(0, 80)}`, "success");
+			else this.say(`not delivered: ${row.name} is not running`, "error");
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	/** Ctrl+E: the suggestion in the reply box of that row's peek, to edit before sending. */
+	private editSuggestion(): void {
+		const row = this.escalation();
+		if (!row?.suggested) return;
+		this.cursor = { kind: "row", id: row.id };
+		if (!this.peek || this.peekId !== row.id) {
+			this.peek = true;
+			this.peekId = row.id;
+			this.reply.focused = true;
+			this.input.focused = false;
+		}
+		fill(this.reply, row.suggested.text);
+		this.o.tui.requestRender();
 	}
 
 	/** M44: `? …`: a question to the concierge; its answer opens in an overlay. */
@@ -2481,8 +2572,11 @@ export class AgentView implements Component {
 				.join(" · ");
 			out.push(t.fg("dim", truncateToWidth(`new sessions: ${d}`, w)));
 		}
+		// M45: the escalation banner: a session waits, the concierge suggests an answer
+		const esc = this.concierge?.on ? this.escalation() : undefined;
+		if (esc) out.push(t.fg("warning", truncateToWidth(this.escalationLine(esc, Date.now()), w)));
 		// M44: the concierge's line
-		if (this.concierge?.on) out.push(t.fg(this.concierge.notice?.kind === "need" && !this.concierge.overBudget ? "warning" : "dim", truncateToWidth(this.conciergeLine(), w)));
+		if (this.concierge?.on) out.push(t.fg(this.concierge.notice?.kind === "need" && !this.concierge.overBudget && !esc ? "warning" : "dim", truncateToWidth(this.conciergeLine(), w)));
 		if (this.fanout) {
 			const n = this.fanout.length;
 			const list = this.fanout.map(shortModel).join(", ");
@@ -2654,6 +2748,11 @@ export class AgentView implements Component {
 		const sentence = sentenceOf(row).replace(CONTROL, " ");
 		for (const chunk of wrap(sentence, inner)) lines.push(`    ${chunk}`);
 		row.choices.forEach((c, i) => lines.push(`    ${t.fg("accent", `${i + 1}.`)} ${truncateToWidth(oneLine(c), Math.max(1, inner - 4))}`));
+		// M45: the concierge's suggested answer, with its reason
+		if (row.suggested && row.state === "blocked") {
+			const why = row.suggested.why ? ` · ${oneLine(row.suggested.why)}` : "";
+			lines.push(`    ${t.fg("warning", "concierge suggests:")} ${truncateToWidth(`${oneLine(row.suggested.text)}${why}`, Math.max(1, inner - 20))} ${t.fg("dim", "(Ctrl+Y sends · Ctrl+E edits)")}`);
+		}
 		// a blocked row's status is always "waiting": say it once, with how long
 		const facts: string[] = [
 			row.state === "blocked"
@@ -2755,7 +2854,9 @@ export class AgentView implements Component {
 			["/usage", "what the sessions spent: today, all, by model, by session"],
 			["/log", "what happened lately: tasks, questions, results, messages (newest first)"],
 			["/concierge on|off|log", "the hub's own agent: watches the sessions, tells you what needs you, relays between them"],
+			["/concierge answer|act|undo", "may it answer routine questions itself (never|routine|always), start/stop sessions (on|off); withdraw its last answer"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
+			["Ctrl+Y · Ctrl+E", "send the concierge's suggested answer to the session that waits · edit it first (the banner under the header)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],
 			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
 			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],

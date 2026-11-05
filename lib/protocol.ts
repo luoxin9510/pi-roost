@@ -1,4 +1,4 @@
-import type { ConciergeStatus } from "./concierge.ts";
+import type { ConciergeAnswer, ConciergePolicy, ConciergeStatus } from "./concierge.ts";
 import type { RoostEvent } from "./events.ts";
 import type { PrInfo } from "./pr.ts";
 import type { UsageInfo } from "./usage.ts";
@@ -74,6 +74,8 @@ export interface JobRow {
 	capabilities?: string[];
 	/** M44: the hub's own agent (not listed as a session; the hub shows its status line). */
 	role?: "concierge" | null;
+	/** M45: the concierge's suggested answer for a row that waits for one (the hub sends it with one key). */
+	suggested?: { text: string; why: string | null; at: number } | null;
 }
 
 /** M9: a session an agent may message (roost_agents). */
@@ -269,12 +271,29 @@ export interface OpArgs {
 	events: { after?: number; limit?: number; id?: string };
 	/** M43, on a peer connection: tell me once when that session is next idle (done, or waiting for an answer) or has ended. */
 	watch: { id: string; when: "idle" | "ended" };
-	/** M44: the concierge: start it (a pi launch the hub built), stop it, or ask how it stands. */
-	concierge: { action: "on"; launch?: DispatchArgs } | { action: "off" } | { action: "status" };
+	/**
+	 * M44: the concierge: start it (a pi launch the hub built), stop it, or ask how it stands.
+	 * M45: set the policy (`answer`, `act`), or undo the last answer it gave a session. The hub's only.
+	 */
+	concierge:
+		| { action: "on"; launch?: DispatchArgs }
+		| { action: "off" }
+		| { action: "status" }
+		| { action: "answer"; answer: ConciergeAnswer }
+		| { action: "act"; act: boolean }
+		| { action: "undo" };
 	/** M44, from the hub: a question for the concierge (`? …`); its answer comes as a `concierge` event. */
 	"concierge-ask": { text: string };
 	/** M44, on the concierge's own connection: what it tells the user (hub_notify), or its answer to a question. */
 	"concierge-say": { kind: "info" | "need" | "answer"; text: string };
+	/** M45, on the concierge's connection: the policy in force (which of its tools it may use). */
+	"concierge-policy": Record<string, never>;
+	/** M45, on the concierge's connection: the answer it would give a session that waits for one, and why. */
+	"concierge-suggest": { id: string; text: string; why?: string };
+	/** M45, on the concierge's connection: an answer in the user's place; refused (`policy`) unless the policy allows. */
+	"concierge-reply": { id: string; text: string; why?: string };
+	/** M45, on the concierge's connection: stop, restart or start a session; refused (`policy`) unless `act`. */
+	"concierge-act": { what: "stop" | "respawn"; id: string; why?: string } | { what: "dispatch"; launch: DispatchArgs; why?: string };
 }
 
 export interface OpResults {
@@ -314,6 +333,10 @@ export interface OpResults {
 	concierge: ConciergeStatus;
 	"concierge-ask": { id: string };
 	"concierge-say": {};
+	"concierge-policy": ConciergePolicy;
+	"concierge-suggest": { id: string; name: string };
+	"concierge-reply": { id: string; name: string };
+	"concierge-act": { id: string; name: string };
 }
 
 export type Op = keyof OpArgs;

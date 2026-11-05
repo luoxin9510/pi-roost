@@ -53,7 +53,7 @@ class FakeClient {
 	/** M43: what /log shows. */
 	log: RoostEvent[] = [];
 	/** M44: the concierge as the daemon says it stands. */
-	concierge: ConciergeStatus = { on: false, id: null, state: null, live: false, model: null, wakesLastHour: 0, lastWakeAt: null, behind: 0, costToday: 0, budget: 1, overBudget: false, notice: null, answer: null };
+	concierge: ConciergeStatus = { on: false, id: null, state: null, live: false, model: null, wakesLastHour: 0, lastWakeAt: null, behind: 0, costToday: 0, budget: 1, overBudget: false, notice: null, policy: { answer: "never", act: false }, answered: null, answer: null };
 	constructor(rows: JobRow[]) {
 		this.rows = rows;
 	}
@@ -98,6 +98,10 @@ class FakeClient {
 			const a = args as { action: string };
 			if (a.action === "on") this.concierge = { ...this.concierge, on: true, id: "c1", state: "working", live: true, model: "anthropic/claude-haiku-5-5" };
 			if (a.action === "off") this.concierge = { ...this.concierge, on: false };
+			// M45: the policy and the undo
+			if (a.action === "answer") this.concierge = { ...this.concierge, policy: { ...this.concierge.policy, answer: (args as { answer: "never" }).answer } };
+			if (a.action === "act") this.concierge = { ...this.concierge, policy: { ...this.concierge.policy, act: (args as { act: boolean }).act } };
+			if (a.action === "undo") this.concierge = { ...this.concierge, answered: this.concierge.answered ? { ...this.concierge.answered, undone: true } : null };
 			return this.concierge;
 		}
 		if (op === "concierge-ask") return { id: "c1" };
@@ -945,6 +949,66 @@ describe("M23 review", () => {
 		view.handleInput("\r");
 		view.dispose();
 		expect(disposed).toBe(1);
+	});
+});
+
+describe("M45: escalation and policy in the hub", () => {
+	it("a suggestion on a waiting row is a banner: Ctrl+Y sends it, Ctrl+E edits it, Esc dismisses it; the peek shows it; the line says what it answered and the policy", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: { ROOST_ROLE: "concierge" }, name: "concierge", origin: "dispatch" as const };
+		const since = Date.now() - 120_000;
+		const waiting = row({ id: "q1", name: "api-fix", state: "blocked", status: "waiting", waitingFor: "question", question: "Use schema v2?", stateSince: since, suggested: { text: "yes, v2", why: "the migration session created it", at: since + 1000 } });
+		const { view, client } = setup([waiting, row({ id: "w1", name: "lint" })], { extra: { conciergeLaunch: () => launch } });
+		await view.start();
+		// with the concierge off, no banner
+		expect(view.render(200).join("\n")).not.toContain("needs you ·");
+		type(view, "/concierge on");
+		view.handleInput("\r");
+		await sleep(20);
+		let screen = view.render(200).join("\n");
+		expect(screen).toContain("needs you · api-fix asks: Use schema v2? (2m");
+		expect(screen).toContain("· concierge suggests: yes, v2 (the migration session created it) · Ctrl+Y sends it · Ctrl+E edits · Esc dismisses");
+		// Ctrl+Y: the suggestion goes as the user's reply
+		view.handleInput("\x19");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([{ id: "q1", text: "yes, v2" }]);
+		expect(view.render(200).join("\n")).toContain("sent to api-fix: yes, v2");
+		// Ctrl+E: the row's peek with the suggestion in the reply box
+		view.handleInput("\x05");
+		screen = view.render(200).join("\n");
+		expect(screen).toContain("concierge suggests: yes, v2 · the migration session created it");
+		expect((view as unknown as { reply: { getValue(): string } }).reply.getValue()).toBe("yes, v2");
+		view.handleInput("\x1b");
+		// Esc on the list dismisses this suggestion; a new one (a later at) shows again
+		view.handleInput("\x1b");
+		expect(view.render(200).join("\n")).toContain("dismissed; api-fix still waits");
+		expect(view.render(200).join("\n")).not.toContain("needs you ·");
+		client.emit({ event: "job", job: { ...waiting, suggested: { text: "yes, v2 (confirmed)", why: null, at: since + 5000 } } });
+		expect(view.render(200).join("\n")).toContain("concierge suggests: yes, v2 (confirmed) · Ctrl+Y");
+		// the row moving on takes the banner with it
+		client.emit({ event: "job", job: { ...waiting, state: "working", status: "busy", waitingFor: null, question: null, suggested: null } });
+		expect(view.render(200).join("\n")).not.toContain("needs you ·");
+		// the policy: set from the hub; the line says it; an answer it gave, with the undo
+		type(view, "/concierge answer routine");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.find((r) => r.op === "concierge" && (r.args as { action: string }).action === "answer")?.args).toEqual({ action: "answer", answer: "routine" });
+		expect(view.render(200).join("\n")).toContain("concierge answers: routine questions by itself");
+		type(view, "/concierge act on");
+		view.handleInput("\r");
+		await sleep(20);
+		client.concierge = { ...client.concierge, policy: { answer: "routine", act: true }, answered: { id: "q1", name: "api-fix", text: "yes, v2", at: Date.now() - 10_000, undone: false } };
+		client.emit({ event: "concierge", status: client.concierge });
+		screen = view.render(200).join("\n");
+		expect(screen).toContain("concierge · answered api-fix: yes, v2 (10s ago) · /concierge undo · answers routine · acts");
+		type(view, "/concierge undo");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.find((r) => r.op === "concierge" && (r.args as { action: string }).action === "undo")).toBeDefined();
+		expect(view.render(200).join("\n")).toContain("withdrawn: the answer to api-fix");
+		type(view, "/concierge answer sometimes");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(200).join("\n")).toContain("/concierge answer never | routine | always");
 	});
 });
 

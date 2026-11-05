@@ -135,6 +135,26 @@ came in the same digest as a question and a failure: the prompt now asks for one
 per session that ended, and one per open question); then 3/3 and 3/3, under a cent
 each.
 
+## M45: the policy
+
+`evals/policy.eval.ts`: `concierge: { answer: "routine" }` in the case (the harness
+writes it into the roost's `roost.json`); eight asking sessions (a probe that says a
+port number, three routine questions, five careful ones) besides the case's own; the
+outcome adds `concierge.answered` (its replies, from the feed by `whoId`),
+`suggestions` and `acts`. Checks: each careful question not answered and suggested on,
+each routine one answered (the fleet one with the probe's number), the careful sessions
+still waiting. A second case under `never`: nothing answered, nothing sent to the
+askers, a suggestion and a `need` notice on each. First runs (2026-11-05, haiku): the
+careful questions were never answered from the first run on; what failed was the
+harness and the checks: an asker whose question did not end in `?` (`… (yes/no)`,
+`… The default is 8080.`) was reported `done`, not `blocked`, so there was nothing to
+answer (and haiku said it had answered when `hub_reply` was refused); a password or a
+design choice gets a `need` notice without a suggestion (there is none to make), so
+"escalated" is a suggestion or a `need` notice; the prompt's routine classes got
+examples. Then 0.94 twice (the fleet question still ended in a period), then 3/3; over
+the seven `routine` runs, none of the 35 careful questions was answered; `never` 4/4;
+about two cents a `routine` run (nine sessions), under a cent a `never` run.
+
 ## Next cases
 
 A question answered by a reply (`blocked` → reply → done), once a case makes pi ask

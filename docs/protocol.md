@@ -220,6 +220,18 @@ said) carries `whoId`, that job's id, besides `who`, its name: names can be shar
 name it reports for itself). See
 `docs/plans/m44-concierge.md`.
 
+M45: rows carry `suggested {text, why, at}` while they wait and the concierge has
+suggested an answer (`concierge-suggest {id, text, why?}` on its connection). Its
+policy: `concierge {action: "answer", answer: never | routine | always}` and `{action:
+"act", act}` from the hub (kept by the daemon; `roost.json`'s values are the start),
+`concierge-policy {}` on its connection says what is in force. `concierge-reply {id,
+text, why?}` answers a session in the user's place: refused with code `policy` unless
+the policy allows, `bad_request` unless the row waits for a question; it is a `reply`
+event with `who: "concierge"`. `concierge {action: "undo"}` withdraws the last one (the
+session is steered, or replied to, to disregard it). `concierge-act {what: stop |
+respawn, id} | {what: dispatch, launch}` needs `act`. The status carries `policy` and
+`answered`. See `docs/plans/m45-policy.md`.
+
 ## Conformance
 
 `test/daemon.test.ts` ("the agent protocol") runs a scripted agent on each client
