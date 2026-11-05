@@ -416,15 +416,54 @@ export function contextFrom(v: unknown): ContextInfo | null {
 	return { tokens: tokens === null ? null : Math.round(tokens), window, percent: percent === null ? null : Math.min(percent, 999) };
 }
 
+/** M49: a line longer than this (in characters) is not a message of this protocol: the reader gives the stream up. */
+export const LINE_MAX = 64 * 1024 * 1024;
+
+export class LineTooLong extends Error {
+	constructor(max: number) {
+		super(`a line longer than ${max} characters`);
+		this.name = "LineTooLong";
+	}
+}
+
+/**
+ * Splits a stream into lines. Only what just arrived is scanned for newlines (a long
+ * line in progress is not read again on every chunk). A line past `max` throws
+ * LineTooLong once; after that the reader takes nothing more.
+ */
 export class LineReader {
 	private decoder = new StringDecoder("utf8");
 	private partial = "";
+	private dead = false;
+	private readonly max: number;
+
+	constructor(max = LINE_MAX) {
+		this.max = max;
+	}
 
 	push(chunk: Buffer | string): string[] {
-		this.partial += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
-		const parts = this.partial.split("\n");
-		this.partial = parts.pop() ?? "";
-		return parts;
+		if (this.dead) return [];
+		const text = typeof chunk === "string" ? chunk : this.decoder.write(chunk);
+		const lines: string[] = [];
+		let start = 0;
+		for (;;) {
+			const nl = text.indexOf("\n", start);
+			if (nl < 0) break;
+			const line = this.partial + text.slice(start, nl);
+			this.partial = "";
+			start = nl + 1;
+			if (line.length > this.max) return this.giveUp();
+			lines.push(line);
+		}
+		this.partial += text.slice(start);
+		if (this.partial.length > this.max) return this.giveUp();
+		return lines;
+	}
+
+	private giveUp(): never {
+		this.dead = true;
+		this.partial = "";
+		throw new LineTooLong(this.max);
 	}
 }
 

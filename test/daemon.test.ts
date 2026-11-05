@@ -60,6 +60,7 @@ afterEach(() => {
 	clients = [];
 	daemons = [];
 	extra = [];
+	workerConn = undefined;
 	rmSync(home, { recursive: true, force: true });
 	rmSync(rt, { recursive: true, force: true });
 	rmSync(work, { recursive: true, force: true });
@@ -109,6 +110,22 @@ function args(script: string, over: Record<string, unknown> = {}) {
 		origin: "dispatch" as const,
 		...over,
 	};
+}
+
+/**
+ * M49: a worker's connection, one per test (a new one after a restart of the daemon): a
+ * connection that reported is a session's and may not use the hub's ops.
+ */
+let workerConn: DaemonClient | undefined;
+async function asWorker(): Promise<DaemonClient> {
+	if (workerConn) return workerConn;
+	const c = await DaemonClient.connect();
+	clients.push(c);
+	c.onClose(() => {
+		if (workerConn === c) workerConn = undefined;
+	});
+	workerConn = c;
+	return c;
 }
 
 const find = async (c: DaemonClient, id: string): Promise<JobRow | undefined> =>
@@ -350,8 +367,8 @@ describe("worker reports", () => {
 		const { id } = await client.request("dispatch", args("sleep 30"));
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
-		await expect(client.request("report", { id, token: "nope", report: report() })).rejects.toMatchObject({ code: "unauthorized" });
-		await client.request("report", { id, token, report: report() });
+		await expect((await asWorker()).request("report", { id, token: "nope", report: report() })).rejects.toMatchObject({ code: "unauthorized" });
+		await (await asWorker()).request("report", { id, token, report: report() });
 		const row = (await find(client, id))!;
 		expect(row).toMatchObject({
 			state: "blocked",
@@ -362,7 +379,7 @@ describe("worker reports", () => {
 			name: "reset question",
 			model: "x/y",
 		});
-		await expect(client.request("report", { id, token, report: report({ state: "bogus" }) })).rejects.toMatchObject({
+		await expect((await asWorker()).request("report", { id, token, report: report({ state: "bogus" }) })).rejects.toMatchObject({
 			code: "bad_request",
 		});
 	});
@@ -373,11 +390,11 @@ describe("worker reports", () => {
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
 		const usage = { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, cost: 1.25, today: 0.5, day: 1, sub: false, models: { "a/b": { cost: 1.25, tokens: 30 } } };
-		await client.request("report", { id, token, report: { ...report(), usage } });
+		await (await asWorker()).request("report", { id, token, report: { ...report(), usage } });
 		expect((await find(client, id))?.usage).toEqual(usage);
-		await client.request("report", { id, token, report: report() });
+		await (await asWorker()).request("report", { id, token, report: report() });
 		expect((await find(client, id))?.usage?.cost).toBe(1.25);
-		await client.request("report", { id, token, report: { ...report(), usage: { cost: "x", models: [] } as never } });
+		await (await asWorker()).request("report", { id, token, report: { ...report(), usage: { cost: "x", models: [] } as never } });
 		expect((await find(client, id))?.usage).toMatchObject({ cost: 0, sub: false });
 	});
 
@@ -396,15 +413,15 @@ describe("worker reports", () => {
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
 		const context = { tokens: 86_000, window: 200_000, percent: 43 };
-		await client.request("report", { id, token, report: report({ thinking: "high", context }) });
+		await (await asWorker()).request("report", { id, token, report: report({ thinking: "high", context }) });
 		expect(await find(client, id)).toMatchObject({ model: "x/y", thinking: "high", context });
 		// a worker before 0.1.5 sends neither field: the last known values stay
-		await client.request("report", { id, token, report: report() });
+		await (await asWorker()).request("report", { id, token, report: report() });
 		expect(await find(client, id)).toMatchObject({ thinking: "high", context });
 		// garbage is dropped, not stored
-		await client.request("report", { id, token, report: report({ context: { tokens: "lots", window: -1 } }) });
+		await (await asWorker()).request("report", { id, token, report: report({ context: { tokens: "lots", window: -1 } }) });
 		expect((await find(client, id))?.context).toBeNull();
-		await client.request("report", { id, token, report: report({ context: { tokens: null, window: 200_000, percent: null } }) });
+		await (await asWorker()).request("report", { id, token, report: report({ context: { tokens: null, window: 200_000, percent: null } }) });
 		expect((await find(client, id))?.context).toEqual({ tokens: null, window: 200_000, percent: null });
 	});
 
@@ -413,7 +430,7 @@ describe("worker reports", () => {
 		const { id } = await client.request("dispatch", args("sleep 1.5"));
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
-		await client.request("report", { id, token, report: report() });
+		await (await asWorker()).request("report", { id, token, report: report() });
 		const ended = await waitFor(async () => {
 			const r = await find(client, id);
 			return r?.endedAt ? r : undefined;
@@ -430,7 +447,7 @@ describe("worker reports", () => {
 		const b = await client.request("dispatch", args("sleep 30"));
 		await waitFor(async () => (await find(client, a.id))?.pid && (await find(client, b.id))?.pid);
 		const done = report({ state: "done", status: "idle", waitingFor: null, question: null, choices: [] });
-		await client.request("report", { id: a.id, token: readState(a.id)?.jobToken as string, report: done });
+		await (await asWorker()).request("report", { id: a.id, token: readState(a.id)?.jobToken as string, report: done });
 		const failed = await waitFor(async () => {
 			const r = await find(client, a.id);
 			return r?.endedAt ? r : undefined;
@@ -438,7 +455,7 @@ describe("worker reports", () => {
 		expect(failed.state).toBe("failed");
 		expect(failed.error).toMatch(/code 3/);
 		await client.request("stop", { id: b.id });
-		await client.request("report", { id: b.id, token: readState(b.id)?.jobToken as string, report: done });
+		await (await asWorker()).request("report", { id: b.id, token: readState(b.id)?.jobToken as string, report: done });
 		const stopped = await waitFor(async () => {
 			const r = await find(client, b.id);
 			return r?.endedAt ? r : undefined;
@@ -562,7 +579,7 @@ describe("lifecycle", () => {
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
 		const report = { state: "working" as const, status: "busy" as const, waitingFor: null, summary: null, question: null, choices: [], tool: null, error: null, name: null, model: "b/n", thinking: "off" };
-		await client.request("report", { id, token, report });
+		await (await asWorker()).request("report", { id, token, report });
 		await waitFor(async () => (await find(client, id))?.endedAt);
 		await client.request("respawn", { id });
 		expect(readState(id)?.command).toEqual(["/bin/sh", "-c", "sleep 0.2", "--model", "b/n", "--thinking", "off"]);
@@ -625,7 +642,7 @@ describe("lifecycle", () => {
 		const { id } = await client.request("dispatch", args("sleep 30"));
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
-		await client.request("report", { id, token, report: idle });
+		await (await asWorker()).request("report", { id, token, report: idle });
 		const row = await waitFor(async () => {
 			const r = await find(client, id);
 			return r?.reaped ? r : undefined;
@@ -650,7 +667,7 @@ describe("lifecycle", () => {
 		await waitFor(async () => (await find(client, id))?.pid);
 		// never connected as a worker: the reply stays pending
 		expect(await client.request("reply", { id, text: "later" })).toMatchObject({ saved: true });
-		await client.request("report", { id, token: readState(id)?.jobToken as string, report: idle });
+		await (await asWorker()).request("report", { id, token: readState(id)?.jobToken as string, report: idle });
 		await new Promise((r) => setTimeout(r, 600));
 		expect((await find(client, id))?.reaped).toBe(false);
 		expect((await find(client, id))?.pid).toBeTruthy();
@@ -671,12 +688,12 @@ describe("lifecycle", () => {
 		const { id } = await client.request("dispatch", args("sleep 30"));
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
-		await client.request("report", { id, token, report: idle });
+		await (await asWorker()).request("report", { id, token, report: idle });
 		const statePath = join(jobDir(id), "state.json");
 		// idle for long, but the phone looked at it just now (a remoteAt in the future is clamped)
 		const st = JSON.parse(readFileSync(statePath, "utf8"));
 		writeFileSync(statePath, JSON.stringify({ ...st, stateSince: Date.now() - 60_000 }));
-		await client.request("report", { id, token, report: { ...idle, remoteAt: Date.now() + 3_600_000 } });
+		await (await asWorker()).request("report", { id, token, report: { ...idle, remoteAt: Date.now() + 3_600_000 } });
 		expect(readState(id)?.remoteAt as number).toBeLessThanOrEqual(Date.now());
 		await new Promise((res) => setTimeout(res, 300));
 		expect((await find(client, id))?.reaped).toBe(false);
@@ -697,7 +714,7 @@ describe("lifecycle", () => {
 		await waitFor(async () => (await find(client, busy.id))?.pid && (await find(client, pinned.id))?.pid);
 		const statePath = join(jobDir(pinned.id), "state.json");
 		writeFileSync(statePath, JSON.stringify({ ...JSON.parse(readFileSync(statePath, "utf8")), pinned: true }));
-		await client.request("report", { id: pinned.id, token: readState(pinned.id)?.jobToken as string, report: idle });
+		await (await asWorker()).request("report", { id: pinned.id, token: readState(pinned.id)?.jobToken as string, report: idle });
 		await new Promise((r) => setTimeout(r, 800));
 		expect((await find(client, busy.id))?.pid).toBeTruthy();
 		expect((await find(client, pinned.id))?.pid).toBeTruthy();
@@ -743,9 +760,9 @@ describe("organise ops", () => {
 		expect(readState(id)?.pendingReplies).toEqual([{ seq: 1, text: "/name new name" }]);
 		const token = readState(id)?.jobToken as string;
 		const report = (name: string) => ({ state: "working" as const, status: "busy" as const, waitingFor: null, summary: null, question: null, choices: [], tool: null, error: null, name, model: null });
-		await client.request("report", { id, token, report: report("old") });
+		await (await asWorker()).request("report", { id, token, report: report("old") });
 		expect((await find(client, id))?.name).toBe("new name");
-		await client.request("report", { id, token, report: report("new name") });
+		await (await asWorker()).request("report", { id, token, report: report("new name") });
 		expect(readState(id)?.pendingName).toBeNull();
 	});
 });
@@ -861,7 +878,7 @@ describe("M22: one row per session", () => {
 		const sessionFile = join(work, "asked.jsonl");
 		const { id } = await client.request("dispatch", args("sleep 0.6", { sessionFile }));
 		await waitFor(async () => (await find(client, id))?.pid);
-		await client.request("report", { id, token: readState(id)?.jobToken as string, report: blocked });
+		await (await asWorker()).request("report", { id, token: readState(id)?.jobToken as string, report: blocked });
 		await waitFor(async () => (await find(client, id))?.endedAt);
 		expect((await find(client, id))?.state).toBe("blocked");
 		expect(acquireWriterLock(sessionFile).ok).toBe(true);
@@ -1448,7 +1465,7 @@ describe("M39: scheduled tasks", () => {
 		const { id } = await client.request("schedule-run", { name: "idle" });
 		await waitFor(async () => (await find(client, id))?.pid);
 		const token = readState(id)?.jobToken as string;
-		await client.request("report", { id, token, report: { state: "done", status: "idle", waitingFor: null, summary: "did it", question: null, choices: [], tool: null, error: null, name: null, model: null } });
+		await (await asWorker()).request("report", { id, token, report: { state: "done", status: "idle", waitingFor: null, summary: "did it", question: null, choices: [], tool: null, error: null, name: null, model: null } });
 		const second = await client.request("schedule-run", { name: "idle" });
 		expect(second.id).not.toBe(id);
 		// done and idle: closed a moment later, as a subagent's

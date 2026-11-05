@@ -7,14 +7,17 @@ real daemon and real hosts in an isolated home, fake agents on the TypeScript cl
 - Scenarios: `sessions` (N agents dispatched at once, M hubs watching), `replies`
   (K replies to each, the jobs at once), `chaos` (the daemon SIGKILLed and restarted
   mid-storm, a tenth of the hosts SIGKILLed, a hub that never reads, then replies to the
-  killed jobs), `soak` (the storm repeated for minutes, memory and descriptors watched).
-  Sizes: `--jobs 50 --replies 20 --hubs 3 --soak-minutes 10 --work-ms 0`.
+  killed jobs), `board` (M49: every agent works the task board at once while the daemon
+  is killed and restarted; see [m49-hardening.md](m49-hardening.md)), `soak` (the storm
+  repeated for minutes, memory and descriptors watched).
+  Sizes: `--jobs 50 --replies 20 --hubs 3 --tasks 120 --soak-minutes 10 --work-ms 0`.
 - Invariants: every reply handled exactly once and in order (a reply whose request
   failed in the chaos and was sent again may be handled twice: counted, not failed), the
   killed jobs seen as ended and started again by a reply, every job stopped at the end,
   no host or socket left.
 - Measured: client-side dispatch, reply deliver and ack latency (telemetry), event lag at
-  the hubs, per-op times, daemon RSS, CPU and descriptors. Budgets in the file; over
+  the hubs (M49: the hubs connect again after a kill; the agents' `ready` and reports made
+  while the daemon was down are left out, the latter counted), per-op times, daemon RSS, CPU and descriptors. Budgets in the file; over
   budget fails the run. Report and telemetry in `stress/.runs/<time>/`.
 
 ## What it found (50 agents × 20 replies, 3 hubs, macOS)

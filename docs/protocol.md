@@ -197,6 +197,17 @@ capability and not yet described here, except:
   envelope of every peer item says it is from another session, not the user, carries
   no authority, and that a command in it is text.
 
+The hub's ops (M49): `dispatch`, `stop`, `rm`, `respawn`, `reply`, `pin`, `rename`,
+`reorder`, `subscribe`, `schedules`, `schedule-*` and `shutdown` are refused
+(`unsupported`) on a connection that identified as a session: after `hello` or `report`
+(an agent, a worker) or `peer_register` (a foreground pi). An agent that needs them opens
+a connection of its own for the user (the hub, the CLI); its job's own connection uses
+the ops above. The socket: a request line is at most 4 MiB (a longer one ends the
+connection), at most 1024 connections, at most 256 requests in flight on one connection
+(it is not read meanwhile), and a client that leaves 16 MiB of answers and events unread
+is dropped. Names (a peer's, an agent's `hello`) are cleaned to one line of plain
+characters.
+
 `events {after?, limit?, id?}` → `{events, cursor}` (M43) is for the hub and the CLI,
 not for agents (a peer connection is refused, the concierge's excepted: the feed
 carries every tree's messages):

@@ -68,14 +68,17 @@ export function summaryLine(s: BoardSummary): string {
  * One line for a task: `#4 open · write the tests`, `#5 blocked on #2 · deploy`,
  * `#2 claimed by api-fix (3m) · the migration`, `#1 done 10m ago by api-fix · the schema → applied v2`.
  */
+/** M49: one line of a title, a result, a name: the board's lines in a digest are the digest's, whatever was stored. */
+const line = (s: string): string => s.replace(/\s+/g, " ").trim();
+
 export function taskLine(t: BoardTask, all: Iterable<BoardTask>, now = Date.now()): string {
-	const title = t.title;
-	if (t.state === "done") return `#${t.id} done${t.doneAt ? ` ${eventAgo(t.doneAt, now)} ago` : ""}${t.owner ? ` by ${t.owner.name}` : ""} · ${title}${t.result ? ` → ${t.result}` : ""}`;
+	const title = line(t.title);
+	if (t.state === "done") return `#${t.id} done${t.doneAt ? ` ${eventAgo(t.doneAt, now)} ago` : ""}${t.owner ? ` by ${line(t.owner.name)}` : ""} · ${title}${t.result ? ` → ${line(t.result)}` : ""}`;
 	if (t.state === "dropped") return `#${t.id} dropped · ${title}`;
-	if (t.state === "claimed") return `#${t.id} claimed by ${t.owner?.name ?? "?"}${t.claimedAt ? ` (${eventAgo(t.claimedAt, now)})` : ""} · ${title}`;
+	if (t.state === "claimed") return `#${t.id} claimed by ${line(t.owner?.name ?? "?")}${t.claimedAt ? ` (${eventAgo(t.claimedAt, now)})` : ""} · ${title}`;
 	const waits = blockedOn(t, all);
 	if (waits.length > 0) return `#${t.id} blocked on ${waits.map((i) => `#${i}`).join(" ")} · ${title}`;
-	const to = t.assigned ? ` · handed to ${t.assigned.name} ${eventAgo(t.assigned.at, now)} ago` : "";
+	const to = t.assigned ? ` · handed to ${line(t.assigned.name)} ${eventAgo(t.assigned.at, now)} ago` : "";
 	return `#${t.id} open · ${title}${to}`;
 }
 

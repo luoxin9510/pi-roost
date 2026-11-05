@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+Hardening after the board (M49, [docs/plans/m49-hardening.md](docs/plans/m49-hardening.md)): a stress scenario for the task board, and an adversarial pass.
+
+- The hub's ops are the hub's: `dispatch`, `stop`, `rm`, `respawn`, `reply`, `pin`, `rename`, `reorder`, `subscribe`, `schedule-*` and `shutdown` refuse (`unsupported`) a connection that identified as a session (a worker's `hello` or `report`, a foreground pi's `peer_register`); `events`, `concierge` and `concierge-ask` also refuse an agent that said `hello`. A session could stop other sessions, answer their questions as the user or shut the service down; an agent could set the concierge's policy. Clients that use these ops open a connection of their own (the hub, the CLI, pi's panel already did).
+- The socket has bounds: a request line of at most 4 MiB (a longer one ends that connection; the reader no longer re-reads a long line on every chunk, which let one connection take gigabytes and a core), at most 1024 connections, 256 requests in flight per connection (it is not read meanwhile), and a client that leaves 16 MiB unread is dropped.
+- Titles, standing orders and names are one line: newlines and tabs in a task's title, an order, a job's or a peer's name fold to spaces (a title could open a line of its own in the concierge's digest); a task's detail and result keep their lines; a hand-edited store is folded at load; the digest folds what it shows.
+- `npm run stress` has a `board` scenario (in the default set; `--tasks 120`): every agent works the board at once while the daemon is killed and restarted; every task done once, after what it waits on, none released, hand-overs to commands refused, `task` op p95 under 1 s. The hubs connect again after a kill, and the event lag leaves out the agents' start and reports made while the daemon was down (counted apart).
+
 ## [0.1.14] - 2026-11-06
 
 The hub as a control plane ([docs/plans/hub-control-plane.md](docs/plans/hub-control-plane.md), M43–M47) and the peek, deeper (M48). The porting guide ([docs/porting.md](docs/porting.md)) describes this version: Steps 41–46 for M43–M48, the `concierge` config key, the constants, the ops and events, the commits.

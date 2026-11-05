@@ -171,7 +171,11 @@ export function eventAgo(at: number, now = Date.now()): string {
 }
 
 /** One line for an event, as the hub's /log and `pi-roost log` show it. */
+/** M49: one line of a name or a text, whatever was recorded: a digest's lines are the digest's. */
+const fold = (s: string): string => s.replace(/\s+/g, " ").trim();
+
 export function eventLine(e: RoostEvent): string {
+	e = { ...e, name: fold(e.name), ...(e.who ? { who: fold(e.who) } : {}), ...(e.text ? { text: fold(e.text) } : {}) };
 	const who = e.who ? ` ← ${e.who}` : "";
 	switch (e.kind) {
 		case "dispatch":

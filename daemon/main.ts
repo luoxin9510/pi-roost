@@ -215,6 +215,16 @@ const AUTO_CLOSE_MS = Number(process.env.PI_ROOST_AUTO_CLOSE_MS) || 3000;
 const closeTimers = new Map<string, NodeJS.Timeout>();
 const respawning = new Set<string>();
 const conns = new Set<Conn>();
+/**
+ * M49: the socket's bounds. A request line is at most LINE_MAX_REQUEST characters (a longer
+ * one is not a message: the connection ends); at most CONNS_MAX connections are open; a
+ * connection with INFLIGHT_MAX requests unanswered is not read until some are; a client
+ * that leaves SEND_BACKLOG_MAX bytes unread (a subscriber that stopped reading) is dropped.
+ */
+const LINE_MAX_REQUEST = 4 * 1024 * 1024;
+const CONNS_MAX = 1024;
+const INFLIGHT_MAX = 256;
+const SEND_BACKLOG_MAX = 16 * 1024 * 1024;
 /** The connection each live worker reports on; replies are pushed down it. */
 const workerConns = new Map<string, Conn>();
 
@@ -233,6 +243,11 @@ interface Conn {
 	hello?: { name: string; version: string | null; capabilities: string[] };
 	/** M47: an agent's connection (it said hello or reported): never the hub's, even before its peer is set. */
 	agentSide?: boolean;
+	/** M49: requests being handled, and lines waiting their turn (the socket is paused while INFLIGHT_MAX are). */
+	inflight: number;
+	backlog: string[];
+	head: number;
+	paused?: boolean;
 }
 
 /** M9: connected foreground pi sessions, by peer id. */
@@ -672,6 +687,8 @@ function conciergeTarget(args: { id?: unknown } | undefined): JobRow {
 }
 
 const conciergeText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " ").trim().slice(0, max) : "");
+/** M49: one line of it (a rule, a title): newlines and tabs fold too, so a digest's lines stay the digest's. */
+const oneLineText = (v: unknown, max: number): string => conciergeText(v, max).replace(/\s+/g, " ").trim();
 
 /** `concierge-policy`: what it may do now (its tools follow it). */
 function conciergePolicyOp(conn: Conn): ConciergePolicy {
@@ -746,7 +763,8 @@ async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; la
 	const why = conciergeText(args?.why, 200);
 	if (what === "stop" || what === "respawn") {
 		const row = conciergeTarget(args);
-		await handle(conn, what, { id: row.id });
+		// the policy let it: the op runs as the hub's (the concierge's own connection is a session's)
+		await handle({ ...conn, peer: undefined, agentSide: false }, what, { id: row.id });
 		record({ kind: "concierge", id: row.id, name: row.name, who: CONCIERGE_NAME, whoId: peer.id, why: "act", text: `${what === "stop" ? "stopped" : "restarted"} ${row.name}${why ? `: ${why}` : ""}` });
 		return { id: row.id, name: row.name };
 	}
@@ -787,7 +805,7 @@ function loadOrders(): void {
 			const at = Number.isFinite(o.at) ? o.at : now;
 			orders.set(o.id, {
 				id: o.id,
-				text: o.text.slice(0, ORDER_TEXT_MAX),
+				text: oneLineText(o.text, ORDER_TEXT_MAX) || o.text.slice(0, ORDER_TEXT_MAX),
 				when,
 				by: o.by === "concierge" ? "concierge" : "user",
 				at,
@@ -826,7 +844,7 @@ function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: un
 	const all = () => [...orders.values()].sort((a, b) => a.id - b.id);
 	if (action === "list") return { orders: all() };
 	if (action === "add") {
-		const text = conciergeText(args?.text, ORDER_TEXT_MAX);
+		const text = oneLineText(args?.text, ORDER_TEXT_MAX);
 		if (!text) throw new OpError("bad_request", "empty order");
 		if (orders.size >= ORDER_MAX) throw new OpError("full", `${ORDER_MAX} standing orders at most; drop one first`);
 		const whenText = typeof args?.when === "string" ? args.when.trim() : "";
@@ -892,8 +910,8 @@ function loadTasks(): void {
 		const state = t.state === "claimed" || t.state === "done" || t.state === "dropped" ? t.state : "open";
 		tasks.set(t.id, {
 			id: t.id,
-			title: t.title.slice(0, TASK_TITLE_MAX),
-			detail: str(t.detail) ? t.detail.slice(0, TASK_TEXT_MAX) : null,
+			title: taskTitle(t.title) || t.title.slice(0, TASK_TITLE_MAX),
+			detail: str(t.detail) ? taskText(t.detail, TASK_TEXT_MAX) : null,
 			state,
 			after: Array.isArray(t.after) ? t.after.filter((x): x is number => Number.isInteger(x)) : [],
 			by: t.by && typeof t.by === "object" && str(t.by.who) ? { who: t.by.who, whoId: str(t.by.whoId) ? t.by.whoId : null } : { who: "user", whoId: null },
@@ -957,7 +975,9 @@ function boardActor(conn: Conn): { who: string; whoId: string | null; sessionId:
 	return { who: peerName(peer), whoId: peer.kind === "job" ? peer.id : null, sessionId: peer.id, concierge: false };
 }
 
-const taskText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, " ").trim().slice(0, max) : "");
+const taskText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ").trim().slice(0, max) : "");
+/** M49: a title is one line: newlines and tabs fold (the board's lines in a digest are the digest's). */
+const taskTitle = (v: unknown): string => taskText(v, TASK_TITLE_MAX).replace(/\s+/g, " ").trim();
 /** A task id as the op takes it: a positive integer, or a string of digits; nothing else. */
 const taskId = (v: unknown): number | undefined => (typeof v === "number" && Number.isInteger(v) && v > 0 ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : undefined);
 /** Tasks a hand-over is on its way for (two at once would send two messages). */
@@ -1011,7 +1031,7 @@ async function taskOp(
 	const action = args?.action;
 	if (action === "list") return { tasks: all() };
 	if (action === "add") {
-		const title = taskText(args?.title, TASK_TITLE_MAX);
+		const title = taskTitle(args?.title);
 		if (!title) throw new OpError("bad_request", "a task needs a title");
 		const after: number[] = [];
 		if (args?.after !== undefined) {
@@ -1483,7 +1503,14 @@ async function withWorktreeLine(id: string, body: string): Promise<string> {
 }
 
 function send(conn: Conn, value: unknown): void {
-	if (!conn.sock.destroyed) conn.sock.write(encodeLine(value));
+	if (conn.sock.destroyed) return;
+	// M49: a client that stopped reading (a subscriber gone deaf) is not buffered for without end
+	if (conn.sock.writableLength > SEND_BACKLOG_MAX) {
+		log("warn", "client stopped reading: dropped", { peer: conn.peer?.id ?? null, subscribed: conn.subscribed, unread: conn.sock.writableLength });
+		conn.sock.destroy();
+		return;
+	}
+	conn.sock.write(encodeLine(value));
 }
 
 function push(event: Event): void {
@@ -2239,7 +2266,8 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 	if (rid) for (const r of recs.values()) if (r.requestId === rid) return { id: r.id, name: r.name };
 	let id = newJobId();
 	while (recs.has(id)) id = newJobId();
-	const base = str(a.name) ? a.name : id;
+	// M49: one line, as rename keeps it (a session names what it spawns: the name is quoted in digests)
+	const base = (str(a.name) ? a.name.replace(/\s+/g, " ").trim().slice(0, 200) : "") || id;
 	// M22: a job this one takes the session from gives up its name (one row per session)
 	const taken = new Set([...recs.values()].filter((r) => !(!shell && foldsInto(r, a.sessionFile)) && !hiddenJob(r.id)).map((r) => r.name));
 	// M44: the concierge's name is its own
@@ -2926,7 +2954,7 @@ const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn"
 function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabilities?: unknown } | undefined): import("../lib/protocol.ts").HelloResult {
 	if (typeof args?.protocol !== "number" || !Number.isInteger(args.protocol) || args.protocol < 1) throw new OpError("bad_request", "protocol must be a version number");
 	const a = (args.agent && typeof args.agent === "object" ? args.agent : {}) as { name?: unknown; version?: unknown };
-	const name = str(a.name) ? a.name.slice(0, 64) : "unknown";
+	const name = str(a.name) ? sanitizeName(a.name).slice(0, 64) : "unknown";
 	const caps = Array.isArray(args.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
 	conn.hello = { name, version: str(a.version) ? a.version.slice(0, 40) : null, capabilities: caps };
 	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: DAEMON_CAPABILITIES };
@@ -3062,6 +3090,16 @@ function list(args: { cwd?: string } | undefined): JobRow[] {
 }
 
 // ---------------------------------------------------------------- M9: agent messaging
+
+/**
+ * M49: an op of the hub's and the CLI's. A connection that identified as a session (a
+ * worker's hello or report, a peer_register) is refused: its ops are send, spawn, watch,
+ * task and the concierge's own. The socket is the user's: a process of theirs that never
+ * identifies is the hub (the user's own tools are), not a session's doing.
+ */
+function requireHub(conn: Conn): void {
+	if (conn.peer || conn.agentSide) throw new OpError("unsupported", "this is the hub's and the CLI's: a session has its own ops (send, spawn, watch, task)");
+}
 
 function requirePeer(conn: Conn): PeerIdentity {
 	if (!conn.peer) throw new OpError("unauthorized", "this connection is not a peer (report as a worker, or peer_register)");
@@ -3392,7 +3430,8 @@ async function autoClose(id: string): Promise<void> {
 
 function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd?: unknown; pid?: unknown } | undefined): { id: string } {
 	if (conn.peer?.kind === "job") throw new OpError("bad_request", "a worker connection is already a peer");
-	const name = typeof args?.name === "string" && args.name.trim() ? args.name.trim().slice(0, 200) : "pi";
+	// M49: one line of plain characters (it is quoted in digests and events)
+	const name = typeof args?.name === "string" && args.name.trim() ? sanitizeName(args.name) : "pi";
 	const cwd = typeof args?.cwd === "string" ? args.cwd : "";
 	const pid = args?.pid;
 	if (typeof pid !== "number" || !isAlive(pid)) throw new OpError("bad_request", "pid must be a live process");
@@ -3494,8 +3533,10 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "schedule-add":
 		case "schedule-rm":
 		case "schedule-pause":
+			requireHub(conn);
 			return scheduleOp(op, args);
 		case "schedule-run": {
+			requireHub(conn);
 			const s = scheduleOf(args?.name);
 			return { name: s.name, id: await runSchedule(s, Date.now(), "now") };
 		}
@@ -3505,6 +3546,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "list":
 			return { jobs: list(args) };
 		case "dispatch":
+			requireHub(conn);
 			return dispatch(args);
 		case "resolve":
 			return { id: resolve(args?.query) };
@@ -3521,9 +3563,11 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return s;
 		}
 		case "subscribe":
+			requireHub(conn);
 			conn.subscribed = true;
 			return {};
 		case "stop": {
+			requireHub(conn);
 			const id = requireJob(args);
 			if (roster.has(id)) {
 				log("info", "stop", { id });
@@ -3536,8 +3580,10 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { id };
 		}
 		case "rm":
+			requireHub(conn);
 			return removeRecord(requireJob(args));
 		case "respawn": {
+			requireHub(conn);
 			if (args?.all === true) {
 				const results: { id: string; started: boolean; error?: string }[] = [];
 				for (const id of [...recs.keys()]) {
@@ -3556,6 +3602,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { results: [await respawn(id, { restart: args?.restart === true, prompt })] };
 		}
 		case "pin": {
+			requireHub(conn);
 			const id = requireJob(args);
 			const pinned = args?.pinned === true;
 			updateState(id, { pinned });
@@ -3563,8 +3610,10 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { id, pinned };
 		}
 		case "rename":
+			requireHub(conn);
 			return rename(args);
 		case "reorder": {
+			requireHub(conn);
 			const ids: unknown = args?.ids;
 			const key: unknown = args?.key;
 			if (!Array.isArray(ids) || !ids.every((v) => str(v) && recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
@@ -3578,11 +3627,13 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			acceptReport(conn, args);
 			return {};
 		case "reply":
+			requireHub(conn);
 			return reply(args);
 		case "ack":
 			acknowledge(args);
 			return {};
 		case "shutdown":
+			requireHub(conn);
 			setTimeout(() => void shutdown(!!args?.keepWorkers), 20);
 			return {};
 		case "peer_register":
@@ -3599,7 +3650,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return peerAck(conn, args);
 		case "events": {
 			// the feed is the hub's and the CLI's: a session reads other trees' messages otherwise
-			if (conn.peer && !isConciergePeer(conn.peer)) throw new OpError("unsupported", "the event feed is read by the hub and the CLI, not by sessions");
+			if ((conn.peer && !isConciergePeer(conn.peer)) || (!conn.peer && conn.agentSide)) throw new OpError("unsupported", "the event feed is read by the hub and the CLI, not by sessions");
 			const after = args?.after;
 			const limit = args?.limit;
 			const id = args?.id;
@@ -3612,10 +3663,10 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return addWatch(conn, args);
 		case "concierge":
 			// the hub's (a session cannot start, stop or question the concierge)
-			if (conn.peer) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
+			if (conn.peer || conn.agentSide) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
 			return conciergeOp(args);
 		case "concierge-ask":
-			if (conn.peer) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
+			if (conn.peer || conn.agentSide) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
 			return conciergeAsk(args);
 		case "concierge-say":
 			return conciergeSay(conn, args);
@@ -3636,6 +3687,28 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return taskOp(conn, args);
 		default:
 			throw new OpError("bad_request", `unknown op: ${op}`);
+	}
+}
+
+/** M49: a connection's lines are handled INFLIGHT_MAX at a time; past that it is not read until answers went out. */
+function pumpLines(conn: Conn): void {
+	while (conn.head < conn.backlog.length && conn.inflight < INFLIGHT_MAX) {
+		const line = conn.backlog[conn.head++]!;
+		conn.inflight++;
+		void onLine(conn, line).finally(() => {
+			conn.inflight--;
+			pumpLines(conn);
+		});
+	}
+	if (conn.head >= conn.backlog.length) {
+		conn.backlog = [];
+		conn.head = 0;
+	}
+	const full = conn.inflight >= INFLIGHT_MAX;
+	if (full !== !!conn.paused && !conn.sock.destroyed) {
+		conn.paused = full;
+		if (full) conn.sock.pause();
+		else conn.sock.resume();
 	}
 }
 
@@ -3684,11 +3757,25 @@ try {
 	unlinkSync(daemonSocketPath());
 } catch {}
 server = createServer((sock) => {
-	const conn: Conn = { sock, subscribed: false };
+	if (conns.size >= CONNS_MAX) {
+		log("warn", "too many connections: refused", { open: conns.size });
+		sock.destroy();
+		return;
+	}
+	const conn: Conn = { sock, subscribed: false, inflight: 0, backlog: [], head: 0 };
 	conns.add(conn);
-	const reader = new LineReader();
+	const reader = new LineReader(LINE_MAX_REQUEST);
 	sock.on("data", (chunk) => {
-		for (const line of reader.push(chunk)) void onLine(conn, line);
+		let lines: string[];
+		try {
+			lines = reader.push(chunk);
+		} catch (err) {
+			log("warn", "client line too long: dropped", { peer: conn.peer?.id ?? null, error: String(err) });
+			sock.destroy();
+			return;
+		}
+		for (const line of lines) conn.backlog.push(line);
+		pumpLines(conn);
 	});
 	sock.on("error", () => {});
 	sock.on("close", () => {
