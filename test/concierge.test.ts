@@ -163,8 +163,10 @@ describe("M44: the concierge's role in pi", () => {
 		expect(active()).toEqual([...HUB_TOOLS]);
 		const [r] = await emit("before_agent_start", { systemPrompt: "pi's own" });
 		expect((r as { systemPrompt: string }).systemPrompt).toContain("You are the concierge of pi-roost");
-		// a turn a digest started (a custom message): its text goes nowhere
-		const branch = (last: { role: string; content: unknown }[]) => ({ sessionManager: { getBranch: () => last.map((m) => ({ type: "message", message: m })) } });
+		// a turn a digest started (a custom message, kept by pi as a custom_message entry): its text goes nowhere
+		const branch = (last: { role: string; content: unknown }[]) => ({
+			sessionManager: { getBranch: () => last.map((m) => (m.role === "custom" ? { type: "custom_message", customType: "pi-roost-agent-message", content: m.content } : { type: "message", message: m })) },
+		});
 		await emit("agent_start", {});
 		await emit("message_end", { message: { role: "custom", content: "<roost-digest>" } });
 		await emit("agent_settled", { aborted: false }, branch([{ role: "custom", content: "<roost-digest>" }, { role: "assistant", content: [{ type: "text", text: "nothing to report" }] }]));

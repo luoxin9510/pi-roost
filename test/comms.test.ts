@@ -857,6 +857,13 @@ describe("M44: the concierge", () => {
 			expect(d.text).toContain("- " + a + "  a  working");
 			expect(d.text).not.toContain("started a");
 			expect(digests(wc.events)).toHaveLength(1);
+			// on while on and running: as it is (no wake spent, no backlog dropped)
+			await p.c.request("spawn", { launch: launch("sleep 30", "b") });
+			await waitFor(() => digests(wc2.events)[1]);
+			const before = await hub.request("concierge", { action: "status" });
+			expect(await hub.request("concierge", { action: "on" })).toMatchObject({ on: true, id, wakesLastHour: before.wakesLastHour, lastWakeAt: before.lastWakeAt });
+			await settle(300);
+			expect(digests(wc2.events)).toHaveLength(2);
 		} finally {
 			restore();
 		}

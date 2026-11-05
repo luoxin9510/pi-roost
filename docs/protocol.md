@@ -216,7 +216,8 @@ tells the user (a `concierge` event in the feed) or its answer. Hubs get `{"even
 name, and read `events`. `concierge` and `concierge-ask` are the hub's: a session's
 connection is refused. An event a job caused (a message, a notice, what the concierge
 said) carries `whoId`, that job's id, besides `who`, its name: names can be shared
-(`concierge` itself cannot be taken by a session, by `dispatch` or `rename`). See
+(`concierge` itself cannot be taken by a session: not by `dispatch`, `rename` or the
+name it reports for itself). See
 `docs/plans/m44-concierge.md`.
 
 ## Conformance

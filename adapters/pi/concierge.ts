@@ -38,19 +38,23 @@ function textOf(content: unknown): string {
  * too, to nobody; the text before it is the answer.
  */
 function answerText(ctx: ExtensionContext): string {
-	const branch = ctx.sessionManager.getBranch().filter((e) => e.type === "message");
+	// pi keeps a sent custom message (a digest) as a `custom_message` entry; older
+	// sessions as a message with role "custom"
+	const branch = ctx.sessionManager.getBranch() as { type: string; message?: { role?: string; content?: unknown } }[];
+	const kind = (e: { type: string; message?: { role?: string } }) => (e.type === "custom_message" || (e.type === "message" && e.message?.role === "custom") ? "custom" : e.type === "message" ? e.message?.role : undefined);
 	let user = -1;
-	for (let i = branch.length - 1; i >= 0 && user < 0; i--) if (branch[i]!.message.role === "user") user = i;
+	for (let i = branch.length - 1; i >= 0 && user < 0; i--) if (kind(branch[i]!) === "user") user = i;
 	if (user < 0) return "";
 	let answer = "";
 	for (let i = user + 1; i < branch.length; i++) {
-		const m = branch[i]!.message;
-		if (m.role === "custom") {
+		const e = branch[i]!;
+		const k = kind(e);
+		if (k === "custom") {
 			if (answer) break;
 			continue;
 		}
-		if (m.role === "assistant") {
-			const t = textOf(m.content).trim();
+		if (k === "assistant") {
+			const t = textOf(e.message?.content).trim();
 			if (t) answer = t;
 		}
 	}

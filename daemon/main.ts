@@ -271,15 +271,17 @@ const CONCIERGE_TICK_MS = Number(process.env.PI_ROOST_CONCIERGE_TICK_MS) || 30_0
 const CONCIERGE_HEARTBEAT_MS = Number(process.env.PI_ROOST_CONCIERGE_HEARTBEAT_MS) || 0;
 let conciergeTimer: NodeJS.Timeout | undefined;
 let conciergeOverBudget = false;
-/** One wake at a time; something that happened during one is a wake after it. */
+/** One wake at a time; something that happened during one is a wake after it (a heartbeat, if `on` asked for one). */
 let conciergeWaking = false;
-let conciergeNudged = false;
+let conciergeNudged: false | "events" | "heartbeat" = false;
 /** One `on` at a time. */
 let conciergeOnPending: Promise<ConciergeStatus> | undefined;
 
 const conciergeConfig = () => loadUserConfig().concierge ?? CONCIERGE_DEFAULTS;
 const isConcierge = (id: string | undefined | null): boolean => !!id && id === concierge.id;
 const isConciergePeer = (peer: PeerIdentity): boolean => peer.kind === "job" && isConcierge(peer.id);
+/** A name a session reports for itself (pi's /name): not the concierge's, unless it is the concierge. */
+const conciergeSafeName = (id: string, name: string | null | undefined): string | null => (name === CONCIERGE_NAME && !isConcierge(id) ? null : (name ?? null));
 
 function loadConcierge(): void {
 	const s = readJson<Partial<ConciergeState>>(conciergePath());
@@ -330,7 +332,7 @@ function conciergeBudget(now: number): boolean {
 
 /** A wake that could not go now (the cap, a full queue) is tried again later. */
 function conciergeRetry(why: "events" | "heartbeat"): void {
-	if (conciergeTimer) return;
+	if (conciergeTimer || shuttingDown) return;
 	conciergeTimer = setTimeout(() => {
 		conciergeTimer = undefined;
 		void wakeConcierge(why).catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
@@ -395,6 +397,8 @@ async function conciergeOp(args: { action?: unknown; launch?: unknown } | undefi
 async function conciergeOn(launch: unknown): Promise<ConciergeStatus> {
 	const now = Date.now();
 	const had = concierge.id;
+	// already on and running (another hub, say): as it is, its backlog kept
+	if (had && recs.has(had) && concierge.on && roster.has(had)) return conciergeStatus();
 	if (had && recs.has(had)) {
 		concierge = { ...concierge, on: true, onAt: now, cursor: eventLog.cursor(), lastWakeAt: null };
 		saveConcierge();
@@ -418,7 +422,7 @@ async function conciergeOn(launch: unknown): Promise<ConciergeStatus> {
 function nudgeConcierge(): void {
 	if (!concierge.on || !concierge.id || shuttingDown) return;
 	if (conciergeWaking) {
-		conciergeNudged = true;
+		conciergeNudged ||= "events";
 		return;
 	}
 	if (conciergeTimer) return;
@@ -440,7 +444,7 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 	const id = concierge.id;
 	if (!concierge.on || !id || !recs.has(id) || shuttingDown) return false;
 	if (conciergeWaking) {
-		conciergeNudged = true;
+		conciergeNudged = why === "heartbeat" ? "heartbeat" : conciergeNudged || "events";
 		return false;
 	}
 	const cfg = conciergeConfig();
@@ -463,13 +467,16 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 	}
 	const rows = list(undefined).filter((r) => r.id !== id);
 	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now });
+	// an `on` during the wake starts it over (its cursor is not this wake's to set)
+	const epoch = concierge.onAt;
 	conciergeWaking = true;
 	let r: Awaited<ReturnType<typeof deliverAgent>>;
 	try {
 		r = await deliverAgent(recs.get(id)!.sessionFile, "digest", text, { from: "roost", relation: "external" });
 	} catch (err) {
-		// its queue full, say: later
+		// its queue full, say: later (with whatever happened meanwhile)
 		conciergeWaking = false;
+		conciergeNudged = false;
 		log("warn", "concierge not woken", { why, error: String(err) });
 		conciergeRetry(why);
 		return false;
@@ -483,6 +490,7 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 			if (!concierge.on && roster.has(id)) await terminateHost(id).catch(() => {});
 			return false;
 		}
+		if (concierge.onAt !== epoch) return false;
 		if (r.outcome === "stopped") {
 			// the user stopped it: that is off
 			concierge.on = false;
@@ -498,11 +506,11 @@ async function wakeConcierge(why: "events" | "heartbeat"): Promise<boolean> {
 		pushConcierge();
 		return true;
 	} finally {
-		// what happened during the wake is the next one
-		if (conciergeNudged) {
-			conciergeNudged = false;
-			nudgeConcierge();
-		}
+		// what happened during the wake is the next one; an `on` meanwhile wants the fleet now
+		const next = conciergeNudged;
+		conciergeNudged = false;
+		if (next === "heartbeat") void wakeConcierge("heartbeat").catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
+		else if (next) nudgeConcierge();
 	}
 }
 
@@ -2345,8 +2353,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		choices: Array.isArray(r.choices) ? r.choices.filter(str).slice(0, 20).map((c) => c.slice(0, 200)) : [],
 		tool: opt(r.tool, 100),
 		error: opt(r.error, 1000),
-		// a rename the session has not taken yet keeps the daemon's name
-		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : opt(r.name, 200),
+		// a rename the session has not taken yet keeps the daemon's name; the concierge's name is its own
+		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : conciergeSafeName(id, opt(r.name, 200)),
 		...(str(st.pendingName) && opt(r.name, 200) === st.pendingName ? { pendingName: null } : {}),
 		model: opt(r.model, 200),
 		// M8: workers before 0.1.5 send neither; keep what is known then
