@@ -87,7 +87,9 @@ const lines = [
 	),
 	"",
 	`total ${passed}/${total}  cost $${cost.toFixed(4)}${protocol.runs < 2 ? "  (one run each: not a measure of stability)" : ""}`,
+	// judges never fail a test (threshold null): a failed test is a run that was not scored
+	...(res.status !== 0 ? ["", `NOT SCORED: vitest exited ${res.status}; some runs left no observation (see above) and are not in the totals`] : []),
 ];
 writeFileSync(join(dir, "report.txt"), `${lines.join("\n")}\n`);
 console.log(`\n${lines.join("\n")}\n\n${dir}`);
-process.exit(total === 0 ? 1 : 0);
+process.exit(total === 0 || res.status !== 0 ? 1 : 0);

@@ -1,5 +1,6 @@
 // M37: core behaviours of roost with a real pi, graded by checks on what roost saw.
 // ROOST_EVAL_RUNS=N repeats each case (one run never shows stability).
+import { randomBytes } from "node:crypto";
 import { expect } from "vitest";
 import { describeEval } from "vitest-evals";
 import { checks, type RoostCase, roostHarness } from "./harness.ts";
@@ -7,7 +8,8 @@ import { checks, type RoostCase, roostHarness } from "./harness.ts";
 const RUNS = Math.max(1, Number(process.env.ROOST_EVAL_RUNS) || 1);
 const runs = Array.from({ length: RUNS }, (_, i) => ({ run: i + 1 }));
 const ended = (o: { final: { state: string } | null }) => o.final?.state === "done";
-const has = (s: string, w: string) => s.toUpperCase().includes(w);
+// Words no sentence has by chance, matched as written, in the last answer: a mention of
+// "plum" or "when done" must not pass for the thing itself.
 
 describeEval("roost core", { harness: roostHarness, judgeThreshold: null }, (it) => {
 	it.for(runs)("a task runs to done, its file written ($run)", async (_, { run }) => {
@@ -42,14 +44,14 @@ describeEval("roost core", { harness: roostHarness, judgeThreshold: null }, (it)
 
 	it.for(runs)("a steer joins the work under way ($run)", async (_, { run }) => {
 		const r = await run({
-			task: "Use the bash tool to run `sleep 12`, then tell me the word DONE.",
-			steps: [{ when: "working", afterMs: 4000, reply: "Also: at the very end, say the word BANANA too.", mode: "steer" }],
+			task: "Use the bash tool to run `sleep 12`. When it has finished, reply with the word SLEPT-4X.",
+			steps: [{ when: "working", afterMs: 4000, reply: "Also: in your final reply, add the word PLUM-9K.", mode: "steer" }],
 		});
 		await expect(r).toSatisfyJudge(
 			checks("steer", {
 				"done": ended,
-				"did the work": (o) => has(o.answer, "DONE") || o.transcript.some((t) => t.kind === "assistant" && has(t.text, "DONE")),
-				"took the steer": (o) => o.transcript.some((t) => t.kind === "assistant" && has(t.text, "BANANA")),
+				"did the work": (o) => o.transcript.some((t) => t.kind === "tool" && t.text.includes("sleep 12")) && o.answer.includes("SLEPT-4X"),
+				"took the steer": (o) => o.answer.includes("PLUM-9K"),
 				// a steer joins the run: it does not wait for the work to end first (a follow-up would)
 				"in the same run": (o) => o.states.slice(o.states.indexOf("reply (steer)") + 1).filter((s) => s === "done").length === 1,
 				"reply acked": (o) => o.repliesPending === 0,
@@ -59,8 +61,11 @@ describeEval("roost core", { harness: roostHarness, judgeThreshold: null }, (it)
 	});
 
 	it.for(runs)("a subagent reports back to its parent ($run)", async (_, { run }) => {
+		// only the subagent reads it: the parent can know it from the report alone
+		const secret = `K${randomBytes(4).toString("hex").toUpperCase()}`;
 		const r = await run({
-			task: "Use the roost_spawn tool to start one subagent with the task: Reply with exactly the word CHILD. Wait for its report to reach you, then tell me the word it replied with.",
+			task: "Use the roost_spawn tool to start one subagent with this task: Read the file secret.txt and reply with its content only. Do not read secret.txt yourself. Wait for the subagent's report to reach you, then tell me the content it found.",
+			files: { "secret.txt": `${secret}\n` },
 			timeoutMs: 300_000,
 		});
 		await expect(r).toSatisfyJudge(
@@ -68,7 +73,8 @@ describeEval("roost core", { harness: roostHarness, judgeThreshold: null }, (it)
 				"done": ended,
 				"one child": (o) => o.children.length === 1,
 				"child done": (o) => o.children.every((c) => c.state === "done"),
-				"report reached the parent": (o) => has(o.answer, "CHILD"),
+				"parent did not read it": (o) => !o.transcript.some((t) => t.kind === "tool" && !t.text.startsWith("roost_") && t.text.includes("secret.txt")),
+				"report reached the parent": (o) => o.answer.includes(secret),
 			}),
 			{ threshold: null },
 		);
