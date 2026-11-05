@@ -8,6 +8,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 
 export type Attributes = Record<string, string | number | boolean | null>;
 export type SpanStatus = { status: "ok" } | { status: "error"; error: { name: string; message: string } };
@@ -172,10 +173,17 @@ export function fileTelemetry(path: string, proc: string): Telemetry {
 	}, proc);
 }
 
-/** ROOST_TELEMETRY=path turns it on (for this process and the hosts it starts). */
+/**
+ * ROOST_TELEMETRY=path turns it on (for this process and the hosts it starts). A
+ * relative path is made absolute here and written back, so hosts started in other
+ * directories write to the same file.
+ */
 export function telemetryFromEnv(proc: string, env: NodeJS.ProcessEnv = process.env): Telemetry {
 	const path = env.ROOST_TELEMETRY;
-	return path ? fileTelemetry(path, proc) : NOOP_TELEMETRY;
+	if (!path) return NOOP_TELEMETRY;
+	const abs = isAbsolute(path) ? path : resolve(path);
+	env.ROOST_TELEMETRY = abs;
+	return fileTelemetry(abs, proc);
 }
 
 /** Records from a telemetry file (lines that do not parse are skipped). */

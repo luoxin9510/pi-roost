@@ -423,6 +423,7 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 	const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
 	const file = recs.get(id)?.sessionFile;
 	recs.delete(id);
+	replyAt.delete(id);
 	shellPids.delete(id);
 	stopping.delete(id);
 	removing.delete(id);
@@ -878,8 +879,13 @@ function continuedElsewhere(session: string): void {
 
 async function startHost(rec: JobRecord): Promise<void> {
 	const t0 = Date.now();
-	await startHostNow(rec);
-	metric.hostStart.record(Date.now() - t0, { kind: rec.kind ?? "pi" });
+	let ok = false;
+	try {
+		await startHostNow(rec);
+		ok = true;
+	} finally {
+		metric.hostStart.record(Date.now() - t0, { kind: rec.kind ?? "pi", ok });
+	}
 }
 
 async function startHostNow(rec: JobRecord): Promise<void> {
@@ -1032,6 +1038,7 @@ function shellTick(): void {
 		if (!roster.has(id)) {
 			if (typeof st.removeAt === "number" && now >= st.removeAt) {
 				recs.delete(id);
+				replyAt.delete(id);
 				removeJob(id);
 				log("info", "shell job expired", { id });
 				push({ event: "removed", id });
@@ -2005,7 +2012,17 @@ async function onLine(conn: Conn, line: string): Promise<void> {
 	}
 	try {
 		// M34: every request a span (its op, its time, ok or its error)
-		const result = await telemetry.startSpan({ name: `roost.op.${typeof msg!.op === "string" ? msg!.op.slice(0, 32) : "?"}` }, () => handle(conn, msg!.op as string, msg!.args));
+		// a refusal (busy, full, not_found ...) is an answer, not a failure: ok, with its code
+		const op = msg!.op as string;
+		const result = await telemetry.startSpan({ name: `roost.op.${op.slice(0, 32)}` }, (span) =>
+			handle(conn, op, msg!.args).catch((err: unknown) => {
+				if (err instanceof OpError) {
+					span.setAttributes({ code: err.code });
+					span.setStatus({ status: "ok" });
+				}
+				throw err;
+			}),
+		);
 		send(conn, { id: reqId, ok: true, result });
 	} catch (err) {
 		const e = err as Partial<OpError> & Error;
