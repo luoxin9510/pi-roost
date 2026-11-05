@@ -1284,4 +1284,47 @@ describe("M38: interrupted runs carry on", () => {
 		});
 		expect(r2).toMatchObject({ state: "failed", error: "killed by SIGKILL" });
 	});
+
+	it("a start by other means while a restart waits carries the run on, keeping the count", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "5000";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.2; exit 3"));
+		writeFileSync(readJob(id)!.sessionFile, "{}\n");
+		await waitFor(() => (typeof readState(id)?.resumeAt === "number" ? true : undefined));
+		// what attach (ensureLive) and Enter twice do: a respawn with no prompt
+		await client.request("respawn", { id });
+		expect((readState(id)?.command as string[]).at(-1)).toBe("Continue where you left off.");
+		expect(readState(id)?.resumeAt).toBeUndefined();
+		expect(readState(id)?.crashRestarts ?? 0).toBe(0);
+		await client.request("stop", { id });
+	});
+
+	it("a start that fails while a restart waits leaves the restart to run, and it fails with why", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "1500";
+		const { client } = await startDaemon();
+		const dir = mkdtempSync(join(tmpdir(), "roost-gone-"));
+		const { id } = await client.request("dispatch", { ...args("sleep 0.2; exit 3"), cwd: dir });
+		await waitFor(() => (typeof readState(id)?.resumeAt === "number" ? true : undefined));
+		rmSync(dir, { recursive: true, force: true });
+		await expect(client.request("respawn", { id })).rejects.toMatchObject({ code: "bad_request" });
+		expect(typeof readState(id)?.resumeAt).toBe("number");
+		const r = await waitFor(async () => {
+			const x = await find(client, id);
+			return x?.state === "failed" ? x : undefined;
+		}, 6000);
+		expect(r.error).toMatch(/could not restart it: cwd is gone/);
+		expect(r.endedAt).toBeTypeOf("number");
+		expect(readState(id)?.resumeAt).toBeUndefined();
+	});
+
+	it("a /stop reply while a restart waits stops it", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "3000";
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 0.2; exit 3"));
+		await waitFor(() => (typeof readState(id)?.resumeAt === "number" ? true : undefined));
+		expect(await client.request("reply", { id, text: "/stop" })).toMatchObject({ stopped: true });
+		expect((await find(client, id))?.state).toBe("stopped");
+		await new Promise((r) => setTimeout(r, 3300));
+		expect((await find(client, id))?.pid).toBeNull();
+	});
 });

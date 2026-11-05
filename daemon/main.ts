@@ -425,7 +425,8 @@ function pushJob(id: string): void {
 
 /** rm: stop the job, drop its records, then its worktree when that holds no work (M10). */
 async function removeRecord(id: string): Promise<{ id: string; worktree?: CleanupResult }> {
-	cancelResume(id);
+	// M38: a run waiting for its restart ends here; its parent hears of it as of any removal
+	if (cancelResume(id) && !roster.has(id)) reportEnded(id, "removed by the user", true);
 	// a live child's end is reported by finalize, as a removal
 	if (roster.has(id)) removing.add(id);
 	if (roster.has(id)) {
@@ -565,6 +566,8 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	const patch: Partial<JobState> = { endedAt: now, status: null, waitingFor: null, tool: null };
 	patch.stateSince = now;
 	let restart = false;
+	// M38: why it restarts, for telemetry (a fixed set)
+	let resumeWhy: "crash" | "host-gone" | "interrupted" = "crash";
 	// M9: the daemon, not the worker, decided how this run ended
 	let daemonEnded = false;
 	if (recs.get(id)?.kind === "shell") {
@@ -612,7 +615,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 				patch.state = "failed";
 				patch.error = "the session ended while it was working (machine restart?); reply or press Enter twice to resume";
 				// M38: a recent one carries on by itself
-				if (autoResume() === "interrupted" && now - progress < RESUME_WINDOW_MS) restart = true;
+				if (autoResume() === "interrupted" && now - progress < RESUME_WINDOW_MS) {
+					restart = true;
+					resumeWhy = "interrupted";
+				}
 			} else {
 				patch.state = "stopped";
 				patch.error = "ended while the background service was off";
@@ -623,7 +629,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		patch.error = "host vanished";
 		daemonEnded = true;
 		// M38: a host gone under a working run (killed, out of memory) is a crash, not an end
-		if (st.state === "working" && autoResume() === "interrupted") restart = true;
+		if (st.state === "working" && autoResume() === "interrupted") {
+			restart = true;
+			resumeWhy = "host-gone";
+		}
 	} else if (crashed(ex)) {
 		// DM-5, M38: a worker that crashed mid-run restarts, a few times in a row at most
 		restart = st.state === "working" && autoResume() !== "off";
@@ -666,7 +675,7 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		// a reply arrived while the idle worker was going away: start it again for it
 		void respawn(id).catch((err: unknown) => log("error", "wake after reap failed", { id, error: String(err) }));
 	}
-	if (resumeIn !== undefined) scheduleResume(id, resumeIn, why);
+	if (resumeIn !== undefined) scheduleResume(id, resumeIn, resumeWhy);
 	if (daemonEnded && !shuttingDown && recs.get(id)?.parentSession) {
 		const why = removing.has(id) ? "removed by the user" : patch.state === "stopped" ? "stopped" : `failed: ${patch.error ?? st.error ?? "unknown"}`;
 		// a removal cleans the worktree up at the same time: its state would be stale
@@ -681,9 +690,9 @@ const autoResume = () => loadUserConfig().autoResume;
 const resumeTimers = new Map<string, NodeJS.Timeout>();
 
 /** Start the run again after `ms`, unless the user stopped, removed or restarted it meanwhile. */
-function scheduleResume(id: string, ms: number, why: string): void {
+function scheduleResume(id: string, ms: number, why: "crash" | "host-gone" | "interrupted" | "pending"): void {
 	clearTimeout(resumeTimers.get(id));
-	telemetry.counter("roost.auto_resume").add(1, { why: why.slice(0, 40) });
+	telemetry.counter("roost.auto_resume").add(1, { why });
 	log("info", "resume scheduled", { id, ms, why });
 	const t = setTimeout(() => {
 		resumeTimers.delete(id);
@@ -691,10 +700,7 @@ function scheduleResume(id: string, ms: number, why: string): void {
 		void respawn(id, { prompt: CONTINUE, crash: true }).catch((err: unknown) => {
 			log("error", "automatic restart failed", { id, error: String(err) });
 			// it cannot run (a locked session, its directory gone): say why, stop trying
-			try {
-				updateState(id, { state: "failed", resumeAt: undefined, error: `could not restart it: ${(err as Error).message}` });
-			} catch {}
-			pushJob(id);
+			if (!roster.has(id) && recs.has(id)) endWaiting(id, "failed", `could not restart it: ${(err as Error).message}`);
 		});
 	}, ms);
 	t.unref?.();
@@ -707,6 +713,28 @@ function cancelResume(id: string): boolean {
 	if (t) clearTimeout(t);
 	resumeTimers.delete(id);
 	return typeof readState(id)?.resumeAt === "number";
+}
+
+/** The ended job's parent hears of it (M9), as finalize tells it. */
+function reportEnded(id: string, why: string, removed = false): void {
+	if (shuttingDown || !recs.get(id)?.parentSession) return;
+	const body = reportBody({ state: "ended", error: why });
+	// a removal: the record goes next (routeReport reads it at once), the worktree with it
+	if (removed) void routeReport(id, body);
+	else void withWorktreeLine(id, body).then((b) => routeReport(id, b));
+}
+
+/** A run waiting for its automatic restart ends here (stopped, or its restart failed). */
+function endWaiting(id: string, state: "stopped" | "failed", error: string | null): void {
+	cancelResume(id);
+	const now = Date.now();
+	try {
+		updateState(id, { state, resumeAt: undefined, error, stateSince: now, endedAt: readState(id)?.endedAt ?? now });
+	} catch (err) {
+		log("error", "end of a waiting run failed", { id, error: String(err) });
+	}
+	pushJob(id);
+	reportEnded(id, state === "stopped" ? "stopped" : `failed: ${error ?? "unknown"}`);
 }
 
 /**
@@ -766,8 +794,8 @@ function loadJobs(): void {
 		// M38: a restart that was waiting when the service went down
 		else if (st && typeof st.resumeAt === "number" && !roster.has(id)) {
 			if (autoResume() === "off") {
-				updateState(id, { state: "failed", resumeAt: undefined, error: "the background service stopped before its automatic restart; reply to continue" });
-			} else scheduleResume(id, Math.max(0, Math.min(st.resumeAt - Date.now(), RESUME_DELAYS_MS.at(-1) ?? 0)), "restart pending at startup");
+				endWaiting(id, "failed", "the background service stopped before its automatic restart; reply to continue");
+			} else scheduleResume(id, Math.max(0, Math.min(st.resumeAt - Date.now(), RESUME_DELAYS_MS.at(-1) ?? 0)), "pending");
 		}
 	}
 	persistRoster();
@@ -1063,9 +1091,8 @@ async function respawnNow(
 	if (starting.has(id) || respawning.has(id)) return { id, started: false };
 	respawning.add(id);
 	try {
-		// M38: any start of it takes the place of an automatic restart still waiting
-		clearTimeout(resumeTimers.get(id));
-		resumeTimers.delete(id);
+		// M38: an automatic restart waiting: this start takes its place (once it can start)
+		const pendingResume = typeof readState(id)?.resumeAt === "number";
 		const shell = rec.kind === "shell";
 		// M30: a level 0 agent takes its prompt typed in, once it is up and quiet
 		const typeTask = isTermJob(rec) && opts.prompt ? opts.prompt : undefined;
@@ -1076,6 +1103,9 @@ async function respawnNow(
 			updateState(id, { replySeq: seq, pendingReplies: [...pendingReplies(id), { seq, text: opts.prompt }] });
 		}
 		let prompt = shell ? undefined : opts.prompt;
+		// M38: started by other means (attach, Enter twice) while a restart waited: the run
+		// still carries on; a reply waiting goes in instead
+		if (!prompt && !shell && pendingResume && pendingReplies(id).length === 0) prompt = CONTINUE;
 		if (roster.has(id)) {
 			// a running command is never killed to be run again (respawn --all after an upgrade)
 			if (!opts.restart || shell) return { id, started: false };
@@ -1113,6 +1143,9 @@ async function respawnNow(
 		const now = Date.now();
 		// nothing new to do: the worker shows where the session left off, so keep the row as is
 		const restore = written && !prompt && pendingReplies(id).length === 0 && st?.state !== "working";
+		// M38: it starts now: the waiting restart is spent (a failure above leaves it to run)
+		clearTimeout(resumeTimers.get(id));
+		resumeTimers.delete(id);
 		clearExit(id);
 		clearWorker(id);
 		updateState(id, {
@@ -1137,7 +1170,10 @@ async function respawnNow(
 			resumeAt: undefined,
 			command,
 			restore,
-			crashRestarts: opts.crash ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + 1 : 0,
+			// an automatic restart counts; one the user makes while one waited neither counts
+			// nor gives the budget back (replies to a crash loop would keep it going)
+			crashRestarts:
+				opts.crash || pendingResume ? (typeof st?.crashRestarts === "number" ? st.crashRestarts : 0) + (opts.crash ? 1 : 0) : 0,
 			...(isProfileJob(rec) ? { typeTask: typeTask ?? null, termInputAt: now, termTyped: typeTask ? false : st?.termTyped === true } : {}),
 		});
 		await startHost(rec);
@@ -1448,6 +1484,10 @@ async function reply(
 	const live = roster.has(id);
 	if (text === "/stop") {
 		if (live) await terminateHost(id);
+		else if (cancelResume(id)) {
+			endWaiting(id, "stopped", null);
+			return { delivered: false, saved: false, stopped: true };
+		}
 		return { delivered: live, saved: false, stopped: live };
 	}
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
@@ -2097,8 +2137,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			} else if (cancelResume(id)) {
 				// M38: between a crash and its automatic restart
 				log("info", "stop", { id, resume: "cancelled" });
-				updateState(id, { state: "stopped", resumeAt: undefined, error: null, stateSince: Date.now() });
-				pushJob(id);
+				endWaiting(id, "stopped", null);
 			}
 			return { id };
 		}

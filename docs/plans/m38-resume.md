@@ -32,11 +32,15 @@ While a restart waits, the row stays **working** (no "finished" notification for
 that is still meant to go on) and says so ("worker killed by SIGKILL; continuing in 5 s
 (automatic restart 2 of 3)"). `resumeAt` is kept in the job's state as a durable write:
 
-- `stop` calls it off (the row is stopped); `rm` too.
-- A reply, Enter twice, `respawn`: any start takes its place (with the reply instead).
+- `stop` (or a `/stop` reply) calls it off (the row is stopped); `rm` too. A subagent's
+  parent hears of either, as of any end.
+- Any start takes its place once it can start: attach or Enter twice carry the run on
+  ("Continue where you left off."), a reply goes in instead. It does not count as an
+  automatic restart, nor give the budget back. A start that fails (the session locked)
+  leaves the waiting restart to run.
 - The service going down while it waits: the next start takes it up.
 - A restart that cannot start (the session locked by another pi, its directory gone)
-  fails with the reason and is not tried again.
+  fails with the reason and is not tried again; a parent hears of it.
 
 Exits read as crashes now: a non-zero code or a signal (`killed by SIGKILL`); for
 commands and terminal agents too.
@@ -50,8 +54,10 @@ they keep failing as before (a later step).
 - Tests: a crash loop restarted 3 times then failed; `off` restarts nothing; a host
   that died while the service was down resumed with "Continue where you left off."; a host
   killed under a working run restarted (`crash`: failed); stop while a restart waits; a
-  restart pending across a service restart; a reply while one waits; signal deaths read as
-  failures. 360 tests.
+  restart pending across a service restart; a reply, an attach, a failed start and a
+  `/stop` while one waits; signal deaths read as failures. 363 tests. The review found a
+  start that failed while a restart waited left the row waiting for ever, attach losing
+  the "continue", stop and rm not telling a parent: fixed.
 - Eval, real pi on haiku: the worker SIGKILLed 6 s into a 15 s `sleep`; restarted once,
   pi saw the interrupted tool call, ran it again, wrote the file: 3/3.
 - Stress: first run of the branch showed 1000 replies in 8 s instead of 5 and hub event
