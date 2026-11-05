@@ -2,7 +2,7 @@
 // from what `gh pr …` prints, and by looking the branch up after a push or a checkout.
 import { execFile } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { LOOKUP_RETRIES, linkStep, prUrlsIn } from "../lib/pr.ts";
+import { LOOKUP_RETRIES, linkStep, prUrlsIn } from "../../lib/pr.ts";
 
 const MAX_LINKS = 20;
 

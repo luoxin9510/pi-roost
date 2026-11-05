@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { jobIdentity } from "../extensions/worker.ts";
+import { jobIdentity } from "../adapters/pi/worker.ts";
 import { projectConfigPath, userConfigPath } from "../lib/config.ts";
 import { JOB_ENV_NAMES, jobEnv, readJobEnv, roostEnv } from "../lib/identity.ts";
 import { roostHome } from "../lib/paths.ts";

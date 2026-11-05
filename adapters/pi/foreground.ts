@@ -3,12 +3,12 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, Key, matchesKey, type TUI } from "@earendil-works/pi-tui";
-import { DaemonClient } from "../lib/client.ts";
-import { envPolicy, loadConfig } from "../lib/config.ts";
-import { buildLaunch, fallbackName } from "../lib/dispatch.ts";
-import { messageText } from "../lib/heuristics.ts";
-import { observeJob } from "../lib/job-events.ts";
-import { daemonSocketPath, isScratchSession, scratchDir } from "../lib/paths.ts";
+import { DaemonClient } from "../../lib/client.ts";
+import { envPolicy, loadConfig } from "../../lib/config.ts";
+import { buildLaunch, fallbackName } from "../../lib/dispatch.ts";
+import { messageText } from "../../lib/heuristics.ts";
+import { observeJob } from "../../lib/job-events.ts";
+import { daemonSocketPath, isScratchSession, scratchDir } from "../../lib/paths.ts";
 import { agentViewOpen, agentViewOpens, openAgentView } from "./open-view.ts";
 
 export const TOOL_WAIT_MS = 10_000; // BG-2

@@ -1,10 +1,10 @@
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
-import { readJson } from "../lib/atomic.ts";
-import { REPAINT_MARKER } from "../lib/attach.ts";
-import { loadConfig } from "../lib/config.ts";
-import { clip, messageText } from "../lib/heuristics.ts";
+import { readJson } from "../../lib/atomic.ts";
+import { REPAINT_MARKER } from "../../lib/attach.ts";
+import { loadConfig } from "../../lib/config.ts";
+import { clip, messageText } from "../../lib/heuristics.ts";
 import {
 	type AwayLog,
 	awayIsEmpty,
@@ -18,9 +18,9 @@ import {
 	splitModelRef,
 	TURN_SYSTEM,
 	transcriptTail,
-} from "../lib/summarizer.ts";
-import type { WorkerTracker } from "../lib/worker-state.ts";
-import { readJobEnv } from "../lib/identity.ts";
+} from "../../lib/summarizer.ts";
+import type { WorkerTracker } from "../../lib/worker-state.ts";
+import { readJobEnv } from "../../lib/identity.ts";
 
 const PROGRESS_MS = Number(process.env.PI_ROOST_PROGRESS_MS) || 5 * 60_000; // SM-2
 // the first one sooner, so a long turn does not sit on an empty row for five minutes

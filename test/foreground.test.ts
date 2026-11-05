@@ -19,7 +19,7 @@ vi.mock("../lib/client.ts", () => ({
 	},
 }));
 const opened: unknown[] = [];
-vi.mock("../extensions/open-view.ts", () => ({
+vi.mock("../adapters/pi/open-view.ts", () => ({
 	agentViewOpen: () => false,
 	agentViewOpens: () => 0,
 	openAgentView: async (_ctx: unknown, opts: unknown) => {
@@ -27,7 +27,7 @@ vi.mock("../extensions/open-view.ts", () => ({
 	},
 }));
 
-const { registerForeground, footerText, isPromptEditor } = await import("../extensions/foreground.ts");
+const { registerForeground, footerText, isPromptEditor } = await import("../adapters/pi/foreground.ts");
 
 type Handler = (event: any, ctx?: any) => unknown;
 

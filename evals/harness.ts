@@ -23,7 +23,7 @@ import { parseTelemetry, percentiles } from "../lib/telemetry.ts";
 import { transcriptItems } from "../lib/transcript.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const EXT = join(ROOT, "extensions", "index.ts");
+const EXT = join(ROOT, "adapters", "pi", "index.ts");
 
 /** One interaction the case makes once the row reaches a state. */
 export interface Step {

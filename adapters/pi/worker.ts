@@ -1,14 +1,14 @@
 import { dirname, join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, VERSION } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
-import { type DeliverItem, type JobIdentity, jobIdentity, Reporter } from "../lib/agent-client.ts";
-import { hostControl } from "../lib/hostclient.ts";
-import { AGENT_MESSAGE_TYPE, RESULT_MAX } from "../lib/comms.ts";
-import { messageText } from "../lib/heuristics.ts";
-import { type ContextInfo, PROTOCOL_VERSION } from "../lib/protocol.ts";
-import { readJob } from "../lib/store.ts";
-import { worktreeNote } from "../lib/worktree.ts";
-import { sessionUsage, type UsageInfo } from "../lib/usage.ts";
+import { type DeliverItem, type JobIdentity, jobIdentity, Reporter } from "../../lib/agent-client.ts";
+import { hostControl } from "../../lib/hostclient.ts";
+import { AGENT_MESSAGE_TYPE, RESULT_MAX } from "../../lib/comms.ts";
+import { messageText } from "../../lib/heuristics.ts";
+import { type ContextInfo, PROTOCOL_VERSION } from "../../lib/protocol.ts";
+import { readJob } from "../../lib/store.ts";
+import { worktreeNote } from "../../lib/worktree.ts";
+import { sessionUsage, type UsageInfo } from "../../lib/usage.ts";
 import { registerAgentTools } from "./agent-tools.ts";
 import { onMobileActivity } from "./mobile.ts";
 import { type PrLinks, registerPrLinks } from "./pr-links.ts";
@@ -17,10 +17,10 @@ import {
 	CUSTOM_DIALOG_MS,
 	FIRST_PROMPT_MS,
 	WorkerTracker,
-} from "../lib/worker-state.ts";
+} from "../../lib/worker-state.ts";
 
 // M31: the transport (identity, reports, replies) is the agent client every agent uses
-export { jobIdentity, Reporter, type DeliverItem, type JobIdentity } from "../lib/agent-client.ts";
+export { jobIdentity, Reporter, type DeliverItem, type JobIdentity } from "../../lib/agent-client.ts";
 
 const DOUBLE_PRESS_MS = 1000;
 

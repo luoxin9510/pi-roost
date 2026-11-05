@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checksOf, hyperlink, linkStep, prFromGh, prLabel, prQuery, prUrlsIn, readyForReview } from "../lib/pr.ts";
-import { registerPrLinks } from "../extensions/pr-links.ts";
+import { registerPrLinks } from "../adapters/pi/pr-links.ts";
 
 const U = "https://github.com/o/r/pull/12";
 

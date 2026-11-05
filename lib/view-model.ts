@@ -1,5 +1,5 @@
 // Agent view layout as data (PRD §6.1): groups, row icons, ages, counts.
-// Rendering lives in extensions/agent-view.ts; this module is pure.
+// Rendering lives in adapters/pi/agent-view.ts; this module is pure.
 import { homedir } from "node:os";
 import { type Filter, matches } from "./filter.ts";
 import { readyForReview } from "./pr.ts";

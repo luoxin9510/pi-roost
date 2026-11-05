@@ -136,7 +136,7 @@ adapter stays the reference; `docs/porting.md` the guide.
 |---|---|---|
 | core | daemon, PTY host, protocol, client, CLI, config, worktrees, view model | Node and roost's own runtime dependencies (node-pty, @xterm/headless) |
 | agent clients | `pi-roost/agent` (TS), `sdk/python/roost_agent.py` | the protocol types only |
-| adapters | `adapters/pi/` (today's `extensions/`), profiles | the core, the client, that agent's own packages |
+| adapters | `adapters/pi/` (`extensions/` before M32), profiles | the core, the client, that agent's own packages |
 | hubs | hub logic and drawing, inside pi and standalone | the core and pi-tui (a terminal UI library, not an agent interface) |
 
 One package, folders by layer (npm workspaces only if a second package is ever

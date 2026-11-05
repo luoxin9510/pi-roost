@@ -3,13 +3,13 @@
 // (M19), → attaches to it; its own detach keys come back here. PRD: "PRD: pi-roost 会话内子 agent 面板（M12）".
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { attachToHost, type DetachReason } from "../lib/attach.ts";
-import { DaemonClient } from "../lib/client.ts";
-import { loadConfig } from "../lib/config.ts";
-import { hostSocketPath, isScratchSession } from "../lib/paths.ts";
-import type { Event, JobRow } from "../lib/protocol.ts";
-import { ensureLive } from "../lib/resume.ts";
-import { ageOf, iconOf, sentenceOf } from "../lib/view-model.ts";
+import { attachToHost, type DetachReason } from "../../lib/attach.ts";
+import { DaemonClient } from "../../lib/client.ts";
+import { loadConfig } from "../../lib/config.ts";
+import { hostSocketPath, isScratchSession } from "../../lib/paths.ts";
+import type { Event, JobRow } from "../../lib/protocol.ts";
+import { ensureLive } from "../../lib/resume.ts";
+import { ageOf, iconOf, sentenceOf } from "../../lib/view-model.ts";
 import { focusedOf, isPromptEditor } from "./foreground.ts";
 import { agentViewOpen } from "./open-view.ts";
 import { type SendResult, TranscriptView } from "./transcript-view.ts";

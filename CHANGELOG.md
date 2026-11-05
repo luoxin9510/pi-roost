@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The pi extension moved to `adapters/pi/` (the old `extensions/index.ts` still loads it, for sessions started before). New package exports: `pi-roost/client` (talk to the background service) and `pi-roost/protocol` (its types).
+
 - Evals with real models (`npm run eval`, for development): each case runs a real pi in an isolated roost (a task to done, a reply continuing the session, a steer joining the work, a subagent reporting back) and is graded on what roost saw; repeated runs give pass rates and flaky cases, with cost and time. See [docs/plans/m37-evals.md](docs/plans/m37-evals.md).
 
 - Request ids: `reply` and `dispatch` take an optional `requestId`; a request sent again with the same id (its answer lost when the background service restarted) is taken once. With them the stress run's chaos scenario handles every reply exactly once.

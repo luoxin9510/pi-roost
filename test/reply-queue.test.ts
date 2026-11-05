@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ReplyQueue } from "../extensions/worker.ts";
+import { ReplyQueue } from "../adapters/pi/worker.ts";
 
 function harness(opts: { setModel?: () => Promise<boolean> } = {}) {
 	const sent: { text: string; opts: unknown }[] = [];

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { onMobileActivity, registerMobileStarter, startForMobile } from "../extensions/mobile.ts";
+import { onMobileActivity, registerMobileStarter, startForMobile } from "../adapters/pi/mobile.ts";
 
 function bus() {
 	const handlers = new Map<string, ((d: unknown) => void)[]>();

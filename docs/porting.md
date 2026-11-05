@@ -22,7 +22,7 @@
 | daemon | `daemon/main.ts` | 每用户 1 个，按需启动 | **否** |
 | host | `host/main.ts` | 每个会话 1 个，持有 PTY | **否**（只依赖 `node-pty`、`@xterm/headless`） |
 | CLI | `bin/pi-roost.ts` | 临时 | **否** |
-| 扩展（三种角色） | `extensions/*.ts` | 每个宿主 agent 进程里加载一次 | **是**（适配层） |
+| 扩展（三种角色） | `adapters/pi/*.ts`（M32 前在 `extensions/`） | 每个宿主 agent 进程里加载一次 | **是**（适配层） |
 | 公共库 | `lib/*.ts` | — | 只有 `lib/api.ts` 依赖（`SessionManager`） |
 
 **核心思想**：每个后台会话就是一个**完整、普通的宿主 agent 交互进程**，跑在 host 持有的伪终端里。attach 时把真实终端直通过去，看到的就是 agent 原本的 TUI；detach 后进程继续跑。worker 内的扩展只负责**上报状态**和**接收回复**，不改 agent 本身。
@@ -48,7 +48,7 @@
 
 ### 1.2 扩展 API 层（适配层要用的全部接口）
 
-从 `extensions/` 统计的**完整** pi API 使用面：
+从 `adapters/pi/` 统计的**完整** pi API 使用面：
 
 **事件**（`pi.on`）：
 
@@ -78,7 +78,7 @@
 | `pi.registerTool` / `pi.registerMessageRenderer` | M9：`roost_agents/send/spawn` 三个工具 | M9 必需 |
 | `pi.registerCommand` | `/agents` `/bg` `/background` `/bg-fork` | 必需 |
 | `pi.registerFlag` / `pi.getFlag` | `--bg` `--bg-name` `--agents` `--agents-cwd` `--worktree`（M10），`--agent`（M18，`pi.registerFlag("agent", {type:"string"})`，与 `--bg` 合用） | 可降级 |
-| `pi.events.on(channel, fn)`（返回取消函数） | M11：监听 pi-mobile 的 `pi-mobile:starters`、`pi-mobile:activity`（`extensions/mobile.ts`）；`pi.events` 可能不存在（测试宿主），要判空 | 无 pi-mobile 时不需要 |
+| `pi.events.on(channel, fn)`（返回取消函数） | M11：监听 pi-mobile 的 `pi-mobile:starters`、`pi-mobile:activity`（`adapters/pi/mobile.ts`）；`pi.events` 可能不存在（测试宿主），要判空 | 无 pi-mobile 时不需要 |
 | `pi.events.emit` | 发 `agents:job_needs_input` / `agents:job_completed` | 可选 |
 | `pi.setSessionName` / `pi.setModel` / `pi.getThinkingLevel` / `pi.appendEntry` / `pi.getCommands` | 自动命名、/model、/thinking、DI-5 | 可选 |
 | `ctx.sessionManager.getSessionFile()` / `getSessionName()` / `getBranch()` | 会话定位、读历史 | ★ |
@@ -103,7 +103,7 @@
 
 ## 2. 推荐的移植结构：先抽一个适配层
 
-源码里扩展直接调 pi API。移植时建议先定义一个**宿主适配接口**，把 `extensions/` 改写成依赖它，宿主换了只重写适配器：
+源码里扩展直接调 pi API。移植时建议先定义一个**宿主适配接口**，把 `adapters/pi/` 改写成依赖它，宿主换了只重写适配器：
 
 ```ts
 // adapter.ts —— 宿主 agent 需要实现的最小接口（M1–M4 范围）
@@ -244,7 +244,7 @@ daemon/main.ts   host/main.ts   bin/pi-roost.ts
 
 ### Step 2：worker 角色——状态上报（M2）
 
-worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK` 就是 worker（`extensions/worker.ts` `jobIdentity()`），否则是前台。**读完立刻从 `process.env` 删掉 token**（M9 加的），避免 agent 跑的子进程继承。
+worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK` 就是 worker（`adapters/pi/worker.ts` `jobIdentity()`），否则是前台。**读完立刻从 `process.env` 删掉 token**（M9 加的），避免 agent 跑的子进程继承。
 
 1. **状态机**（`lib/worker-state.ts` `WorkerTracker`，纯函数，可直接复用）：
 
@@ -258,7 +258,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
    | 启动 5 秒内没有开始任何轮次且无消息 | `blocked + waitingFor:"first-prompt"` |
    | `restore(lastAssistant)` | `PI_ROOST_RESTORE=1` 重启且无新提示时，用会话最后一条回复还原状态（`stopReason==="toolUse"` 说明被切断，不还原） |
 
-2. **Reporter**（`extensions/worker.ts`）：每次发**完整快照** `WorkerReport`；一次只有一个请求在途；状态变化立即发，仅文本变化最多 15 秒一次；断线 500ms 起退避重连；关闭时 500ms 最终 flush。
+2. **Reporter**（`adapters/pi/worker.ts`）：每次发**完整快照** `WorkerReport`；一次只有一个请求在途；状态变化立即发，仅文本变化最多 15 秒一次；断线 500ms 起退避重连；关闭时 500ms 最终 flush。
 3. **daemon `report` op**（`acceptReport`）：校验 `jobToken`；该连接登记为这个 job 的 `workerConn`；`stopping` 中的 job 不再接受上报（daemon 接管状态）；所有字段截断（summary 500、question 2000、choices ≤20×200…）。
 4. **finalize 状态裁决**（`daemon/main.ts` `finalize()`）——这是最需要照抄的逻辑：
 
@@ -292,7 +292,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ### Step 5：前台角色——"聊到一半转后台"（M5a/M5b）
 
-流程（`extensions/foreground.ts`）：
+流程（`adapters/pi/foreground.ts`）：
 
 1. 触发：空提示符 ←（经 `onTerminalInput`，过滤 key release）/ `/bg` / `/background` / 正在跑时 Ctrl+D、`/quit`、`/exit` 的确认框。
 2. 若在跑：提示"当前工具结束后转后台"，最多等 10 秒（再按 ← 跳过）→ `abort()` → `waitForIdle()` → 首条提示设为 "Continue where you left off."。
@@ -305,14 +305,14 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 ### Step 6：agent view（M6a/M6b）
 
 - 纯数据层 `lib/view-model.ts`（分组 Pinned / Needs input / Working / Completed，或按目录；图标、时长、排序）、`lib/filter.ts`（`s:` `n:` `o:` 过滤）、`lib/dispatch-input.ts`（解析 `task` / `@dir task` / `! cmd` / `/model` `/thinking` `/resume`）——**全部可直接复用**。
-- 渲染层 `extensions/agent-view.ts`（1200 行，pi-tui 组件）是**移植工作量最大的部分**。daemon 侧只需要 `subscribe` 后监听 `job` / `removed` 事件，加上 `list pin rename reorder stop rm reply respawn`。
+- 渲染层 `adapters/pi/agent-view.ts`（1200 行，pi-tui 组件）是**移植工作量最大的部分**。daemon 侧只需要 `subscribe` 后监听 `job` / `removed` 事件，加上 `list pin rename reorder stop rm reply respawn`。
 - 进入会话：`tui.stop()` → `attachToHost()` → 返回后重置终端模式 → `tui.start()` + 强制重绘（Step 0 的 R2）。
 - 如果宿主 TUI 不好扩展，**完全可以把 agent view 做成独立程序**（比如 `roost` CLI 的一个子命令），协议不变。
 - 通知（`lib/job-events.ts`）：OSC 9 / OSC 777 / BEL，终端标题显示等待数；同时在宿主事件总线上发 `agents:job_needs_input` / `agents:job_completed`。
 
 ### Step 7：摘要模型与空闲回收（M7 等）
 
-- **摘要**（`extensions/worker-extras.ts` + `lib/summarizer.ts`，提示词可直接复用）：每轮结束一次、轮开始 45 秒后一次、之后每 5 分钟一次；自动命名一次；attach 时生成"离开期间"回顾。**关闭 thinking、`maxTokens:1024`、超时 20 秒、只回 JSON**；只发会话末尾约 6000 字符；失败静默回退到启发式文本。公司部署时细节见 `docs/summary-model.md`（中文，含内部 LLM 节点与环境变量白名单的坑）。
+- **摘要**（`adapters/pi/worker-extras.ts` + `lib/summarizer.ts`，提示词可直接复用）：每轮结束一次、轮开始 45 秒后一次、之后每 5 分钟一次；自动命名一次；attach 时生成"离开期间"回顾。**关闭 thinking、`maxTokens:1024`、超时 20 秒、只回 JSON**；只发会话末尾约 6000 字符；失败静默回退到启发式文本。公司部署时细节见 `docs/summary-model.md`（中文，含内部 LLM 节点与环境变量白名单的坑）。
 - **空闲回收**（`reapIdle()`，每 30 秒）：未置顶、非 working、非对话框、无待投递、空闲超过 `reapIdleMinutes`（默认 60）、**且没人 attach** 的 worker 被 terminate，标 `reaped`；回复或 attach 时自动重启。中间有 await，**拿到 host 状态后要重新判断一次**（源码里有这个双检）。
 
 ### Step 7.5：模型与上下文显示、切换运行中会话的模型（M8）
@@ -391,7 +391,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - daemon `reapable`：空闲时间从 `max(stateSince, remoteAt)` 算起；`acceptReport` 把 `remoteAt` 夹到不超过"现在"（防止伪造未来时间导致永不回收）。
 - 限制：被回收的会话会从手机列表消失（pi-mobile 只列存活进程）；`/bg` 把对话交给另一个进程，手机上显示为新会话。
 
-主要文件：`extensions/mobile.ts`，`daemon/main.ts` `reapable`/`acceptReport`，`lib/protocol.ts` `WorkerReport.remoteAt`。
+主要文件：`adapters/pi/mobile.ts`，`daemon/main.ts` `reapable`/`acceptReport`，`lib/protocol.ts` `WorkerReport.remoteAt`。
 
 **验收**：单测里请求带 `PATH` 和 `PI_MOBILE_SPAWN`，只有后者进了 worker 环境；手机（或测试 phone）发起 `spawn via:"pi-roost"` 得到新会话；对该会话做一次调用后，`state.json` 里出现 `remoteAt`；把 `reapIdleMinutes` 调小，手机持续使用的会话不被回收。
 
@@ -408,7 +408,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - 命令 `/fork` 改名为 `/bg-fork`：与 pi 内置 `/fork` 重名会被 pi 从补全里剔除。
 - 配置：`subagentPanel`（默认 `true`）、`subagentPanelRows`（默认 5，1–10）。
 
-主要文件：`extensions/subagent-panel.ts`（`renderPanel`、`onInput`、`watch`、`stopOrHide`、`openComposer`、`stopAll`），`extensions/peer-link.ts`（`hasChildren`）。
+主要文件：`adapters/pi/subagent-panel.ts`（`renderPanel`、`onInput`、`watch`、`stopOrHide`、`openComposer`、`stopAll`），`adapters/pi/peer-link.ts`（`hasChildren`）。
 
 **验收**：父会话 spawn 两个子会话，1 秒内出现两行；↓ ↓ Enter 进入第二个，← 回来时选中保留；选中状态下按 ← 只离开面板而不会把父会话转后台；进入子会话期间父会话的一轮正常结束、子会话的报告到达；`x` 停止（父会话收到报告）、再 `x` 隐藏；`m` 发出的消息被子会话处理。
 
@@ -430,7 +430,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 配置：`subagentAutoClose`（默认 `true`）、`agentViewSubagents`（默认 `"hide"`）。
 
-主要文件：`daemon/main.ts`（`parentOpen`、`pushChildrenOf`、`scheduleAutoClose`、`closable`、`autoClose`），`lib/view-model.ts`，`extensions/subagent-panel.ts`。
+主要文件：`daemon/main.ts`（`parentOpen`、`pushChildrenOf`、`scheduleAutoClose`、`closable`、`autoClose`），`lib/view-model.ts`，`adapters/pi/subagent-panel.ts`。
 
 **验收**：spawn 一个子会话让它完成：agent view 里没有它的行；约 3 秒后它的 worker 被关闭（记录 `done`、`reaped`，没有多余的 "ended" 报告）；面板里行立即消失、页脚提示 30 s；`roost_send` 给它发消息后它重新跑起来；`subagentAutoClose:false` 时不关闭；关掉父 pi 后仍在工作的子会话出现在 agent view 里，父 pi 重新打开后又消失。
 
@@ -452,7 +452,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 坑：全局记录"上次处理的 attach"，`session_start` 也要检查——会话切换（`/new`、`/resume`）期间 attach 也必须重绘；报告里的 `attachRepaint` 只在会话 TUI 在手时才声明。
 
-主要文件：`extensions/worker-extras.ts`（`registerAttachRepaint`、`attachRepaintReady`），`host/main.ts`（`holdUntilRepaint`、`nudge`），`lib/attach.ts`。
+主要文件：`adapters/pi/worker-extras.ts`（`registerAttachRepaint`、`attachRepaintReady`），`host/main.ts`（`holdUntilRepaint`、`nudge`），`lib/attach.ts`。
 
 **验收**：tmux 里 attach，抓到的流 = 离开/进入备用屏、模式设置、查询、**一帧**，没有对话刷屏；PageUp 在应用内滚动会话；Ctrl+Z 回到 agent view 且主屏滚动区未被污染；单测：声明 `attachRepaint` 的 worker 收到信号且既没有清屏也没有缩放，没声明的两者都有。
 
@@ -473,7 +473,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 解决：看不出会话的 PR 到哪一步。依赖 `gh`（没装或没登录就静默无标签，10 分钟后再试）。
 
-- **关联**（worker，`extensions/pr-links.ts`）：监听 `tool_execution_start/end` 的 `bash` 调用（也看 codemode 内嵌的 bash）。`gh pr create/reopen/review/edit/comment/close/ready` 的输出里出现 PR URL 就记下；`gh pr checkout` 或 push 之后，在之后最多 `LOOKUP_RETRIES`（5）条 git/gh/glab/curl 命令内用 `gh pr view` 查当前分支。报告字段 `prLinks`（URL，最多 20）。worktree 会话的分支还由 daemon 自己查（`gh pr list --head <branch>`，无链接时最多每 10 分钟一次）。
+- **关联**（worker，`adapters/pi/pr-links.ts`）：监听 `tool_execution_start/end` 的 `bash` 调用（也看 codemode 内嵌的 bash）。`gh pr create/reopen/review/edit/comment/close/ready` 的输出里出现 PR URL 就记下；`gh pr checkout` 或 push 之后，在之后最多 `LOOKUP_RETRIES`（5）条 git/gh/glab/curl 命令内用 `gh pr view` 查当前分支。报告字段 `prLinks`（URL，最多 20）。worktree 会话的分支还由 daemon 自己查（`gh pr list --head <branch>`，无链接时最多每 10 分钟一次）。
 - **状态**（daemon）：`state.json.prLinks` 取并集（≤20）；每 `PI_ROOST_PR_POLL_MS`（60 s）一轮，对**最近 7 天有活动或活着**的会话逐个 `gh pr view <url> --json number,url,state,isDraft,reviewDecision,statusCheckRollup,title`（一次一个）；结果存 `state.prs`，推给 `JobRow.prs`。merged/closed 的每 URL 每小时问一次。
 - **显示**（`lib/pr.ts`、`lib/view-model.ts`）：行右缘 `#N`，OSC 8 超链接（`FORCE_HYPERLINK=0` 关）；颜色 warning（等检查/评审或检查失败）/ success / accent（已合并）/ dim（draft 或关闭）；多个 PR 显示 `3 PRs`，按最需要关注的上色，偷看里列出。新分组 **Ready for review**（Pinned 与 Needs input 之间）：不在工作也不在等待、PR 打开且非 draft、检查失败或未批准。空组不显示标题。`s:ready` 过滤；输入 `#N` 或 PR URL 时若有行含它就当过滤，否则当任务派发。
 - 坑：一轮轮询最长一分钟（`PR_POLL_BUDGET_MS`），下一轮从上次停处续；每次 gh 调用后重新读 state，**轮询只写自己的字段**；`#N` 按编号匹配，URL 按 host/owner/repo/number 匹配（不管 scheme、大小写、尾部路径 `/files`、`#discussion…`）；`localhost`、裸 IP、`.local`/`.internal` 的链接忽略；被取消的 check run 不算失败。`gh` 路径可用 `PI_ROOST_GH` 覆盖（测试用）。
@@ -483,7 +483,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 
 ### Step 16：任务输入框用宿主的编辑器（M17，`docs/plans/m17-editor-input.md`）
 
-解决：agent view 的单行 `Input` 没有多行、没有长粘贴折叠。`extensions/task-editor.ts` 包装 pi-tui 的 `Editor`（宿主提示符编辑器的基类），只暴露视图原来从 `Input` 用到的小接口：`getValue`（展开粘贴标记）、`setValue`、`focused`、`handleInput`、`render`，外加 `multiline()`、`atEdge()`。
+解决：agent view 的单行 `Input` 没有多行、没有长粘贴折叠。`adapters/pi/task-editor.ts` 包装 pi-tui 的 `Editor`（宿主提示符编辑器的基类），只暴露视图原来从 `Input` 用到的小接口：`getValue`（展开粘贴标记）、`setValue`、`focused`、`handleInput`、`render`，外加 `multiline()`、`atEdge()`。
 
 - 视图自己保留的键：Enter 派发、Ctrl+Enter 派发并 attach、Esc、Tab 补全 `@dir`、空输入框里 Space/`?`。Shift+Enter、Alt+Enter、Ctrl+J 交给编辑器加一行。↑↓ 默认移动行选择，**多行任务内部**才移动光标，到首/末行再切回行选择。
 - 长的括号粘贴在屏幕上显示为 `[paste #1 +30 lines]`，发送时是完整内容。Ctrl+G（外部编辑器）的结果原样放进编辑器，同时 `tui.stop({preserveScreen:true})`。空时那一行显示提示。
@@ -513,7 +513,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 - 评审修出的坑：没有会话文件的行（shell 任务）要说明而不是沿用上一个的内容；"消息没发出去"只在仍显示同一个子 agent 时才还回输入框；树的选中跟随行而不是下标；终端不到 10 行时不画树但输入框和键保留；记录打开时会话切换或 pi 关闭要关掉它，并且通过宿主的 `done` 关闭；被截断的开头仅在那一行确实被截时才丢弃。
 - 未移植：原地（非浮层）记录；展开工具的完整输出（三行+计数，Ctrl+O 去 attach 看全部）；不应用 `context_edit`，压缩前的消息仍显示（视图展示"发生了什么"而非模型上下文）。
 
-主要文件：`extensions/transcript-view.ts`（`TranscriptView`），`lib/transcript.ts`，`extensions/subagent-panel.ts`（入口）。
+主要文件：`adapters/pi/transcript-view.ts`（`TranscriptView`），`lib/transcript.ts`，`adapters/pi/subagent-panel.ts`（入口）。
 
 **验收**：父会话有一个正在工作的子会话，面板里 Enter 看到它的对话并随工作增长；在里面打字后消息送达子会话；↑↓ 切到同级/父级，Esc 逐级回到对话；Ctrl+O 进入它的 PTY；对一个含大量历史的会话文件（>4 MB）显示截断提示；会话文件里混入转义序列不会污染终端。
 
@@ -558,7 +558,7 @@ worker 判定：扩展加载时看到 `PI_JOB_ID + PI_JOB_TOKEN + PI_DAEMON_SOCK
 5. `attached.json` 写 `replay:true`，新 worker 看到就不再重绘（只画一次）。SIGUSR2 照发，"离开期间"回顾要用。旧 worker 仍会重绘，它的标记照样剔除，多画一次也无害。
 6. 删除：扣输出、`REPAINT_WAIT_MS`、清屏 + nudge 回退。有人 attach 时终端查询交给用户终端回答（随数据流到达）。
 
-主要文件：`host/main.ts`（`snapshot`、`replay`），`lib/term-modes.ts`，`extensions/worker-extras.ts`。运行时依赖新增 `@xterm/addon-serialize`（与 `@xterm/headless` 6.0 配套的 0.14）。
+主要文件：`host/main.ts`（`snapshot`、`replay`），`lib/term-modes.ts`，`adapters/pi/worker-extras.ts`。运行时依赖新增 `@xterm/addon-serialize`（与 `@xterm/headless` 6.0 配套的 0.14）。
 
 **验收**：无人 attach 时启动的全屏 pi worker，`pi-roost attach` 后 0.4 s 内画面完整（对话、编辑框、底栏）；改尺寸、打字、detach、再 attach 都即时，草稿还在；host 日志里没有 repaint 和 nudge。单测：安静的程序不靠信号也能立刻拿到画面；WINCH 重绘排在快照之后；备用屏、鼠标、SGR 鼠标、kitty 标志、隐藏光标完整还原；旧 worker 的标记被剔除；抢占 attach 拿到同一屏幕。
 

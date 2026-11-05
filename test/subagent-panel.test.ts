@@ -1,7 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { JobRow } from "../lib/protocol.ts";
-import { descendantCounts, keyOf, LINGER_MS, panelTree, renderPanel, shownIn } from "../extensions/subagent-panel.ts";
+import { descendantCounts, keyOf, LINGER_MS, panelTree, renderPanel, shownIn } from "../adapters/pi/subagent-panel.ts";
 
 let n = 0;
 function row(over: Partial<JobRow> = {}): JobRow {

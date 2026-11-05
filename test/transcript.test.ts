@@ -5,7 +5,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { JobRow } from "../lib/protocol.ts";
 import { branchOf, clean, neighboursOf, pathOf, READ_MAX, readTail, transcriptItems } from "../lib/transcript.ts";
-import { TranscriptView } from "../extensions/transcript-view.ts";
+import { TranscriptView } from "../adapters/pi/transcript-view.ts";
 
 const line = (o: object) => `${JSON.stringify(o)}\n`;
 function session(): string {

@@ -35,16 +35,25 @@
   },
   "exports": {
     "./api": {
-      "types": "./dist/lib/api.d.ts",
-      "default": "./dist/lib/api.js"
+      "types": "./dist/adapters/pi/api.d.ts",
+      "default": "./dist/adapters/pi/api.js"
     },
     "./agent": {
       "types": "./dist/lib/agent-client.d.ts",
       "default": "./dist/lib/agent-client.js"
     },
+    "./client": {
+      "types": "./dist/lib/client.d.ts",
+      "default": "./dist/lib/client.js"
+    },
+    "./protocol": {
+      "types": "./dist/lib/protocol.d.ts",
+      "default": "./dist/lib/protocol.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
+    "adapters",
     "extensions",
     "lib",
     "sdk",
@@ -55,7 +64,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/index.ts"
+      "./adapters/pi/index.ts"
     ],
     "image": "https://raw.githubusercontent.com/luoxin9510/pi-roost/main/assets/agent-view.png"
   },

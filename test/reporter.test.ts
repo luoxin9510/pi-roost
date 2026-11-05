@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Reporter } from "../extensions/worker.ts";
+import { Reporter } from "../adapters/pi/worker.ts";
 import { encodeLine, LineReader, type WorkerReport } from "../lib/protocol.ts";
 
 const base: WorkerReport = {
