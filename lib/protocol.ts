@@ -66,6 +66,8 @@ export interface JobRow {
 	fanout?: string | null;
 	/** M29: the agent that runs it: "pi", "shell", or (M30) the name of the user's agent profile. */
 	profile?: string;
+	/** M31: what its agent said it can do in its hello (absent: it never said). */
+	capabilities?: string[];
 }
 
 /** M9: a session an agent may message (roost_agents). */
@@ -160,6 +162,8 @@ export interface DispatchArgs {
 	resumeCommand?: string[];
 	/** M30: the first task is in its argv (it has been given something to do). */
 	taskInArgv?: boolean;
+	/** M31: a profile's agent that speaks the roost agent protocol. */
+	protocol?: boolean;
 }
 
 export interface DaemonStatus {
@@ -172,8 +176,32 @@ export interface DaemonStatus {
 	startedAt: number;
 }
 
+/** M31: the protocol version this daemon and these clients speak (docs/protocol.md). */
+export const PROTOCOL_VERSION = 1;
+
+/**
+ * M31: what an agent can do, said in its hello. Unknown ones are ignored; the list only
+ * grows with a protocol version.
+ */
+export const AGENT_CAPABILITIES = ["report", "replies", "steer", "usage", "context", "model-switch", "transcript", "peers", "agent-items"] as const;
+export type AgentCapability = (typeof AGENT_CAPABILITIES)[number];
+
+export interface HelloArgs {
+	protocol: number;
+	agent?: { name: string; version?: string };
+	capabilities?: string[];
+}
+export interface HelloResult {
+	protocol: number;
+	daemon: { name: "roost"; version: string };
+	/** What the daemon offers agents (the ops beyond report, ack and hello). */
+	capabilities: string[];
+}
+
 export interface OpArgs {
 	ping: {};
+	/** M31: an agent says which protocol and capabilities it has, before it reports. */
+	hello: HelloArgs;
 	list: { all?: boolean; cwd?: string };
 	dispatch: DispatchArgs;
 	stop: { id: string };
@@ -207,6 +235,7 @@ export interface OpArgs {
 
 export interface OpResults {
 	ping: { pid: number; version: string };
+	hello: HelloResult;
 	list: { jobs: JobRow[] };
 	dispatch: { id: string; name: string };
 	stop: { id: string };

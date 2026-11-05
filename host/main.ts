@@ -66,8 +66,9 @@ let rows = 30;
 const launchState = readState(id);
 const token = launchState?.jobToken;
 // A shell job has no worker: a pi started inside it must not report as this job.
+// M31: a profile's agent that speaks the protocol is this job's worker.
 const identity: Record<string, string> =
-	job.kind === "shell"
+	job.kind === "shell" && job.agentProtocol !== true
 		? {}
 		: jobEnv({ id, ...(typeof token === "string" ? { token } : {}), socket: daemonSocketPath(), dir: jobDir(id) });
 // M20: the workspace's own environment (direnv, mise, fnm ...), evaluated at every start.

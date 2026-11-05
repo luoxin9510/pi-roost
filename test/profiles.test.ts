@@ -54,6 +54,11 @@ describe("M30 agent profiles", () => {
 		// starting again: its command without the first task (no resume argv)
 		expect(l.resumeCommand).toEqual(["agent", "--model", "o3"]);
 		expect(presetFrom({ profile: "codex", model: "--danger" })).toEqual({ profile: "codex" });
+		// M31: an agent that speaks the protocol
+		const proto = profileFrom({ command: ["my-agent"], protocol: true, task: "type" })!;
+		expect(proto.protocol).toBe(true);
+		expect(profileFrom({ command: ["a"], protocol: "yes" })).toBeUndefined();
+		expect(buildProfileLaunch({ name: "n", profile: "mine", def: proto, task: "go", cwd: "/w", env: {} })).toMatchObject({ protocol: true, command: ["my-agent"], term: { typeTask: "go" } });
 	});
 });
 

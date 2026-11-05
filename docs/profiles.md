@@ -38,6 +38,7 @@ choose one.
 | `submit` | what is typed after a reply (default `"\r"`). |
 | `settleMs` | how long a still screen means quiet (default 3000, 500–60000). |
 | `env` | extra environment; names on your `envDenyList` are dropped, as from any job. |
+| `protocol` | `true`: it speaks the [roost agent protocol](protocol.md): it gets the job's identity, its reports set the row, replies reach it as protocol replies (a `task: "type"` task is its first reply). |
 
 In the argv templates, an element that is exactly `{model}`, `{thinking}` or `{task}`
 becomes that value (and goes when there is none). Nothing else is substituted. A

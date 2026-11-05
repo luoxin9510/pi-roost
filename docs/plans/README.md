@@ -38,6 +38,7 @@ Claude Code's documented behaviour.
 | M28 | [steer or wait, as in pi](m28-steer.md) | next |
 | M29 | [a neutral core](m29-neutral-core.md) | next |
 | M30 | [agent profiles: terminal agents besides pi](m30-profiles.md) | next |
+| M31 | [the agent protocol, TypeScript and Python clients](m31-protocol.md) | next |
 
 Next: [any agent](any-agent.md), the design for M29–M33 (roost for agents other than pi, pi staying the baseline).
 

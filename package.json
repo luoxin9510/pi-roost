@@ -38,11 +38,16 @@
       "types": "./dist/lib/api.d.ts",
       "default": "./dist/lib/api.js"
     },
+    "./agent": {
+      "types": "./dist/lib/agent-client.d.ts",
+      "default": "./dist/lib/agent-client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "extensions",
     "lib",
+    "sdk",
     "dist",
     "README.md",
     "CHANGELOG.md",
