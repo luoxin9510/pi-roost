@@ -286,6 +286,15 @@ export class ReplyQueue {
 			else warn("/name needs a name");
 			return true;
 		}
+		if (cmd === "/compact") {
+			// M48: /compact from a peek: pi's own compaction, started here, not awaited
+			try {
+				ctx.compact();
+			} catch (err) {
+				warn(`cannot compact: ${String(err)}`);
+			}
+			return true;
+		}
 		if (cmd === "/thinking") {
 			if (THINKING.has(arg)) this.pi.setThinkingLevel(arg as Parameters<ExtensionAPI["setThinkingLevel"]>[0]);
 			else warn(`/thinking needs one of ${[...THINKING].join(", ")}`);

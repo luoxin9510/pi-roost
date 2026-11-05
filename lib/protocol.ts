@@ -76,6 +76,9 @@ export interface JobRow {
 	role?: "concierge" | null;
 	/** M45: the concierge's suggested answer for a row that waits for one (the hub sends it with one key). */
 	suggested?: { text: string; why: string | null; at: number } | null;
+	/** M48: the task it was started on (one line, at most 200 characters), and the user replies waiting for it. */
+	task?: string | null;
+	queued?: number;
 }
 
 /** M9: a session an agent may message (roost_agents). */

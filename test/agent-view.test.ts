@@ -1,4 +1,5 @@
-import { rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentDef } from "../lib/agents.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -91,6 +92,10 @@ class FakeClient {
 			return { id: "new1", name: "new task" };
 		}
 		if (op === "reply") return this.replyResult;
+		// M48: a peek's commands
+		if (op === "respawn") return { results: [{ id: (args as { id: string }).id, started: true }] };
+		if (op === "rm") return { id: (args as { id: string }).id };
+		if (op === "rename") return args;
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		if (op === "schedule-add") return { ...(args as object), paused: false, nextAt: Date.now() + 3600_000 };
 		if (op === "events") return { events: this.log, cursor: this.log.length };
@@ -1838,5 +1843,159 @@ describe("AgentView agent profiles (M30)", () => {
 		expect(rowDetailsOf({ ...agentRow, model: null })).toMatchObject({ model: "codex" });
 		expect(rowDetailsOf(cmd)).toBeNull();
 		expect(modelFacts(agentRow)).toEqual(["agent codex", "o3"]);
+	});
+});
+
+describe("M48: the peek, deeper", () => {
+	const entry = (id: string, parentId: string | null, message: unknown) => `${JSON.stringify({ type: "message", id, parentId, message })}\n`;
+	/** A pi session file with a prompt, a reply with a tool call, its result and a last reply. */
+	function sessionFile(dir: string): string {
+		const file = join(dir, "s.jsonl");
+		writeFileSync(
+			file,
+			`${JSON.stringify({ type: "session", id: "s", version: 1 })}\n` +
+				entry("m1", null, { role: "user", content: [{ type: "text", text: "write the tests" }] }) +
+				entry("m2", "m1", { role: "assistant", content: [{ type: "text", text: "Reading the code first." }, { type: "toolCall", id: "t1", name: "read_file", arguments: { path: "src/x.ts" } }] }) +
+				entry("m3", "m2", { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "export const x = 1" }] }) +
+				entry("m4", "m3", { role: "assistant", content: [{ type: "text", text: "Now the tests." }] }),
+		);
+		return file;
+	}
+	const usage = { input: 30_000, output: 4_000, cacheRead: 0, cacheWrite: 0, cost: 0.12, today: 0.12, day: 0, sub: false, models: {} };
+
+	it("shows the task, where and since when, the cost, queued replies and the transcript tail (live); a failed row's error whole; the box says what Enter does", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "roost-peek-"));
+		try {
+			const file = sessionFile(dir);
+			const home = process.env.HOME ?? "/nohome";
+			const r1 = row({ id: "p1", name: "tests", task: "write the tests for x", cwd: `${home}/w`, queued: 2, usage, sessionFile: file });
+			const failed = row({ id: "p2", name: "lint", state: "failed", status: null, pid: null, endedAt: Date.now() - 5_000, error: `the linter found ${"many ".repeat(30)}problems in the end` });
+			const asking = row({ id: "p3", name: "api", state: "blocked", status: "waiting", waitingFor: "question", question: "Use v2?", choices: ["yes", "no"] });
+			const { view } = setup([r1, failed, asking]);
+			await view.start();
+			// the list: Needs input (api), Working (tests), Completed (lint); headers are rows too
+			const select = (name: string) => {
+				view.handleInput("\x1b[H");
+				for (let i = 0; i < 10 && !view.render(120).some((l) => l.startsWith("›") && l.includes(name)); i++) view.handleInput("\x1b[B");
+			};
+			select("tests");
+			view.handleInput(" "); // peek tests
+			let screen = view.render(120).join("\n");
+			expect(screen).toContain("task: write the tests for x");
+			expect(screen).toContain("~/w · started 1m ago");
+			expect(screen).toContain("2 replies queued");
+			expect(screen).toContain("$0.12 · 34k tokens");
+			expect(screen).toContain("you: write the tests");
+			expect(screen).toContain("⚙ read_file");
+			expect(screen).toContain("› Now the tests.");
+			expect(screen).toContain("reply · Enter joins its work");
+			// live: the file grows, the tail follows (re-read at most every 2 s)
+			appendFileSync(file, entry("m5", "m4", { role: "assistant", content: [{ type: "text", text: "Done: 3 tests pass." }] }));
+			(view as unknown as { tails: Map<string, unknown> }).tails.clear();
+			screen = view.render(120).join("\n");
+			expect(screen).toContain("› Done: 3 tests pass.");
+			// the failed row: its error whole, and what Enter does
+			view.handleInput("\x1b"); // close
+			select("lint");
+			view.handleInput(" ");
+			screen = view.render(80).join("\n");
+			expect(screen).toContain("problems in the end");
+			expect(screen).toContain("failed 5s ago · took");
+			expect(screen).toContain("/continue picks it up");
+			// the asking row: answer
+			view.handleInput("\x1b");
+			select("api");
+			view.handleInput(" ");
+			screen = view.render(80).join("\n");
+			expect(screen).toContain("1. yes");
+			expect(screen).toContain("answer · Enter sends · 1-9 picks a choice");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("commands in a peek act on that session; unknown ones and ! are refused; a reply of several lines goes whole", async () => {
+		const r1 = row({ id: "p1", name: "tests" });
+		const { view, client } = setup([r1, row({ id: "p2", name: "other" })]);
+		await view.start();
+		view.handleInput(" ");
+		const send = async (text: string) => {
+			view.handleInput("\x03"); // a refused command stays in the box to fix: cleared here
+			type(view, text);
+			view.handleInput("\r");
+			await sleep(20);
+			return view.render(120).join("\n");
+		};
+		const ops = (op: string) => client.requests.filter((r) => r.op === op).map((r) => r.args);
+		expect(await send("/stop")).toContain("stopping · tests");
+		expect(ops("stop")).toEqual([{ id: "p1" }]);
+		expect(await send("/respawn")).toContain("starting tests again");
+		expect(ops("respawn")).toEqual([{ id: "p1" }]);
+		expect(await send("/rename api-two")).toContain("renamed · api-two");
+		expect(ops("rename")).toEqual([{ id: "p1", name: "api-two" }]);
+		await send("/pin");
+		expect(ops("pin")).toEqual([{ id: "p1", pinned: true }]);
+		expect(await send("/continue")).toContain("sent · tests");
+		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "Continue where you left off.", mode: "followUp" });
+		expect(await send("/compact")).toContain("/compact · tests");
+		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/compact" });
+		expect(await send("/name zed")).toContain("/name · tests");
+		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "/name zed" });
+		expect(await send("/bogus now")).toContain("not a command for a session: /bogus");
+		expect(await send("!ls")).toContain("shell commands are not sent to a session");
+		expect(ops("reply")).toHaveLength(3);
+		// several lines: Ctrl+J adds one; Enter sends them together
+		view.handleInput("\x03");
+		type(view, "line one");
+		view.handleInput("\n");
+		type(view, "line two");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(ops("reply").at(-1)).toEqual({ id: "p1", text: "line one\nline two", mode: "steer" });
+		// /rm: twice within 2 s; the peek closes with the row
+		expect(await send("/rm")).toContain("/rm again within 2 s to delete tests");
+		expect(ops("rm")).toEqual([]);
+		expect(await send("/rm")).toContain("deleted · tests");
+		expect(ops("rm")).toEqual([{ id: "p1" }]);
+		expect(view.render(120).join("\n")).not.toContain("/ commands · Esc close");
+	});
+
+	it("/log and /transcript in a peek open overlays for that session; Tab completes a / command", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "roost-peek-"));
+		try {
+			const file = sessionFile(dir);
+			const r1 = row({ id: "p1", name: "tests", sessionFile: file });
+			const { view, client } = setup([r1, row({ id: "p2", name: "other" })]);
+			client.log = [
+				{ seq: 1, at: Date.now() - 60_000, kind: "state", id: "p1", name: "tests", state: "working", from: null, text: null },
+				{ seq: 2, at: Date.now() - 30_000, kind: "state", id: "p2", name: "other", state: "done", from: "working", text: "all green" },
+			];
+			await view.start();
+			view.handleInput(" ");
+			type(view, "/log");
+			view.handleInput("\r");
+			await sleep(20);
+			let screen = view.render(120).join("\n");
+			expect(screen).toContain("Log · tests (newest first)");
+			expect(screen).not.toContain("all green");
+			view.handleInput("\x1b");
+			type(view, "/transcript");
+			view.handleInput("\r");
+			await sleep(20);
+			screen = view.render(120).join("\n");
+			expect(screen).toContain("Transcript · tests");
+			expect(screen).toContain("› Now the tests.");
+			expect(screen).toContain("→ export const x = 1");
+			view.handleInput("\x1b");
+			expect(view.render(120).join("\n")).not.toContain("Transcript · tests");
+			// completion: pi's menu opens on /, Tab takes the first match
+			type(view, "/tra");
+			await sleep(30);
+			view.handleInput("\t");
+			await sleep(30);
+			expect((view as unknown as { reply: { getValue(): string } }).reply.getValue().trim()).toBe("/transcript");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

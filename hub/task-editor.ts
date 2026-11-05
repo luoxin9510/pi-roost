@@ -1,7 +1,7 @@
 // M17: the agent view's task input is pi's editor (pi-tui Editor): several lines
 // (Shift+Enter), a long paste folded into a marker, undo, a kill ring, word moves, as
 // in pi's own prompt. The view keeps Enter, ↑↓ between rows and its other keys.
-import { Editor, type EditorTheme, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type AutocompleteProvider, Editor, type EditorTheme, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export interface TaskEditorTheme {
 	border: (s: string) => string;
@@ -43,6 +43,21 @@ export class TaskEditor {
 
 	handleInput(data: string): void {
 		this.ed.handleInput(data);
+	}
+
+	/** M48: the hint shown while the box is empty (a peek's says what Enter does for that session). */
+	setPlaceholder(text: string): void {
+		this.placeholder = text;
+	}
+
+	/** M48: pi's own completion menu (`/` commands, `@` paths), as in pi's prompt. */
+	setAutocomplete(provider: AutocompleteProvider): void {
+		this.ed.setAutocompleteProvider(provider);
+	}
+
+	/** The completion menu is open: ↑↓, Tab, Enter and Esc are its (pi-tui keeps the state private). */
+	autocompleteOpen(): boolean {
+		return (this.ed as unknown as { autocompleteState?: unknown }).autocompleteState != null;
 	}
 
 	/** Replace the last `count` characters of the text (an `@dir` being completed); the cursor goes to the end. */

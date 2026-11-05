@@ -1148,3 +1148,20 @@ describe("worktrees through the daemon (M10)", () => {
 		expect(git(r, "branch", "--list", wt.branch)).toContain(wt.branch);
 	});
 });
+
+describe("M48: the row's task and queued replies", () => {
+	it("list rows carry the task after -- and the user replies waiting for the session", async () => {
+		await startDaemon();
+		const p = await foreground("parent");
+		const { id } = await p.c.request("spawn", { launch: { ...launch("sleep 30", "child"), command: ["/bin/sh", "-c", "sleep 30", "--", "write the tests"] } });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === id)?.pid);
+		const w = await worker(id);
+		const rowNow = async () => (await p.c.request("list", {})).jobs.find((j) => j.id === id)!;
+		expect(await rowNow()).toMatchObject({ task: "write the tests", queued: 0 });
+		await p.c.request("reply", { id, text: "hi" });
+		expect((await rowNow()).queued).toBe(1);
+		const item = await waitFor(() => w.events.find((e) => e.event === "deliver" && (e as { text?: string }).text === "hi") as { seq: number } | undefined);
+		await w.c.request("ack", { id, token: w.token, seq: item.seq });
+		await waitFor(async () => (await rowNow()).queued === 0);
+	});
+});

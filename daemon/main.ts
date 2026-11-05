@@ -1024,6 +1024,14 @@ function hostGone(ref: HostRef): boolean {
 // pi whose first report is late, still has to show (and attach) once its host is up
 const shellPids = new Map<string, number | null>();
 
+/** M48: the task a job was started on, for its row: the argument after `--`, what a terminal agent was typed, or the command itself. */
+function rowTask(rec: JobRecord): string | null {
+	const i = rec.command.indexOf("--");
+	const text = i >= 0 && str(rec.command[i + 1]) ? rec.command[i + 1]! : str(rec.term?.typeTask) ? rec.term.typeTask : rec.kind === "shell" ? rec.command.join(" ") : "";
+	const line = clipText(text);
+	return line ? (line.length > 200 ? `${line.slice(0, 199)}…` : line) : null;
+}
+
 function rowOf(id: string): JobRow | undefined {
 	const rec = recs.get(id);
 	const st = readState(id);
@@ -1071,6 +1079,9 @@ function rowOf(id: string): JobRow | undefined {
 		// M45: the concierge's suggested answer, while it waits for one
 		...(id in concierge.suggestions ? { suggested: suggestedFor(id, st) } : {}),
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
+		// M48: the task it was started on, and the user replies waiting for it (the peek shows both)
+		task: rowTask(rec),
+		queued: pendingReplies(id).filter((r) => !isAgentItem(r)).length,
 	};
 }
 

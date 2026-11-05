@@ -3,7 +3,21 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import type { HubTheme } from "./theme.ts";
-import { type Component, decodeKittyPrintable, Input, isKeyRelease, parseKey, stripTerminalSequences, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	type AutocompleteProvider,
+	CombinedAutocompleteProvider,
+	type Component,
+	decodeKittyPrintable,
+	Input,
+	isKeyRelease,
+	parseKey,
+	type SlashCommand,
+	stripTerminalSequences,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
@@ -20,6 +34,8 @@ import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
+import { screenPath } from "../lib/store.ts";
+import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
@@ -48,6 +64,24 @@ import {
 
 const MIN_TASK = 4; // DI-1
 const DOUBLE_PRESS_MS = 2000; // Ctrl+X delete, Ctrl+C exit
+
+/** M48: the commands a peek takes (`/…` in its reply box), for that session. */
+const PEEK_COMMANDS: { name: string; description: string; argumentHint?: string }[] = [
+	{ name: "stop", description: "stop it" },
+	{ name: "respawn", description: "start it again" },
+	{ name: "rm", description: "delete it (twice within 2 s)" },
+	{ name: "pin", description: "pin / unpin (a pinned session keeps running)" },
+	{ name: "rename", description: "rename it (bare: edit the name)", argumentHint: "name" },
+	{ name: "attach", description: "attach to it (→)" },
+	{ name: "model", description: "switch its model (bare: pick)", argumentHint: "provider/id" },
+	{ name: "thinking", description: "its thinking level (bare: pick)", argumentHint: "level" },
+	{ name: "name", description: "its own session name (pi's /name)", argumentHint: "name" },
+	{ name: "compact", description: "compact its context (pi's /compact)" },
+	{ name: "continue", description: "send: Continue where you left off." },
+	{ name: "log", description: "its events (newest first)" },
+	{ name: "transcript", description: "its transcript (a terminal agent: its screen)" },
+	{ name: "ask", description: "ask the concierge about it", argumentHint: "question" },
+];
 const RESTART_ASK_MS = 3000;
 const NOTICE_MS = 4000;
 const SPIN_MS = 150;
@@ -243,7 +277,8 @@ export class AgentView implements Component {
 	private help = false;
 	/** M17: pi's editor: several lines (Shift+Enter), long pastes folded. */
 	private input: TaskEditor;
-	private reply = new Input({ prompt: "reply › " });
+	/** M48: the reply box is an editor like the task box (lines, pastes, undo, completion). */
+	private reply: TaskEditor;
 	/** AV-K10: the row being renamed, edited in its own input. */
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
@@ -300,6 +335,11 @@ export class AgentView implements Component {
 			{ border: (s) => o.theme.fg("border", s), dim: (s) => o.theme.fg("dim", s), accent: (s) => o.theme.fg("accent", s) },
 			"describe a task and press Enter to start it in the background · Shift+Enter new line",
 		);
+		this.reply = new TaskEditor(o.tui, { border: (s) => o.theme.fg("border", s), dim: (s) => o.theme.fg("dim", s), accent: (s) => o.theme.fg("accent", s) }, "reply · Enter sends · / commands");
+		this.reply.focused = false;
+		// M48: pi's completion menu in both boxes: `/` the box's commands, `@` paths under its directory
+		this.input.setAutocomplete(this.completion(() => this.viewCommands(), () => this.dispatchCwd()));
+		this.reply.setAutocomplete(this.completion(() => this.peekCommands(), () => (this.peekId ? this.rows.get(this.peekId)?.cwd : undefined) ?? this.dispatchCwd()));
 		this.o = o;
 		this.origin = o.origin;
 		this.groupBy = o.groupBy ?? "state";
@@ -568,8 +608,9 @@ export class AgentView implements Component {
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
 		// M17: Ctrl+J (a bare LF) adds a line; a paste arriving in pieces goes to the editor whole
-		if (!this.peek && (data === "\n" || this.input.inPaste())) {
-			this.input.handleInput(data);
+		// (M48: the reply box too); the open completion menu takes its keys
+		if (data === "\n" || typing.inPaste() || (typing.autocompleteOpen() && (key === "tab" || key === "up" || key === "down" || key === "enter" || key === "escape"))) {
+			typing.handleInput(data);
 			this.o.tui.requestRender();
 			return;
 		}
@@ -611,8 +652,8 @@ export class AgentView implements Component {
 			case "ctrl+r":
 				return this.startRename();
 			case "ctrl+g":
-				if (this.peek) break;
-				return void this.editExternally();
+				// M48: the reply too
+				return void this.editExternally(typing);
 			case "alt+up":
 				return this.jumpHeader(-1);
 			case "alt+down":
@@ -623,8 +664,8 @@ export class AgentView implements Component {
 				return void this.reorder(1);
 			case "up":
 			case "down":
-				// M17: within a task of several lines the arrows move in the text
-				if (!this.peek && this.input.multiline() && !this.input.atEdge(key)) break;
+				// M17: within a task (M48: or a reply) of several lines the arrows move in the text
+				if (typing.multiline() && !typing.atEdge(key)) break;
 				return this.moveAndRender(key === "up" ? -1 : 1);
 			case "pageUp":
 				return this.moveAndRender(-10);
@@ -799,10 +840,10 @@ export class AgentView implements Component {
 	}
 
 	/** Ctrl+G: write the task in $VISUAL / $EDITOR (P2 row "Ctrl+G external editor"). */
-	private async editExternally(): Promise<void> {
+	private async editExternally(box: TaskEditor = this.input): Promise<void> {
 		const editor = process.env.VISUAL || process.env.EDITOR;
 		if (!editor) return this.say("set $VISUAL or $EDITOR to edit the task in an editor", "warning");
-		const current = this.input.getValue();
+		const current = box.getValue();
 		const { tui } = this.o;
 		let text: string | undefined;
 		let dir: string | undefined;
@@ -829,7 +870,7 @@ export class AgentView implements Component {
 		}
 		if (text === undefined) return this.say("editor exited with an error; task unchanged", "warning");
 		// M17: the editor keeps the lines
-		this.input.setValue(text);
+		box.setValue(text);
 		this.o.tui.requestRender();
 	}
 
@@ -1890,9 +1931,17 @@ export class AgentView implements Component {
 			return this.say("that session no longer exists", "warning");
 		}
 		if (!text || !this.client) return;
-		// M8: /model and /thinking in a peek change that session, with the same pickers as for new ones
-		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
-		if (setting) return this.sessionSetting(row, setting[1] as "model" | "thinking", (setting[2] ?? "").trim());
+		// M48: a /command in a peek is for that session (M8: /model and /thinking among them)
+		const cmd = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+		if (cmd) {
+			try {
+				await this.peekCommand(row, cmd[1]!.toLowerCase(), (cmd[2] ?? "").trim());
+			} catch (err) {
+				this.say((err as Error).message, "error");
+			}
+			return;
+		}
+		if (text.startsWith("!")) return this.say("shell commands are not sent to a session; attach (→) to run one", "warning");
 		try {
 			const r = await this.client.request("reply", { id: row.id, text, mode });
 			this.reply.setValue("");
@@ -1906,6 +1955,189 @@ export class AgentView implements Component {
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
+	}
+
+	/** M48: a `/command` typed in a peek acts on that session (the keys' code, by name). */
+	private async peekCommand(row: JobRow, name: string, arg: string): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		const done = () => {
+			this.reply.setValue("");
+			this.o.tui.requestRender();
+		};
+		switch (name) {
+			case "model":
+			case "thinking":
+				// M8: with the same pickers as for new sessions
+				return this.sessionSetting(row, name, arg);
+			case "stop":
+				done();
+				if (row.pid === null) return this.say(`${row.name} is not running`, "warning");
+				await client.request("stop", { id: row.id });
+				return this.say(`stopping · ${row.name}`, "warning");
+			case "respawn": {
+				done();
+				const r = await client.request("respawn", { id: row.id });
+				const first = r.results[0];
+				return first?.started ? this.say(`starting ${row.name} again`, "success") : this.say(first?.error ?? `${row.name} was not started`, "warning");
+			}
+			case "rm": {
+				// twice within 2 s, as Ctrl+X Ctrl+X
+				done();
+				const now = Date.now();
+				if (this.armedStop?.id === row.id && now - this.armedStop.at < DOUBLE_PRESS_MS) {
+					this.armedStop = undefined;
+					const res = await client.request("rm", { id: row.id });
+					this.closePeek();
+					return this.say(`deleted · ${row.name}${res.worktree ? ` · ${cleanupText(res.worktree)}` : ""}`);
+				}
+				this.armedStop = { id: row.id, at: now };
+				return this.say(`/rm again within 2 s to delete ${row.name}${row.pid !== null ? " (it is running: it is stopped first)" : ""}`, "warning");
+			}
+			case "pin":
+				done();
+				return this.togglePin();
+			case "rename": {
+				done();
+				if (!arg) return this.startRename();
+				await client.request("rename", { id: row.id, name: arg });
+				return this.say(`renamed · ${arg}`, "success");
+			}
+			case "attach":
+				done();
+				return this.attachSelected();
+			case "log":
+				done();
+				return this.showLog((e) => e.id === row.id || e.whoId === row.id, `Log · ${oneLine(row.name)} (newest first)`);
+			case "transcript":
+				done();
+				return this.showTranscript(row);
+			case "continue":
+				this.reply.setValue("Continue where you left off.");
+				return this.sendReply("followUp");
+			case "ask":
+				done();
+				if (!arg) return this.say("/ask <a question about this session>", "warning");
+				return this.ask(`About the session ${row.name} (${row.id}): ${arg}`);
+			case "name":
+			case "compact": {
+				// pi's own, run in the session by the worker
+				if (name === "name" && !arg) return this.say("/name <the session's own name>", "warning");
+				if (row.kind === "shell") return this.say(`/${name} is for a pi session`, "warning");
+				const r = await client.request("reply", { id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` });
+				done();
+				if (r.delivered) return this.say(`/${name} · ${row.name}`, "success");
+				return this.say(r.saved ? `saved; it runs when ${row.name} starts again` : `not delivered: ${row.name} is not running`, "warning");
+			}
+			default:
+				return this.say(`not a command for a session: /${name} · ${PEEK_COMMANDS.map((c) => `/${c.name}`).join(" ")}`, "warning");
+		}
+	}
+
+	/** M48 /transcript in a peek: its transcript (a terminal agent: its screen), the end first in view; r reloads. */
+	private showTranscript(row: JobRow): void {
+		const view = this;
+		const t = this.o.theme;
+		let body: string[] = [];
+		let top = -1; // -1: the end
+		const load = (width: number): string[] => {
+			const inner = Math.max(1, width - 2);
+			const out: string[] = [];
+			try {
+				if (row.kind === "shell" || !row.sessionFile) {
+					for (const l of readFileSync(screenPath(row.id), "utf8").trimEnd().split("\n")) out.push(truncateToWidth(l.replace(CONTROL, " "), inner));
+				} else {
+					const tail = readTail(row.sessionFile);
+					for (const it of transcriptItems(tail.text, tail.truncated)) {
+						const text =
+							it.kind === "tool"
+								? `⚙ ${it.name}${it.args ? ` ${it.args}` : ""}${it.result ? `\n  → ${it.result}` : ""}`
+								: it.kind === "user"
+									? `you: ${it.text}`
+									: it.kind === "assistant"
+										? `› ${it.text}`
+										: `· ${it.text}`;
+						// a long result shows its first lines
+						for (const l of text.replace(CONTROL, " ").split("\n").slice(0, 24)) for (const w of wrap(l, inner)) out.push(it.kind === "assistant" ? w : t.fg(it.kind === "user" ? "accent" : it.kind === "tool" && it.error ? "error" : "muted", w));
+						out.push("");
+					}
+				}
+			} catch {
+				out.push(t.fg("dim", "(nothing to read yet)"));
+			}
+			return out.length > 0 ? out : [t.fg("dim", "(empty)")];
+		};
+		this.overlay = {
+			render(width: number) {
+				if (body.length === 0) body = load(width);
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				const all = [t.bold(truncateToWidth(`Transcript · ${oneLine(row.name)}`, width)), "", ...body];
+				if (top < 0) top = Math.max(0, all.length - room);
+				top = Math.max(0, Math.min(top, Math.max(0, all.length - room)));
+				return [...all.slice(top, top + room), "", t.fg("dim", truncateToWidth("r reload · ↑↓ PgUp PgDn scroll · Esc close", width))];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (data === "r") {
+					body = [];
+					top = -1;
+				} else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
+				else if (key === "pageUp") top = Math.max(0, top - 10);
+				else if (key === "pageDown") top += 10;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	/** M48: pi's own completion (pi-tui) for a box: `/` its commands, `@` paths under its directory (fuzzy with fd). */
+	private completion(commands: () => SlashCommand[], base: () => string): AutocompleteProvider {
+		const fresh = () => new CombinedAutocompleteProvider(commands(), base());
+		return {
+			triggerCharacters: ["/", "@"],
+			getSuggestions: (lines, line, col, options) => fresh().getSuggestions(lines, line, col, options),
+			applyCompletion: (lines, line, col, item, prefix) => fresh().applyCompletion(lines, line, col, item, prefix),
+			shouldTriggerFileCompletion: (lines, line, col) => fresh().shouldTriggerFileCompletion(lines, line, col),
+		};
+	}
+
+	/** The task box's commands: the view's, then pi's prompt templates and skills (an agent's first prompt). */
+	private viewCommands(): SlashCommand[] {
+		const levels = () => [...THINKING_LEVELS].map((v) => ({ value: v, label: v }));
+		const models = () => (this.o.models?.() ?? []).map((m) => ({ value: m, label: m }));
+		const names = (list: string[]) => list.map((n) => ({ value: n, label: n }));
+		const starts = (items: { value: string; label: string; description?: string }[], prefix: string) => items.filter((i) => i.value.toLowerCase().startsWith(prefix.toLowerCase()));
+		const own: SlashCommand[] = [
+			{ name: "model", description: "the model for new sessions", argumentHint: "provider/id | default", getArgumentCompletions: (p) => starts(models(), p) },
+			{ name: "thinking", description: "the thinking level for new sessions", argumentHint: "level", getArgumentCompletions: (p) => starts(levels(), p) },
+			{ name: "worktree", description: "new sessions in their own git worktree", argumentHint: "on | off" },
+			{ name: "resume", description: "pick a session to resume in the background" },
+			{ name: "usage", description: "what the sessions spent" },
+			{ name: "log", description: "what happened lately" },
+			{ name: "concierge", description: "the hub's own agent", argumentHint: "on | off | status | log | attach | ask | answer | act | undo | orders", getArgumentCompletions: (p) => starts(names(["on", "off", "status", "log", "attach", "ask", "answer", "act", "undo", "orders"]), p) },
+			{ name: "ask", description: "ask the concierge", argumentHint: "question" },
+			{ name: "schedule", description: "a task on a schedule", argumentHint: "<name> <when> <task> | run | pause | resume | rm" },
+			{ name: "fanout", description: "the next task once per model", argumentHint: "model model … | off" },
+			{ name: "compare", description: "the fan-out side by side" },
+			{ name: "preset", description: "launch presets", argumentHint: "name | save name | rm name | off" },
+			{ name: "profile", description: "new sessions run another agent", argumentHint: "name | pi" },
+			{ name: "exit", description: "leave the view" },
+		];
+		const pi = (this.o.commands?.() ?? []).filter((c) => c.source === "prompt" || c.source === "skill").map((c) => ({ name: c.name, description: `pi: ${c.source}` }));
+		return [...own, ...pi];
+	}
+
+	/** A peek's commands: for that session. */
+	private peekCommands(): SlashCommand[] {
+		const starts = (items: { value: string; label: string }[], prefix: string) => items.filter((i) => i.value.toLowerCase().startsWith(prefix.toLowerCase()));
+		return PEEK_COMMANDS.map((c) =>
+			c.name === "model"
+				? { ...c, getArgumentCompletions: (p: string) => starts((this.o.models?.() ?? []).map((m) => ({ value: m, label: m })), p) }
+				: c.name === "thinking"
+					? { ...c, getArgumentCompletions: (p: string) => starts([...THINKING_LEVELS].map((v) => ({ value: v, label: v })), p) }
+					: { ...c },
+		);
 	}
 
 	/** M8: switch a session's model or thinking level from its peek. */
@@ -2819,20 +3051,29 @@ export class AgentView implements Component {
 		const t = this.o.theme;
 		const inner = Math.max(1, width - 4);
 		const lines: string[] = [];
+		const blocked = row.state === "blocked";
+		// what it asks, said last, or failed with: first, whole (a failed row's error is not cut short)
 		const sentence = sentenceOf(row).replace(CONTROL, " ");
-		for (const chunk of wrap(sentence, inner)) lines.push(`    ${chunk}`);
+		for (const chunk of wrap(sentence, inner)) lines.push(`    ${row.state === "failed" ? t.fg("error", chunk) : chunk}`);
 		row.choices.forEach((c, i) => lines.push(`    ${t.fg("accent", `${i + 1}.`)} ${truncateToWidth(oneLine(c), Math.max(1, inner - 4))}`));
 		// M45: the concierge's suggested answer, with its reason
-		if (row.suggested && row.state === "blocked") {
+		if (row.suggested && blocked) {
 			const why = row.suggested.why ? ` · ${oneLine(row.suggested.why)}` : "";
 			lines.push(`    ${t.fg("warning", "concierge suggests:")} ${truncateToWidth(`${oneLine(row.suggested.text)}${why}`, Math.max(1, inner - 20))} ${t.fg("dim", "(Ctrl+Y sends · Ctrl+E edits)")}`);
 		}
+		// M48: the task it was started on; where; since when
+		if (row.task) lines.push(`    ${t.fg("dim", truncateToWidth(`task: ${oneLine(row.task)}`, inner))}`);
+		const when = row.endedAt
+			? `${row.state} ${formatDuration(now - row.endedAt)} ago · took ${formatDuration(row.endedAt - row.startedAt)}`
+			: `started ${formatDuration(now - row.startedAt)} ago`;
+		lines.push(`    ${t.fg("dim", truncateToWidth(`${tildeDir(row.cwd)} · ${when}`, inner))}`);
 		// a blocked row's status is always "waiting": say it once, with how long
 		const facts: string[] = [
-			row.state === "blocked"
+			blocked
 				? `needs input · waiting ${formatDuration(now - row.stateSince)}`
 				: row.state + (row.status ? ` · ${row.status}` : ""),
 		];
+		if (row.queued) facts.push(`${row.queued} ${row.queued === 1 ? "reply" : "replies"} queued`);
 		if (row.parentSession) {
 			const parent = [...this.rows.values()].find((r) => r.sessionFile === row.parentSession && r.id !== row.id);
 			facts.push(`child of ${parent ? oneLine(parent.name) : "a foreground session"}`);
@@ -2852,22 +3093,70 @@ export class AgentView implements Component {
 		}
 		facts.push(row.id);
 		lines.push(`    ${t.fg("dim", truncateToWidth(facts.join(" · "), inner))}`);
-		// M8: model, thinking and context window on a line of their own
+		// M8: model, thinking and context window on a line of their own; M48: what it cost
 		const model = modelFacts(row);
+		const u = row.usage;
+		if (u && u.cost > 0) model.push(`${u.cost < 0.01 ? "<$0.01" : `$${u.cost.toFixed(2)}`}${u.sub ? " (sub)" : ""} · ${kTokens(u.input + u.output + u.cacheRead + u.cacheWrite)} tokens`);
 		if (model.length > 0) {
 			const tone = row.context ? rowDetailsOf(row)?.tone ?? "dim" : "dim";
 			lines.push(`    ${t.fg(tone, truncateToWidth(model.join(" · "), inner))}`);
 		}
 		if (row.waitingFor === "dialog") lines.push(`    ${t.fg("warning", "a dialog is open: attach (→) to answer it; replies wait for it")}`);
+		// M48: the last things it said and did (a terminal agent: its screen), live while the peek is open
+		for (const l of this.tailLines(row, inner, now)) lines.push(`    ${l}`);
+		// M48: the box says what Enter does for a session in this state
+		this.reply.setPlaceholder(
+			blocked
+				? "answer · Enter sends · 1-9 picks a choice · / commands"
+				: row.state === "failed"
+					? "Enter sends your text · /continue picks it up where it left off · / commands"
+					: row.state === "working"
+						? "reply · Enter joins its work · Alt+Enter after it · / commands"
+						: "reply · Enter sends (a session that ended starts again) · / commands",
+		);
 		for (const l of this.reply.render(inner)) lines.push(`    ${l}`);
 		return lines;
+	}
+
+	/** M48: the tail of its transcript (or its screen), re-read at most every 2 s; as many lines as the terminal has room for. */
+	private tails = new Map<string, { at: number; key: string; lines: string[] }>();
+	private tailLines(row: JobRow, inner: number, now: number): string[] {
+		const t = this.o.theme;
+		const max = Math.max(3, Math.min(12, Math.floor((this.o.tui.terminal.rows || 30) / 4)));
+		const cached = this.tails.get(row.id);
+		if (cached && now - cached.at < 2000) return cached.lines.slice(-max);
+		let key = "";
+		const out: string[] = [];
+		try {
+			if (row.kind === "shell" || !row.sessionFile) {
+				const screen = readFileSync(screenPath(row.id), "utf8");
+				for (const l of screen.trimEnd().split("\n")) if (l.trim()) out.push(t.fg("muted", truncateToWidth(oneLine(l), inner)));
+			} else {
+				const tail = readTail(row.sessionFile);
+				key = `${tail.size}:${tail.mtimeMs}`;
+				if (cached?.key === key) {
+					cached.at = now;
+					return cached.lines.slice(-max);
+				}
+				for (const it of transcriptItems(tail.text, tail.truncated)) {
+					if (it.kind === "user") out.push(t.fg("accent", truncateToWidth(`you: ${oneLine(it.text)}`, inner)));
+					else if (it.kind === "assistant") out.push(truncateToWidth(`› ${oneLine(it.text)}`, inner));
+					else if (it.kind === "tool") out.push(t.fg(it.error ? "error" : "muted", truncateToWidth(`⚙ ${it.name}${it.args ? ` ${oneLine(it.args)}` : ""}`, inner)));
+					else out.push(t.fg("dim", truncateToWidth(`· ${oneLine(it.text)}`, inner)));
+				}
+			}
+		} catch {
+			// nothing written yet (a session file pi has not created, no screen kept)
+		}
+		this.tails.set(row.id, { at: now, key, lines: out.slice(-40) });
+		return out.slice(-max);
 	}
 
 	private footer(): string {
 		if (this.renaming) return "Enter rename · Esc cancel";
 		if (this.origin) return "Esc/Enter back to your conversation · ↑↓ select · Space peek · ? keys";
 		if (this.filter()) return "filtering (s: n: o: a: #PR) · Enter/→ attach · Esc clear";
-		if (this.peek) return "Enter send · Alt+Enter after its work · 1-9 pick · → attach · Esc close · ? keys";
+		if (this.peek) return "Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys";
 		const n = this.markedRows().length;
 		if (n > 0) return `${n} marked · type, Enter: send to all · /model /thinking · Ctrl+T pin · Ctrl+X stop · Ctrl+O mark · Esc unmark`;
 		return "↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit";
@@ -2907,6 +3196,9 @@ export class AgentView implements Component {
 			["Ctrl+O", "mark the row (on a header: the group) for a batch"],
 			["marked: type, Enter", "send it to every marked session (/model, /thinking too)"],
 			["in a peek: Alt+Enter", "send after its current work (Enter: joins it, as in pi)"],
+			["in a peek: /…", "that session: /stop /respawn /rm /pin /rename /attach /model /thinking /name /compact /continue /log /transcript /ask"],
+			["Tab · /", "complete: / the commands, @ paths (pi's menu: ↑↓ choose, Enter or Tab take)"],
+			["Ctrl+G · Ctrl+J", "edit the task or reply in $VISUAL · a new line"],
 			["marked: Ctrl+X Ctrl+T", "stop / delete, pin / unpin all of them"],
 			["Ctrl+R", "rename"],
 			["Shift+↑ Shift+↓", "move the row within its group"],
@@ -3017,6 +3309,18 @@ export function fitScreen(
 
 // Control characters other than newlines would corrupt the line-based renderer.
 const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
+
+/** M48: a directory with the home as `~` (the peek's "where"). */
+function tildeDir(dir: string): string {
+	const home = process.env.HOME;
+	if (!home) return dir;
+	return dir === home ? "~" : dir.startsWith(`${home}/`) ? `~${dir.slice(home.length)}` : dir;
+}
+
+/** M48: a token count in short (`34k`, `1.2M`). */
+function kTokens(n: number): string {
+	return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
 
 /** Put text in an input with the cursor after it (setValue leaves the cursor where it was). */
 function fill(input: { setValue(v: string): void; handleInput(d: string): void }, value: string): void {
