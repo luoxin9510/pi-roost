@@ -26,6 +26,11 @@ export interface AgentProfile {
 	settleMs?: number;
 	/** Extra environment; names on the deny list are dropped like any job's. */
 	env?: Record<string, string>;
+	/**
+	 * M31: it speaks the roost agent protocol (docs/protocol.md): it gets the job's identity,
+	 * its reports set the row, and replies reach it as protocol replies, not typed in.
+	 */
+	protocol?: boolean;
 }
 
 /** Names the profiles may not take: roost's own job kinds. */
@@ -86,6 +91,10 @@ export function profileFrom(v: unknown): AgentProfile | undefined {
 	if (o.settleMs !== undefined) {
 		if (typeof o.settleMs !== "number" || !Number.isInteger(o.settleMs) || o.settleMs < 500 || o.settleMs > 60_000) return undefined;
 		p.settleMs = o.settleMs;
+	}
+	if (o.protocol !== undefined) {
+		if (typeof o.protocol !== "boolean") return undefined;
+		if (o.protocol) p.protocol = true;
 	}
 	if (o.env !== undefined) {
 		if (!o.env || typeof o.env !== "object" || Array.isArray(o.env)) return undefined;

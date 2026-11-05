@@ -250,5 +250,6 @@ export function buildProfileLaunch(i: ProfileLaunchInput): DispatchArgs {
 		term: profileTerm(i.def, i.task),
 		...(resume.length > 0 ? { resumeCommand: resume } : {}),
 		...(taskInArgv ? { taskInArgv } : {}),
+		...(i.def.protocol ? { protocol: true } : {}),
 	};
 }

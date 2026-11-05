@@ -41,6 +41,7 @@ import {
 	type WorkerReport,
 	contextFrom,
 	encodeLine,
+	PROTOCOL_VERSION,
 } from "../lib/protocol.ts";
 import { usageFrom } from "../lib/usage.ts";
 import {
@@ -56,6 +57,8 @@ import {
 	readWorkerPid,
 	removeJob,
 	isProfileJob,
+	isProtocolJob,
+	isTermJob,
 	respawnCommand,
 	screenPath,
 	termPath,
@@ -138,6 +141,8 @@ interface Conn {
 	peer?: PeerIdentity;
 	/** M9: the worker on this connection takes agent items (older workers would inject them as user input). */
 	agentItems?: boolean;
+	/** M31: what the agent on this connection said in its hello. */
+	hello?: { name: string; version: string | null; capabilities: string[] };
 }
 
 /** M9: connected foreground pi sessions, by peer id. */
@@ -194,8 +199,8 @@ function rowOf(id: string): JobRow | undefined {
 		choices: Array.isArray(st.choices) ? st.choices.filter((c): c is string => typeof c === "string") : [],
 		model: text(st.model) ?? rec.model ?? null,
 		thinking: text(st.thinking) ?? rec.thinking ?? null,
-		context: rec.kind === "shell" ? null : contextFrom(st.context),
-		usage: rec.kind === "shell" ? null : usageFrom(st.usage),
+		context: rec.kind === "shell" && !isProtocolJob(rec) ? null : contextFrom(st.context),
+		usage: rec.kind === "shell" && !isProtocolJob(rec) ? null : usageFrom(st.usage),
 		error: text(st.error),
 		stateSince: typeof st.stateSince === "number" ? st.stateSince : (st.endedAt ?? st.startedAt),
 		reaped: !live && st.reaped === true,
@@ -209,8 +214,15 @@ function rowOf(id: string): JobRow | undefined {
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch, base: rec.worktree.base } : null,
 		fanout: rec.fanout ?? null,
 		profile: rec.profile ?? (rec.kind === "shell" ? "shell" : "pi"),
+		...(agentCaps(st) ? { capabilities: agentCaps(st) } : {}),
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
+}
+
+/** M31: the capabilities a job's agent said it has, from state.json. */
+function agentCaps(st: JobState): string[] | undefined {
+	const c = (st.agentInfo as { capabilities?: unknown } | undefined)?.capabilities;
+	return Array.isArray(c) ? c.filter(str) : undefined;
 }
 
 const MAX_PR_LINKS = 20;
@@ -479,7 +491,10 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 	if (recs.get(id)?.kind === "shell") {
 		// DI-6: stopped, or the command's exit status; the row goes away a while later
 		if (stopReq) patch.state = "stopped";
-		else {
+		else if (isProtocolJob(recs.get(id)) && ex?.code === 0 && st.state === "failed" && typeof st.reportedAt === "number") {
+			// M31: an agent that said it failed and then exited cleanly failed
+			patch.state = "failed";
+		} else {
 			patch.state = ex && ex.code === 0 ? "done" : "failed";
 			if (patch.state === "failed") patch.error = ex ? `exited with code ${ex.code}${ex.signal ? ` (${ex.signal})` : ""}` : "host vanished";
 		}
@@ -499,7 +514,8 @@ function finalize(id: string, why: string, opts: { startup?: boolean } = {}): vo
 		}
 		// the host flushed its screen on exit: the last output line is the result
 		const line = isProfileJob(rec) ? (readTermSignals(termPath(id))?.title ?? lastScreenLine(id)) : lastScreenLine(id);
-		if (line) patch.summary = line;
+		// M31: a protocol agent's row keeps what it last said
+		if (line && !(isProtocolJob(rec) && typeof st.reportedAt === "number")) patch.summary = line;
 	} else if (reaped) {
 		// DM-4: an idle worker stopped to save resources; the row stays as it was
 		patch.state = st.state === "working" ? "done" : st.state;
@@ -705,7 +721,7 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		sessionFile: shell ? "" : a.sessionFile,
 		command: a.command,
 		...(shell ? { kind: "shell" as const } : {}),
-		...(profile ? { profile, term: { ...term!, typeTask: undefined }, ...(resumeCommand ? { resumeCommand } : {}) } : {}),
+		...(profile ? { profile, term: { ...term!, typeTask: undefined }, ...(resumeCommand ? { resumeCommand } : {}), ...(a.protocol === true ? { agentProtocol: true } : {}) } : {}),
 		env,
 		...(str(a.model) ? { model: a.model } : {}),
 		...(str(a.thinking) ? { thinking: a.thinking } : {}),
@@ -728,7 +744,9 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		jobToken: newToken(),
 		...(shell ? { status: "busy" } : {}),
 		// M30: a task given in argv counts as typed; one typed in waits for the first quiet
-		...(profile ? { termInputAt: now, termTyped: a.taskInArgv === true, ...(term!.typeTask ? { typeTask: term!.typeTask } : {}) } : {}),
+		// M31: a protocol agent gets it as its first reply instead
+		...(profile && a.protocol !== true ? { termInputAt: now, termTyped: a.taskInArgv === true, ...(term!.typeTask ? { typeTask: term!.typeTask } : {}) } : {}),
+		...(profile && a.protocol === true && term!.typeTask ? { replySeq: 1, pendingReplies: [{ seq: 1, text: term!.typeTask }] } : {}),
 	});
 	recs.set(id, rec);
 	try {
@@ -849,7 +867,13 @@ async function respawn(
 	try {
 		const shell = rec.kind === "shell";
 		// M30: a level 0 agent takes its prompt typed in, once it is up and quiet
-		const typeTask = isProfileJob(rec) && opts.prompt ? opts.prompt : undefined;
+		const typeTask = isTermJob(rec) && opts.prompt ? opts.prompt : undefined;
+		// M31: a protocol agent takes the prompt as a reply, waiting for its first report
+		if (isProtocolJob(rec) && opts.prompt) {
+			const cur = readState(id);
+			const seq = (typeof cur?.replySeq === "number" ? cur.replySeq : 0) + 1;
+			updateState(id, { replySeq: seq, pendingReplies: [...pendingReplies(id), { seq, text: opts.prompt }] });
+		}
 		let prompt = shell ? undefined : opts.prompt;
 		if (roster.has(id)) {
 			// a running command is never killed to be run again (respawn --all after an upgrade)
@@ -952,7 +976,14 @@ function shellTick(): void {
 			continue;
 		}
 		if (isProfileJob(rec)) {
-			profileTick(id, rec, st, now);
+			// M31: a protocol agent's reports set its row; its terminal only until the first one
+			if (isProtocolJob(rec) && typeof st.reportedAt === "number") {
+				const pid = readWorkerPid(id) ?? null;
+				if (shellPids.get(id) !== pid) {
+					shellPids.set(id, pid);
+					pushJob(id);
+				}
+			} else profileTick(id, rec, st, now);
 			continue;
 		}
 		const line = lastScreenLine(id);
@@ -1201,8 +1232,8 @@ async function reply(
 		return { delivered: live, saved: false, stopped: live };
 	}
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
-	if (isProfileJob(recs.get(id))) return replyToProfile(id, text, live);
-	if (recs.get(id)?.kind === "shell") throw new OpError("unsupported", "a shell job takes no replies; attach to type into it");
+	if (isTermJob(recs.get(id))) return replyToProfile(id, text, live);
+	if (recs.get(id)?.kind === "shell" && !isProtocolJob(recs.get(id))) throw new OpError("unsupported", "a shell job takes no replies; attach to type into it");
 	const conn = workerConns.get(id);
 	const connected = live && !!conn && !conn.sock.destroyed;
 	// PK-5: commands only make sense live; plain replies wait for the worker.
@@ -1259,6 +1290,23 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
 	}
 }
 
+/** M31: what the daemon offers agents beyond report, ack and hello. */
+const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback"];
+
+/**
+ * M31: an agent's hello. Informational (a report is what proves a job): the daemon keeps
+ * what the agent can do and answers with its own protocol and capabilities. A newer
+ * protocol than this daemon's is answered with this one's: the agent decides.
+ */
+function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabilities?: unknown } | undefined): import("../lib/protocol.ts").HelloResult {
+	if (typeof args?.protocol !== "number" || !Number.isInteger(args.protocol) || args.protocol < 1) throw new OpError("bad_request", "protocol must be a version number");
+	const a = (args.agent && typeof args.agent === "object" ? args.agent : {}) as { name?: unknown; version?: unknown };
+	const name = str(a.name) ? a.name.slice(0, 64) : "unknown";
+	const caps = Array.isArray(args.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
+	conn.hello = { name, version: str(a.version) ? a.version.slice(0, 40) : null, capabilities: caps };
+	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: DAEMON_CAPABILITIES };
+}
+
 function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?: Partial<WorkerReport> } | undefined): void {
 	const id = args?.id;
 	if (!str(id) || !recs.has(id)) throw new OpError("not_found", `no such job: ${String(id)}`);
@@ -1306,6 +1354,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		// M11: a phone using the session keeps it from being reaped (never in the future)
 		...(typeof r.remoteAt === "number" && Number.isFinite(r.remoteAt) ? { remoteAt: Math.min(r.remoteAt, Date.now()) } : {}),
 		reportedAt: Date.now(),
+		// M31: what its agent said it can do (kept from the hello on this connection)
+		...(conn.hello ? { agentInfo: conn.hello } : {}),
 		attachSignal: r.attachSignal === true,
 		attachRepaint: r.attachRepaint === true,
 		// M16: links only grow (a respawned worker starts with none)
@@ -1331,6 +1381,13 @@ function rename(args: { id?: unknown; name?: unknown } | undefined): { id: strin
 	const next = { ...rec, name };
 	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
 	recs.set(id, next);
+	// M31: only pi takes /name; another agent's row is named by the daemon alone
+	if (rec.kind === "shell") {
+		updateState(id, { displayName: name });
+		pushJob(id);
+		log("info", "rename", { id, name });
+		return { id, name };
+	}
 	// The session takes the name too, whenever its worker next runs (now, or after a
 	// respawn): until it reports that name, the daemon's name wins over the report.
 	const st = readState(id);
@@ -1763,6 +1820,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 	switch (op) {
 		case "ping":
 			return { pid: process.pid, version: ROOST_VERSION };
+		case "hello":
+			return hello(conn, args);
 		case "list":
 			return { jobs: list(args) };
 		case "dispatch":

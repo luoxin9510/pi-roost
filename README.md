@@ -276,12 +276,15 @@ agent view (or a preset's `profile`). Its row is read from its terminal (its tit
 notifications, bell, whether the screen still moves, and patterns you give); replies are
 typed into it; attach, stop, delete, worktrees and presets work as for pi. Model,
 context, cost and transcript are not known for it. See [docs/profiles.md](docs/profiles.md).
+An agent you write can speak the [roost agent protocol](docs/protocol.md) instead
+(TypeScript `pi-roost/agent`, Python `sdk/python/roost_agent.py`): then it reports its own
+state and takes replies directly.
 
 pi-roost 也能运行它没有专门代码的终端 agent（Claude Code、Codex、你自己的 CLI）：在你的
 `roost.json` 的 `agentProfiles` 里描述它，然后在 agent 视图里 `/profile 名字`（或在预设里写
 `profile`）。它的行状态从终端读出（标题、通知、响铃、屏幕是否还在动，以及你给的正则）；回复会被
 打进它的终端；进入、停止、删除、worktree 和预设都和 pi 一样。它的模型、上下文、花费和记录无从得知。
-详见 [docs/profiles.md](docs/profiles.md)。
+详见 [docs/profiles.md](docs/profiles.md)。你自己写的 agent 也可以改讲 [roost agent 协议](docs/protocol.md)（TypeScript 用 `pi-roost/agent`，Python 用 `sdk/python/roost_agent.py`），这样它自己上报状态、直接接收回复。
 
 ## Worktrees · 独立 worktree
 

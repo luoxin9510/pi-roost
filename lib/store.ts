@@ -32,6 +32,8 @@ export interface JobRecord {
 	term?: ProfileTerm;
 	/** M30: the argv that reopens it (a reply to it once it has ended). */
 	resumeCommand?: string[];
+	/** M31: its agent speaks the roost agent protocol (identity, reports, protocol replies). */
+	agentProtocol?: boolean;
 	createdAt: number; // ms epoch
 	piVersion?: string;
 	roostVersion: string;
@@ -166,3 +168,9 @@ export function removeJob(id: string): void {
 
 /** M30: a level 0 agent (a profile job), as opposed to a plain shell command. */
 export const isProfileJob = (rec: Pick<JobRecord, "kind" | "profile"> | undefined): boolean => rec?.kind === "shell" && typeof rec.profile === "string" && rec.profile !== "";
+
+/** M31: a profile job whose agent speaks the protocol: a worker as pi's, not a terminal read from outside. */
+export const isProtocolJob = (rec: Pick<JobRecord, "kind" | "profile" | "agentProtocol"> | undefined): boolean => isProfileJob(rec) && rec?.agentProtocol === true;
+
+/** M30/M31: a job whose terminal roost reads and types into (a profile job that does not speak the protocol). */
+export const isTermJob = (rec: Pick<JobRecord, "kind" | "profile" | "agentProtocol"> | undefined): boolean => isProfileJob(rec) && rec?.agentProtocol !== true;

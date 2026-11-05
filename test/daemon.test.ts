@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -947,4 +947,72 @@ describe("M30 level 0 agents (profiles)", () => {
 		await expect(client.request("dispatch", { ...agent(), kind: undefined, sessionFile: join(work, "x.jsonl") })).rejects.toMatchObject({ code: "bad_request" });
 		await expect(client.request("dispatch", agent({ profile: "../x" }))).rejects.toMatchObject({ code: "bad_request" });
 	});
+});
+
+describe("M31 the agent protocol", () => {
+	it("hello: the daemon answers with its protocol and capabilities; a bad one is refused", async () => {
+		const { client } = await startDaemon();
+		const r = await client.request("hello", { protocol: 1, agent: { name: "x" }, capabilities: ["report"] });
+		expect(r).toMatchObject({ protocol: 1, daemon: { name: "roost" } });
+		expect(r.capabilities).toContain("replies");
+		// a newer protocol is answered with this one: the agent decides
+		expect((await client.request("hello", { protocol: 7 })).protocol).toBe(1);
+		await expect(client.request("hello", { protocol: "one" } as never)).rejects.toMatchObject({ code: "bad_request" });
+	});
+
+	const hasPython = (() => {
+		try {
+			return spawnSync("python3", ["--version"]).status === 0;
+		} catch {
+			return false;
+		}
+	})();
+	const agents = [
+		{ lang: "TypeScript", command: () => [process.execPath, resolve("test/fixtures/agent-ts.ts")], name: "scripted-ts" },
+		{ lang: "Python", command: () => ["python3", resolve("test/fixtures/agent-py.py")], name: "scripted-py", python: true },
+	];
+	for (const a of agents) {
+		it.skipIf("python" in a && !hasPython)(`conformance (${a.lang} client): first task as a reply, reports, acks, a daemon restart, exit`, async () => {
+			const first = await startDaemon();
+			const { id } = await first.client.request("dispatch", {
+				cwd: work,
+				sessionFile: "",
+				kind: "shell",
+				profile: "scripted",
+				protocol: true,
+				command: a.command(),
+				env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+				name: "scripted",
+				origin: "dispatch",
+				term: { submit: "\r", settleMs: 600, typeTask: "first" },
+			});
+			const until = async (c: DaemonClient, pred: (r: JobRow) => boolean, timeout = 15000) =>
+				waitFor(async () => {
+					const r = await find(c, id);
+					return r && pred(r) ? r : undefined;
+				}, timeout);
+			// the first task arrives as reply 1; its reports set the row; what it said in its hello is kept
+			const did = await until(first.client, (r) => r.summary === "did first (#1)");
+			expect(did).toMatchObject({ state: "done", status: "idle", model: "scripted-1", profile: "scripted" });
+			expect(did.capabilities).toEqual(expect.arrayContaining(["report", "replies", "usage"]));
+			await waitFor(() => (readState(id)?.pendingReplies as unknown[] | undefined)?.length === 0);
+			expect((readState(id)?.agentInfo as { name?: string }).name).toBe(a.name);
+			// a reply
+			expect(await first.client.request("reply", { id, text: "second" })).toMatchObject({ delivered: true });
+			await until(first.client, (r) => r.summary === "did second (#2)");
+			// the daemon restarts under it: it reconnects, says hello, reports, and takes replies once each
+			const before = Date.now();
+			await first.client.request("shutdown", { keepWorkers: true });
+			await waitFor(() => exited(first.proc));
+			const second = await startDaemon();
+			await waitFor(() => ((readState(id)?.reportedAt as number | undefined) ?? 0) > before);
+			expect(await second.client.request("reply", { id, text: "third" })).toMatchObject({ delivered: true });
+			await until(second.client, (r) => r.summary === "did third (#3)");
+			// it exits: done, with what it last said
+			await second.client.request("reply", { id, text: "exit" });
+			const ended = await until(second.client, (r) => r.endedAt !== null);
+			expect(ended).toMatchObject({ state: "done", summary: "bye" });
+			expect((readState(id)?.pendingReplies as unknown[] | undefined) ?? []).toEqual([]);
+		}, 60000);
+	}
 });
