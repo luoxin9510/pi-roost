@@ -46,7 +46,8 @@ Claude Code's documented behaviour.
 | M32 | [folders by layer: `adapters/pi/`, package exports](m32-layers.md) | next |
 | M33 | [the hub on its own: `pi-roost hub`](m33-hub.md) | next |
 | M38 | [interrupted runs carry on; a crash loop is bounded](m38-resume.md) | next |
+| M39 | [scheduled tasks](m39-schedules.md) | next |
 
-Next: the durable-inspired work from [any agent](any-agent.md) (scheduled tasks), measured by the stress run and the evals.
+Next: see [any agent](any-agent.md); measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).

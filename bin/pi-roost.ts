@@ -9,6 +9,7 @@ import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
 import { daemonLogPath, hostSocketPath, runtimeDir } from "../lib/paths.ts";
 import { findPiPackage, piCliOf, usePiPackage } from "../lib/pi-resolve.ts";
+import { agoText, untilText } from "../lib/schedule.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
@@ -18,6 +19,8 @@ const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
 usage:
   pi-roost hub [dir]               the agent view in this terminal, without a pi session
                                    (new sessions start in dir; needs pi on the PATH)
+  pi-roost schedule [list]         scheduled tasks (add them in the agent view: /schedule)
+  pi-roost schedule run|pause|resume|rm <name>
   pi-roost list [--all] [--subagents] [--cwd <dir>]
                                    list background sessions (as the agent view does)
   pi-roost attach <id|name>        open a background session (Ctrl+Z detaches);
@@ -157,6 +160,39 @@ async function cmdRespawn(args: string[]): Promise<void> {
 	});
 }
 
+/** M39: list and manage schedules (adding one needs pi: the agent view's /schedule). */
+async function cmdSchedule(args: string[]): Promise<void> {
+	const [verb = "list", name, ...more] = args;
+	if (verb === "list" && !name) {
+		const { schedules } = await withDaemon((c) => c.request("schedules", {}));
+		if (schedules.length === 0) {
+			process.stdout.write("no schedules (add one in the agent view: /schedule <name> <when> <task>)\n");
+			return;
+		}
+		const now = Date.now();
+		for (const s of schedules) {
+			const next = s.paused ? "paused" : s.nextAt === null ? "never" : `next ${untilText(s.nextAt, now)}`;
+			const last = s.lastRunAt ? `last ${agoText(now - s.lastRunAt)} ago (${s.lastJob})` : "not run yet";
+			process.stdout.write(`${s.name}  ${s.when}  ${next}  ${last}\n  ${s.task ?? ""}\n  ${s.cwd}${s.model ? `  ${s.model}` : ""}\n`);
+			if (s.lastSkip) process.stdout.write(`  skipped ${agoText(now - s.lastSkip.at)} ago: ${s.lastSkip.why}\n`);
+		}
+		return;
+	}
+	if (!name || more.length > 0 || !["run", "pause", "resume", "rm"].includes(verb)) throw new UsageError("schedule [list] | schedule run|pause|resume|rm <name>");
+	await withDaemon(async (c) => {
+		if (verb === "rm") {
+			await c.request("schedule-rm", { name });
+			process.stdout.write(`removed ${name}\n`);
+		} else if (verb === "run") {
+			const r = await c.request("schedule-run", { name });
+			process.stdout.write(`started ${r.id}\n`);
+		} else {
+			const r = await c.request("schedule-pause", { name, paused: verb === "pause" });
+			process.stdout.write(r.paused || r.nextAt === null ? `paused ${name}\n` : `${name}: next run ${untilText(r.nextAt)}\n`);
+		}
+	});
+}
+
 async function cmdList(args: string[]): Promise<void> {
 	const rows = await listRows(args);
 	process.stdout.write(formatList(rows, { subagents: args.includes("--subagents") || args.includes("--all"), width: process.stdout.columns || 100 }));
@@ -263,6 +299,10 @@ async function main(argv: string[]): Promise<number> {
 				break;
 			case "hub":
 				await cmdHub(rest);
+				break;
+			case "schedule":
+			case "schedules":
+				await cmdSchedule(rest);
 				break;
 			case "list":
 			case "ls":

@@ -28,6 +28,8 @@ export interface JobRecord {
 	kind?: "pi" | "shell";
 	/** M30: a level 0 agent run from this profile (kind "shell": no worker, no session file). */
 	profile?: string;
+	/** M39: started by this schedule. */
+	schedule?: string;
 	/** M30: how its screen is read and how replies are typed into it. */
 	term?: ProfileTerm;
 	/** M30: the argv that reopens it (a reply to it once it has ended). */

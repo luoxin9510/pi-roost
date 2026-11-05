@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { deferDurability, durable, readJson, setSyncErrorHandler, writeJsonAtomic } from "../lib/atomic.ts";
 import { hostEntry } from "../lib/client.ts";
 import {
@@ -23,10 +23,11 @@ import {
 	type TreeNode,
 } from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
+import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME } from "../lib/schedule.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
-import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, rosterPath, runtimeDir } from "../lib/paths.ts";
+import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, roostHome, rosterPath, runtimeDir } from "../lib/paths.ts";
 import { isAlive, processStartToken, processStartTokenAsync, sameProcess } from "../lib/proc.ts";
 import { JOB_ENV_NAMES } from "../lib/identity.ts";
 import { telemetryFromEnv } from "../lib/telemetry.ts";
@@ -43,6 +44,7 @@ import {
 	contextFrom,
 	encodeLine,
 	PROTOCOL_VERSION,
+	type ScheduleRow,
 } from "../lib/protocol.ts";
 import { usageFrom } from "../lib/usage.ts";
 import {
@@ -283,6 +285,7 @@ function rowOf(id: string): JobRow | undefined {
 		worktree: rec.worktree ? { path: rec.worktree.path, branch: rec.worktree.branch, base: rec.worktree.base } : null,
 		fanout: rec.fanout ?? null,
 		profile: rec.profile ?? (rec.kind === "shell" ? "shell" : "pi"),
+		schedule: rec.schedule ?? null,
 		...(agentCaps(st) ? { capabilities: agentCaps(st) } : {}),
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 	};
@@ -753,6 +756,174 @@ function exitText(ex: { code: number | null; signal: string | null }, what: stri
 		return `${what === "exited" ? "killed" : "worker killed"} by ${name ?? `signal ${ex.signal}`}`;
 	}
 	return `${what} with code ${ex.code}`;
+}
+
+// ---- M39: scheduled tasks ----------------------------------------------------------
+
+/** The scheduler's own state; the daemon is its one writer. */
+const schedulesPath = () => join(roostHome(), "schedules.json");
+const schedules = new Map<string, Schedule>();
+const SCHEDULE_TICK_MS = Number(process.env.PI_ROOST_SCHEDULE_TICK_MS) || 15_000;
+
+function loadSchedules(): void {
+	const saved = readJson<Schedule[]>(schedulesPath());
+	if (!Array.isArray(saved)) return;
+	for (const s of saved) {
+		try {
+			if (!s || !SCHEDULE_NAME.test(s.name)) continue;
+			parseWhen(s.when);
+			checkTemplate(s.launch);
+			schedules.set(s.name, s);
+		} catch (err) {
+			log("warn", "schedule dropped", { name: s?.name, error: String(err) });
+		}
+	}
+}
+
+function saveSchedules(): void {
+	try {
+		writeJsonAtomic(schedulesPath(), [...schedules.values()]);
+	} catch (err) {
+		log("error", "schedules not saved", { error: String(err) });
+	}
+}
+
+function scheduleRow(s: Schedule): ScheduleRow {
+	return {
+		name: s.name,
+		when: s.when,
+		task: s.task ?? null,
+		cwd: s.launch.cwd,
+		model: s.launch.model ?? null,
+		paused: s.paused,
+		catchUp: s.catchUp,
+		nextAt: s.nextAt,
+		lastRunAt: s.lastRunAt ?? null,
+		lastJob: s.lastJob ?? null,
+		lastSkip: s.lastSkip ?? null,
+	};
+}
+
+function scheduleOf(name: unknown): Schedule {
+	const s = typeof name === "string" ? schedules.get(name) : undefined;
+	if (!s) throw new OpError("not_found", `no schedule named ${String(name)}`);
+	return s;
+}
+
+/**
+ * Whether a schedule's previous run is still working (or starting, or about to restart).
+ * A finished one may still have its worker up, idle until it is closed: that is not going.
+ */
+function stillRunning(id: string | undefined): boolean {
+	if (!id || !recs.has(id)) return false;
+	if (starting.has(id) || respawning.has(id)) return true;
+	const st = readState(id);
+	return st?.state === "working" && (roster.has(id) || typeof st.resumeAt === "number");
+}
+
+/**
+ * One run of a schedule: a session like any other, named after it. A due run whose
+ * previous one still runs is skipped (said in lastSkip), never stacked.
+ */
+async function runSchedule(s: Schedule, now: number, why: "due" | "catch-up" | "now"): Promise<string> {
+	return telemetry.startSpan({ name: "roost.schedule.run", attributes: { schedule: s.name, why } }, async (span) => {
+		// the next one first: an await below must not let a tick start this one twice
+		if (why !== "now") s.nextAt = nextRun(parseWhen(s.when), now, s.anchor);
+		if (stillRunning(s.lastJob)) {
+			s.lastSkip = { at: now, why: `the previous run (${s.lastJob}) is still going` };
+			saveSchedules();
+			span.setAttributes({ skipped: true });
+			throw new OpError("busy", s.lastSkip.why);
+		}
+		try {
+			const r = await dispatch({ ...runLaunch(s.launch, runSlot(now)), name: s.name, requestId: undefined }, { schedule: s.name });
+			s.lastRunAt = now;
+			s.lastJob = r.id;
+			s.lastSkip = undefined;
+			log("info", "schedule ran", { schedule: s.name, id: r.id, why });
+			return r.id;
+		} catch (err) {
+			s.lastSkip = { at: now, why: (err as Error).message };
+			log("warn", "schedule run failed", { schedule: s.name, error: String(err) });
+			throw err;
+		} finally {
+			saveSchedules();
+		}
+	});
+}
+
+function scheduleTick(now = Date.now()): void {
+	if (shuttingDown) return;
+	for (const s of schedules.values()) {
+		if (s.paused || s.nextAt === null || now < s.nextAt) continue;
+		void runSchedule(s, now, "due").catch(() => {});
+	}
+}
+
+/** At start: runs that fell due while the service was off: one now (catchUp), or the next. */
+function catchUpSchedules(now = Date.now()): void {
+	for (const s of schedules.values()) {
+		if (s.paused || s.nextAt === null || s.nextAt > now) continue;
+		if (s.catchUp) void runSchedule(s, now, "catch-up").catch(() => {});
+		else {
+			s.nextAt = nextRun(parseWhen(s.when), now, s.anchor);
+			saveSchedules();
+		}
+	}
+}
+
+function scheduleOp(op: string, args: any): unknown {
+	const now = Date.now();
+	switch (op) {
+		case "schedules":
+			return { schedules: [...schedules.values()].sort((a, b) => a.name.localeCompare(b.name)).map(scheduleRow) };
+		case "schedule-add": {
+			const name = args?.name;
+			if (typeof name !== "string" || !SCHEDULE_NAME.test(name)) throw new OpError("bad_request", "name: 1-40 of A-Z a-z 0-9 _ . -, starting with a letter or digit");
+			if (schedules.has(name)) throw new OpError("exists", `a schedule named ${name} exists (remove it first)`);
+			if (schedules.size >= 100) throw new OpError("limit", "100 schedules at most");
+			let when: ReturnType<typeof parseWhen>;
+			try {
+				when = parseWhen(String(args?.when ?? ""));
+				checkTemplate(args?.launch);
+			} catch (err) {
+				throw new OpError("bad_request", (err as Error).message);
+			}
+			if (!isDir(args.launch.cwd)) throw new OpError("bad_request", `cwd is not a directory: ${args.launch.cwd}`);
+			const s: Schedule = {
+				name,
+				when: String(args.when).trim(),
+				launch: args.launch,
+				...(typeof args.task === "string" ? { task: args.task.slice(0, 2000) } : {}),
+				paused: false,
+				catchUp: args.catchUp !== false,
+				createdAt: now,
+				anchor: now,
+				nextAt: nextRun(when, now, now),
+			};
+			schedules.set(name, s);
+			saveSchedules();
+			log("info", "schedule added", { name, when: s.when, nextAt: s.nextAt });
+			return scheduleRow(s);
+		}
+		case "schedule-rm": {
+			const s = scheduleOf(args?.name);
+			schedules.delete(s.name);
+			saveSchedules();
+			log("info", "schedule removed", { name: s.name });
+			return { name: s.name };
+		}
+		case "schedule-pause": {
+			const s = scheduleOf(args?.name);
+			s.paused = args?.paused === true;
+			// resumed: counted from now (an "every" does not fire at once for the time it was paused)
+			if (!s.paused) s.anchor = now;
+			s.nextAt = s.paused ? null : nextRun(parseWhen(s.when), now, s.anchor);
+			saveSchedules();
+			return scheduleRow(s);
+		}
+	}
+	throw new OpError("bad_request", `unknown op: ${op}`);
 }
 
 function checkHosts(): void {
@@ -1649,7 +1820,7 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	if (before !== r.state) metric.stateChanges.add(1, { to: r.state ?? null });
 	pushJob(id);
 	// M13: a subagent that finished closes (each report while done and idle starts the wait again)
-	if (r.state === "done" && r.status === "idle" && recs.get(id)?.parentSession) scheduleAutoClose(id);
+	if (r.state === "done" && r.status === "idle" && (recs.get(id)?.parentSession || recs.get(id)?.schedule)) scheduleAutoClose(id);
 }
 
 /** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
@@ -1968,7 +2139,9 @@ async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Pr
  * or waiting child alone, and one with replies still queued.
  */
 function scheduleAutoClose(id: string): void {
-	if (!recs.get(id)?.parentSession || !loadUserConfig().subagentAutoClose) return;
+	const rec = recs.get(id);
+	// M39: a scheduled run's worker goes once it is done, as a subagent's (it is started again by a reply)
+	if (!rec || !((rec.parentSession && loadUserConfig().subagentAutoClose) || rec.schedule)) return;
 	clearTimeout(closeTimers.get(id));
 	const t = setTimeout(() => {
 		closeTimers.delete(id);
@@ -2083,6 +2256,7 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 	for (const t of resumeTimers.values()) clearTimeout(t);
 	resumeTimers.clear();
 	clearInterval(watcher);
+	clearInterval(scheduler);
 	clearInterval(shellWatcher);
 	clearInterval(reaper);
 	if (!keepWorkers) {
@@ -2106,6 +2280,15 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 	switch (op) {
 		case "ping":
 			return { pid: process.pid, version: ROOST_VERSION };
+		case "schedules":
+		case "schedule-add":
+		case "schedule-rm":
+		case "schedule-pause":
+			return scheduleOp(op, args);
+		case "schedule-run": {
+			const s = scheduleOf(args?.name);
+			return { name: s.name, id: await runSchedule(s, Date.now(), "now") };
+		}
 		case "hello":
 			return hello(conn, args);
 		case "list":
@@ -2246,6 +2429,7 @@ async function onLine(conn: Conn, line: string): Promise<void> {
 }
 
 loadJobs();
+loadSchedules();
 
 try {
 	unlinkSync(daemonSocketPath());
@@ -2282,6 +2466,10 @@ try {
 } catch {}
 
 const watcher = setInterval(checkHosts, 1000);
+// M39: runs that fell due while it was off, then every tick
+catchUpSchedules();
+const scheduler = setInterval(scheduleTick, SCHEDULE_TICK_MS);
+scheduler.unref();
 const shellWatcher = setInterval(shellTick, 2000);
 shellWatcher.unref();
 const reaper = setInterval(

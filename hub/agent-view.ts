@@ -13,6 +13,7 @@ import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
 import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
+import { agoText, parseScheduleInput, untilText } from "../lib/schedule.ts";
 import { TaskEditor } from "./task-editor.ts";
 import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
@@ -81,6 +82,11 @@ export interface AgentViewOptions {
 	/** M18: agents a task's first word or `@name` can pick, and the default one (`dispatchAgent`). */
 	agents?: () => ReadonlyMap<string, AgentDef>;
 	defaultAgent?: string;
+	/**
+	 * M39: the template of a scheduled pi session: as `launch`, with `{{run}}` where each
+	 * run's own session file goes (no worktree).
+	 */
+	scheduleLaunch?: (task: string, opts: { cwd: string; model?: string; thinking?: string }) => LaunchRequest;
 	/** DI-6: a shell job (no model). */
 	launchShell?: (command: string, cwd: string) => DispatchArgs;
 	/** M30: the user's agent profiles (terminal agents besides pi), by name. */
@@ -849,6 +855,10 @@ export class AgentView implements Component {
 			case "usage":
 				this.showUsage();
 				return done();
+			case "schedule":
+			case "schedules":
+				void this.scheduleCommand(arg);
+				return done();
 			case "fanout": {
 				if (arg === "off") {
 					this.fanout = undefined;
@@ -988,6 +998,81 @@ export class AgentView implements Component {
 			}
 		}
 		void this.resumePicker();
+	}
+
+	/**
+	 * M39 /schedule: `<name> <when> <task>` adds one (a pi session with the view's model,
+	 * thinking and directory); `list` (or bare), `run`, `pause`, `resume`, `rm <name>`.
+	 */
+	private async scheduleCommand(arg: string): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		const words = arg.trim().split(/\s+/).filter(Boolean);
+		try {
+			if (words.length === 0 || (words.length === 1 && words[0] === "list")) return await this.showSchedules();
+			const [verb, name] = words as [string, string | undefined];
+			if (words.length === 2 && name && ["rm", "pause", "resume", "run"].includes(verb)) {
+				if (verb === "rm") {
+					await client.request("schedule-rm", { name });
+					return this.say(`schedule ${name} removed`);
+				}
+				if (verb === "run") {
+					const r = await client.request("schedule-run", { name });
+					this.cursor = { kind: "row", id: r.id };
+					return this.say(`schedule ${name} started a run`, "success");
+				}
+				const r = await client.request("schedule-pause", { name, paused: verb === "pause" });
+				return this.say(r.paused || r.nextAt === null ? `schedule ${name} paused` : `schedule ${name}: next run ${untilText(r.nextAt)}`, "success");
+			}
+			const p = parseScheduleInput(arg);
+			if ("error" in p) return this.say(p.error, "warning");
+			if (this.profile) return this.say("schedules run pi sessions (/profile pi first)", "warning");
+			if (!this.o.scheduleLaunch) return this.say("schedules are not available here", "warning");
+			const dir = this.presetDir();
+			if (dir && "error" in dir) return this.say(dir.error, "warning");
+			const { discard: _d, note: _n, ...launch } = this.o.scheduleLaunch(p.task, { cwd: dir?.path ?? this.dispatchCwd(), model: this.model, thinking: this.thinking });
+			const r = await client.request("schedule-add", { name: p.name, when: p.when, launch, task: p.task });
+			this.say(`schedule ${r.name}: ${r.when} · first run ${r.nextAt === null ? "never" : untilText(r.nextAt)}`, "success");
+		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	/** M39 /schedule list: each schedule, when it runs next, its last run; Esc closes. */
+	private async showSchedules(): Promise<void> {
+		const list = (await this.client!.request("schedules", {})).schedules;
+		if (list.length === 0) return this.say('no schedules: /schedule <name> <every 1h | daily 09:00 | weekdays 09:00 | cron "…"> <task>');
+		let top = 0;
+		const view = this;
+		const lines = (width: number): string[] => {
+			const t = view.o.theme;
+			const now = Date.now();
+			const out = [t.bold("Schedules"), ""];
+			for (const s of list) {
+				const next = s.paused ? t.fg("warning", "paused") : s.nextAt === null ? "never" : `next ${untilText(s.nextAt, now)}`;
+				const last = s.lastRunAt ? `last ${agoText(now - s.lastRunAt)} ago` : "not run yet";
+				out.push(truncateToWidth(`${t.fg("accent", s.name)}  ${s.when}  · ${next} · ${last}`, width));
+				out.push(t.fg("dim", truncateToWidth(`  ${oneLine(s.task ?? "")}  · ${s.cwd}${s.model ? ` · ${s.model}` : ""}`, width)));
+				if (s.lastSkip) out.push(t.fg("warning", truncateToWidth(`  skipped ${agoText(now - s.lastSkip.at)} ago: ${oneLine(s.lastSkip.why)}`, width)));
+			}
+			return out;
+		};
+		this.overlay = {
+			render(width: number) {
+				const all = lines(width);
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				top = Math.max(0, Math.min(top, all.length - room));
+				const keys = view.o.theme.fg("dim", truncateToWidth("/schedule run|pause|resume|rm <name> · ↑↓ scroll · Esc close", width));
+				return [...all.slice(top, top + room), "", keys];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
+			},
+		};
+		this.o.tui.requestRender();
 	}
 
 	/** M24 /usage: what the sessions spent, by model and by session; Esc closes, ↑↓ scroll. */
@@ -2432,6 +2517,7 @@ export class AgentView implements Component {
 			["in a peek: /model", "switch that session's model (/thinking: its level)"],
 			["/resume", "open a past session (search; Tab: this directory or all)"],
 			["/usage", "what the sessions spent: today, all, by model, by session"],
+			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"); bare: list"],
 			["/fanout a/x b/y", "the next task runs once per model, each in its own worktree"],
 			["/compare", "a fan-out (or marked rows) side by side; k keeps one"],
 			["/preset [name]", "saved choices for new sessions (save <name>, rm <name>, off)"],
