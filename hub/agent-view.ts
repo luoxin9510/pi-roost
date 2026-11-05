@@ -1319,6 +1319,12 @@ export class AgentView implements Component {
 
 	/** M45: the row the banner is about: the selected one if it waits with a suggestion, else the longest waiting. */
 	private escalation(): JobRow | undefined {
+		// dismissals of suggestions that are gone are forgotten
+		for (const k of this.dismissed) {
+			const [id, at] = k.split(":");
+			const r = id ? this.rows.get(id) : undefined;
+			if (!r?.suggested || String(r.suggested.at) !== at) this.dismissed.delete(k);
+		}
 		const has = (r: JobRow | undefined): r is JobRow => !!r?.suggested && r.state === "blocked" && !this.dismissed.has(`${r.id}:${r.suggested.at}`);
 		const sel = this.selectedRow();
 		if (has(sel)) return sel;
@@ -1337,8 +1343,10 @@ export class AgentView implements Component {
 		const row = this.escalation();
 		if (!row?.suggested || !this.client) return;
 		const text = row.suggested.text;
+		// once: a second press before the row moves would answer its next question
+		this.dismissed.add(`${row.id}:${row.suggested.at}`);
 		try {
-			const r = await this.client.request("reply", { id: row.id, text });
+			const r = await this.client.request("reply", { id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}` });
 			if (r.delivered || r.saved) this.say(`sent to ${row.name}: ${oneLine(text).slice(0, 80)}`, "success");
 			else this.say(`not delivered: ${row.name} is not running`, "error");
 		} catch (err) {

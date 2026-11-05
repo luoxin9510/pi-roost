@@ -130,12 +130,20 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 		return new Text(`${theme.fg("accent", head)}\n${theme.fg("muted", shown)}`, 1, 0);
 	});
 
-	// the concierge's own prompt, whole, with the policy in force: it has no project to read
-	pi.on("before_agent_start", async () => ({ systemPrompt: conciergeSystemPrompt(await syncPolicy()) }));
+	// the concierge's own prompt, whole, with the policy in force: it has no project to read;
+	// a slow service does not hold the turn (the last policy known, then)
+	pi.on("before_agent_start", async () => {
+		const p = await Promise.race([syncPolicy(), new Promise<ConciergePolicy>((r) => setTimeout(() => r(policy), 1500).unref?.())]);
+		return { systemPrompt: conciergeSystemPrompt(p) };
+	});
 
-	// only the hub's tools (those the policy allows): no shell, no files
+	// only the hub's tools (those the policy allows): no shell, no files; at once, from the
+	// setting, then as the service says
 	pi.on("session_start", () => {
-		active = "";
+		active = activeTools(policy).join(",");
+		try {
+			pi.setActiveTools(activeTools(policy));
+		} catch {}
 		void syncPolicy();
 	});
 

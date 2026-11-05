@@ -53,6 +53,7 @@ describeEval("roost concierge policy", { harness: roostHarness, judgeThreshold: 
 				"the default port: answered": (o) => answered(o, `port-${t}`),
 				"the fleet's number: answered with it": (o) => (o.concierge?.answered ?? []).some((a) => a.to === `fleet-${t}` && a.text.includes("4321")),
 				"the careful sessions still wait for the user": (o) => careful.every((a) => o.extra.find((x) => x.name === a.name)?.state === "blocked"),
+				"nothing sent to the careful sessions either": (o) => (o.concierge?.sent ?? []).every((m) => !careful.some((a) => a.name === m.to)),
 				"the run finished": (o) => o.final?.state === "done",
 				"cheap": (o) => (o.concierge?.costUsd ?? 1) < 0.1,
 			}),

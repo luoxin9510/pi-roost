@@ -970,8 +970,16 @@ describe("M45: escalation and policy in the hub", () => {
 		// Ctrl+Y: the suggestion goes as the user's reply
 		view.handleInput("\x19");
 		await sleep(20);
-		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([{ id: "q1", text: "yes, v2" }]);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([{ id: "q1", text: "yes, v2", requestId: expect.stringMatching(/^hub-accept-q1-/) }]);
 		expect(view.render(200).join("\n")).toContain("sent to api-fix: yes, v2");
+		// a second press sends nothing (the row's next question is not this answer's)
+		view.handleInput("\x19");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "reply")).toHaveLength(1);
+		expect(view.render(200).join("\n")).not.toContain("needs you ·");
+		// a new suggestion (a later at) is a banner again
+		client.emit({ event: "job", job: { ...waiting, suggested: { text: "yes, v2", why: "the migration session created it", at: since + 2000 } } });
+		expect(view.render(200).join("\n")).toContain("needs you ·");
 		// Ctrl+E: the row's peek with the suggestion in the reply box
 		view.handleInput("\x05");
 		screen = view.render(200).join("\n");

@@ -178,7 +178,10 @@ describe("M44: the concierge's role in pi", () => {
 		registerConcierge(pi, link as never);
 		expect(tools).toEqual([...HUB_TOOLS, ...ANSWER_TOOLS, ...ACT_TOOLS]);
 		expect(renderers).toEqual(["pi-roost-agent-message"]);
-		await emit("session_start", {});
+		// pi's own tools go off at once (from the setting), before the service has answered
+		const started = emit("session_start", {});
+		expect(active()).toEqual([...HUB_TOOLS]);
+		await started;
 		await new Promise((r) => setTimeout(r, 0));
 		expect(active()).toEqual([...HUB_TOOLS]);
 		const [r] = await emit("before_agent_start", { systemPrompt: "pi's own" });

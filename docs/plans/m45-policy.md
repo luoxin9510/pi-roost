@@ -61,7 +61,9 @@ question it reports (`hub_notify` need + `hub_suggest`).
 
 `concierge-reply {id, text, why}` (the `hub_reply` tool): refused with `policy` unless
 the policy is `routine` or `always` (and with `bad_request` unless the row waits for a
-question, or for a `/command`); then it is `reply`, recorded in the feed as a `reply`
+question, a dialog never, or when the text is a `/command` or a `!shell` line; a
+suggestion is plain text too, since the hub sends it as the user's reply); then it is
+`reply`, recorded in the feed as a `reply`
 event with `who: "concierge"` and its `whoId` (the user's replies say `user`), kept as
 `concierge.answered[]` (the last 20) for the undo, in the status as `answered`, and said
 in the hub's line. The policy lives in `concierge.json` (`/concierge answer …` and
@@ -89,8 +91,14 @@ may undo; nothing to undo is `not_found`.
 `hub_dispatch(task, name?, cwd?, model?)` are active and allowed (`concierge-act {what,
 id | launch, why}`, refused with `policy` otherwise; never itself). `hub_dispatch`
 builds a pi launch like `roost_spawn` does, in the concierge's directory (the hub's)
-unless told, without the concierge role, and the daemon dispatches it as a top-level
-session (the concierge is not its parent: what it does reaches it in the digests).
+unless told, without the concierge role; the daemon takes a pi launch only (no command,
+profile or worktree), strips the role and job identity from its env itself, and
+dispatches it as a top-level session (the concierge is not its parent: what it does
+reaches it in the digests). An undo reaches the session only while it still waits with
+the question that was answered (a reply after the answer) or is at work (a steer);
+waiting on something else, or ended, it is marked withdrawn only. The suggestion is
+for the question it was made for: another question, the same wait, drops it; so does a
+restart that finds the row not waiting.
 Every act is a `concierge` event (`why: "act"`, `stopped x: why`). The prompt says: only
 when the user asked, or a standing order (M46) says so.
 

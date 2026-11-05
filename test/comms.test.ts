@@ -926,11 +926,18 @@ describe("M44: the concierge", () => {
 			// the user's reply spends it
 			await hub.request("reply", { id: childId, text: "main" });
 			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested ?? null).toBeNull();
-			// a suggestion for the next question goes when the row moves on without a reply
+			// a suggestion is for the question it was made for: another question (the same wait) is another
 			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "And the port?" }) });
 			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.question === "And the port?");
+			await expect(wc.c.request("concierge-suggest", { id: childId, text: "/stop" })).rejects.toMatchObject({ code: "bad_request" });
 			await wc.c.request("concierge-suggest", { id: childId, text: "8080" });
 			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested?.text).toBe("8080");
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "And the host?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.question === "And the host?");
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested ?? null).toBeNull();
+			await wc.c.request("concierge-suggest", { id: childId, text: "localhost" });
+			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested?.text).toBe("localhost");
+			// a suggestion for the next question goes when the row moves on without a reply
 			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "working", status: "busy" }) });
 			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
 			expect((await hub.request("list", {})).jobs.find((j) => j.id === childId)?.suggested ?? null).toBeNull();
@@ -977,12 +984,22 @@ describe("M44: the concierge", () => {
 			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "working", status: "busy" }) });
 			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "working");
 			await expect(wc.c.request("concierge-reply", { id: "worker", text: "and more", why: "x" })).rejects.toMatchObject({ code: "bad_request" });
-			// undo: the session (at work) is steered to disregard it and ask the user; once
+			// undo: the session (at work) is steered to disregard it and ask the user
 			expect((await hub.request("concierge", { action: "undo" })).answered).toMatchObject({ text: "yes, proceed", undone: true });
 			const undo = await waitFor(() => w.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.text.includes("came from the concierge")));
 			expect(undo.text).toContain("«yes, proceed»");
 			expect(undo.mode).toBe("steer");
 			expect((await hub.request("events", { id: childId })).events.filter((e) => e.kind === "concierge" && e.why === "undo")).toHaveLength(1);
+			await expect(hub.request("concierge", { action: "undo" })).rejects.toMatchObject({ code: "not_found" });
+			// a second answer, to a new question: undone while it still waits with that question, by a reply
+			await w.c.request("report", { id: childId, token: w.token, report: report({ state: "blocked", status: "waiting", waitingFor: "question", question: "Run the tests first?" }) });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === childId)?.state === "blocked");
+			await wc.c.request("concierge-reply", { id: "worker", text: "yes, run them", why: "routine" });
+			expect((await hub.request("concierge", { action: "status" })).answered).toMatchObject({ text: "yes, run them", undone: false });
+			expect((await hub.request("concierge", { action: "undo" })).answered).toMatchObject({ text: "yes, run them", undone: true });
+			const undo2 = await waitFor(() => w.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.text.includes("«yes, run them»")));
+			expect(undo2.mode).toBeUndefined();
+			// nothing left to undo: the first was undone before
 			await expect(hub.request("concierge", { action: "undo" })).rejects.toMatchObject({ code: "not_found" });
 		} finally {
 			restore();
