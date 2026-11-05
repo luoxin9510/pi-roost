@@ -13,6 +13,7 @@ import { registerForegroundPeer } from "./peer-link.ts";
 import { registerSubagentPanel } from "./subagent-panel.ts";
 import { openAgentView, setCommandSource } from "./open-view.ts";
 import { jobIdentity, registerWorker } from "./worker.ts";
+import { isConciergeRole, registerConcierge } from "./concierge.ts";
 import { registerMobileStarter } from "./mobile.ts";
 import { JOB_ENV } from "../../lib/identity.ts";
 
@@ -100,7 +101,9 @@ export function register(pi: ExtensionAPI, via: "adapters/pi" | "extensions"): v
 		// M9: commands the agent runs do not inherit the token (same-user processes can still
 		// read it from the job's files: a guard against accidents, not a boundary)
 		for (const n of JOB_ENV.token) delete process.env[n];
-		registerWorker(pi, job);
+		// M44: the concierge is a worker with the hub's tools instead of the roost_* ones
+		if (isConciergeRole(process.env)) registerConcierge(pi, registerWorker(pi, job, { agentTools: false }));
+		else registerWorker(pi, job);
 	} else {
 		registerForeground(pi);
 		registerForegroundPeer(pi);

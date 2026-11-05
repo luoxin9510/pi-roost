@@ -21,7 +21,9 @@ export type EventKind =
 	/** A schedule started a run (M39). */
 	| "schedule"
 	/** A job's record was removed. */
-	| "removed";
+	| "removed"
+	/** M44: the concierge told the user something (why: info | need), or answered a question (why: answer). */
+	| "concierge";
 
 export interface RoostEvent {
 	seq: number;
@@ -191,6 +193,8 @@ export function eventLine(e: RoostEvent): string {
 			return `schedule ${e.who ?? "?"} started ${e.name}${e.why ? ` (${e.why})` : ""}`;
 		case "removed":
 			return `${e.name} removed`;
+		case "concierge":
+			return `concierge${e.why === "need" ? " needs you" : e.why === "answer" ? " answered" : ""}: ${e.text ?? ""}`;
 		default:
 			return `${e.kind} ${e.name}`;
 	}

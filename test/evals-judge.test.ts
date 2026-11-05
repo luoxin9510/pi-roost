@@ -26,6 +26,8 @@ const outcome = (o: Partial<RoostOutcome> = {}): RoostOutcome => ({
 	tokens: 10,
 	ms: 1000,
 	ackP50: null,
+	extra: [],
+	concierge: null,
 	...o,
 });
 

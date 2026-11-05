@@ -2,6 +2,7 @@
 // by <cwd>/.pi/roost.json. Unknown keys are ignored; bad files are skipped.
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { type ConciergeConfig, conciergeFrom } from "./concierge.ts";
 import { type AgentProfile, profileName, profilesFrom } from "./profiles.ts";
 import { homedir } from "node:os";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
@@ -60,6 +61,8 @@ export interface RoostConfig {
 	presets?: Record<string, Preset>;
 	/** M30: terminal agents roost can run besides pi, by name (user config only). */
 	agentProfiles?: Record<string, AgentProfile>;
+	/** M44: the hub's resident agent (user config only); absent: the defaults, once turned on in the hub. */
+	concierge?: ConciergeConfig;
 }
 
 /** M27: what a preset sets for new sessions; everything is optional. */
@@ -137,6 +140,8 @@ const USER_ONLY = [
 	"agentMaxTotal",
 	// M30: a profile is a command to run: a cloned project cannot define one
 	"agentProfiles",
+	// M44: what answers for you, and what it may spend, is yours to set
+	"concierge",
 ] as const;
 
 export const DEFAULTS: RoostConfig = {
@@ -201,6 +206,8 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (presets) out.presets = presets;
 	const profiles = profilesFrom(r.agentProfiles);
 	if (profiles) out.agentProfiles = profiles;
+	const concierge = conciergeFrom(r.concierge);
+	if (concierge) out.concierge = concierge;
 	if (r.notify === "auto" || r.notify === "osc9" || r.notify === "osc777" || r.notify === "bell" || r.notify === "off") {
 		out.notify = r.notify;
 	}

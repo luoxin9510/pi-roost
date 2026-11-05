@@ -3,13 +3,13 @@ import { type ExtensionAPI, type ExtensionContext, VERSION } from "@earendil-wor
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { type DeliverItem, type JobIdentity, jobIdentity, Reporter } from "../../lib/agent-client.ts";
 import { hostControl } from "../../lib/hostclient.ts";
-import { AGENT_MESSAGE_TYPE, RESULT_MAX } from "../../lib/comms.ts";
+import { AGENT_MESSAGE_TYPE, isAgentKind, RESULT_MAX } from "../../lib/comms.ts";
 import { messageText } from "../../lib/heuristics.ts";
 import { type ContextInfo, PROTOCOL_VERSION } from "../../lib/protocol.ts";
 import { readJob } from "../../lib/store.ts";
 import { worktreeNote } from "../../lib/worktree.ts";
 import { sessionUsage, type UsageInfo } from "../../lib/usage.ts";
-import { registerAgentTools } from "./agent-tools.ts";
+import { type AgentLink, registerAgentTools } from "./agent-tools.ts";
 import { onMobileActivity } from "./mobile.ts";
 import { type PrLinks, registerPrLinks } from "./pr-links.ts";
 import { attachRepaintReady, registerAttachRepaint, registerRecap, registerSummaries } from "./worker-extras.ts";
@@ -339,7 +339,11 @@ export function contextOf(ctx: ExtensionContext): ContextInfo | null {
 }
 
 /** Worker role (PRD C6): report this session's state, take replies, detach keys. */
-export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
+/**
+ * The worker role. Returns the link its tools call the daemon through (M44: the
+ * concierge role adds its own tools on it; `agentTools: false` leaves the roost_* ones out).
+ */
+export function registerWorker(pi: ExtensionAPI, job: JobIdentity, opts: { agentTools?: boolean } = {}): AgentLink {
 	const tracker = new WorkerTracker();
 	let reporter: Reporter | undefined;
 	let firstPromptTimer: NodeJS.Timeout | undefined;
@@ -537,7 +541,8 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		const note = worktreeNote(worktree);
 		pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${note}` }));
 	}
-	registerAgentTools(pi, { call: (op, args) => (reporter ? reporter.call(op, args) : Promise.reject(new Error("not connected"))) });
+	const link: AgentLink = { call: (op, args) => (reporter ? reporter.call(op, args) : Promise.reject(new Error("not connected"))) };
+	if (opts.agentTools !== false) registerAgentTools(pi, link);
 
 	pi.on("session_shutdown", async () => {
 		current = undefined;
@@ -549,6 +554,7 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity): void {
 		reporter = undefined;
 		await closing?.close();
 	});
+	return link;
 }
 
 function thinkingOf(pi: ExtensionAPI): string | null {
@@ -560,7 +566,6 @@ function thinkingOf(pi: ExtensionAPI): string | null {
 }
 
 
-const isAgentKind = (k: DeliverItem["kind"]) => k === "message" || k === "report" || k === "notice";
 const MAX_MESSAGE_REPORTS = 3;
 
 function lastAssistant(ctx: ExtensionContext): { content?: unknown; stopReason?: string; errorMessage?: string } | undefined {

@@ -1,7 +1,7 @@
 # The hub as a control plane: a resident concierge agent
 
-Status: approved 2026-11-05; M43 done ([m43-events.md](m43-events.md)), M44–M47 to
-come in order. Decided then: the phone side (`notifyCommand`, pi-mobile escalation) is
+Status: approved 2026-11-05; M43 done ([m43-events.md](m43-events.md)), M44 done
+([m44-concierge.md](m44-concierge.md)), M45–M47 to come in order. Decided then: the phone side (`notifyCommand`, pi-mobile escalation) is
 out of scope for now, and the shared task board (M47) is a milestone in its own right,
 not an option. Nothing in it changes what pi users have today; the concierge is off
 until turned on.
@@ -217,7 +217,7 @@ watches" into "a team", and the user asked for it as a milestone of its own.
 | M | What | Acceptance |
 |---|---|---|
 | M43 | **Event feed and messaging rules** (done, [m43-events.md](m43-events.md)): `events` op with cursor and durable log; `watch` idle/ended notices; repeats dropped; message framing; hub `/log`, `pi-roost log` | daemon tests for each rule; the pi worker shows a peer message as "from a session, not you" |
-| M44 | **Concierge v0 — report and relay**: the job, the extension role, the digest wake with coalescing and the hourly cap, the heartbeat, tools `hub_sessions/read/send/notify/watch`, the status line, `?` chat, `/concierge on/off/cost`, the audit log; `answer: "never"` only | with 5 real sessions (haiku) it reports a finished run, a failed one and a question within one wake; relays a finding from one session to another on request; stays under `wakesPerHour`; cost shown; evals: digest correctness, relay, no self-wake loops |
+| M44 | **Concierge v0 — report and relay** (done, [m44-concierge.md](m44-concierge.md)): the job, the extension role, the digest wake with coalescing and the hourly cap, the heartbeat, the daily budget, tools `hub_sessions/events/read/send/notify/watch`, the status line, `?` chat, `/concierge on/off/status/log/attach`, the feed as its audit; `answer: "never"` only | with 3 real sessions (haiku) it reports a finished run, a failed one and a question within its first wakes, the question as needing the user, without answering it; relays a finding from one session to another on request; wakes and cost shown; daemon tests for the cap, the budget, the heartbeat and its own events left out |
 | M45 | **Escalation and policy**: suggested answers on escalations, the banner with accept/edit, `answer: "routine"` with the routine classes and the undo, `act` gate (the phone is out of scope) | evals: routine vs non-routine classification on a fixed set of questions (target ≥ 95 % never answering a non-routine one); an irreversible question is always escalated; undo steers the session |
 | M46 | **Standing orders**: `hub_note`, `orders.json`, `/concierge orders`, the heartbeat as a schedule, orders on a clock | an order "when A ends tell B" fires once; a daily digest arrives on schedule; an order that starts work is refused without `act` |
 | M47 | **Shared task board** (Claude Code agent teams) | board ops, tools, `/tasks`, a level 1 agent claims a task; the concierge assigns and unblocks |

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
 import type { AgentViewOptions } from "../../hub/agent-view.ts";
 import { discoverAgents } from "../../lib/agents.ts";
+import { CONCIERGE_DEFAULTS, CONCIERGE_NAME, CONCIERGE_ROLE_ENV } from "../../lib/concierge.ts";
 import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset } from "../../lib/config.ts";
 import { buildLaunch, buildProfileLaunch, fallbackName, isolationDefault, prepareIsolation, workerEnv } from "../../lib/dispatch.ts";
 import { notifySequence, notifyText, resolveNotify } from "../../lib/job-events.ts";
@@ -84,6 +85,28 @@ export function piHubOptions(h: PiHost): PiHubOptions {
 				model: o.model ?? config.dispatchModel,
 				thinking: o.thinking ?? config.dispatchThinking,
 			});
+		},
+		// M44: the concierge: a pi session in this directory on the configured cheap model, no task
+		// (the daemon wakes it); its role is said in its environment
+		conciergeLaunch: () => {
+			const cfg = loadUserConfig().concierge ?? CONCIERGE_DEFAULTS;
+			const sessionFile = SessionManager.create(dispatchCwd).getSessionFile();
+			if (!sessionFile) throw new Error("could not allocate a session file");
+			const launch = buildLaunch({
+				task: "",
+				cwd: dispatchCwd,
+				sessionFile,
+				name: CONCIERGE_NAME,
+				origin: "dispatch",
+				argv: h.argv,
+				execPath: process.execPath,
+				env: process.env,
+				...envPolicy(config),
+				piVersion: VERSION,
+				model: cfg.model,
+				thinking: cfg.thinking,
+			});
+			return { ...launch, env: { ...launch.env, [CONCIERGE_ROLE_ENV]: "concierge" } };
 		},
 		// M30: read again each time (an edited roost.json counts at once)
 		profiles: () => Object.keys(loadConfig(dispatchCwd).agentProfiles ?? {}),
