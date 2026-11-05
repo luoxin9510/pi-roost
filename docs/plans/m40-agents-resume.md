@@ -31,13 +31,19 @@ to fill per run, each run is the command again. Lists show what runs (`agent`: `
 `shell`, or the profile's name).
 
 A scheduled terminal agent that is done and quiet is closed, as a pi run is (its row
-stays; a reply starts it with `resume`). One that notifies when it finishes (Claude Code
-does) shows as needing input instead, with the notification as the question, and
-stays for you: attach or stop it. A command's row goes as a command's does.
+stays; a reply starts it again: `resume`, else its command). A scheduled run is
+unattended, so one that notifies when it finishes (Claude Code does) counts as done,
+with the notification as the row's text, rather than as a question nobody is there to
+answer (it would stay up, one process per run); a dialog it is stuck in (the profile's
+`waiting` regex) is still a dialog, and stays for you. A command's row goes as a
+command's does. After the machine or the service went down, a terminal agent that was
+done, or had a question, is shown so, without a process (a reply starts it again).
 
 ## Checked
 
-- Tests: a terminal agent with `resume` dying mid-work (restarted with `resume`, the
+- Tests: a terminal agent done or asking when the service went down, shown so after;
+  an automatic restart that cannot start leaving no "continue" queued; a terminal agent
+  with `resume` dying mid-work (restarted with `resume`, the
   prompt typed, done); one without (failed, not restarted); a protocol agent dying on a
   reply (restarted, "continue" taken as a reply); a schedule of a terminal agent (named
   after it, closed once done, the row kept) and of a command; a template with a worktree

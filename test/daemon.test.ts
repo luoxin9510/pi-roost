@@ -1539,16 +1539,15 @@ describe("M40: agents cut short carry on; scheduled commands and agents", () => 
 	it("a schedule runs a terminal agent, named after it, closed once done; and a plain command", async () => {
 		process.env.PI_ROOST_AUTO_CLOSE_MS = "600";
 		const { client } = await startDaemon();
-		// an agent that just stops when done (one that notifies shows as needing input, and stays)
-		const quiet = fake({ command: [process.execPath, FAKE, "task"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", FAKE_QUIET: "1" } });
-		const row = await client.request("schedule-add", { name: "term", when: "daily 03:00", launch: quiet, task: "task" });
+		// it notifies when done (as Claude Code does): unattended, that is done, not a question
+		const row = await client.request("schedule-add", { name: "term", when: "daily 03:00", launch: fake({ command: [process.execPath, FAKE, "task"] }), task: "task" });
 		expect(row.agent).toBe("fake");
 		const { id } = await client.request("schedule-run", { name: "term" });
 		expect(await find(client, id)).toMatchObject({ name: "term", schedule: "term", profile: "fake", state: "working" });
 		await waitFor(() => screen(id).includes("answer: task") || undefined, 15000);
 		// done and nobody attached: its process goes, the row stays
 		const closed = await until(client, id, (x) => x.pid === null, 15000);
-		expect(closed.state).toBe("done");
+		expect(closed).toMatchObject({ state: "done", summary: "finished task", question: null });
 		// a command
 		const cmd = await client.request("schedule-add", { name: "cmd", when: "daily 03:00", launch: { ...args("echo scheduled"), kind: "shell", sessionFile: "" }, task: "! echo scheduled" });
 		expect(cmd.agent).toBe("shell");
@@ -1556,6 +1555,48 @@ describe("M40: agents cut short carry on; scheduled commands and agents", () => 
 		const done = await until(client, run.id, (x) => x.endedAt !== null);
 		expect(done).toMatchObject({ state: "done", schedule: "cmd", profile: "shell" });
 		await expect(client.request("schedule-add", { name: "wt", when: "daily 03:00", launch: { ...fake(), worktree: { path: "/x", branch: "b", repo: "/r", base: "main" } } })).rejects.toMatchObject({ code: "bad_request" });
+	});
+
+	it("a terminal agent whose host died while the service was down keeps what it was: done, or its question", async () => {
+		const first = await startDaemon();
+		const done = await first.client.request("dispatch", fake({ command: [process.execPath, FAKE, "one"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", FAKE_QUIET: "1" }, name: "quiet" }));
+		const asked = await first.client.request("dispatch", fake({ command: [process.execPath, FAKE, "two"], name: "loud" }));
+		await until(first.client, done.id, (r) => r.state === "done");
+		await until(first.client, asked.id, (r) => r.state === "blocked" && r.question === "finished two");
+		const pids = [readState(done.id)!.hostPid!, readState(asked.id)!.hostPid!];
+		await first.client.request("shutdown", { keepWorkers: true });
+		await waitFor(() => exited(first.proc));
+		for (const pid of pids) process.kill(pid, "SIGKILL");
+		const second = await startDaemon();
+		expect(await find(second.client, done.id)).toMatchObject({ state: "done", error: null, pid: null });
+		// (a row without a process shows no waitingFor; the state keeps it for the reply that starts it)
+		expect(await find(second.client, asked.id)).toMatchObject({ state: "blocked", question: "finished two", summary: "finished two", error: null, pid: null });
+		expect(readState(asked.id)?.waitingFor).toBe("question");
+	});
+
+	it("an automatic restart that cannot start leaves no \"continue\" queued for a later reply", async () => {
+		process.env.PI_ROOST_RESUME_DELAYS_MS = "100";
+		const { client } = await startDaemon();
+		const dir = mkdtempSync(join(tmpdir(), "roost-gone-"));
+		const { id } = await client.request("dispatch", {
+			cwd: dir,
+			sessionFile: "",
+			kind: "shell",
+			profile: "scripted",
+			protocol: true,
+			command: [process.execPath, TS],
+			resumeCommand: [process.execPath, TS],
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			name: "scripted",
+			origin: "dispatch",
+			term: { submit: "\r", settleMs: 600, typeTask: "crash" },
+		});
+		// the agent took the task (acked) and is about to die; its directory goes meanwhile
+		await waitFor(() => ((readState(id)?.pendingReplies as unknown[] | undefined)?.length === 0 ? true : undefined));
+		rmSync(dir, { recursive: true, force: true });
+		const r = await until(client, id, (x) => x.state === "failed" && /could not restart/.test(x.error ?? ""), 20000);
+		expect(r.error).toMatch(/cwd is gone/);
+		expect(((readState(id)?.pendingReplies as { text: string }[] | undefined) ?? []).map((x) => x.text)).toEqual([]);
 	});
 });
 

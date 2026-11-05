@@ -196,7 +196,7 @@ export function checkTemplate(t: unknown): asserts t is DispatchArgs {
 	if (!Array.isArray(a.command) || a.command.length === 0 || !a.command.every((x) => typeof x === "string")) throw new Error("launch: command");
 	if (typeof a.cwd !== "string" || !a.cwd.startsWith("/")) throw new Error("launch: cwd");
 	if (a.kind === "shell") {
-		if (a.sessionFile !== "" && a.sessionFile !== undefined) throw new Error("launch: a command has no sessionFile");
+		if (a.sessionFile !== "") throw new Error("launch: a command has no sessionFile");
 		if (a.worktree !== undefined) throw new Error("launch: a scheduled run has no worktree");
 		return;
 	}
