@@ -1122,3 +1122,31 @@ describe("M36 request ids", () => {
 		await client.request("stop", { id });
 	});
 });
+
+describe("M36 a resend after the daemon died before starting the job", () => {
+	it("starts the ended job for the reply it took", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", {
+			cwd: work,
+			sessionFile: "",
+			kind: "shell",
+			profile: "scripted",
+			protocol: true,
+			command: [process.execPath, resolve("test/fixtures/agent-ts.ts")],
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			name: "scripted",
+			origin: "dispatch",
+			term: { submit: "\r", settleMs: 600, typeTask: "first" },
+		});
+		await waitFor(async () => (await find(client, id))?.summary === "did first (#1)", 15000);
+		await client.request("stop", { id });
+		await waitFor(async () => (await find(client, id))?.endedAt);
+		// as if a reply was taken (kept with its id) and the daemon died before starting the job
+		const file = join(jobDir(id), "state.json");
+		const st = JSON.parse(readFileSync(file, "utf8"));
+		writeFileSync(file, JSON.stringify({ ...st, replySeq: 2, pendingReplies: [{ seq: 2, text: "kept" }], requestIds: ["r-kept"] }));
+		expect(await client.request("reply", { id, text: "kept", requestId: "r-kept" })).toMatchObject({ duplicate: true, respawned: true });
+		await waitFor(async () => (await find(client, id))?.summary === "did kept (#1)", 15000);
+		await client.request("stop", { id });
+	}, 40000);
+});

@@ -792,6 +792,9 @@ async function dispatch(a: DispatchArgs, extra: Partial<JobRecord> = {}): Promis
 		}
 	}
 
+	// M36: checked again after the awaits above (a worktree check): the same request on
+	// another connection may have made its job meanwhile
+	if (rid) for (const r of recs.values()) if (r.requestId === rid) return { id: r.id, name: r.name };
 	let id = newJobId();
 	while (recs.has(id)) id = newJobId();
 	const base = str(a.name) ? a.name : id;
@@ -1344,7 +1347,14 @@ async function reply(
 	const rawRid = (args as { requestId?: unknown } | undefined)?.requestId;
 	const rid = requestIdOf(rawRid);
 	if (rawRid !== undefined && !rid) throw new OpError("bad_request", "requestId: 1-64 of A-Z a-z 0-9 _ . : -");
-	if (rid && seenRequest(id, rid)) return { delivered: false, saved: true, duplicate: true };
+	if (rid && seenRequest(id, rid)) {
+		// taken before; an ended job it was to start (the daemon died in between) starts now
+		if (!roster.has(id) && !starting.has(id) && !respawning.has(id) && pendingReplies(id).length > 0) {
+			const r = await respawn(id).catch((err: unknown) => ({ error: (err as Error).message }));
+			return { delivered: false, saved: true, duplicate: true, ...("error" in r ? { error: r.error } : { respawned: r.started }) };
+		}
+		return { delivered: false, saved: true, duplicate: true };
+	}
 	const live = roster.has(id);
 	if (text === "/stop") {
 		if (live) await terminateHost(id);
@@ -1353,7 +1363,8 @@ async function reply(
 	if (text.startsWith("!")) throw new OpError("unsupported", "shell commands in replies are not supported yet; attach to run them");
 	if (isTermJob(recs.get(id))) {
 		const r = await replyToProfile(id, text, live);
-		if (rid && (r.delivered || r.saved)) updateState(id, { requestIds: withRequest(readState(id), rid) });
+		// typed in first, then kept: a crash in between types it again on a resend (not atomic)
+		if (rid && (r.delivered || r.saved) && readState(id)) updateState(id, { requestIds: withRequest(readState(id), rid) });
 		return r;
 	}
 	if (recs.get(id)?.kind === "shell" && !isProtocolJob(recs.get(id))) throw new OpError("unsupported", "a shell job takes no replies; attach to type into it");
@@ -1432,8 +1443,8 @@ function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabili
 	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: DAEMON_CAPABILITIES };
 }
 
-/** M36: request ids a job's replies came with, the last 200 (a resend comes soon after). */
-const MAX_REQUEST_IDS = 200;
+/** M36: request ids a job's replies came with, the last 100 (a resend comes soon after). */
+const MAX_REQUEST_IDS = 100;
 function seenRequest(id: string, rid: string): boolean {
 	const ids = readState(id)?.requestIds;
 	return Array.isArray(ids) && ids.includes(rid);

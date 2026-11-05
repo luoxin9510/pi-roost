@@ -168,9 +168,12 @@ seconds. The connection a report goes through becomes the job's: replies come on
 an optional `requestId` (1–64 of `A-Z a-z 0-9 _ . : -`). Sent again with the same id,
 because the answer was lost (the daemon restarted, the connection dropped), the request
 is taken once: a reply answers `{"duplicate": true, "saved": true}` and is not queued
-again; a dispatch answers with the job the first one made. A job remembers its last 200
-reply ids, kept in the same write as the reply itself. Use a new id for each new request
-and the same id for each resend of it.
+again (if the job had ended and was to be started for it, it is started now); a dispatch
+answers with the job the first one made, whatever the resend's other arguments, as long
+as that job exists. A job remembers its last 100 reply ids, kept in the same write as the
+reply itself (for a terminal agent the id is kept just after the text is typed: a crash
+between the two types it again). Use a new id for each new request and the same id for
+each resend of it.
 
 ### Others
 
