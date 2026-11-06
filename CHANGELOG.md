@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Evals of the agent development environment loop with a real model (M62, [docs/plans/m62-workspace-evals.md](docs/plans/m62-workspace-evals.md)): a task started in its own worktree, the session commits and says done, verify runs (a failure goes back with its output), the user merges into base; the harness builds the start as `/tasks start` does. Haiku 5.5: 6/6 over 3 runs, $0.0071.
+
 ## [0.1.19] - 2026-11-06
 
 The end of the agent development environment roadmap ([docs/plans/ade-roadmap.md](docs/plans/ade-roadmap.md)): tasks can be shelved and what the loop leaves behind cleaned up, the task board is a command of every pi session (so of the phone), the concierge's sessions are built by the daemon (M59); a pull request is an optional exit, and tasks changing the same files are marked (M60). An adversarial pass over the whole loop closed a way for a session to merge on its own. The porting guide ([docs/porting.md](docs/porting.md)) describes this release.
