@@ -2402,3 +2402,97 @@ describe("M61: a session's own slash commands in its peek", () => {
 		expect(a.client.requests.filter((r) => r.op === "reply").at(-1)!.args).toEqual({ id: "t", text: "/init x", mode: "steer" });
 	});
 });
+
+describe("M57: the workspace overlay", () => {
+	const sha = "a".repeat(40);
+	const task = (id: number, title: string, extra: Partial<BoardTask> = {}): BoardTask => ({ id, title, detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], ...extra });
+	const ws = (stage: string, extra: object = {}) => ({ path: `/r/.pi/worktrees/x-${stage}`, branch: `roost/t-${stage}`, baseRef: "main", baseSha: sha, stage, note: null, ...extra }) as never;
+	const changes = (async () => ({ files: [{ status: "M", path: "db/schema.sql", add: 12, del: 1 }, { status: "A", path: "db/0004_users.sql", add: 40, del: 0 }], insertions: 52, deletions: 1, commits: 2, dirty: false })) as never;
+	const board = () => [
+		task(5, "login page", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: ws("working") }),
+		task(4, "users migration", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: ws("review", { note: "verified: npm test (3s)" }) }),
+		task(6, "rate limiter", { workspace: ws("conflict", { note: "conflict in src/rate.ts" }) }),
+		task(9, "audit log", { after: [4] }),
+	];
+
+	it("/workspaces lists the pipeline (review first), the selected one's detail beside it; Ctrl+N goes to the next that needs you", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint", state: "working" })], { extra: { taskChanges: changes } });
+		client.tasks = board();
+		await view.start();
+		type(view, "/workspaces");
+		view.handleInput("\r");
+		await sleep(30);
+		const out = view.render(120).join("\n");
+		expect(out).toContain("all projects · workspaces");
+		expect(out.indexOf("REVIEW")).toBeLessThan(out.indexOf("CONFLICT · FAILED"));
+		expect(out.indexOf("CONFLICT · FAILED")).toBeLessThan(out.indexOf("WORKING"));
+		expect(out).toContain("▶ ◆ #4 users migration");
+		expect(out).toContain("+52 −1");
+		expect(out).toContain("#9 audit log · after #4");
+		// the detail: branch, agent, change, files
+		expect(out).toContain("roost/t-review (base main)");
+		expect(out).toContain("2 files +52 −1 · 2 commits");
+		expect(out).toContain("db/0004_users.sql");
+		expect(out).toContain("m merge · b back · v verify");
+		// n: the next that needs you (the conflict), then back round to the review
+		view.handleInput("n");
+		expect(view.render(120).join("\n")).toContain("▶ ✕ #6 rate limiter");
+		view.handleInput("n");
+		expect(view.render(120).join("\n")).toContain("▶ ◆ #4 users migration");
+		view.handleInput("\x1b");
+		expect(view.render(120).join("\n")).not.toContain("· workspaces");
+		// Ctrl+N from the list opens it at the first that needs you
+		view.handleInput("\x0e");
+		await sleep(30);
+		expect(view.render(120).join("\n")).toContain("▶ ◆ #4 users migration");
+	});
+
+	it("the keys act on the selected task: m merges, b sends back with a note, s starts an open one; keys a stage has not do nothing", async () => {
+		const fake = (() => ({ path: "/r/.pi/worktrees/t9-audit-ab12", branch: "roost/t9-audit-ab12", repo: "/r", base: sha, baseRef: "main", cwd: "/r/.pi/worktrees/t9-audit-ab12", sourceDirty: false, included: [] })) as never;
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes, createTaskWorktree: fake, taskMerge: "ff" } });
+		client.tasks = board();
+		await view.start();
+		view.handleInput("\x0e");
+		await sleep(30);
+		const acts = () => client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action !== "list").map((r) => r.args);
+		// p (pass) is for a failed task only
+		view.handleInput("p");
+		await sleep(10);
+		expect(acts()).toEqual([]);
+		view.handleInput("m");
+		await sleep(30);
+		expect(acts()).toContainEqual({ action: "merge", id: 4, mode: "ff" });
+		view.handleInput("b");
+		for (const ch of "use a transaction") view.handleInput(ch);
+		expect(view.render(120).join("\n")).toContain("#4 back › use a transaction");
+		view.handleInput("\r");
+		await sleep(30);
+		expect(acts()).toContainEqual({ action: "back", id: 4, note: "use a transaction" });
+		// the open task at the end: s starts it in its worktree
+		view.handleInput("\x1b[F");
+		expect(view.render(120).join("\n")).toContain("▶ · #9 audit log");
+		view.handleInput("s");
+		await sleep(30);
+		expect(acts().some((a) => (a as { action: string; id: number }).action === "start" && (a as { id: number }).id === 9)).toBe(true);
+	});
+
+	it("under 100 columns the detail goes below the list", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes } });
+		client.tasks = board();
+		await view.start();
+		type(view, "/ws");
+		view.handleInput("\r");
+		await sleep(30);
+		const lines = view.render(80);
+		const at = (s: string) => lines.findIndex((l) => l.includes(s));
+		expect(at("roost/t-review (base main)")).toBeGreaterThan(at("#9 audit log"));
+		expect(lines.every((l) => !l.includes("│"))).toBe(true);
+	});
+
+	it("the header says Ctrl+N while tasks are in workspaces", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })]);
+		client.tasks = board();
+		await view.start();
+		expect(view.render(120).join("\n")).toContain("Ctrl+N workspaces");
+	});
+});

@@ -1350,7 +1350,8 @@ async function workspaceAction(
 	}
 	if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.workspace?.stage === "merged" ? "merged" : t.state}`);
 	if (action === "start") {
-		if (!human) throw new OpError("unsupported", "the hub starts a task in its workspace (/tasks start)");
+		// M57: the concierge too, when its policy lets it start sessions
+		if (!human && !(a.concierge && conciergePolicy().act)) throw new OpError(a.concierge ? "policy" : "unsupported", a.concierge ? "the concierge may not start sessions (act: off): ask the user to /tasks start it" : "the hub starts a task in its workspace (/tasks start)");
 		if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: a workspace is a repository's (add it in a repository)`);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);
 		// M56: its setup runs: the session follows by itself
@@ -1369,6 +1370,13 @@ async function workspaceAction(
 		if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
 		if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
 		if (!str(launch.cwd) || !isInside(realPath(launch.cwd), realPath(w.path))) throw new OpError("bad_request", "launch: cwd must be inside the task's worktree");
+		// M57: a session the concierge starts is not a concierge, nor does it carry another job's identity
+		if (a.concierge) {
+			if (launch.profile) throw new OpError("bad_request", "the concierge starts pi sessions only");
+			launch.env = Object.fromEntries(Object.entries(launch.env ?? {}).filter(([k]) => k !== CONCIERGE_ROLE_ENV && !/^(ROOST|PI_ROOST|PI)_(JOB|SOCKET)/.test(k)));
+			launch.origin = "dispatch";
+			launch.requestId = undefined;
+		}
 		// M56: a new worktree gets the repository's setup first (approved), then the session
 		if (!t.workspace) {
 			const { config } = await readProjectConfig(t.project, w.baseRef);

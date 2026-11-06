@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	abortSync, cleanupMergedTask, commitAll, createTaskWorktree, findCheckout, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, taskTag, withMergeLock, worktreeClean,
+	abortSync, cleanupMergedTask, commitAll, createTaskWorktree, findCheckout, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, taskChanges, taskTag, withMergeLock, worktreeClean,
 } from "../lib/task-git.ts";
 import { WorktreeError, validWorktree } from "../lib/worktree.ts";
 
@@ -344,5 +344,47 @@ describe("withMergeLock", () => {
 		utimesSync(lock, old, old);
 		expect(await withMergeLock(r, async () => "x")).toBe("x");
 		expect(existsSync(lock)).toBe(false);
+	});
+});
+
+describe("M57: taskChanges", () => {
+	it("counts commits and uncommitted work against the commit shared with base: renames, new files, base's own commits left out", async () => {
+		const { r, w } = task();
+		// base moves on: its file is not the task's change
+		commitFile(r, "base.txt", "b\n");
+		// a rename, a change, a new file (untracked), a binary
+		writeFileSync(join(w.path, "a.txt"), "a\nmore\n");
+		git(w.path, "mv", "t.txt", "renamed.txt");
+		writeFileSync(join(w.path, "new.txt"), "n\n");
+		const c = (await taskChanges(w.path, "main"))!;
+		expect(c.commits).toBe(1);
+		expect(c.dirty).toBe(true);
+		const by = Object.fromEntries(c.files.map((f) => [f.path, f]));
+		// t.txt was the task's own (added on its branch): renamed, it is still a new file
+		expect(Object.keys(by).sort()).toEqual(["a.txt", "new.txt", "renamed.txt"].sort());
+		expect(by["renamed.txt"]).toMatchObject({ status: "A", add: 1 });
+		expect(by["a.txt"]).toMatchObject({ status: "M", add: 1, del: 0 });
+		expect(by["new.txt"]).toMatchObject({ status: "A", add: null });
+		expect(c.files.some((f) => f.path.includes("base.txt"))).toBe(false);
+		// committed: the rename is one
+		git(w.path, "add", "-A");
+		git(w.path, "commit", "-q", "-m", "more");
+		const d = (await taskChanges(w.path, "main"))!;
+		expect(d.commits).toBe(2);
+		expect(d.dirty).toBe(false);
+		expect(d.files.map((f) => f.path).sort()).toEqual(["a.txt", "new.txt", "renamed.txt"].sort());
+		expect(d.insertions).toBe(1 + 1 + 1);
+	});
+
+	it("a file of base renamed shows as a rename", async () => {
+		const { w } = task();
+		git(w.path, "mv", "a.txt", "z.txt");
+		const c = (await taskChanges(w.path, "main"))!;
+		expect(c.files).toContainEqual({ status: "R", path: "a.txt → z.txt", add: 0, del: 0 });
+	});
+
+	it("undefined when git cannot say (no such base)", async () => {
+		const { w } = task();
+		expect(await taskChanges(w.path, "nope")).toBeUndefined();
 	});
 });
