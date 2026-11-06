@@ -92,6 +92,8 @@ const PEEK_COMMANDS: { name: string; description: string; argumentHint?: string 
 	{ name: "ask", description: "ask the concierge about it", argumentHint: "question" },
 ];
 const RESTART_ASK_MS = 3000;
+/** M56: how long a shown /tasks approve waits for the same command again. */
+const APPROVE_MS = 30_000;
 const NOTICE_MS = 4000;
 const SPIN_MS = 150;
 /** M8: the row's model and context column only shows while the summary keeps this many columns. */
@@ -311,6 +313,8 @@ export class AgentView implements Component {
 	private overlay: Overlay | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
+	/** M56: the commands /tasks approve showed, by their hash. */
+	private approveShown: { id: number; at: number; hash: string } | undefined;
 	/** M61: a built-in command on its way (a second Enter meanwhile is ignored). */
 	private commandBusy = false;
 	/** M61: sessions' command lists by the mtime of the file they were read from. */
@@ -2130,7 +2134,32 @@ export class AgentView implements Component {
 				const r = await client.request("task", { action: "commit", id, message: rest.slice(1).join(" ") || undefined });
 				return this.say(`#${id}: ${r.note ?? "committed"}`, "success");
 			}
-			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | merge <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			// M56: the repository's commands: shown, then approved by the same command again
+			if (verb === "approve") {
+				if (id === undefined) return this.say("/tasks approve <id>", "warning");
+				const shown = this.approveShown;
+				if (!shown || shown.id !== id || Date.now() - shown.at >= APPROVE_MS) {
+					const r = await client.request("task", { action: "approve", id, dry: true });
+					if (!r.hash) return this.say(r.note ?? "nothing to approve", "warning");
+					this.approveShown = { id, at: Date.now(), hash: r.hash };
+					return this.say(`${r.note} · they run in your account: /tasks approve ${id} again within 30 s to approve`, "warning");
+				}
+				this.approveShown = undefined;
+				// what is approved is what was shown (the daemon refuses if the commands changed)
+				const r = await client.request("task", { action: "approve", id, hash: shown.hash });
+				return this.say(r.note ?? "approved", "success");
+			}
+			if (verb === "verify") {
+				if (id === undefined) return this.say("/tasks verify <id>", "warning");
+				const r = await client.request("task", { action: "verify", id });
+				return this.say(`#${id}: ${r.note ?? "verifying"}`, "success");
+			}
+			if (verb === "pass") {
+				if (id === undefined) return this.say("/tasks pass <id>", "warning");
+				await client.request("task", { action: "pass", id });
+				return this.say(`#${id}: in review (passed by hand)`, "muted");
+			}
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | merge <id> | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
