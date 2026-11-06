@@ -3,7 +3,8 @@
 import { initTheme, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, ScrollView, Text, VStack } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
-import { drawUnit, EarlierHistory, earlierEntries, HISTORY_CHUNK, historyUnits, type ScrollLike, transcriptView } from "../adapters/pi/earlier-history.ts";
+import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
+import { drawUnit, EarlierHistory, earlierEntries, HISTORY_CHUNK, historyUnits, registerEarlierHistory, type ScrollLike, transcriptView } from "../adapters/pi/earlier-history.ts";
 
 beforeAll(() => initTheme("dark"));
 
@@ -94,33 +95,124 @@ describe("M53: earlier history", () => {
 		expect(h.render(80)).toEqual([]);
 	});
 
-	it("finds pi's transcript in a fullscreen layout, and keeps a real ScrollView in place as history loads", () => {
+	// pi 1.5.0's fullscreen layout: a primary ScrollView over [header, resources, chat], a dock under it
+	const piLayout = (chatLines: number) => {
 		const chat = new Container();
-		for (let i = 0; i < 5; i++) chat.addChild(new Text(`chat ${i}`, 0, 0));
+		for (let i = 0; i < chatLines; i++) chat.addChild(new Text(`chat ${i}`, 0, 0));
 		const doc = new Container();
 		doc.addChild(new Text("header", 0, 0));
+		doc.addChild(new Container());
 		doc.addChild(chat);
 		const sv = new ScrollView(doc, { follow: "end", primary: true });
 		const root = new VStack([
 			{ component: sv, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 			{ component: new VStack([{ component: new Text("editor", 0, 0), shrink: 1, minSize: 1 }]), basis: "auto", grow: 0, shrink: 1, minSize: 1 },
 		]);
-		const found = transcriptView(root);
-		expect(found).toBe(sv);
+		return { root, sv, doc, chat };
+	};
+	const frame = (root: Component) => renderLayoutFrame(root, 40, 11, () => {}).lines.map((l) => l.trimEnd());
+
+	it("finds pi's transcript, and in real frames keeps the chat on its row as each chunk loads above it", async () => {
+		const { root, sv, doc } = piLayout(30);
+		expect(transcriptView(root)).toBe(sv);
 		expect(transcriptView(new Container())).toBeUndefined();
-		const h = new EarlierHistory({ view: () => found, draw: lineDraw as never, note: (left) => `left ${left}`, requestRender: () => {} });
+		let asked = 0;
+		const h = new EarlierHistory({ view: () => transcriptView(root), draw: lineDraw as never, note: (left) => `left ${left}`, requestRender: () => asked++ });
 		h.set(fakeUnits(20));
 		doc.children.splice(doc.children.length - 1, 0, h);
-		// a viewport of 4 rows over 7 lines, scrolled to the top
-		sv.updateLayout(7, 4, () => {});
+		// the first frame: not laid out yet, nothing loads (it looks again once)
+		frame(root);
+		expect(h.loaded).toBe(0);
+		await new Promise((r) => setImmediate(r));
+		expect(asked).toBe(1);
+		// following the end: no load
+		expect(frame(root).at(-2)).toBe("chat 29");
+		expect(h.loaded).toBe(0);
+		// at the top: header, the hint, the chat's first line on row 2; a chunk loads above it
 		sv.scrollTo(0);
-		const lines = doc.render(80).map((l) => l.trimEnd());
-		// laid out again as pi does: the content grew above, the view moved with it
-		sv.updateLayout(lines.length, 4, () => {});
+		const top = frame(root);
+		expect(h.loaded).toBe(HISTORY_CHUNK);
 		expect(sv.scrollTop).toBe(HISTORY_CHUNK);
-		// before: [header, note, chat 0, chat 1] on screen; the chat stays on the same row
-		expect(lines[sv.scrollTop + 2]).toBe("chat 0");
-		expect(lines.slice(0, 2)).toEqual(["header", `left ${20 - HISTORY_CHUNK}`]);
-		expect(lines.slice(2, 2 + HISTORY_CHUNK)).toEqual(Array.from({ length: HISTORY_CHUNK }, (_, i) => `message ${20 - HISTORY_CHUNK + i}`));
+		expect(top.slice(0, 3)).toEqual(["message 18", "message 19", "chat 0"]);
+		// up again: the rest, the oldest on the row under the hint
+		sv.scrollBy(-HISTORY_CHUNK);
+		const next = frame(root);
+		expect(h.loaded).toBe(20);
+		expect(next[2]).toBe("message 8");
+		sv.scrollTo(0);
+		expect(frame(root).slice(0, 3)).toEqual(["header", "left 0", "message 0"]);
+	});
+
+	it("a short chat fills the screen with earlier messages, then follows its end", async () => {
+		const { root, doc } = piLayout(2);
+		const h = new EarlierHistory({ view: () => transcriptView(root), draw: lineDraw as never, note: (left) => `left ${left}`, requestRender: () => {} });
+		h.set(fakeUnits(30));
+		doc.children.splice(doc.children.length - 1, 0, h);
+		frame(root);
+		const second = frame(root);
+		expect(h.loaded).toBe(HISTORY_CHUNK);
+		expect(second.at(-2)).toBe("chat 1");
+		frame(root);
+		expect(h.loaded).toBe(HISTORY_CHUNK);
+		// without a transcript (pi printing its document as it leaves fullscreen): nothing
+		const gone = new EarlierHistory({ view: () => undefined, draw: lineDraw as never, note: () => "hint", requestRender: () => {} });
+		gone.set(fakeUnits(3));
+		expect(gone.render(40)).toEqual([]);
+	});
+
+	it("goes into pi's document before the chat, starts over on a compaction, and leaves on shutdown", () => {
+		const { root, doc, chat } = piLayout(3);
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+		const pi = { on: (name: string, fn: (event: unknown, ctx: unknown) => void) => handlers.set(name, fn), getSettings: () => ({}) };
+		let widget: Component | undefined;
+		const tui = { layoutRoot: root as unknown, requestRender: () => {} };
+		const kept = user("kept");
+		let branch: SessionEntry[] = [user("a"), assistant("b"), kept, compaction(kept.id), user("now")];
+		const ctx = (hasUI = true) => ({
+			hasUI,
+			cwd: "/tmp",
+			sessionManager: { getBranch: () => branch },
+			ui: {
+				getToolsExpanded: () => false,
+				setWidget: (_key: string, factory: (t: unknown, theme: unknown) => Component) => {
+					widget = factory(tui, { fg: (_c: string, s: string) => s });
+				},
+			},
+		});
+		registerEarlierHistory(pi as never);
+		handlers.get("session_start")!({}, ctx());
+		expect(doc.children).toHaveLength(3);
+		widget!.render(40);
+		expect(doc.children).toHaveLength(4);
+		expect(doc.children[3]).toBe(chat);
+		const history = doc.children[2] as EarlierHistory;
+		expect(history.total).toBe(2);
+		// mounted once
+		widget!.render(40);
+		expect(doc.children).toHaveLength(4);
+		const kept2 = user("kept2");
+		branch = [...branch, kept2, compaction(kept2.id)];
+		handlers.get("session_compact")!({}, ctx());
+		expect(history.total).toBe(5);
+		expect(history.loaded).toBe(0);
+		handlers.get("session_shutdown")!({}, ctx());
+		expect(doc.children).toHaveLength(3);
+		// pi on the main screen (no layout root), or no UI: nothing
+		tui.layoutRoot = undefined;
+		handlers.get("session_start")!({}, ctx());
+		widget!.render(40);
+		expect(doc.children).toHaveLength(3);
+		widget = undefined;
+		handlers.get("session_start")!({}, ctx(false));
+		expect(widget).toBeUndefined();
+	});
+
+	it("draws a skill's invocation folded, with the user's words after it", () => {
+		const text = '<skill name="review" location="/s/review/SKILL.md">\nLONG SKILL BODY\n</skill>\n\nplease review';
+		const o = { tui: { requestRender: () => {} } as never, cwd: "/tmp", hideThinking: true, outputPad: 1, toolsExpanded: false };
+		const out = historyUnits([user(text)]).flatMap((u) => drawUnit(u, o).render(80)).join("\n");
+		expect(out).toContain("review");
+		expect(out).toContain("please review");
+		expect(out).not.toContain("LONG SKILL BODY");
 	});
 });

@@ -746,9 +746,9 @@ replay. Nothing leaves your machine; it is off by default. The shape follows pi'
 - The background service's socket is yours alone (only your user can open it). It tells the hub and the sessions apart (a session cannot stop others, answer for you or change the concierge's policy), but it does not sandbox your own processes from each other: a session with a shell can do what you can.<br>
   后台服务的 socket 只有你自己的用户能打开。它能区分 hub 和会话（会话不能停掉别的会话、不能冒充你回答、不能改值班 agent 的策略），但不会把你自己的进程彼此隔离：有 shell 权限的会话能做你能做的事。
 - The earlier messages loaded on scrolling up need pi's fullscreen mode (its default); a
-  session on the terminal's main screen (`tuiMode: "regular"`) shows what pi shows. Tools
-  in them are drawn plainly (without a tool's own renderer).<br>
-  向上滚动加载更早记录需要 pi 的全屏模式（默认就是）；在终端主屏上运行的会话（`tuiMode: "regular"`）只显示 pi 自己显示的内容。其中的工具调用用通用样式显示（不用工具自带的渲染器）。
+  session on the terminal's main screen (`tuiMode: "regular"`) shows what pi shows. An
+  extension's tools in them are drawn plainly (without the extension's renderer).<br>
+  向上滚动加载更早记录需要 pi 的全屏模式（默认就是）；在终端主屏上运行的会话（`tuiMode: "regular"`）只显示 pi 自己显示的内容。其中扩展提供的工具用通用样式显示（不用扩展自带的渲染器）。
 - `/fork` is pi's own command (branch from an earlier message); pi-roost's copy-to-background is `/bg-fork <prompt>`.<br>
   `/fork` 是 pi 自己的命令（从之前的消息分支）；pi-roost 的“复制到后台”是 `/bg-fork <prompt>`。
 

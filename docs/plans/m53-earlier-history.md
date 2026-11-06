@@ -21,11 +21,12 @@ already reached pi.)
 - A line above them says how many are left (`↑ 28 earlier messages (before compaction):
   scroll up to load`), or `── the start of the session ──` when all are shown.
 - A screen not full yet (a short chat after the compaction) loads on until it is.
-- They are drawn by pi's own components, as pi draws a resumed session: prompts, assistant
-  text (thinking hidden as the `hideThinkingBlock` setting says), tool calls with their
-  results, `!` commands, displayed custom messages (pi-roost's messages among them),
-  earlier compactions' and branches' summaries. Ctrl+O's expanded state is the one at the
-  time a message loads.
+- They are drawn by pi's own components, as pi draws a resumed session: prompts (a
+  skill's invocation folded, the user's words after it), assistant text (thinking hidden
+  as the `hideThinkingBlock` setting says), tool calls with their results (pi's built-in
+  tools with their own renderers), `!` commands, displayed custom messages (pi-roost's
+  messages among them), earlier compactions' and branches' summaries. Ctrl+O's expanded
+  state is the one at the time a message loads.
 - A compaction while the session runs, `/tree` to another branch, or another session
   (`/new`, `/resume`) starts over: nothing loaded, the count of the new boundary.
 
@@ -45,16 +46,38 @@ already reached pi.)
 - Loading: the component's render sees the view at its top, adds a chunk and moves the
   view down by the lines it added. pi lays the transcript out after rendering it (the
   content is measured, then the position clamped to it), so the position is moved inside
-  that render (the ScrollView's `currentScrollTop`); a pi without that field gets a
-  `scrollTo` after the frame instead. A render is requested after each load.
+  that render (the ScrollView's `currentScrollTop`); a pi without that field still loads,
+  but the view stays at the top (the new lines show from their start). A render is
+  requested after each load. A view not laid out yet (its first frame: height 0) loads
+  nothing; one more render is asked for, so a short chat then fills the screen.
+- Without a transcript (pi printing its document as it leaves fullscreen, or switched to
+  the main screen) the component draws nothing, so no stale hint is left behind.
+
+## Review
+
+- A skill's invocation was drawn as its whole text; now folded, as pi does
+  (`parseSkillBlock`, `SkillInvocationMessageComponent`).
+- Built-in tools got the generic drawing; their definitions (with renderers) are exported
+  by pi and used now.
+- The first frame (position 0 before any layout) loaded a chunk on every entry; it waits
+  for a laid-out view now.
+- The hint stayed in the terminal's scrollback when pi left fullscreen; nothing is drawn
+  without a transcript.
+- Mounting runs inside pi's layout: it is guarded (`try`), and only goes in when the
+  document's last child is a container (the chat).
+- The fallback for a ScrollView without the field moved the view after the frame, twice
+  if a frame rendered twice; dropped.
 
 ## Tests
 
 `test/earlier-history.test.ts`: the boundary (one compaction, two, a lost first kept
-entry), the messages kept and paired, drawing with pi's components, loading only at the
-top and only once per frame, the start line, a reset; and on pi-tui's own `ScrollView` and
-`VStack`: the transcript found, history put before the chat, the chat staying on the
-same row as a chunk loads above it.
+entry), the messages kept and paired, drawing with pi's components (a skill folded),
+loading only at the top, the start line, a reset; real frames of pi-tui's layout
+(`renderLayoutFrame` over its `ScrollView` and `VStack` shaped as pi's): nothing on the
+first frame, nothing while following the end, the chat on the same row as each chunk
+loads above it, a short chat filled then followed, nothing without a transcript; and the
+extension against a fake pi: mounted once before the chat, started over on a compaction,
+taken out on shutdown, nothing on the main screen or without a UI.
 
 Checked in a real fullscreen pi (1.5.0) in a pseudo-terminal: a session of 40 exchanges
 compacted down to its last; the first frame shows the newest earlier one (the screen was
@@ -66,5 +89,8 @@ not full), wheel events scroll through the rest, and the top says the session's 
   put them in, and the host's replay carries no scrollback; such a session shows what pi
   shows.
 - A foreground pi (not a pi-roost session) is left as it is.
-- A tool's own renderer: extension tools' renderers are not reachable from an extension,
-  so tool calls are drawn the generic way.
+- An extension tool's own renderer is not reachable from an extension: its calls are
+  drawn the generic way (pi's built-in tools use theirs).
+- Custom entries drawn by an extension's entry renderer and cache-warming notices are not
+  shown (pi shows them after a compaction only if they are kept).
+- `hideThinkingBlock` and `outputPad` are read when the session starts.

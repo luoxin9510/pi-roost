@@ -11,10 +11,20 @@ import {
 	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomMessageComponent,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createPowerShellToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getMarkdownTheme,
+	parseSkillBlock,
 	type SessionEntry,
+	SkillInvocationMessageComponent,
 	sessionEntryToContextMessages,
 	ToolExecutionComponent,
 	UserMessageComponent,
@@ -89,22 +99,61 @@ export interface DrawOptions {
 	toolsExpanded: boolean;
 }
 
+/** pi's built-in tools, for their renderers (an extension's own renderer is not reachable). */
+const BUILT_IN: Record<string, (cwd: string) => unknown> = {
+	read: createReadToolDefinition,
+	bash: createBashToolDefinition,
+	powershell: createPowerShellToolDefinition,
+	edit: createEditToolDefinition,
+	write: createWriteToolDefinition,
+	grep: createGrepToolDefinition,
+	find: createFindToolDefinition,
+	ls: createLsToolDefinition,
+};
+const builtIns = new Map<string, unknown>();
+function builtInTool(name: string, cwd: string): unknown {
+	const make = BUILT_IN[name];
+	if (!make) return undefined;
+	const key = `${name}\0${cwd}`;
+	if (!builtIns.has(key)) {
+		let def: unknown;
+		try {
+			def = make(cwd);
+		} catch {}
+		if (builtIns.size > 64) builtIns.clear();
+		builtIns.set(key, def);
+	}
+	return builtIns.get(key);
+}
+
 /** pi's components for one message (as its chat draws them on a resume). */
 export function drawUnit(u: HistoryUnit, o: DrawOptions): Component {
 	const md = getMarkdownTheme();
 	const box = new Container();
 	const m = u.message as never as AnyMessage & Record<string, never>;
 	switch (u.message.role) {
-		case "user":
+		case "user": {
+			const text = userText(u.message);
 			box.addChild(new Spacer(1));
-			box.addChild(new UserMessageComponent(userText(u.message), md, o.outputPad));
+			// a skill's invocation folds, and the user's own words follow it (as in pi)
+			const skill = parseSkillBlock(text);
+			if (skill) {
+				const c = new SkillInvocationMessageComponent(skill, md, o.outputPad);
+				c.setExpanded(o.toolsExpanded);
+				box.addChild(c);
+				if (skill.userMessage) {
+					box.addChild(new Spacer(1));
+					box.addChild(new UserMessageComponent(skill.userMessage, md, o.outputPad));
+				}
+			} else box.addChild(new UserMessageComponent(text, md, o.outputPad));
 			break;
+		}
 		case "assistant": {
 			box.addChild(new AssistantMessageComponent(m as never, o.hideThinking, md, undefined, o.outputPad));
 			const content = (u.message.content as { type: string; id?: string; name?: string; arguments?: unknown }[] | undefined) ?? [];
 			for (const c of content) {
 				if (c.type !== "toolCall" || !c.id) continue;
-				const tool = new ToolExecutionComponent(String(c.name), c.id, c.arguments, { showImages: false, outputPad: o.outputPad }, undefined, o.tui, o.cwd);
+				const tool = new ToolExecutionComponent(String(c.name), c.id, c.arguments, { showImages: false, outputPad: o.outputPad }, builtInTool(String(c.name), o.cwd) as never, o.tui, o.cwd);
 				tool.setExpanded(o.toolsExpanded);
 				const result = u.results.get(c.id);
 				const stop = u.message.stopReason;
@@ -154,6 +203,8 @@ export function drawUnit(u: HistoryUnit, o: DrawOptions): Component {
 /** The part of pi's ScrollView this reads: where the view is; its scroll position is moved. */
 export interface ScrollLike {
 	readonly scrollTop: number;
+	/** 0 before its first layout (its position means nothing yet) */
+	readonly viewportHeight?: number;
 	scrollTo(top: number, options?: { disableFollow?: boolean }): void;
 }
 
@@ -183,17 +234,13 @@ export function transcriptView(root: unknown): (ScrollLike & { children: Compone
 /**
  * Keep the view on the same lines when `delta` lines are put above them. pi lays the
  * transcript out after rendering it (the content is measured, then the position is
- * clamped to it), so the position is moved now, inside the render; a ScrollView without
- * that field is moved after the frame instead.
+ * clamped to it), so the position is moved now, inside the render. A ScrollView without
+ * that field (another pi) is left at the top: the loaded lines show from their start.
  */
 function keepPlace(view: ScrollLike, delta: number): void {
 	if (delta <= 0) return;
 	const v = view as unknown as { currentScrollTop?: unknown };
 	if (typeof v.currentScrollTop === "number") v.currentScrollTop = v.currentScrollTop + delta;
-	else {
-		const top = view.scrollTop;
-		setImmediate(() => view.scrollTo(top + delta, { disableFollow: true }));
-	}
 }
 
 export interface HistoryDeps {
@@ -209,6 +256,7 @@ export class EarlierHistory implements Component {
 	private units: HistoryUnit[] = [];
 	private shown = 0;
 	private drawn = new Map<HistoryUnit, Component>();
+	private lookedAgain = false;
 
 	private readonly deps: HistoryDeps;
 
@@ -221,6 +269,7 @@ export class EarlierHistory implements Component {
 		this.units = units;
 		this.shown = 0;
 		this.drawn.clear();
+		this.lookedAgain = false;
 	}
 
 	get total(): number {
@@ -254,7 +303,18 @@ export class EarlierHistory implements Component {
 
 	render(width: number): string[] {
 		const view = this.deps.view();
-		if (!view || this.units.length === 0 || this.shown >= this.units.length || view.scrollTop > 0) return this.lines(width);
+		// no transcript (pi leaving fullscreen prints its document): nothing, not a stale hint
+		if (!view) return [];
+		// not laid out yet (its first frame), or not at the top: as it is
+		if (this.units.length === 0 || this.shown >= this.units.length || view.scrollTop > 0) return this.lines(width);
+		if (view.viewportHeight === 0) {
+			// laid out after this render: look again once (a short chat fills the screen then)
+			if (!this.lookedAgain) {
+				this.lookedAgain = true;
+				setImmediate(() => this.deps.requestRender());
+			}
+			return this.lines(width);
+		}
 		// at the top: the next older ones go above what is shown
 		const before = this.lines(width).length;
 		this.shown = Math.min(this.units.length, this.shown + HISTORY_CHUNK);
@@ -292,14 +352,20 @@ export function registerEarlierHistory(pi: ExtensionAPI): void {
 	// pi's document is [header, loaded resources, chat]: the history goes just above the chat
 	const mount = () => {
 		if (!tui || !history) return;
-		const view = transcriptView((tui as unknown as { layoutRoot?: unknown }).layoutRoot);
-		const doc = view?.children[0] as { children?: Component[] } | undefined;
-		if (!doc || !Array.isArray(doc.children) || doc.children.length === 0) return;
-		if (doc === mountedIn && doc.children.includes(history)) return;
-		unmount();
-		doc.children.splice(doc.children.length - 1, 0, history);
-		mountedIn = doc as { children: Component[] };
-		tui.requestRender();
+		// inside pi's layout: whatever is found, nothing here may throw
+		try {
+			const view = transcriptView((tui as unknown as { layoutRoot?: unknown }).layoutRoot);
+			const doc = view?.children[0] as { children?: Component[] } | undefined;
+			if (!doc || !Array.isArray(doc.children)) return;
+			if (doc === mountedIn && doc.children.includes(history)) return;
+			// pi 1.5.0's document: [header, loaded resources, chat], the chat a container
+			const chat = doc.children.at(-1) as { children?: unknown } | undefined;
+			if (doc.children.length < 2 || !Array.isArray(chat?.children)) return;
+			unmount();
+			doc.children.splice(doc.children.length - 1, 0, history);
+			mountedIn = doc as { children: Component[] };
+			tui.requestRender();
+		} catch {}
 	};
 	const refresh = (ctx: ExtensionContext) => {
 		ctxNow = ctx;
