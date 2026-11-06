@@ -402,9 +402,15 @@ when its session ended, and puts tasks on, marks them done or drops them when yo
 background service (`tasks.json`, at most 200; the done and dropped ones go first); the
 `task` op and the `tasks` capability for [agents of your own](docs/protocol.md)
 (`RoostAgent.tasks() / claimTask / taskDone / releaseTask / addTask`, `request` in
-Python). Design notes: [docs/plans/m47-tasks.md](docs/plans/m47-tasks.md).
+Python). Each repository has its board (M52): a task put on by a session is its
+repository's, one from the hub is the hub's repository's (outside one, for any session);
+a session sees and takes its repository's tasks and the ones for anyone (an isolated
+session's worktree counts as its repository), `/tasks` shows the hub's repository's and
+`/tasks all` every one, each named. A session refused a task because it waits on another
+is told, by a message, when it can be claimed, and so is the session it was handed to.
+Design notes: [docs/plans/m47-tasks.md](docs/plans/m47-tasks.md), [m52-board-projects.md](docs/plans/m52-board-projects.md).
 
-任务板让各会话像一个团队那样协作，就像 Claude Code 的 agent teams 共享一个任务列表：任何会话都能认领的任务，每个由一把锁持有，有的要等别的任务先完成。`/tasks add write the tests after #1 -- the unit tests for the board` 挂上一个任务（`after` 后面写它依赖的任务，`--` 后面写细节）；会话用 `roost_task_claim` 认领（另一个活着的会话持有时、或它依赖的任务还没完成时会被拒绝），做完用 `roost_task_done` 带结果标记完成，做不了用 `roost_task_release` 交还；失败、被停止或被删除的会话不再持有任何任务。会话也可以自己往板上挂后续工作（`roost_task_add`）。hub 可以把任务交给某个会话（`/tasks assign <id> <session>`：给它发一条带任务的消息）、标记完成或删掉（`/tasks done <id> [result]`、`/tasks rm <id>`）；`/tasks` 显示整个板（开放的、被阻塞的及卡在哪、被谁认领了多久、已完成的及其结果），板上有东西时标题行显示数量。值班 agent 开着时，每次摘要都带上任务板，它作为组长来管：把开放任务交给空闲会话（`hub_task_assign`），某个任务或全部任务完成时告诉你，会话结束了就把它的任务再交出去，你要求时才挂任务、标记完成或删除（`hub_task_add`、`hub_task_done`、`hub_task_drop`）；它自己从不认领。由后台服务保存（`tasks.json`，最多 200 条；满了先清掉已完成和已删除的）；[自己写的 agent](docs/protocol.md) 用 `task` op 和 `tasks` 能力（TypeScript 的 `RoostAgent.tasks() / claimTask / taskDone / releaseTask / addTask`，Python 的 `request`）。设计说明：[docs/plans/m47-tasks.md](docs/plans/m47-tasks.md)。
+任务板让各会话像一个团队那样协作，就像 Claude Code 的 agent teams 共享一个任务列表：任何会话都能认领的任务，每个由一把锁持有，有的要等别的任务先完成。`/tasks add write the tests after #1 -- the unit tests for the board` 挂上一个任务（`after` 后面写它依赖的任务，`--` 后面写细节）；会话用 `roost_task_claim` 认领（另一个活着的会话持有时、或它依赖的任务还没完成时会被拒绝），做完用 `roost_task_done` 带结果标记完成，做不了用 `roost_task_release` 交还；失败、被停止或被删除的会话不再持有任何任务。会话也可以自己往板上挂后续工作（`roost_task_add`）。hub 可以把任务交给某个会话（`/tasks assign <id> <session>`：给它发一条带任务的消息）、标记完成或删掉（`/tasks done <id> [result]`、`/tasks rm <id>`）；`/tasks` 显示整个板（开放的、被阻塞的及卡在哪、被谁认领了多久、已完成的及其结果），板上有东西时标题行显示数量。值班 agent 开着时，每次摘要都带上任务板，它作为组长来管：把开放任务交给空闲会话（`hub_task_assign`），某个任务或全部任务完成时告诉你，会话结束了就把它的任务再交出去，你要求时才挂任务、标记完成或删除（`hub_task_add`、`hub_task_done`、`hub_task_drop`）；它自己从不认领。由后台服务保存（`tasks.json`，最多 200 条；满了先清掉已完成和已删除的）；[自己写的 agent](docs/protocol.md) 用 `task` op 和 `tasks` 能力（TypeScript 的 `RoostAgent.tasks() / claimTask / taskDone / releaseTask / addTask`，Python 的 `request`）。每个仓库有自己的任务板（M52）：会话挂的任务属于它所在的仓库，hub 挂的属于 hub 所在的仓库（不在仓库里就是谁都能做的）；会话只看到并认领本仓库的任务和谁都能做的任务（隔离会话的 worktree 算作它的仓库），`/tasks` 显示 hub 所在仓库的板，`/tasks all` 显示全部并标出各自的项目。会话认领时因依赖未完成被拒，等依赖完成或被删时会收到一条消息说可以认领了，被交办的会话也会收到。设计说明：[docs/plans/m47-tasks.md](docs/plans/m47-tasks.md)、[m52-board-projects.md](docs/plans/m52-board-projects.md)。
 
 ## Scheduled tasks · 定时任务
 

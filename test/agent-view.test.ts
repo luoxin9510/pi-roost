@@ -134,7 +134,7 @@ class FakeClient {
 			const a = args as { action: string; id?: number; title?: string; detail?: string; after?: number[]; result?: string; to?: string };
 			if (a.action === "list") return { tasks: this.tasks };
 			if (a.action === "add") {
-				const task: BoardTask = { id: this.tasks.length + 1, title: a.title ?? "", detail: a.detail ?? null, state: "open", after: a.after ?? [], by: { who: "user", whoId: null }, at: Date.now(), owner: null, claimedAt: null, doneAt: null, result: null, assigned: null };
+				const task: BoardTask = { id: this.tasks.length + 1, title: a.title ?? "", detail: a.detail ?? null, state: "open", after: a.after ?? [], by: { who: "user", whoId: null }, at: Date.now(), owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: null, waiting: [] };
 				this.tasks = [...this.tasks, task];
 				return { tasks: this.tasks, task };
 			}
@@ -1898,8 +1898,8 @@ describe("M47: the task board in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		expect(client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action === "add").map((r) => r.args)).toEqual([
-			{ action: "add", title: "the schema", detail: undefined, after: undefined },
-			{ action: "add", title: "write the tests", detail: "the unit tests for the board", after: [1] },
+			{ action: "add", title: "the schema", detail: undefined, after: undefined, project: null },
+			{ action: "add", title: "write the tests", detail: "the unit tests for the board", after: [1], project: null },
 		]);
 		expect(view.render(120).join("\n")).toContain("task #2 added: write the tests (after #1)");
 		type(view, "/tasks add");
@@ -1914,11 +1914,11 @@ describe("M47: the task board in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		const screen = view.render(120).join("\n");
-		expect(screen).toContain("Task board · 1 open · 1 blocked");
+		expect(screen).toContain("Task board · all projects · 1 open · 1 blocked");
 		expect(screen).toContain("#1 open · the schema");
 		expect(screen).toContain("#2 blocked on #1 · write the tests");
 		expect(screen).toContain("the unit tests for the board");
-		expect(screen).toContain("/tasks add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id>");
+		expect(screen).toContain("/tasks all · add <title> [after #n] [-- detail] · assign <id> <session>");
 		view.handleInput("\x1b");
 		// assign, done, rm (by number, # or not)
 		type(view, "/tasks assign 1 lint");
@@ -1961,9 +1961,9 @@ describe("M47: the task board in the hub", () => {
 			await sleep(20);
 		}
 		expect(client.requests.slice(before).map((r) => r.args)).toEqual([
-			{ action: "add", title: "retry after 3", detail: undefined, after: undefined },
-			{ action: "add", title: "x after 1111111111111111111111111111111111111z", detail: undefined, after: undefined },
-			{ action: "add", title: "a", detail: "d", after: [1, 2] },
+			{ action: "add", title: "retry after 3", detail: undefined, after: undefined, project: null },
+			{ action: "add", title: "x after 1111111111111111111111111111111111111z", detail: undefined, after: undefined, project: null },
+			{ action: "add", title: "a", detail: "d", after: [1, 2], project: null },
 		]);
 	});
 });

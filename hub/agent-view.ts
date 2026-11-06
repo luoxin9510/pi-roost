@@ -37,7 +37,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { screenPath } from "../lib/store.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
-import { type BoardSummary, type BoardTask, boardSummary, liveOrder, summaryLine, taskLine } from "../lib/board.ts";
+import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -2022,10 +2022,13 @@ export class AgentView implements Component {
 			return Number.isInteger(n) && n > 0 ? n : undefined;
 		};
 		try {
-			if (!verb || verb === "list") {
-				const { tasks } = await client.request("task", { action: "list" });
-				this.board = boardSummary(tasks);
-				return this.showTasks(tasks);
+			// M52: the board of the project the hub is in (its repository) and the tasks for any session; `all`: every task
+			const here = projectOf(this.dispatchCwd());
+			if (!verb || verb === "list" || verb === "all") {
+				const every = verb === "all" || here === null;
+				const { tasks } = await client.request("task", { action: "list", ...(every ? {} : { project: here! }) });
+				if (every) this.board = boardSummary(tasks);
+				return this.showTasks(tasks, every ? "all projects" : projectLabel(here));
 			}
 			if (verb === "add") {
 				// the title, then `after #2 #3`, then ` -- ` and the detail
@@ -2044,8 +2047,8 @@ export class AgentView implements Component {
 					title = title.slice(0, m.index).trim();
 				}
 				if (!title) return this.say("/tasks add <title> [after #n] [-- detail]", "warning");
-				const r = await client.request("task", { action: "add", title, detail: detail || undefined, after: after.length > 0 ? after : undefined });
-				return this.say(`task #${r.task?.id} added: ${title}${after.length > 0 ? ` (after ${after.map((n) => `#${n}`).join(", ")})` : ""}`, "success");
+				const r = await client.request("task", { action: "add", title, detail: detail || undefined, after: after.length > 0 ? after : undefined, project: here });
+				return this.say(`task #${r.task?.id} added${here ? ` to ${projectLabel(here)}` : ""}: ${title}${after.length > 0 ? ` (after ${after.map((n) => `#${n}`).join(", ")})` : ""}`, "success");
 			}
 			const id = idOf(rest[0]);
 			if (verb === "assign" || verb === "give") {
@@ -2070,25 +2073,26 @@ export class AgentView implements Component {
 				await client.request("task", { action: "release", id });
 				return this.say(`task #${id} is open again`, "muted");
 			}
-			return this.say("/tasks [add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
 	}
 
 	/** M47: the board as an overlay: open (claimable), blocked, claimed, then done, newest first. */
-	private showTasks(tasks: BoardTask[]): void {
+	private showTasks(tasks: BoardTask[], scope = "all projects"): void {
+		const projects = manyProjects(tasks);
 		let top = 0;
 		const view = this;
 		const lines = (width: number): string[] => {
 			const t = view.o.theme;
 			const now = Date.now();
-			const out = [t.bold(truncateToWidth(`Task board · ${summaryLine(boardSummary(tasks))}`, width)), ""];
+			const out = [t.bold(truncateToWidth(`Task board · ${scope} · ${summaryLine(boardSummary(tasks))}`, width)), ""];
 			const live = tasks.filter((x) => x.state === "open" || x.state === "claimed");
 			const group = (x: BoardTask) => liveOrder(x, tasks);
 			for (const x of [...live].sort((a, b) => group(a) - group(b) || a.id - b.id)) {
 				const g = group(x);
-				const line = oneLine(taskLine(x, tasks, now));
+				const line = oneLine(taskLine(x, tasks, now, projects));
 				out.push(truncateToWidth(`  ${t.fg(g === 0 ? "accent" : g === 1 ? "warning" : "muted", line)}`, width));
 				if (x.detail && g !== 2) out.push(truncateToWidth(`      ${t.fg("dim", oneLine(x.detail))}`, width));
 			}
@@ -2096,10 +2100,10 @@ export class AgentView implements Component {
 			const done = tasks.filter((x) => x.state === "done").sort((a, b) => (b.doneAt ?? b.at) - (a.doneAt ?? a.at));
 			if (done.length > 0) {
 				out.push("");
-				for (const x of done.slice(0, 30)) out.push(truncateToWidth(`  ${t.fg("dim", oneLine(taskLine(x, tasks, now)))}`, width));
+				for (const x of done.slice(0, 30)) out.push(truncateToWidth(`  ${t.fg("dim", oneLine(taskLine(x, tasks, now, projects)))}`, width));
 				if (done.length > 30) out.push(t.fg("dim", `  … ${done.length - 30} more done`));
 			}
-			out.push("", t.fg("dim", truncateToWidth("/tasks add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id> · release <id>", width)));
+			out.push("", t.fg("dim", truncateToWidth("/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id> · release <id>", width)));
 			return out;
 		};
 		this.overlay = {
@@ -2282,7 +2286,7 @@ export class AgentView implements Component {
 			{ name: "resume", description: "pick a session to resume in the background" },
 			{ name: "usage", description: "what the sessions spent" },
 			{ name: "log", description: "what happened lately" },
-			{ name: "tasks", description: "the shared task board", argumentHint: "add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["add", "assign", "done", "rm", "release"]), p) },
+			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "assign", "done", "rm", "release"]), p) },
 			{ name: "concierge", description: "the hub's own agent", argumentHint: "on | off | status | log | attach | ask | answer | act | undo | orders", getArgumentCompletions: (p) => starts(names(["on", "off", "status", "log", "attach", "ask", "answer", "act", "undo", "orders"]), p) },
 			{ name: "ask", description: "ask the concierge", argumentHint: "question" },
 			{ name: "schedule", description: "a task on a schedule", argumentHint: "<name> <when> <task> | run | pause | resume | rm" },

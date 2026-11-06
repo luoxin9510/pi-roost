@@ -227,7 +227,7 @@ export function eventLine(e: RoostEvent): string {
 		}
 		case "task": {
 			// M47: who did what on the board; the text is `#id title` (done: with the result)
-			const verb = e.why === "add" ? "added" : e.why === "claim" ? "claimed" : e.why === "release" ? "released" : e.why === "done" ? "finished" : e.why === "drop" ? "dropped" : e.why === "assign" ? "handed over" : "changed";
+			const verb = e.why === "add" ? "added" : e.why === "claim" ? "claimed" : e.why === "release" ? "released" : e.why === "done" ? "finished" : e.why === "drop" ? "dropped" : e.why === "assign" ? "handed over" : e.why === "open" ? "can claim" : "changed";
 			return `${e.who ?? "someone"} ${verb} task ${e.text ?? ""}`;
 		}
 		default:
