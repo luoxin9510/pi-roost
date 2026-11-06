@@ -2085,3 +2085,43 @@ describe("M57: the concierge starts a task in its workspace", () => {
 		await expect(s.c.request("task", { action: "start", id: t2.id, workspace: args().workspace, launch: args().launch })).rejects.toMatchObject({ code: "unsupported" });
 	});
 });
+
+describe("M58: review comments", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	function repo(name: string): string {
+		mkdirSync(join(work, name), { recursive: true });
+		const r = realpathSync(join(work, name));
+		git(r, "init", "-q", "-b", "main");
+		writeFileSync(join(r, "a.txt"), "a\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "a");
+		return r;
+	}
+
+	it("the hub comments on lines; back sends them to the session and clears them; a session cannot comment", async () => {
+		const hub = await startDaemon();
+		const r = repo("rv");
+		const t = (await hub.request("task", { action: "add", title: "users", project: r })).task!;
+		const w = createTaskWorktree(r, t.id, t.title);
+		const { job } = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "u"), cwd: w.path } });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job!.id)?.pid);
+		const s = await worker(job!.id);
+		writeFileSync(join(w.path, "users.sql"), "drop table users;\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "users");
+		await s.c.request("task", { action: "done", id: t.id, result: "users" });
+		await expect(s.c.request("task", { action: "comment", id: t.id, comment: { file: "users.sql", line: 1, text: "no" } })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(hub.request("task", { action: "comment", id: t.id, comment: { file: "users.sql", line: 0, text: "x" } })).rejects.toMatchObject({ code: "bad_request" });
+		await hub.request("task", { action: "comment", id: t.id, comment: { file: "users.sql", line: 1, text: "drop the index first", lineText: "+drop table users;" } });
+		const two = await hub.request("task", { action: "comment", id: t.id, comment: { file: "a.txt", line: 1, text: "typo" } });
+		expect(two.task?.workspace?.comments).toHaveLength(2);
+		const one = await hub.request("task", { action: "uncomment", id: t.id, index: 1 });
+		expect(one.task?.workspace?.comments).toHaveLength(1);
+		const back = await hub.request("task", { action: "back", id: t.id, note: "see the comment" });
+		expect(back.note).toContain("(1 comment)");
+		const msg = await waitFor(() => s.events.find((e): e is Extract<Event, { event: "deliver" }> => e.event === "deliver" && e.text.includes("came back from review")));
+		expect(msg.text).toContain("- users.sql:1 (+drop table users;): drop the index first");
+		expect(back.task?.workspace?.comments).toBeUndefined();
+		expect(back.task?.workspace?.note).toBe("sent back (1 comment): see the comment");
+	});
+});

@@ -61,8 +61,8 @@ describe("M57: the workspace pipeline", () => {
 	it("the keys a stage has", () => {
 		const k = (t: BoardTask, running = false) => wsKeys(t, running ? { name: "a", state: "idle", running } : undefined).map(([x]) => x);
 		expect(k(task(1))).toEqual(["s", "n", "r"]);
-		expect(k(task(1, { workspace: ws("review") }))).toEqual(["m", "b", "v", "s", "a", "n", "r"]);
-		expect(k(task(1, { workspace: ws("review") }), true)).toEqual(["m", "b", "v", "t", "a", "n", "r"]);
+		expect(k(task(1, { workspace: ws("review") }))).toEqual(["Enter", "m", "b", "v", "s", "a", "n", "r"]);
+		expect(k(task(1, { workspace: ws("review") }), true)).toEqual(["Enter", "m", "b", "v", "t", "a", "n", "r"]);
 		expect(k(task(1, { workspace: ws("failed") }))).toContain("p");
 		expect(k(task(1, { workspace: ws("conflict") }))).toContain("x");
 		expect(k(task(1, { workspace: ws("verifying") }))).not.toContain("m");

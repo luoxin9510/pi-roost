@@ -308,12 +308,39 @@ export function boardListing(all: BoardTask[], now = Date.now(), doneMax = 10): 
 	return out;
 }
 
+/** M58: at most this many review comments on a task; a send-back's text at most this long. */
+export const REVIEW_COMMENTS_MAX = 200;
+export const REVIEW_TEXT_MAX = 4000;
+
+/**
+ * M58: the review comments as a message for the session: each with its place and the line
+ * it is about, bounded (the rest counted).
+ */
+export function reviewText(comments: ReviewComment[], max = REVIEW_TEXT_MAX): string {
+	const one = (s: string) => s.replace(/\s+/g, " ").trim();
+	const out: string[] = [];
+	let used = 0;
+	for (let i = 0; i < comments.length; i++) {
+		const c = comments[i]!;
+		const line = `- ${c.file}:${c.line}${c.lineText ? ` (${one(c.lineText).slice(0, 120)})` : ""}: ${one(c.text)}`;
+		if (used + line.length + 1 > max) {
+			out.push(`… and ${comments.length - i} more comment${comments.length - i === 1 ? "" : "s"} (the review shows them)`);
+			break;
+		}
+		out.push(line);
+		used += line.length + 1;
+	}
+	return out.join("\n");
+}
+
 /** M55/M57: the first prompt of a task's session (the hub's /tasks start, the concierge's hub_task_start). */
 export function taskPrompt(t: Pick<BoardTask, "id" | "title" | "detail" | "workspace">): string {
+	const comments = t.workspace?.comments ?? [];
 	return [
 		`Task #${t.id}: ${t.title}`,
 		t.detail ?? "",
 		t.workspace ? "Work on it started before in this worktree: read `git log` and the diff against the base branch first." : "",
+		comments.length > 0 ? `The review asks for changes (line numbers are of the reviewed version):\n${reviewText(comments)}` : "",
 		"Commit your work on this branch, then call roost_task_done with a line on what you did.",
 	]
 		.filter(Boolean)

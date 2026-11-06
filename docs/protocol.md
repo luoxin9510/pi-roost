@@ -332,6 +332,12 @@ act (`policy` otherwise): it makes the worktree and the launch as the hub does; 
 daemon drops the concierge's role and any job's identity from the launch's environment.
 See `docs/plans/m57-workspace-overlay.md`.
 
+M58: `{action: "comment", id, comment: {file, line, text, lineText?, tip?}}` and
+`{action: "uncomment", id, index}` (a person's: the hub, the CLI) keep review comments on
+the task (`workspace.comments`, at most 200); `back` sends them to the live holder in its
+message and clears them, or leaves them for the next `start`'s prompt. See
+`docs/plans/m58-review.md`.
+
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
 works (its job's directory, a foreground pi's); outside a repository it has none. A
