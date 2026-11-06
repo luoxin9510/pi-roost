@@ -53,6 +53,9 @@ export interface JobRecord {
 	worktree?: { path: string; branch: string; repo: string; base: string };
 	/** M55: started for a task in the task's worktree (the task's, never removed with the job). */
 	task?: { id: number; title: string; path: string; branch: string; baseRef: string };
+	/** M56: the verify (or setup) command of this task, run in its worktree. */
+	verifyOf?: number;
+	setupOf?: number;
 }
 
 export interface JobState {

@@ -317,6 +317,16 @@ id, note?}` (the hub's, the concierge's) returns it to `working` and tells its h
 commits what its worktree holds. Each change of stage is a `task` event with `why:
 "stage"`. See `docs/plans/m55-start-merge.md`.
 
+M56: with `.roost/project.json` on the base branch, the holder's `done` runs the
+repository's `verify` command (once a person approved it: `{action: "approve", id,
+dry?}`, the hub's only; `dry` shows the commands) as a shell job `verify #N` in the
+worktree, at most two per repository; the task is `verifying`, then `review` (exit 0),
+`working` again with the end of the output sent to the holder, or `failed` after
+`maxRounds`. `{action: "verify", id}` runs it again from review or failed; `{action:
+"pass", id}` accepts a failure. A first `start` runs an approved `setup` before the
+session (the result has no `job` then; the session follows). See
+`docs/plans/m56-verify.md`.
+
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
 works (its job's directory, a foreground pi's); outside a repository it has none. A

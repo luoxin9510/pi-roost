@@ -324,7 +324,11 @@ export interface OpArgs {
 		| { action: "merge"; id: number; mode?: "ff" | "no-ff" }
 		| { action: "back"; id: number; note?: string }
 		| { action: "abort"; id: number }
-		| { action: "commit"; id: number; message?: string };
+		| { action: "commit"; id: number; message?: string }
+		// M56: the repository's commands approved (dry: shown); verify again; a failure accepted
+		| { action: "approve"; id: number; dry?: boolean }
+		| { action: "verify"; id: number }
+		| { action: "pass"; id: number };
 }
 
 export interface OpResults {

@@ -92,6 +92,8 @@ const PEEK_COMMANDS: { name: string; description: string; argumentHint?: string 
 	{ name: "ask", description: "ask the concierge about it", argumentHint: "question" },
 ];
 const RESTART_ASK_MS = 3000;
+/** M56: how long a shown /tasks approve waits for the same command again. */
+const APPROVE_MS = 30_000;
 const NOTICE_MS = 4000;
 const SPIN_MS = 150;
 /** M8: the row's model and context column only shows while the summary keeps this many columns. */
@@ -2130,7 +2132,32 @@ export class AgentView implements Component {
 				const r = await client.request("task", { action: "commit", id, message: rest.slice(1).join(" ") || undefined });
 				return this.say(`#${id}: ${r.note ?? "committed"}`, "success");
 			}
-			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | merge <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			// M56: the repository's commands: shown, then approved by the same command again
+			if (verb === "approve") {
+				if (id === undefined) return this.say("/tasks approve <id>", "warning");
+				const key = `approve:${id}`;
+				const armed = this.armedStop?.id === key && Date.now() - this.armedStop.at < APPROVE_MS;
+				if (!armed) {
+					const r = await client.request("task", { action: "approve", id, dry: true });
+					if (r.note?.startsWith("no commands")) return this.say(r.note, "warning");
+					this.armedStop = { id: key, at: Date.now() };
+					return this.say(`${r.note} · they run in your account: /tasks approve ${id} again within 30 s to approve`, "warning");
+				}
+				this.armedStop = undefined;
+				const r = await client.request("task", { action: "approve", id });
+				return this.say(r.note ?? "approved", "success");
+			}
+			if (verb === "verify") {
+				if (id === undefined) return this.say("/tasks verify <id>", "warning");
+				const r = await client.request("task", { action: "verify", id });
+				return this.say(`#${id}: ${r.note ?? "verifying"}`, "success");
+			}
+			if (verb === "pass") {
+				if (id === undefined) return this.say("/tasks pass <id>", "warning");
+				await client.request("task", { action: "pass", id });
+				return this.say(`#${id}: in review (passed by hand)`, "muted");
+			}
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | merge <id> | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
