@@ -13,6 +13,8 @@ import { agoText, untilText } from "../lib/schedule.ts";
 import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
+import { taskDiff } from "../lib/task-diff.ts";
+import { commentAnchor, reviewLines, termText } from "../lib/review.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 
 const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
@@ -37,6 +39,11 @@ usage:
   pi-roost respawn --all           restart live and reaped sessions (after an upgrade)
   pi-roost --json [--all] [--cwd <dir>]
                                    list jobs as JSON (--all includes ended > 48 h ago)
+  pi-roost review <task>           a task's diff against its base, with the review's comments
+  pi-roost review <task> comment <file>:<line> <text>
+                                   a comment on that line (its number in the new version)
+  pi-roost review <task> back [note]
+                                   send it back to its session with the comments
   pi-roost daemon status|logs|stop [--keep-workers]
 
 start one with: pi --bg "<task>"`;
@@ -234,6 +241,43 @@ async function cmdLog(args: string[]): Promise<void> {
 	});
 }
 
+/** M58: a task's review from the terminal: the diff with its comments; comment; back. */
+async function cmdReview(args: string[]): Promise<void> {
+	const id = Number((args[0] ?? "").replace(/^#/, ""));
+	if (!Number.isInteger(id) || id <= 0) throw new UsageError("review <task> [comment <file>:<line> <text> | back [note]]");
+	await withDaemon(async (c) => {
+		const { tasks } = await c.request("task", { action: "list" });
+		const t = tasks.find((x) => x.id === id);
+		const w = t?.workspace;
+		if (!t || !w || !w.path) throw new Error(`#${id} has no workspace to review`);
+		const verb = args[1];
+		if (verb === "back") {
+			const r = await c.request("task", { action: "back", id, note: args.slice(2).join(" ") || undefined });
+			process.stdout.write(`#${id} back to work · ${r.note ?? ""}\n`);
+			return;
+		}
+		const d = await taskDiff(w.path, w.baseRef);
+		if (!d) throw new Error(`#${id}: git could not diff ${w.branch} against ${w.baseRef}`);
+		if (verb === "comment") {
+			const m = /^(.+):(\d+)$/.exec(args[2] ?? "");
+			const text = args.slice(3).join(" ").trim();
+			if (!m || !text) throw new UsageError("review <task> comment <file>:<line> <text>");
+			const file = m[1]!;
+			const n = Number(m[2]);
+			// the line of the new version with that number (a removed line only when no line of the new one has it)
+			const lines = d.files.find((f) => f.path === file)?.hunks.flatMap((h) => h.lines) ?? [];
+			const line = lines.find((l) => l.newNo === n) ?? lines.find((l) => l.newNo === null && l.oldNo === n);
+			if (!line) throw new Error(`${file}:${n} is not a line of the diff (pi-roost review ${id} shows them)`);
+			const r = await c.request("task", { action: "comment", id, comment: { file, line: n, text, lineText: commentAnchor(line).lineText, tip: d.tip } });
+			process.stdout.write(`#${id}: ${r.note ?? "kept"}\n`);
+			return;
+		}
+		if (verb !== undefined) throw new UsageError("review <task> [comment <file>:<line> <text> | back [note]]");
+		process.stdout.write(`#${id} ${termText(t.title)} · ${w.branch} against ${w.baseRef} (${d.base.slice(0, 8)}..${d.tip.slice(0, 8)}${w.stage ? ` · ${w.stage}` : ""})\n\n`);
+		for (const l of reviewLines(d, w.comments ?? [])) process.stdout.write(`${l}\n`);
+	});
+}
+
 async function cmdList(args: string[]): Promise<void> {
 	const rows = await listRows(args);
 	process.stdout.write(formatList(rows, { subagents: args.includes("--subagents") || args.includes("--all"), width: process.stdout.columns || 100 }));
@@ -351,6 +395,9 @@ async function main(argv: string[]): Promise<number> {
 				break;
 			case "log":
 				await cmdLog(rest);
+				break;
+			case "review":
+				await cmdReview(rest);
 				break;
 			case "--json":
 				await cmdJson(rest);

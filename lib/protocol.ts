@@ -328,7 +328,10 @@ export interface OpArgs {
 		// M56: the repository's commands approved (dry: shown); verify again; a failure accepted
 		| { action: "approve"; id: number; dry?: boolean; hash?: string }
 		| { action: "verify"; id: number }
-		| { action: "pass"; id: number };
+		| { action: "pass"; id: number }
+		// M58: a person's comments on lines of the task's diff (sent with back)
+		| { action: "comment"; id: number; comment: { file: string; line: number; text: string; lineText?: string; tip?: string } }
+		| { action: "uncomment"; id: number; comment: { file: string; line: number; at: number } };
 }
 
 export interface OpResults {

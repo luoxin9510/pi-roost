@@ -167,6 +167,7 @@ export function wsKeys(t: BoardTask | undefined, s?: WsSession): [string, string
 	if (t && !w && t.state === "open") keys.push(["s", "start"]);
 	if (w) {
 		const live = !!s?.running;
+		if (w.path && w.stage !== "merged") keys.push(["Enter", "review"]);
 		if (w.stage === "review" || w.stage === "conflict" || w.stage === "failed") keys.push(["m", "merge"]);
 		if (w.stage === "review" || w.stage === "conflict" || w.stage === "failed") keys.push(["b", "back"]);
 		if (w.stage === "review" || w.stage === "failed") keys.push(["v", "verify"]);

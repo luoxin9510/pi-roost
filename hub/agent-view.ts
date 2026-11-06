@@ -38,10 +38,12 @@ import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
 import { createTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
+import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
+import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
 import { nextNeedsYou, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
-import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
+import { type BoardSummary, type BoardTask, type ReviewComment, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -157,6 +159,8 @@ export interface AgentViewOptions {
 	createTaskWorktree?: typeof createTaskWorktree;
 	/** M57: what a task's worktree holds against base (tests pass a fake). */
 	taskChanges?: typeof taskChanges;
+	/** M58: a task's diff against base (tests pass a fake). */
+	taskDiff?: typeof taskDiff;
 	/** DI-4: models for the /model picker, as "provider/id". */
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
@@ -2126,6 +2130,10 @@ export class AgentView implements Component {
 				if (id === undefined) return this.say("/tasks start <id>", "warning");
 				return await this.startTask(id);
 			}
+			if (verb === "review") {
+				if (id === undefined) return this.say("/tasks review <id>", "warning");
+				return await this.openReview(id);
+			}
 			if (verb === "merge") {
 				if (id === undefined) return this.say("/tasks merge <id>", "warning");
 				this.say(`merging #${id}…`, "muted");
@@ -2173,7 +2181,7 @@ export class AgentView implements Component {
 				await client.request("task", { action: "pass", id });
 				return this.say(`#${id}: in review (passed by hand)`, "muted");
 			}
-			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | merge <id> | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | review <id> | merge <id> | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -2274,20 +2282,20 @@ export class AgentView implements Component {
 	 * columns); the keys act on it. `next`: open at the next task that needs you.
 	 */
 	private wsOpening = false;
-	private async showWorkspaces(next: boolean): Promise<void> {
+	private async showWorkspaces(next: boolean, focus?: number): Promise<void> {
 		const client = this.client;
 		if (!client) return this.say("background service unavailable", "error");
 		// a second Ctrl+N while the first loads opens nothing more
 		if (this.wsOpening) return;
 		this.wsOpening = true;
 		try {
-			await this.openWorkspaces(client, next);
+			await this.openWorkspaces(client, next, focus);
 		} finally {
 			this.wsOpening = false;
 		}
 	}
 
-	private async openWorkspaces(client: DaemonClient, next: boolean): Promise<void> {
+	private async openWorkspaces(client: DaemonClient, next: boolean, focus?: number): Promise<void> {
 		const view = this;
 		const t = this.o.theme;
 		const here = projectOf(this.dispatchCwd());
@@ -2332,6 +2340,7 @@ export class AgentView implements Component {
 			tasks = r.tasks;
 			entries = workspaceEntries(tasks);
 			if (pickNext) sel = nextNeedsYou(entries, undefined, sessionOf) ?? sel;
+			else if (focus !== undefined && sel === undefined) sel = focus;
 			if (sel === undefined || !entries.some((e) => e.task.id === sel)) sel = entries[0]?.task.id;
 			fetchChanges();
 			view.o.tui.requestRender();
@@ -2506,6 +2515,12 @@ export class AgentView implements Component {
 				if (!x) return;
 				const s = sessionOf(x);
 				const allowed = new Set(wsKeys(x, s).map(([k]) => k));
+				// M58: Enter reviews a task with a workspace (its diff, comments); Esc comes back here
+				if (key === "enter" && x.workspace?.path && x.workspace.stage !== "merged") {
+					const at = x.id;
+					view.closeOverlay();
+					return void view.openReview(at, () => void view.showWorkspaces(false, at));
+				}
 				const attach = data === "t" || key === "right" || key === "enter";
 				if (attach) {
 					if (s?.running && x.owner) {
@@ -2543,6 +2558,267 @@ export class AgentView implements Component {
 			dispose() {
 				closed = true;
 				if (view.wsReload === reload) view.wsReload = undefined;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	/**
+	 * M58: a task's review: its diff against base (committed and not), a file at a time, the
+	 * person's comments under their lines; c comments, b sends back with them, m merges.
+	 * `onClose`: where Esc goes (the workspace overlay it came from).
+	 */
+	private reviewOpening = false;
+	private async openReview(id: number, onClose?: () => void): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		// a second Enter while it loads opens nothing more
+		if (this.reviewOpening) return;
+		this.reviewOpening = true;
+		try {
+			await this.reviewOverlay(client, id, onClose);
+		} finally {
+			this.reviewOpening = false;
+		}
+	}
+
+	private async reviewOverlay(client: DaemonClient, id: number, onClose?: () => void): Promise<void> {
+		const view = this;
+		const t = this.o.theme;
+		const diffOf = this.o.taskDiff ?? taskDiff;
+		let task: BoardTask | undefined;
+		let diff: TaskDiff | undefined;
+		let fi = 0;
+		let ri = -1; // -1: the file's first line of diff
+		let top = 0;
+		let input: { kind: "comment" | "back"; box: Input } | undefined;
+		let busy = false;
+		let closed = false;
+		let self: Overlay | undefined;
+		const load = async (): Promise<void> => {
+			const { tasks } = await client.request("task", { action: "list" });
+			task = tasks.find((x) => x.id === id);
+			const w = task?.workspace;
+			if (!task || !w || !w.path) throw new Error(`#${id} has no workspace to review`);
+			const d = await diffOf(w.path, w.baseRef);
+			if (!d) throw new Error(`#${id}: git could not diff ${w.branch} against ${w.baseRef}`);
+			diff = d;
+			fi = Math.min(fi, Math.max(0, d.files.length - 1));
+		};
+		try {
+			await load();
+		} catch (err) {
+			this.say((err as Error).message, "error");
+			return onClose?.();
+		}
+		const comments = () => task?.workspace?.comments ?? [];
+		// the files, and one more holding the comments on files no longer in the diff
+		const filesOf = (): DiffFile[] => {
+			const fs = diff?.files ?? [];
+			const there = new Set(fs.map((f) => f.path));
+			return comments().some((c) => !there.has(c.file)) ? [...fs, { path: "", status: "M", binary: false, hunks: [] }] : fs;
+		};
+		type Row = { kind: "hunk"; text: string; h: number } | { kind: "line"; line: DiffLine; h: number } | { kind: "note"; text: string } | { kind: "stale"; c: ReviewComment };
+		const rowsOf = (f: DiffFile | undefined): Row[] => {
+			if (!f) return [];
+			// comments not under a line of it now (outdated), first; d deletes them there
+			if (!f.path) {
+				const there = new Set((diff?.files ?? []).map((x) => x.path));
+				return comments().filter((c) => !there.has(c.file)).map((c) => ({ kind: "stale", c }));
+			}
+			const out: Row[] = outdatedIn(f, comments()).map((c) => ({ kind: "stale", c }));
+			if (f.summary) return [...out, { kind: "note", text: f.summary }];
+			if (f.binary) return [...out, { kind: "note", text: "binary file" }];
+			if (f.hunks.length === 0) return [...out, { kind: "note", text: f.status === "R" ? "renamed, its text unchanged" : f.status === "A" ? "an empty file" : f.status === "D" ? "an empty file, deleted" : "its text unchanged (its mode changed)" }];
+			f.hunks.forEach((hk, h) => {
+				out.push({ kind: "hunk", text: hk.header, h });
+				for (const line of hk.lines) out.push({ kind: "line", line, h });
+			});
+			return out;
+		};
+		const anchor = commentAnchor;
+		// a comment sits under its line while that line is where it was; otherwise it is outdated (kept)
+		const placed = (f: DiffFile, rows: Row[]) => {
+			const at = new Map<number, ReviewComment[]>();
+			for (const c of comments()) {
+				if (c.file !== f.path) continue;
+				const r = rows.findIndex((x) => x.kind === "line" && commentOn(c, f.path, x.line));
+				if (r >= 0) at.set(r, [...(at.get(r) ?? []), c]);
+			}
+			return { at };
+		};
+		const clean = (s: string) => s.replace(/\t/g, "    ").replace(CONTROL, " ").replace(/[\x80-\x9f]/g, " ");
+		// merge and back close the review when they did it (the task merged, at work again); else it stays
+		const act = (verb: string, extra = "") => {
+			if (busy) return view.say("busy: try again in a moment", "muted");
+			busy = true;
+			void view
+				.tasksCommand(`${verb} ${id}${extra ? ` ${extra}` : ""}`)
+				.then(() => reload())
+				.finally(() => {
+					busy = false;
+					const stage = task?.workspace?.stage;
+					if ((verb === "merge" && stage === "merged") || (verb === "back" && stage === "working")) close();
+				});
+		};
+		const reload = async () => {
+			try {
+				await load();
+			} catch (err) {
+				// a merged task's worktree is gone: nothing to diff any more
+				if (task?.workspace?.stage !== "merged") view.say((err as Error).message, "error");
+			}
+			if (!closed) view.o.tui.requestRender();
+		};
+		const close = () => {
+			if (closed || view.overlay !== self) return;
+			view.closeOverlay();
+			onClose?.();
+		};
+		const moveLine = (rows: Row[], to: number) => {
+			ri = Math.max(0, Math.min(rows.length - 1, to));
+		};
+		this.overlay = self = {
+			render(width: number) {
+				const room = Math.max(4, (view.o.tui.terminal.rows || 30) - 9);
+				const files = filesOf();
+				fi = Math.min(fi, Math.max(0, files.length - 1));
+				const f = files[fi];
+				const rows = rowsOf(f);
+				if (ri < 0) ri = Math.max(0, rows.findIndex((r) => r.kind === "line"));
+				moveLine(rows, ri);
+				const { at } = f ? placed(f, rows) : { at: new Map<number, ReviewComment[]>() };
+				const hunks = f?.hunks.length ?? 0;
+				const cur = rows[ri];
+				const h = cur && (cur.kind === "line" || cur.kind === "hunk") ? cur.h + 1 : 0;
+				const name = !f ? "no changes" : !f.path ? "comments on files not in the diff now" : clean(f.oldPath ? `${f.oldPath} → ${f.path}` : f.path);
+				const head = `#${id} ${oneLine(task?.title ?? "")} · ${f?.path ? `${f.status} ` : ""}${name}`;
+				const facts = [files.length > 1 ? `file ${fi + 1}/${files.length}` : "", hunks > 0 ? `hunk ${h || 1}/${hunks}` : "", comments().length > 0 ? `${comments().length} comment${comments().length === 1 ? "" : "s"}` : "", diff?.truncated ? "diff cut short" : ""].filter(Boolean).join(" · ");
+				const out = [t.bold(truncateToWidth(oneLine(head), width)), t.fg("dim", truncateToWidth(facts || " ", width)), t.fg("dim", "─".repeat(Math.max(1, Math.min(width, 120))))];
+				// the body: the rows with the comments under theirs, the cursor in view
+				const body: { text: string; row: number }[] = [];
+				rows.forEach((r, i) => {
+					const mark = i === ri ? t.fg("accent", "▶") : " ";
+					if (r.kind === "note") body.push({ text: `${mark} ${t.fg("dim", r.text)}`, row: i });
+					else if (r.kind === "stale") body.push({ text: `${mark} ${t.fg("warning", truncateToWidth(clean(`✎ ${f?.path ? "outdated" : r.c.file} (line ${r.c.line}): ${oneLine(r.c.text)}`), Math.max(1, width - 2)))}`, row: i });
+					else if (r.kind === "hunk") body.push({ text: `${mark} ${t.fg("dim", truncateToWidth(clean(r.text), Math.max(1, width - 2)))}`, row: i });
+					else {
+						const l = r.line;
+						const no = String(l.newNo ?? l.oldNo ?? "").padStart(5);
+						const text = truncateToWidth(clean(`${l.kind} ${l.text}`), Math.max(1, width - 8), "…");
+						body.push({ text: `${mark}${t.fg("dim", no)} ${l.kind === "+" ? t.fg("success", text) : l.kind === "-" ? t.fg("error", text) : text}`, row: i });
+					}
+					for (const c of at.get(i) ?? []) for (const w of wrap(clean(`└ ✎ ${oneLine(c.text)}`), Math.max(1, width - 8))) body.push({ text: `       ${t.fg("warning", w)}`, row: i });
+				});
+				const first = body.findIndex((b) => b.row === ri);
+				let last = first;
+				while (last + 1 < body.length && body[last + 1]!.row === ri) last++;
+				if (first < top) top = first;
+				if (last >= top + room) top = last - room + 1;
+				top = Math.max(0, Math.min(top, Math.max(0, body.length - room)));
+				out.push(...body.slice(top, top + room).map((b) => b.text));
+				if (files.length === 0) out.push(t.fg("dim", "  nothing changed against base"));
+				out.push("");
+				if (input) out.push(...input.box.render(width));
+				const n = view.notice;
+				if (n && n.until > Date.now()) out.push(t.fg(n.tone, truncateToWidth(oneLine(n.text), width)));
+				const keys = input
+					? `Enter ${input.kind === "comment" ? "keep the comment" : "send back with the comments"} · Esc cancel`
+					: "j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload · Esc back";
+				out.push(t.fg("dim", truncateToWidth(keys, width)));
+				return out.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width) : l));
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				const files = filesOf();
+				const f = files[fi];
+				const rows = rowsOf(f);
+				if (input) {
+					if (key === "escape" || key === "ctrl+c") input = undefined;
+					else if (key === "enter") {
+						// busy: the text stays in the box for another Enter
+						if (busy) return view.say("busy: Enter again in a moment", "muted");
+						const text = oneLine(input.box.getValue()).trim();
+						const kind = input.kind;
+						input = undefined;
+						if (kind === "back") return act("back", text);
+						const r = rows[ri];
+						if (!text || !f?.path || r?.kind !== "line") return;
+						busy = true;
+						void client
+							.request("task", { action: "comment", id, comment: { file: f.path, ...anchor(r.line), text, tip: diff?.tip } })
+							.then((res) => {
+								if (task?.workspace && res.task?.workspace) task.workspace.comments = res.task.workspace.comments;
+							})
+							.catch((err: unknown) => view.say((err as Error).message, "error"))
+							.finally(() => {
+								busy = false;
+								view.o.tui.requestRender();
+							});
+					} else input.box.handleInput(data);
+					return;
+				}
+				if (key === "escape" || data === "q" || key === "ctrl+c") return close();
+				if (data === "j" || key === "down") return moveLine(rows, ri + 1);
+				if (data === "k" || key === "up") return moveLine(rows, ri - 1);
+				if (key === "pageDown") return moveLine(rows, ri + 10);
+				if (key === "pageUp") return moveLine(rows, ri - 10);
+				if (data === "n" || data === "p") {
+					// to the first line of the next (previous) hunk; p from a hunk's start goes to the one before
+					const cur = rows[ri];
+					const h = cur && (cur.kind === "line" || cur.kind === "hunk") ? cur.h : data === "n" ? -1 : Number.MAX_SAFE_INTEGER;
+					const want = data === "n" ? h + 1 : h - 1;
+					const at = rows.findIndex((r) => r.kind === "hunk" && r.h === want);
+					if (at >= 0) moveLine(rows, at + 1 < rows.length ? at + 1 : at);
+					return;
+				}
+				if (data === "]" || data === "[") {
+					const to = fi + (data === "]" ? 1 : -1);
+					if (to >= 0 && to < files.length) {
+						fi = to;
+						// the first line of its diff (past its outdated comments and its first hunk's header)
+						const next = rowsOf(files[to]);
+						const first = next.findIndex((r) => r.kind === "line");
+						ri = first >= 0 ? first : 0;
+						top = 0;
+					}
+					return;
+				}
+				if (data === "r") return void reload();
+				if (data === "c") {
+					if (rows[ri]?.kind !== "line") return view.say("c comments on a line of the diff", "muted");
+					input = { kind: "comment", box: new Input({ prompt: "comment › " }) };
+					input.box.focused = true;
+					return;
+				}
+				if (data === "d") {
+					if (!f || busy) return;
+					const r = rows[ri];
+					const mine = r?.kind === "stale" ? [r.c] : r?.kind === "line" ? placed(f, rows).at.get(ri) : undefined;
+					if (!mine || mine.length === 0) return view.say("no comment here", "muted");
+					const c = mine[mine.length - 1]!;
+					busy = true;
+					void client
+						.request("task", { action: "uncomment", id, comment: { file: c.file, line: c.line, at: c.at } })
+						.then((res) => {
+							if (task?.workspace) task.workspace.comments = res.task?.workspace?.comments;
+						})
+						.catch((err: unknown) => view.say((err as Error).message, "error"))
+						.finally(() => {
+							busy = false;
+							view.o.tui.requestRender();
+						});
+					return;
+				}
+				if (data === "b") {
+					input = { kind: "back", box: new Input({ prompt: `#${id} back › ` }) };
+					input.box.focused = true;
+					return;
+				}
+				if (data === "m") return act("merge");
+			},
+			dispose() {
+				closed = true;
 			},
 		};
 		this.o.tui.requestRender();
@@ -2711,7 +2987,7 @@ export class AgentView implements Component {
 			{ name: "resume", description: "pick a session to resume in the background" },
 			{ name: "usage", description: "what the sessions spent" },
 			{ name: "log", description: "what happened lately" },
-			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "merge", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
+			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "review", "merge", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
 			{ name: "concierge", description: "the hub's own agent", argumentHint: "on | off | status | log | attach | ask | answer | act | undo | orders", getArgumentCompletions: (p) => starts(names(["on", "off", "status", "log", "attach", "ask", "answer", "act", "undo", "orders"]), p) },
 			{ name: "workspaces", description: "the tasks in their worktrees: review, merge, send back (Ctrl+N: the next that needs you)" },
 			{ name: "ask", description: "ask the concierge", argumentHint: "question" },
@@ -3961,7 +4237,8 @@ export class AgentView implements Component {
 			["/concierge answer|act|undo", "may it answer routine questions itself (never|routine|always), start/stop sessions (on|off); withdraw its last answer"],
 			["/concierge orders [add|rm]", "the standing orders it keeps (rules in your words, some on a clock); add one, drop one"],
 			["/tasks [add|assign|done|rm|release]", "the shared task board: sessions claim tasks (roost_task_*), the concierge hands them out; add <title> [after #n] [-- detail], assign <id> <session>, done <id> [result], rm <id>, release <id>"],
-			["/workspaces · Ctrl+N", "the tasks in their own worktrees, as a pipeline: s start · m merge · b back · v verify · a approve · t attach · n the next that needs you"],
+			["/workspaces · Ctrl+N", "the tasks in their own worktrees, as a pipeline: Enter review · s start · m merge · b back · v verify · a approve · t attach · n the next that needs you"],
+			["/tasks review <id>", "a task's diff against base: j/k line · n/p hunk · ]/[ file · c comment · d delete it · b send back with the comments · m merge"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
 			["Ctrl+Y · Ctrl+E", "send the concierge's suggested answer to the session that waits · edit it first (the banner under the header)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],
