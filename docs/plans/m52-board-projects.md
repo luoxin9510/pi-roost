@@ -7,11 +7,14 @@ by itself, or be told by the concierge.
 ## Projects
 
 - A task has a `project`: the root of a git repository (`projectOf` in `lib/board.ts`:
-  up from the directory to a `.git`; a worktree's `.git` file points into its
-  repository's `.git/worktrees/`, so roost's isolated sessions share their repository's
-  board), or `null`, for any session. Tasks from before have none.
+  up from the directory to a `.git`; a linked worktree's `.git` file points at a git dir
+  whose `commondir` names its repository's, so roost's isolated sessions share their
+  repository's board, and a bare repository's worktrees share the bare repository's; a
+  checkout without one, a submodule's, is its own; always a real path), or `null`, for
+  any session. Tasks from before have none.
 - A session's project is where it works: its job's directory, a foreground pi's (kept per
-  directory in the daemon). It lists, claims, finishes and gives back its project's tasks
+  directory in the daemon; a directory outside any repository is looked up again, since
+  it may become one). It lists, claims, finishes and gives back its project's tasks
   and the ones for anyone; another project's is `not_found` to it (one it holds stays its
   own). What it adds is its project's; a session outside any repository adds for anyone.
 - The hub and the concierge see every task (`list` names a project by a directory in it:
@@ -31,7 +34,8 @@ by itself, or be told by the concierge.
   that put it on are told by a `message` from `roost` ("Task #n (title) can be claimed
   now: #m, which it waited on, is done"), `waiting` is cleared, and the feed has a `task`
   event `why: "open"` ("roost can claim task #n …"). A task with another dependency still
-  open is not.
+  open is not. The session that did or dropped it is not told what it did; a claim
+  clears the task's `waiting`.
 - `roost_task_claim` says so when it refuses; the board's helpers in the clients are
   unchanged (the message comes to `onMessage`, M50).
 
