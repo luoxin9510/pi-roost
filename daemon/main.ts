@@ -46,7 +46,7 @@ import {
 } from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
-import { type BoardTask, blockedOn, boardSummary, onBoardOf, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
+import { type BoardTask, blockedOn, boardSummary, onBoardOf, parseWorkspace, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -897,6 +897,8 @@ function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: un
 // as the lead. The daemon keeps them (tasks.json); a claim is a lock a live session holds.
 
 const tasksPath = () => join(roostHome(), "tasks.json");
+/** M54: the store's version: 2 since tasks carry workspaces. */
+const TASKS_VERSION = 2;
 const tasks = new Map<number, BoardTask>();
 /** The next task's id: never one that was used. */
 let taskNext = 1;
@@ -908,7 +910,11 @@ function loadTasks(): void {
 	for (const t of saved) {
 		if (!t || typeof t !== "object" || !Number.isInteger(t.id) || t.id <= 0 || !str(t.title)) continue;
 		const state = t.state === "claimed" || t.state === "done" || t.state === "dropped" ? t.state : "open";
+		// M54: a workspace normalised (a damaged one kept as failed); merged is done
+		const workspace = parseWorkspace((t as { workspace?: unknown }).workspace);
 		tasks.set(t.id, {
+			// M54: fields this version does not know are kept (a newer daemon's), never dropped on save
+			...(t as object),
 			id: t.id,
 			title: taskTitle(t.title) || t.title.slice(0, TASK_TITLE_MAX),
 			detail: str(t.detail) ? taskText(t.detail, TASK_TEXT_MAX) : null,
@@ -927,7 +933,19 @@ function loadTasks(): void {
 			// M52: tasks from before projects are any session's
 			project: str(t.project) && isAbsolute(t.project) ? t.project : null,
 			waiting: Array.isArray(t.waiting) ? t.waiting.filter((w) => w && str(w.id)).slice(0, TASK_WAITING_MAX).map((w) => ({ id: w.id, name: str(w.name) ? w.name : w.id })) : [],
+			...(workspace ? { workspace } : { workspace: undefined }),
 		});
+		const kept = tasks.get(t.id)!;
+		if (!kept.workspace) delete kept.workspace;
+		else if (kept.workspace.stage === "merged" && kept.state !== "dropped" && kept.state !== "done") {
+			kept.state = "done";
+			kept.doneAt ??= kept.at;
+		} else if (kept.state === "done" && kept.workspace.stage !== "merged") {
+			// done without its merge (a file edited by hand): it holds its dependents, and a person looks at it
+			kept.state = "open";
+			kept.workspace.stage = "failed";
+			kept.workspace.note = "marked done without a merge: check its branch";
+		}
 	}
 	const kept = Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
 	taskNext = Math.max(kept, Math.max(0, ...tasks.keys()) + 1);
@@ -949,7 +967,8 @@ function loadTasks(): void {
 
 function saveTasks(): void {
 	try {
-		writeJsonAtomic(tasksPath(), { next: taskNext, tasks: [...tasks.values()] });
+		// M54: version 2 (tasks may carry a workspace); an older daemon would drop it on save
+		writeJsonAtomic(tasksPath(), { version: TASKS_VERSION, next: taskNext, tasks: [...tasks.values()] });
 	} catch (err) {
 		log("error", "the task board was not saved", { error: String(err) });
 	}
@@ -1052,9 +1071,11 @@ function tellOpened(d: BoardTask, by: string | null): void {
 		if (by !== null) told.delete(by); // the session that did it knows
 		t.waiting = [];
 		saveTasks();
-		record({ kind: "task", id: d.owner?.id ?? "", name: "roost", who: "roost", whoId: null, why: "open", text: clipText(`#${t.id} ${t.title}: #${d.id} ${d.state}`) });
+		// M54: a task merged from its workspace says so
+		const how = d.workspace?.stage === "merged" && d.state === "done" ? "merged" : d.state;
+		record({ kind: "task", id: d.owner?.id ?? "", name: "roost", who: "roost", whoId: null, why: "open", text: clipText(`#${t.id} ${t.title}: #${d.id} ${how}`) });
 		for (const [id, name] of told) {
-			tellOwner({ id, name }, "roost", `Task #${t.id} (${t.title}) can be claimed now: #${d.id}, which it waited on, is ${d.state}. Claim it with roost_task_claim if it is yours to do.`);
+			tellOwner({ id, name }, "roost", `Task #${t.id} (${t.title}) can be claimed now: #${d.id}, which it waited on, is ${how}. Claim it with roost_task_claim if it is yours to do.`);
 		}
 	}
 }
@@ -3046,7 +3067,7 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
 }
 
 /** M31: what the daemon offers agents beyond report, ack and hello. */
-const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks"];
+const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks", "workspaces"];
 
 /**
  * M31: an agent's hello. Informational (a report is what proves a job): the daemon keeps

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type BoardTask, boardLines, manyProjects, onBoardOf, projectLabel, projectOf } from "../lib/board.ts";
+import { type BoardTask, blockedOn, boardLines, boardSummary, dependencyMet, manyProjects, needsYou, onBoardOf, parseWorkspace, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -83,5 +83,62 @@ describe("M52: projects", () => {
 		expect(lines).toContain("- #1 open · [api] t1");
 		expect(lines).toContain("- #3 open · [any] t3");
 		expect(boardLines([task(4, "/w/api")], 10)).toContain("- #4 open · t4");
+	});
+});
+
+describe("M54: workspaces on the board", () => {
+	const sha = "a".repeat(40);
+	const ws = (stage: string, over: Record<string, unknown> = {}) => parseWorkspace({ path: "/r/.pi/worktrees/t1-x-ab12", branch: "roost/t1-x-ab12", baseRef: "main", baseSha: sha, stage, ...over })!;
+
+	it("a stored workspace is normalised; a damaged one is kept as failed, never dropped", () => {
+		expect(parseWorkspace(undefined)).toBeNull();
+		expect(parseWorkspace(null)).toBeNull();
+		const ok = ws("review", { note: "x".repeat(900), verify: { ok: true, at: 5, log: "/l", tail: "t", rounds: 1 }, merge: { tip: sha, oldBase: "b".repeat(40), at: 3 }, comments: [{ file: "a.ts", line: 3, text: "why", lineText: "x", tip: sha, at: 1 }, { file: "", line: 1, text: "no file" }] });
+		expect(ok).toMatchObject({ stage: "review", baseRef: "main", baseSha: sha, verify: { ok: true, rounds: 1 }, merge: { tip: sha, oldBase: "b".repeat(40) } });
+		expect(ok.note).toHaveLength(500);
+		expect(ok.comments).toHaveLength(1);
+		expect(ok.merge!.into).toBeUndefined();
+		for (const bad of [{}, "x", { path: "relative", branch: "b", stage: "review" }, { path: "/p", stage: "review" }, { path: "/p", branch: "b", stage: "sideways" }]) {
+			const w = parseWorkspace(bad)!;
+			expect(w.stage).toBe("failed");
+			expect(w.note).toMatch(/damaged/);
+		}
+		expect(parseWorkspace({ path: "/p", branch: "b", stage: "working", baseSha: "nothex" })!.baseSha).toBe("");
+	});
+
+	it("dependencies: a task with a workspace holds until merged; another project's until done; dropped never holds", () => {
+		const t = task(9, "/r", { after: [1, 2, 3, 4, 5] });
+		const all = [
+			task(1, "/r", { state: "done" }), // no workspace: done is enough
+			task(2, "/r", { state: "claimed", workspace: ws("review") }), // in review: holds
+			task(3, "/r", { state: "done", workspace: ws("merged") }), // merged
+			task(4, "/other", { state: "claimed", workspace: ws("merged") }), // another project: done counts, not the stage
+			task(5, "/r", { state: "dropped", workspace: ws("conflict") }), // dropped
+			t,
+		];
+		expect(blockedOn(t, all)).toEqual([2, 4]);
+		expect(dependencyMet(task(6, "/r", { state: "done", workspace: ws("review") }), t)).toBe(false);
+		expect(taskLine(t, all)).toBe("#9 blocked on #2 (in review) #4 · t9");
+	});
+
+	it("the counts put tasks in workspaces apart, with those that need you; their lines say the stage", () => {
+		const all = [
+			task(1, "/r"),
+			task(2, "/r", { state: "claimed", owner: { id: "j", name: "api-fix" }, workspace: ws("working") }),
+			task(3, "/r", { state: "open", workspace: ws("review", { note: "not verified" }) }),
+			task(4, "/r", { state: "open", workspace: ws("conflict") }),
+			task(5, "/r", { state: "done", workspace: ws("merged") }),
+		];
+		const s = boardSummary(all);
+		expect(s).toEqual({ open: 1, claimed: 0, blocked: 0, done: 1, workspaces: 3, needsYou: 2 });
+		expect(summaryLine(s)).toBe("1 open · 3 in workspaces (2 need you) · 1 done");
+		expect(summaryLine({ open: 0, claimed: 0, blocked: 0, done: 0, workspaces: 1, needsYou: 1 })).toBe("1 in workspace (1 needs you)");
+		expect(summaryLine({ open: 1, claimed: 0, blocked: 0, done: 0 })).toBe("1 open");
+		expect(needsYou(all[2]!)).toBe(true);
+		expect(needsYou(all[1]!)).toBe(false);
+		expect(taskLine(all[1]!, all)).toBe("#2 working · api-fix · t2");
+		expect(taskLine(all[2]!, all)).toBe("#3 in review · t3 (not verified)");
+		expect(taskLine(all[4]!, all, 1)).toMatch(/^#5 done/);
+		expect(boardLines(all, 1).slice(1)).toEqual(["- #1 open · t1", "- #2 working · api-fix · t2", "- #3 in review · t3 (not verified)", "- #4 conflict · t4"]);
 	});
 });
