@@ -19,7 +19,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
-import { DaemonClient, type DaemonError } from "../lib/client.ts";
+import { DaemonClient, type DaemonError, requestOnce } from "../lib/client.ts";
 import { hostSocketPath } from "../lib/paths.ts";
 import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
 import { type Filter, parseFilter } from "../lib/filter.ts";
@@ -382,6 +382,18 @@ export class AgentView implements Component {
 		this.client?.close();
 		this.client = undefined;
 		this.o.setTitle("pi");
+	}
+
+	/** M51: the connection now, waiting a moment while it is being made again (the daemon restarted). */
+	private async live(timeoutMs = 10_000): Promise<DaemonClient> {
+		const until = Date.now() + timeoutMs;
+		for (;;) {
+			if (this.closed) throw new Error("the agent view is closed");
+			const c = this.client;
+			if (c && !c.isClosed) return c;
+			if (Date.now() > until) throw new Error("background service unavailable");
+			await new Promise((r) => setTimeout(r, 100));
+		}
 	}
 
 	private async connect(): Promise<void> {
@@ -1447,7 +1459,7 @@ export class AgentView implements Component {
 		const key = `${row.id}:${row.suggested.at}`;
 		this.dismissed.add(key);
 		try {
-			const r = await this.client.request("reply", { id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
+			const r = await requestOnce(() => this.live(), "reply", { id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
 			if (r.delivered || r.saved) this.say(`sent to ${row.name}: ${oneLine(text).slice(0, 80)}`, "success");
 			else {
 				this.dismissed.delete(key);
@@ -1624,7 +1636,7 @@ export class AgentView implements Component {
 		const args = this.o.launch("", { cwd: s.cwd || this.dispatchCwd(), sessionFile: s.path, name: s.name, origin: "adopt" });
 		let r: { id: string; name: string };
 		try {
-			r = await this.client.request("dispatch", args);
+			r = await requestOnce(() => this.live(), "dispatch", args, { tag: "hub" });
 		} catch (err) {
 			args.discard?.();
 			const e = err as DaemonError;
@@ -1934,7 +1946,7 @@ export class AgentView implements Component {
 		this.dispatching = true;
 		this.input.setValue("");
 		try {
-			const { id, name } = await this.client.request("dispatch", request);
+			const { id, name } = await requestOnce(() => this.live(), "dispatch", request, { tag: "hub" });
 			this.cursor = { kind: "row", id };
 			const where = request.worktree ? ` · ⎇ ${request.worktree.branch}` : "";
 			this.say(`started · ${name}${where}${note ? ` · ${note}` : ""}`, note ? "warning" : "success");
@@ -1975,7 +1987,7 @@ export class AgentView implements Component {
 		}
 		if (text.startsWith("!")) return this.say("shell commands are not sent to a session; attach (→) to run one", "warning");
 		try {
-			const r = await this.client.request("reply", { id: row.id, text, mode });
+			const r = await requestOnce(() => this.live(), "reply", { id: row.id, text, mode }, { tag: "hub" });
 			this.reply.setValue("");
 			if (r.stopped) this.say(`stopped · ${row.name}`);
 			else if (r.delivered) {
@@ -2167,7 +2179,7 @@ export class AgentView implements Component {
 				if (name === "name" && !arg) return this.say("/name <the session's own name>", "warning");
 				if (row.kind === "shell") return this.say(`/${name} is for a pi session`, "warning");
 				if (row.pid === null) return this.say(`${row.name} is not running: /${name} works in a running session`, "warning");
-				const r = await client.request("reply", { id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` });
+				const r = await requestOnce(() => this.live(), "reply", { id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` }, { tag: "hub" });
 				done();
 				if (r.delivered) return this.say(`/${name} · ${row.name}`, "success");
 				return this.say(r.respawned ? `starting ${row.name} again; /${name} runs then` : r.saved ? `saved; it runs when ${row.name} starts again` : `not delivered: ${row.name} is not running`, "warning");
@@ -2327,7 +2339,7 @@ export class AgentView implements Component {
 		// a second switch before the first shows: compare with what the session had before both
 		const before = pending ? pending.before : ((which === "model" ? row.model : row.thinking) ?? null);
 		try {
-			const r = await this.client.request("reply", { id: row.id, text: `/${which} ${value}` });
+			const r = await requestOnce(() => this.live(), "reply", { id: row.id, text: `/${which} ${value}` }, { tag: "hub" });
 			if (!quiet) this.reply.setValue("");
 			if (r.delivered) {
 				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
@@ -2568,7 +2580,7 @@ export class AgentView implements Component {
 				}
 				const { discard, note, ...request } = args;
 				try {
-					const { id } = await this.client.request("dispatch", { ...request, fanout });
+					const { id } = await requestOnce(() => this.live(), "dispatch", { ...request, fanout }, { tag: "hub" });
 					started.push(id);
 					if (note) notes.add(note);
 				} catch (err) {
@@ -2821,7 +2833,7 @@ export class AgentView implements Component {
 		try {
 			for (const r of pi) {
 				try {
-					const res = await this.client.request("reply", { id: r.id, text, mode });
+					const res = await requestOnce(() => this.live(), "reply", { id: r.id, text, mode }, { tag: "hub" });
 					if (res.delivered || res.respawned) sent++;
 					else if (res.saved) later++;
 					else failed.push(r.name);

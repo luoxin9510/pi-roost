@@ -85,7 +85,14 @@ class FakeClient {
 		this.emitted++;
 		for (const l of [...this.events]) l(e);
 	}
+	/** M51: the request ids the hub sent (kept apart from the args the tests compare). */
+	requestIds: { op: string; id: string }[] = [];
 	async request(op: string, args: unknown): Promise<unknown> {
+		if ((op === "reply" || op === "dispatch") && args && typeof args === "object" && "requestId" in args) {
+			const { requestId, ...rest } = args as { requestId: string };
+			this.requestIds.push({ op, id: requestId });
+			args = rest;
+		}
 		this.requests.push({ op, args });
 		if (op === "list") return { jobs: this.rows };
 		if (op === "dispatch") {
@@ -362,6 +369,8 @@ describe("AgentView keys", () => {
 		view.handleInput("\r");
 		await sleep(10);
 		expect(client.requests.find((r) => r.op === "reply")?.args).toEqual({ id: a.id, text: "no", mode: "steer" });
+		// M51: with a request id, so a resend after a lost answer is taken once
+		expect(client.requestIds.find((r) => r.op === "reply")?.id).toMatch(/^hub\./);
 
 		type(view, "late answer");
 		client.emit({ event: "removed", id: a.id });
@@ -1009,7 +1018,8 @@ describe("M45: escalation and policy in the hub", () => {
 		// Ctrl+Y: the suggestion goes as the user's reply
 		view.handleInput("\x19");
 		await sleep(20);
-		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([{ id: "q1", text: "yes, v2", requestId: expect.stringMatching(/^hub-accept-q1-/) }]);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => r.args)).toEqual([{ id: "q1", text: "yes, v2" }]);
+		expect(client.requestIds.map((r) => r.id)).toEqual([expect.stringMatching(/^hub-accept-q1-/)]);
 		expect(view.render(200).join("\n")).toContain("sent to api-fix: yes, v2");
 		// a second press sends nothing (the row's next question is not this answer's)
 		view.handleInput("\x19");

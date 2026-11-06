@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- A reply or a new session whose answer was lost when the background service restarted is sent again and taken once (M51, [docs/plans/m51-request-ids.md](docs/plans/m51-request-ids.md)): the agent view, `pi-roost reply`, pi's subagent panel, `/bg` and the phone's start send request ids now (as the stress run and the evals did), and resend on a new connection for up to 15 s; before, the hub showed an error and a second try could queue the reply twice.
 - Agents of the protocol take messages (M50, [docs/plans/m50-protocol-messages.md](docs/plans/m50-protocol-messages.md)): an agent you write on the TypeScript or Python client gives `onMessage` (`on_message`) and other sessions reach it as they reach pi: `send` and `peers` list it, the board's `assign` hands it a task (the hub's `/tasks assign`, the concierge's `hub_task_assign`), its watches tell it, a task it holds that is taken back is told. It has `peers()`, `send()` and `watch()` of its own. One that takes no messages is not listed and is refused at once (`unsupported`), not queued for. The stress run's board scenario hands tasks to its agents again: each reached once.
 
 ## [0.1.15] - 2026-11-06

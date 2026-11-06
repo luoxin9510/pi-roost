@@ -1579,3 +1579,32 @@ describe("M50: agents of the protocol take messages", () => {
 		await expect(a.c.request("spawn", { launch: launch("sleep 1", "kid") })).rejects.toMatchObject({ code: "unsupported" });
 	});
 });
+
+describe("M51: a reply whose answer was lost", () => {
+	it("is sent again with its id on a new connection and queued once", async () => {
+		await startDaemon();
+		const { requestOnce } = await import("../lib/client.ts");
+		const { id } = await (await hubc()).request("dispatch", { ...launch("sleep 30", "target") });
+		await waitFor(async () => (await (await hubc()).request("list", {})).jobs.find((j) => j.id === id)?.pid);
+		const first = await DaemonClient.connect();
+		clients.push(first);
+		let calls = 0;
+		const r = await requestOnce(
+			async () => {
+				calls++;
+				if (calls === 1) {
+					// the answer is lost: the connection goes right after the request is written
+					setImmediate(() => first.close());
+					return first;
+				}
+				return hubc();
+			},
+			"reply",
+			{ id, text: "only once" },
+		);
+		expect(calls).toBeGreaterThanOrEqual(2);
+		expect(r.saved || r.delivered).toBe(true);
+		const pending = (readState(id)?.pendingReplies as { text: string }[]).filter((p) => p.text === "only once");
+		expect(pending).toHaveLength(1);
+	});
+});

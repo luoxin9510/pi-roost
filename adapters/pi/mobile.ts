@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { DaemonClient } from "../../lib/client.ts";
+import { DaemonClient, requestOnce } from "../../lib/client.ts";
 import { envPolicy, loadConfig } from "../../lib/config.ts";
 import { buildLaunch, fallbackName, isolationDefault, prepareIsolation, refusedByDaemon } from "../../lib/dispatch.ts";
 
@@ -54,7 +54,9 @@ export async function startForMobile(req: MobileStartRequest, connect = () => Da
 	let client: DaemonClient | undefined;
 	try {
 		client = await connect();
-		const r = await client.request("dispatch", { ...launch, ...(iso.worktree ? { worktree: iso.worktree } : {}) });
+		const first = client;
+		// M51: sent again (once taken) when the answer is lost to a restart of the service
+		const r = await requestOnce(async () => (first.isClosed ? (client = await connect()) : first), "dispatch", { ...launch, ...(iso.worktree ? { worktree: iso.worktree } : {}) }, { tag: "mobile" });
 		return { id: r.id, name: r.name };
 	} catch (err) {
 		if (refusedByDaemon(err)) iso.discard();

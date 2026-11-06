@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -12,6 +13,36 @@ export class DaemonError extends Error {
 	constructor(message: string, code?: string) {
 		super(message);
 		this.code = code;
+	}
+}
+
+/** M51: a request id (docs/protocol.md "Request ids"): new for each request, the same for each resend of it. */
+export function newRequestId(tag: string): string {
+	return `${tag}.${process.pid.toString(36)}.${Date.now().toString(36)}.${randomBytes(4).toString("hex")}`.replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 64);
+}
+
+/**
+ * M51: a reply or a dispatch whose answer may be lost: sent with a request id, and when
+ * no answer comes because the connection went (the daemon restarted), sent again with the
+ * same id on the connection `via()` gives then, until `timeoutMs`; the daemon takes it
+ * once. A refusal (the daemon answered with a code) is not sent again.
+ */
+export async function requestOnce<O extends "reply" | "dispatch">(
+	via: () => Promise<DaemonClient>,
+	op: O,
+	args: ArgsOf<O>,
+	opts: { timeoutMs?: number; tag?: string } = {},
+): Promise<ResultOf<O>> {
+	const a = { ...args, requestId: (args as { requestId?: string }).requestId ?? newRequestId(opts.tag ?? op) } as ArgsOf<O>;
+	const deadline = Date.now() + (opts.timeoutMs ?? 15_000);
+	for (let wait = 200; ; wait = Math.min(wait * 2, 2000)) {
+		try {
+			return await (await via()).request(op, a);
+		} catch (err) {
+			const refused = err instanceof DaemonError && typeof err.code === "string" && err.code !== "closed";
+			if (refused || Date.now() + wait > deadline) throw err;
+			await new Promise((r) => setTimeout(r, wait));
+		}
 	}
 }
 
@@ -136,6 +167,11 @@ export class DaemonClient {
 	onEvent(listener: (event: Event) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
+	}
+
+	/** M51: the connection is gone (dropped, or closed): a request on it fails at once. */
+	get isClosed(): boolean {
+		return this.closed;
 	}
 
 	/** Called once when the connection drops (not after close()). */
