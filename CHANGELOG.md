@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-11-06
+
+The end of the agent development environment roadmap ([docs/plans/ade-roadmap.md](docs/plans/ade-roadmap.md)): tasks can be shelved and what the loop leaves behind cleaned up, the task board is a command of every pi session (so of the phone), the concierge's sessions are built by the daemon (M59); a pull request is an optional exit, and tasks changing the same files are marked (M60). An adversarial pass over the whole loop closed a way for a session to merge on its own. The porting guide ([docs/porting.md](docs/porting.md)) describes this release.
+
+- Shelving, leftovers, hardening (M59, [docs/plans/m59-shelve-cleanup.md](docs/plans/m59-shelve-cleanup.md)): `/tasks shelve <id>` (overlay: `h`) removes a clean worktree and keeps the branch; `/tasks start` makes it again from the branch. `/tasks cleanup` lists, and `/tasks cleanup yes` removes, the worktrees of dropped and merged tasks, worktrees of task branches no task holds, and old verify logs (never a worktree with changes, never an unmerged branch). A branch merged into base by hand (the tip that went to review) is marked merged. `/tasks` is a command of every pi session, so it works from the phone through pi-mobile. The daemon builds the launch of a session the concierge starts from the concierge's own; a spawned child's or the concierge's first message may not be a command (`/`), a shell line (`!`) or a file (`@`).
+- Optional exits (M60, [docs/plans/m60-exits.md](docs/plans/m60-exits.md)): `/tasks pr <id>` (overlay: `o`, then `y`) pushes the commit shown to the remote shown and opens a pull request with `gh` (a person's, from review; refused if the branch or its remote changed since shown); the task stays in review with the pull request recorded. The workspace overlay marks (`⚠`) tasks at work that change the same files.
+
 ## [0.1.18] - 2026-11-06
 
 The screens of the agent development environment: the tasks in their worktrees as a pipeline (M57) and a task's review in the hub, with comments sent back to its session (M58). The porting guide ([docs/porting.md](docs/porting.md)) describes this release.
