@@ -80,6 +80,9 @@ row with a live one-line summary. Start a few more. Then:
 - **Enter** (or →) opens the session full-screen. **←** on its empty prompt, or **Ctrl+Z**,
   brings you back to the list.<br>
   按 **回车**（或 →）全屏进入会话。在它的空提示符下按 **←**，或按 **Ctrl+Z**，回到列表。
+- Scroll up in a session to read all of it: what came before its last compaction (which pi
+  no longer draws) loads a few messages at a time as you reach the top.<br>
+  在会话里向上滚动就能看到全部记录：最近一次压缩之前的内容（pi 自己不再显示）会在滚到顶时一批批加载出来。
 - **Esc** leaves the view. The sessions keep going; `pi --agents` shows them again.<br>
   按 **Esc** 离开视图。会话继续运行，再次 `pi --agents` 就能看到它们。
 
@@ -742,6 +745,10 @@ replay. Nothing leaves your machine; it is off by default. The shape follows pi'
   workspace 环境来自 zsh、bash、fish、tcsh/csh 的 hook；其他 shell 只走 `direnv export`。
 - The background service's socket is yours alone (only your user can open it). It tells the hub and the sessions apart (a session cannot stop others, answer for you or change the concierge's policy), but it does not sandbox your own processes from each other: a session with a shell can do what you can.<br>
   后台服务的 socket 只有你自己的用户能打开。它能区分 hub 和会话（会话不能停掉别的会话、不能冒充你回答、不能改值班 agent 的策略），但不会把你自己的进程彼此隔离：有 shell 权限的会话能做你能做的事。
+- The earlier messages loaded on scrolling up need pi's fullscreen mode (its default); a
+  session on the terminal's main screen (`tuiMode: "regular"`) shows what pi shows. An
+  extension's tools in them are drawn plainly (without the extension's renderer).<br>
+  向上滚动加载更早记录需要 pi 的全屏模式（默认就是）；在终端主屏上运行的会话（`tuiMode: "regular"`）只显示 pi 自己显示的内容。其中扩展提供的工具用通用样式显示（不用扩展自带的渲染器）。
 - `/fork` is pi's own command (branch from an earlier message); pi-roost's copy-to-background is `/bg-fork <prompt>`.<br>
   `/fork` 是 pi 自己的命令（从之前的消息分支）；pi-roost 的“复制到后台”是 `/bg-fork <prompt>`。
 

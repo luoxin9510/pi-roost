@@ -60,6 +60,7 @@ Claude Code's documented behaviour.
 | M50 | [agents of the protocol take messages: send, peers, watches and the board's hand-overs reach them](m50-protocol-messages.md) | next |
 | M51 | [request ids from the hub and the CLI: a reply or a dispatch whose answer was lost is sent again, taken once](m51-request-ids.md) | next |
 | M52 | [the board by project (a repository's), and told when a task can be claimed](m52-board-projects.md) | next |
+| M53 | [a session's whole conversation: what came before the last compaction loads as the transcript scrolls up](m53-earlier-history.md) | next |
 
 Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers, and a shared task board (M43–M47, all done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 

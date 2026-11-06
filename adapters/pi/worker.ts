@@ -12,6 +12,7 @@ import { sessionUsage, type UsageInfo } from "../../lib/usage.ts";
 import { type AgentLink, registerAgentTools } from "./agent-tools.ts";
 import { onMobileActivity } from "./mobile.ts";
 import { type PrLinks, registerPrLinks } from "./pr-links.ts";
+import { registerEarlierHistory } from "./earlier-history.ts";
 import { attachRepaintReady, registerAttachRepaint, registerRecap, registerSummaries } from "./worker-extras.ts";
 import {
 	CUSTOM_DIALOG_MS,
@@ -544,6 +545,8 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity, opts: { agent
 	registerSummaries(pi, { tracker, send: () => send(true), ctx: () => current });
 	registerRecap(pi, { tracker, send: () => send(), ctx: () => current });
 	registerAttachRepaint(pi);
+	// M53: the conversation from before the latest compaction, loaded as the transcript scrolls up
+	registerEarlierHistory(pi);
 	// M10: a session in its own worktree is told so, every run (it is not in the session file)
 	const worktree = readJob(job.id)?.worktree;
 	if (worktree) {
