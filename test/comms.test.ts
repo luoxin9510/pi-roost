@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -2195,6 +2195,8 @@ describe("M59: shelve, hand merges, cleanup", () => {
 		expect(existsSync(w.path)).toBe(false);
 		expect(gitOut(r, "branch", "--list", w.branch)).toContain(w.branch);
 		await expect(hub.request("task", { action: "merge", id: t.id })).rejects.toThrow(/shelved/);
+		// a comment on a shelved task is kept (the next start's prompt carries it)
+		expect((await hub.request("task", { action: "comment", id: t.id, comment: { file: "a.txt", line: 1, text: "later" } })).task?.workspace?.comments).toHaveLength(1);
 		restoreTaskWorktree(r, w.path, w.branch);
 		const again = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "again"), cwd: w.path } });
 		expect(again.task).toMatchObject({ state: "claimed", workspace: { stage: "working" } });
@@ -2212,9 +2214,14 @@ describe("M59: shelve, hand merges, cleanup", () => {
 			const { t, w, job } = await inReview(hub, r, "schema");
 			const next = (await hub.request("task", { action: "add", title: "after", project: r, after: [t.id] })).task!;
 			await stopped(hub, job.id);
+			// a branch moved onto base (reset) is not a merge of what was reviewed
+			const other = await inReview(hub, r, "reset");
+			await stopped(hub, other.job.id);
+			git(other.w.path, "reset", "-q", "--hard", "main");
 			git(r, "merge", "--ff-only", "-q", w.branch);
 			const list = (await hub.request("task", { action: "list" })).tasks;
 			expect(list.find((x) => x.id === t.id)).toMatchObject({ state: "done", workspace: { stage: "merged" } });
+			expect(list.find((x) => x.id === other.t.id)?.workspace?.stage).toBe("review");
 			// the next one can be started now
 			const w2 = createTaskWorktree(r, next.id, "after");
 			await expect(hub.request("task", { action: "start", id: next.id, workspace: { path: w2.path, branch: w2.branch, baseRef: w2.baseRef, baseSha: w2.base }, launch: { ...launch("sleep 30", "n"), cwd: w2.path } })).resolves.toBeTruthy();
@@ -2235,6 +2242,10 @@ describe("M59: shelve, hand merges, cleanup", () => {
 		await hub.request("task", { action: "drop", id: b.id });
 		await hub.request("task", { action: "drop", id: a.id });
 		const orphan = createTaskWorktree(r, 999, "orphan");
+		// one made moments ago may be a start under way: only an older one is left behind
+		const young = createTaskWorktree(r, 998, "young");
+		const old = (Date.now() - 3_600_000) / 1000;
+		utimesSync(orphan.path, old, old);
 		const logs = join(process.env.PI_ROOST_HOME ?? join(work, "home"), "verify");
 		mkdirSync(logs, { recursive: true });
 		writeFileSync(join(logs, `${a.id}-1.log`), "ok\n");
@@ -2245,10 +2256,23 @@ describe("M59: shelve, hand merges, cleanup", () => {
 		const done = (await hub.request("task", { action: "cleanup" })).note!;
 		expect(done).toContain(`${orphan.branch}: worktree removed · branch kept`);
 		expect(existsSync(orphan.path)).toBe(false);
+		expect(existsSync(young.path)).toBe(true);
 		expect(existsSync(wb.path)).toBe(true);
 		expect(existsSync(wa.path)).toBe(false);
 		expect(done).toContain("removed 1 verify log");
 		expect(existsSync(join(logs, `${a.id}-1.log`))).toBe(false);
 		await expect((await foreground("lead")).c.request("task", { action: "cleanup" })).rejects.toMatchObject({ code: "unsupported" });
+	});
+});
+
+describe("M59: a child's first message", () => {
+	it("is a task, never a command or a file: roost_spawn of /tasks merge is refused", async () => {
+		await startDaemon();
+		const p = await foreground("lead");
+		const child = (task: string) => ({ ...launch("sleep 30", "kid"), command: ["/bin/sh", "-c", "sleep 30", "--", task] });
+		await expect(p.c.request("spawn", { launch: child("/tasks merge 5") })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(p.c.request("spawn", { launch: child("  !rm -rf x") })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(p.c.request("spawn", { launch: child("@/etc/passwd") })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(p.c.request("spawn", { launch: child("write the tests") })).resolves.toMatchObject({ name: "kid" });
 	});
 });

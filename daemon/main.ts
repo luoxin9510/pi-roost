@@ -100,7 +100,7 @@ import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.t
 import { ROOST_VERSION } from "../lib/version.ts";
 import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
 import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
-import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
+import { type CleanupResult, cleanupWorktree, isInside, validWorktree, WORKTREES_DIR, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
 const CONTINUE = "Continue where you left off.";
@@ -760,6 +760,21 @@ async function conciergeUndo(): Promise<ConciergeStatus> {
 }
 
 /**
+ * M59: a session's first message from another agent (a spawned child, the concierge's) is a
+ * task: never a slash command (pi would run it: `/tasks merge` is a person's), a shell line
+ * or a file to attach. Undefined: there is none.
+ */
+function firstMessage(command: unknown): string | null | undefined {
+	if (!Array.isArray(command)) return undefined;
+	const dash = command.indexOf("--");
+	if (dash < 0) return null;
+	const task = dash === command.length - 2 && typeof command[dash + 1] === "string" ? (command[dash + 1] as string) : undefined;
+	if (task === undefined) throw new OpError("bad_request", "launch: one task after --");
+	if (/^\s*[\/!@]/.test(task)) throw new OpError("bad_request", "a task is plain text, not a command (/, !) or a file (@)");
+	return task;
+}
+
+/**
  * M59: a session the concierge starts runs what the concierge runs: the daemon builds its
  * launch from the concierge's own job (its pi, its flags, its environment and policy) and
  * takes from the concierge's only the task, the directory, a new session file, the name,
@@ -773,11 +788,8 @@ function conciergeLaunch(launch: DispatchArgs): DispatchArgs {
 	if (!str(launch.cwd) || !isAbsolute(launch.cwd) || !existsSync(launch.cwd)) throw new OpError("bad_request", "launch: cwd must be a directory");
 	const sf = launch.sessionFile;
 	if (!str(sf) || !isAbsolute(sf) || !sf.endsWith(".jsonl") || existsSync(sf) || [...recs.values()].some((r) => r.sessionFile === sf)) throw new OpError("bad_request", "launch: a new session file");
-	// the task: the argument after "--" (one, the last)
-	const dash = launch.command.indexOf("--");
-	const task = dash >= 0 && dash === launch.command.length - 2 && typeof launch.command[dash + 1] === "string" ? launch.command[dash + 1]! : null;
-	// its first message is a task, never a command of pi's or a shell line (pi would run them)
-	if (task !== null && /^\s*[\/!]/.test(task)) throw new OpError("bad_request", "a task is plain text, not a command");
+	// the task: the argument after "--" (one, the last), plain text
+	const task = firstMessage(launch.command) ?? null;
 	const ownDash = own.command.indexOf("--");
 	const flags = own.command.slice(4, ownDash >= 0 ? ownDash : undefined);
 	const without = (args: string[], flag: string) => args.filter((x, i) => x !== flag && args[i - 1] !== flag && !x.startsWith(`${flag}=`));
@@ -1316,12 +1328,16 @@ function verifyEnded(taskId: number, jobId: string, code: number | null): void {
 async function setupEnded(taskId: number, jobId: string, code: number | null): Promise<void> {
 	const run = setupRuns.get(taskId);
 	if (!run || run.jobId !== jobId) return;
-	setupRuns.delete(taskId);
 	setTimeout(() => void removeRecord(jobId).catch(() => {}), 0).unref?.();
 	const t = tasks.get(taskId);
 	const w = t?.workspace;
-	if (!t || !w || t.state === "dropped") return;
+	// M59: the run holds its place until its session is dispatched (a shelve or start meanwhile is refused)
+	const done = () => {
+		if (setupRuns.get(taskId)?.jobId === jobId) setupRuns.delete(taskId);
+	};
+	if (!t || !w || t.state === "dropped") return done();
 	if (code !== 0) {
+		done();
 		const last = readLogTail(verifyLogPath(t.id, 0)).trim().split("\n").pop() ?? "";
 		setStage(t, "failed", `setup failed (exit ${code ?? "?"})${last ? `: ${last.slice(0, 200)}` : ""}`);
 		return;
@@ -1334,6 +1350,8 @@ async function setupEnded(taskId: number, jobId: string, code: number | null): P
 		setStage(t, "working", null, run.actor, `${job.name} in ${w.branch}`);
 	} catch (err) {
 		setStage(t, "failed", `the session did not start: ${String((err as Error).message ?? err).slice(0, 200)}`);
+	} finally {
+		done();
 	}
 }
 
@@ -1475,7 +1493,7 @@ async function workspaceAction(
 	// M59: on the shelf its worktree is gone: start takes it off (the hub makes the worktree again)
 	if (w.stage === "shelved" && action !== "comment" && action !== "uncomment") throw new OpError("bad_request", `#${t.id} is shelved: /tasks start it to take it off the shelf`);
 	// a damaged record (no path, no branch) never reaches git: `git -C ""` is the daemon's own directory
-	if (action !== "back" && (!w.path || !isAbsolute(w.path) || !w.branch || !BASE_REF.test(w.baseRef) || !existsSync(w.path))) {
+	if (action !== "back" && action !== "comment" && action !== "uncomment" && !(action === "shelve" && w.path && isAbsolute(w.path)) && (!w.path || !isAbsolute(w.path) || !w.branch || !BASE_REF.test(w.baseRef) || !existsSync(w.path))) {
 		throw new OpError("bad_request", `#${t.id}: its worktree ${w.path || "(none recorded)"} is not there: look at it by hand`);
 	}
 	// M59: put away: the worktree removed (clean only), the branch and the record kept; /tasks start brings it back
@@ -1661,10 +1679,13 @@ async function settleHandMerges(): Promise<void> {
 		const w = t.workspace;
 		if (!w || !t.project || t.state === "dropped" || !["review", "failed", "conflict", "shelved"].includes(w.stage) || workspaceBusy.has(t.id)) continue;
 		try {
+			// the reviewed tip, still the branch's, with commits of its own, in base: a person merged what was reviewed
+			// (a branch reset onto base, or moved after review, is not)
 			const tip = await revParse(t.project, `refs/heads/${w.branch}`);
 			const base = await revParse(t.project, `refs/heads/${w.baseRef}`);
-			// a branch with no commit of its own is not "merged"
-			if (!tip || !base || tip === w.baseSha || !(await isAncestor(t.project, tip, base))) continue;
+			if (!tip || !base || !w.reviewTip || tip !== w.reviewTip || tip === w.baseSha) continue;
+			if (!(await isAncestor(t.project, w.baseSha, tip)) || !(await isAncestor(t.project, tip, base))) continue;
+			if (existsSync(w.path) && (await worktreeClean(w.path)) !== true) continue;
 			workspaceBusy.add(t.id);
 			try {
 				w.merge = { tip, oldBase: w.baseSha, at: Date.now() };
@@ -1713,6 +1734,13 @@ async function cleanupLeftovers(dry: boolean): Promise<string[]> {
 		for (const x of await taskWorktrees(repo)) {
 			const t = tasks.get(x.id);
 			if (t?.workspace && t.workspace.branch === x.branch) continue;
+			// only pi-roost's (under .pi/worktrees), not one being started (made by a client moments ago, or under way)
+			if (workspaceBusy.has(x.id) || !isInside(realPath(x.path), realPath(join(repo, WORKTREES_DIR)))) continue;
+			try {
+				if (Date.now() - statSync(x.path).mtimeMs < 10 * 60_000) continue;
+			} catch {
+				continue;
+			}
 			const clean = await worktreeClean(x.path);
 			if (clean !== true) {
 				out.push(`${x.branch} kept: ${x.path} has uncommitted changes (no task holds it)`);
@@ -1897,6 +1925,9 @@ async function taskOp(
 				workspaceBusy.add(t.id);
 				try {
 					t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
+					// M59: the tip that went to review: only it, found in base, is "merged by hand"
+					const tip = await revParse(t.workspace.path, "HEAD");
+					if (tip) t.workspace.reviewTip = tip;
 					// M56: the repository's verify runs first (approved); review sees work that passed
 					await startVerify(t, a, t.result ?? undefined);
 				} finally {
@@ -4353,6 +4384,8 @@ async function spawnChild(conn: Conn, args: { launch?: DispatchArgs } | undefine
 	const launch = args?.launch;
 	if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch required");
 	if (launch.kind === "shell") throw new OpError("unsupported", "roost_spawn starts pi sessions");
+	// M59: a child's first message is a task, never a command (a child's `/tasks merge` would be a person's)
+	firstMessage(launch.command);
 	// a fresh session for the child, never one that exists or another job uses
 	if (!str(launch.sessionFile) || existsSync(launch.sessionFile) || [...recs.values()].some((r) => r.sessionFile === launch.sessionFile)) {
 		throw new OpError("bad_request", "a spawn needs a new session file");

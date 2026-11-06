@@ -37,7 +37,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
-import { createTaskWorktree, restoreTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
+import { createTaskWorktree, removeTaskWorktree, restoreTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
 import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
 import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
 import { nextNeedsYou, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
@@ -2218,10 +2218,12 @@ export class AgentView implements Component {
 		if (!t.project) return this.say(`#${id} is for any session: add it in a repository to give it a workspace`, "warning");
 		let made: TaskWorktree | undefined;
 		let w = t.workspace && t.workspace.path ? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha } : undefined;
-		// M59: off the shelf: its worktree made again from its branch
-		if (w && t.workspace?.stage === "shelved" && !existsSync(w.path)) {
+		// M59: its worktree gone (shelved, or a shelve cut short): made again from its branch; undone when the start is refused
+		let restored = false;
+		if (w && !existsSync(w.path)) {
 			try {
 				(this.o.restoreTaskWorktree ?? restoreTaskWorktree)(t.project, w.path, w.branch);
+				restored = true;
 			} catch (err) {
 				return this.say((err as Error).message, "error");
 			}
@@ -2237,6 +2239,7 @@ export class AgentView implements Component {
 		const prompt = taskPrompt(t);
 		const discard = () => {
 			if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
+			if (restored && w) void removeTaskWorktree(t.project!, w.path);
 		};
 		let request: DispatchArgs;
 		try {

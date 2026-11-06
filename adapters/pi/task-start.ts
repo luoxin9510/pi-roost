@@ -10,7 +10,7 @@ import { CONCIERGE_ROLE_ENV } from "../../lib/concierge.ts";
 import { envPolicy, loadConfig } from "../../lib/config.ts";
 import { buildLaunch, fallbackName, refusedByDaemon } from "../../lib/dispatch.ts";
 import type { DispatchArgs } from "../../lib/protocol.ts";
-import { createTaskWorktree, restoreTaskWorktree, type TaskWorktree } from "../../lib/task-git.ts";
+import { createTaskWorktree, removeTaskWorktree, restoreTaskWorktree, type TaskWorktree } from "../../lib/task-git.ts";
 import { discardWorktree } from "../../lib/worktree.ts";
 
 /** M45: a launch for a pi session like the hub's, in a directory (the caller's unless told). */
@@ -52,11 +52,17 @@ export async function startTaskInPi(call: TaskCall, ctx: Pick<ExtensionContext, 
 	const w = t.workspace?.path
 		? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha }
 		: ((made = createTaskWorktree(t.project, t.id, t.title)), { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base });
+	// M59: its worktree gone (shelved, or a shelve cut short): made again from its branch; undone when the start is refused
+	let restored = false;
+	if (t.workspace?.path && !existsSync(w.path)) {
+		restoreTaskWorktree(t.project, w.path, w.branch);
+		restored = true;
+	}
+	const project = t.project;
 	const discard = () => {
 		if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
+		if (restored) void removeTaskWorktree(project, w.path);
 	};
-	// M59: off the shelf: its worktree made again from its branch
-	if (t.workspace?.stage === "shelved" && !existsSync(w.path)) restoreTaskWorktree(t.project, w.path, w.branch);
 	let launch: DispatchArgs;
 	try {
 		launch = dispatchLaunch(ctx, { task: taskPrompt(t), cwd: w.path, name: fallbackName(t.title), model });
