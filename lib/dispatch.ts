@@ -179,7 +179,8 @@ export interface Isolation {
  * dropped connection or a timeout may come after the daemon started it: keep the worktree.
  */
 export function refusedByDaemon(err: unknown): boolean {
-	return err instanceof DaemonError && typeof err.code === "string" && err.code !== "closed";
+	// M51: `lost`: sent, and no answer came: it may have been taken
+	return err instanceof DaemonError && typeof err.code === "string" && err.code !== "closed" && err.code !== "lost";
 }
 
 /**
