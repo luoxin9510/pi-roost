@@ -306,6 +306,8 @@ export class AgentView implements Component {
 	private overlay: Overlay | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
+	/** M61: a built-in command on its way (a second Enter meanwhile is ignored). */
+	private commandBusy = false;
 	/** M61: sessions' command lists by the mtime of the file they were read from. */
 	private commandsCache = new Map<string, { mtime: number; list: SessionCommand[] }>();
 	private ctrlCAt = 0;
@@ -2383,8 +2385,26 @@ export class AgentView implements Component {
 	 */
 	private async piBuiltin(row: JobRow, name: string, how: "screen" | "picker" | "confirm", text: string): Promise<void> {
 		const host = this.o.hostControl ?? hostControl;
+		// pi matches a command without arguments exactly: words after it would go to the model as a prompt
+		const spec = piCommand(name);
+		const hasArgs = /\s/.test(text.trim());
+		if (hasArgs && !spec?.args) return this.say(`/${name} takes no arguments`, "warning");
+		if (!hasArgs && spec?.args === "required") return this.say(`/${name} needs ${spec.argumentHint ?? "an argument"}`, "warning");
+		if (this.commandBusy) return;
 		if (row.pid === null) return this.say(`${row.name} is not running: /${name} works in a running session`, "warning");
 		if (row.state === "working" || row.waitingFor === "dialog") return this.say(`${row.name} is ${row.state === "working" ? "working" : "in a dialog"}: /${name} works when it is idle`, "warning");
+		this.commandBusy = true;
+		try {
+			return await this.piBuiltinRun(row, name, how, text, host);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			return this.say(code === "ENOENT" || code === "ECONNREFUSED" ? `${row.name} has no terminal pi-roost hosts (a foreground pi?): run /${name} there` : (err as Error).message, "error");
+		} finally {
+			this.commandBusy = false;
+		}
+	}
+
+	private async piBuiltinRun(row: JobRow, name: string, how: "screen" | "picker" | "confirm", text: string, host: typeof hostControl): Promise<void> {
 		const st = (await host(row.id, "status")) as { attached?: boolean };
 		if (st.attached) return this.say(`${row.name} is attached elsewhere: its editor is theirs; detach it first`, "warning");
 		if (how === "confirm") {

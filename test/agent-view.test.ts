@@ -2282,6 +2282,25 @@ describe("M61: a session's own slash commands in its peek", () => {
 		expect(attached).toEqual(["p1"]);
 	});
 
+	it("words after a built-in that takes none are refused (pi would send them to the model); one that needs them says so; an argument goes along", async () => {
+		const { view, host } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }));
+		await view.start();
+		view.handleInput(" ");
+		expect(await send(view, "/tree foo", "/tree takes no arguments")).toContain("/tree takes no arguments");
+		expect(await send(view, "/import", "/import needs")).toContain("/import needs");
+		expect(host.calls).toEqual([]);
+		await send(view, "/Export out.html", "Session Info");
+		expect(host.calls.find((c) => c.op === "command")!.extra).toEqual({ text: "/export out.html" });
+	});
+
+	it("a session without a host pi-roost runs (a foreground pi) is told so, not a socket error", async () => {
+		const gone = Object.assign(new Error("connect ENOENT"), { code: "ENOENT" });
+		const { view } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }), { calls: [], fn: (async () => Promise.reject(gone)) as never });
+		await view.start();
+		view.handleInput(" ");
+		expect(await send(view, "/session", "has no terminal")).toContain("has no terminal pi-roost hosts");
+	});
+
 	it("/quit needs a second /quit within 2 s", async () => {
 		const { view, host } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }));
 		await view.start();

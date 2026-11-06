@@ -245,13 +245,24 @@ describe("host", () => {
 		for (const text of ["session", "/a\nb", "/a\x1b[31m", "/" + "x".repeat(500), 5]) {
 			expect(await hostControl(id, "command", 3000, { text })).toEqual({ error: "bad command" });
 		}
+		// someone attached owns the editor: refused at the host, whatever the hub saw before
+		const a = watch(await connectHost(id, { role: "attach", cols: 80, rows: 24 }));
+		await waitFor(async () => ((await hostControl(id, "status")) as { attached: boolean }).attached);
+		expect(await hostControl(id, "command", 3000, { text: "/session" })).toEqual({ error: "attached: the editor is the attached user's" });
+		a.sock.destroy();
+		await waitFor(async () => !((await hostControl(id, "status")) as { attached: boolean }).attached);
 		expect(await hostControl(id, "command", 3000, { text: "/session" })).toEqual({ ok: true });
-		await waitFor(() => typed().includes("\x1b[200~/session\x1b[201~"));
-		expect(typed()).toBe("\x1b[200~/session\x1b[201~\n"); // Enter reaches the pty as \r, which its line discipline makes \n
+		// a trailing space inside the paste: a line ending in "\\" would make Enter a new line in pi's editor
+		await waitFor(() => typed().includes("\x1b[200~/session \x1b[201~"));
+		expect(typed()).toBe("\x1b[200~/session \x1b[201~\n"); // Enter reaches the pty as \r, which its line discipline makes \n
 		await hostControl(id, "terminate");
 		// an agent profile takes `input`, not `command`
 		const p = await startHost("cat > /dev/null", {}, { kind: "shell", profile: "mine" });
 		expect(await hostControl(p.id, "command", 3000, { text: "/session" })).toEqual({ error: "command is for pi sessions" });
 		await hostControl(p.id, "terminate");
+		// nor a shell job (it has no pi to type into)
+		const sh = await startHost("cat > /dev/null", {}, { kind: "shell" });
+		expect(await hostControl(sh.id, "command", 3000, { text: "/session" })).toEqual({ error: "command is for pi sessions" });
+		await hostControl(sh.id, "terminate");
 	});
 });

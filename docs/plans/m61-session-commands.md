@@ -81,6 +81,23 @@ attached to it (the host's `status` says `attached`: their editor is theirs). Fo
 `screen` commands it then waits ~800 ms and asks the host for a `snapshot`, shown in the
 overlay; for `picker` ones it attaches (the same path as `/attach`).
 
+### After review
+
+- Arguments: pi matches a built-in exactly unless it takes arguments (`export`, `import`,
+  `bug`, `login`, besides the hub's `model`, `thinking`, `name`, `compact`), so `/tree
+  foo` would reach the model as a prompt. `PiCommand.args` says which take them; the
+  peek refuses words after the others and a bare `/import` (it needs a path). The name
+  is sent as pi spells it (`/Export x` → `/export x`).
+- The host checks, at the moment it types, that nobody is attached and that the job is
+  a pi session (`kind` not `shell`): the hub's earlier `status` could be stale.
+- A trailing space goes inside the paste (pi trims it): a text ending in `\` would
+  otherwise make Enter a new line.
+- One built-in at a time from a peek (a second Enter meanwhile is ignored); a row
+  without a host (a foreground pi) is told to run the command there.
+- Not handled: a draft left in pi's editor by an earlier attach. The paste goes after it
+  and both are submitted. Detaching with a draft is rare (Ctrl+G/← leave it); the note is
+  here so the behaviour is known.
+
 ### Profiles
 
 An agent profile may declare `commands: [{ name, description? }]` (at most 100). They
