@@ -127,7 +127,7 @@ export const ORDER_TEXT_MAX = 500;
 export function orderLine(o: StandingOrder, now: number = Date.now()): string {
 	const when = o.when ? `${o.when} · ` : "";
 	const applied = o.count > 0 && o.lastAt ? ` (applied ×${o.count}, ${eventAgo(o.lastAt, now)} ago)` : "";
-	return `#${o.id} ${when}${o.text}${applied}`;
+	return `#${o.id} ${when}${oneLine(o.text, ORDER_TEXT_MAX)}${applied}`;
 }
 
 export type WakeWhy = "events" | "heartbeat" | "order";

@@ -43,7 +43,15 @@ export class DaemonClient {
 	private constructor(sock: Socket) {
 		this.sock = sock;
 		sock.on("data", (chunk) => {
-			for (const line of this.reader.push(chunk)) this.onLine(line);
+			let lines: string[];
+			try {
+				lines = this.reader.push(chunk);
+			} catch (err) {
+				// M49: a line past the reader's limit: this stream is not the protocol's any more
+				sock.destroy(err as Error);
+				return;
+			}
+			for (const line of lines) this.onLine(line);
 		});
 		const fail = (err: Error) => {
 			const first = !this.closed;

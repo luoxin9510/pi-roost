@@ -7,14 +7,19 @@
  *   replies   K replies to each, in bursts: each handled once, in order
  *   chaos     the daemon killed (SIGKILL) and restarted under the reply storm, some
  *             hosts killed, a hub that never reads; then replies to the killed ones
+ *   board     M49: T tasks on the shared board (every fifth waiting on the one before),
+ *             every agent told to work it (claim, finish, next); the hub hands tasks out
+ *             meanwhile; the daemon killed and restarted mid-race. Then: every task done
+ *             exactly once, by one session, after what it waited on; no claim released;
+ *             the store consistent; the `task` op within budget
  *   soak      the reply storm repeated for a while, memory and descriptors watched
  *
  * Every run checks the invariants, measures (client side, from telemetry, from ps) and
  * holds the numbers to budgets; it exits 1 when one fails. The report goes to
  * stress/.runs/<time>/ (report.json, report.txt, telemetry.jsonl, the agents' logs).
  *
- *   node stress/run.ts [sessions|replies|chaos|soak ...] [--jobs 50] [--replies 20]
- *                      [--hubs 3] [--soak-minutes 10] [--work-ms 0] [--keep]
+ *   node stress/run.ts [sessions|replies|chaos|board|soak ...] [--jobs 50] [--replies 20]
+ *                      [--hubs 3] [--tasks 120] [--soak-minutes 10] [--work-ms 0] [--keep]
  */
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,6 +27,7 @@ import { connect } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient, DaemonError } from "../lib/client.ts";
+import type { RoostEvent } from "../lib/events.ts";
 import { daemonSocketPath } from "../lib/paths.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import { readState } from "../lib/store.ts";
@@ -36,13 +42,14 @@ const flag = (name: string, def: number) => {
 	const i = argv.indexOf(`--${name}`);
 	return i >= 0 && argv[i + 1] ? Number(argv[i + 1]) : def;
 };
-const SCENARIOS = ["sessions", "replies", "chaos", "soak"] as const;
+const SCENARIOS = ["sessions", "replies", "chaos", "board", "soak"] as const;
 type Scenario = (typeof SCENARIOS)[number];
 const picked = argv.filter((a): a is Scenario => (SCENARIOS as readonly string[]).includes(a));
-const scenarios: Scenario[] = picked.length > 0 ? picked : ["sessions", "replies", "chaos"];
+const scenarios: Scenario[] = picked.length > 0 ? picked : ["sessions", "replies", "chaos", "board"];
 const JOBS = flag("jobs", 50);
 const REPLIES = flag("replies", 20);
 const HUBS = flag("hubs", 3);
+const TASKS = flag("tasks", 120);
 const SOAK_MIN = flag("soak-minutes", 10);
 const WORK_MS = flag("work-ms", 0);
 const KEEP = argv.includes("--keep");
@@ -55,6 +62,9 @@ const BUDGET = {
 	eventLagP95: 1000,
 	daemonRssMB: 400,
 	storm: 120_000 + JOBS * REPLIES * 20,
+	/** M49: a `task` op (a claim under contention among them) */
+	taskP95: 1000,
+	board: 120_000 + TASKS * 500,
 };
 
 // ---- an isolated roost -----------------------------------------------------------
@@ -124,21 +134,63 @@ function sampleDaemon(): void {
 }
 
 const lags: number[] = [];
+/**
+ * M49: when the daemon was down (killed, then back; agents reconnect with a backoff of up to
+ * a few seconds): a report made then reaches the hubs late by design, and is counted apart.
+ */
+const outages: [number, number][] = [];
+const OUTAGE_GRACE_MS = 5000;
+let lagsInOutage = 0;
+let hubsClosing = false;
 const dispatchMs: number[] = [];
 const failures: string[] = [];
 const notes: string[] = [];
 const results: Record<string, unknown> = {};
 
-/** A hub: subscribes and measures how late each state change reaches it. */
-async function hub(): Promise<DaemonClient> {
-	const c = await DaemonClient.connect();
-	c.onEvent((e: Event) => {
-		if (e.event !== "job") return;
-		const m = / t=(\d+)$/.exec(e.job.summary ?? "");
-		if (m) lags.push(Date.now() - Number(m[1]));
-	});
-	await c.request("subscribe", {});
-	return c;
+/**
+ * A hub: subscribes and measures how late each state change reaches it. It connects again
+ * when the daemon went (chaos), as the agent view does.
+ */
+async function hub(): Promise<{ close(): void }> {
+	// a row comes again when something else about it changes (it went idle, a restarted daemon
+	// took it back): the first sight of a report is its lag; the same report again is not
+	const seen = new Set<string>();
+	let c: DaemonClient | undefined;
+	const attach = async (): Promise<void> => {
+		const fresh = await DaemonClient.connect();
+		try {
+			await fresh.request("subscribe", {});
+		} catch (e) {
+			fresh.close();
+			throw e;
+		}
+		fresh.onEvent((e: Event) => {
+			if (e.event !== "job") return;
+			// "ready" is stamped before the agent connected: its start, measured as allReadyMs
+			const m = / t=(\d+)$/.exec(e.job.summary ?? "");
+			if (!m || (e.job.summary ?? "").startsWith("ready")) return;
+			const key = `${e.job.id} ${m[1]}`;
+			if (seen.has(key)) return;
+			seen.add(key);
+			const at = Number(m[1]);
+			if (outages.some(([from, to]) => at >= from && at <= to)) lagsInOutage++;
+			else lags.push(Date.now() - at);
+		});
+		fresh.onClose(() => {
+			if (hubsClosing) return;
+			void waitFor(async () => {
+				try {
+					await attach();
+					return true;
+				} catch {
+					return undefined;
+				}
+			}, 30_000, "a hub back").catch(() => {});
+		});
+		c = fresh;
+	};
+	await attach();
+	return { close: () => c?.close() };
 }
 
 /** A hub that subscribes and never reads: the daemon must not stall on it. */
@@ -319,6 +371,7 @@ async function main(): Promise<void> {
 		// mid-storm: the daemon dies hard and comes back; some hosts die hard
 		const chaos = (async () => {
 			await sleep(1500);
+			const killAt = Date.now();
 			try {
 				process.kill(daemon!.pid!, "SIGKILL");
 			} catch {}
@@ -333,6 +386,7 @@ async function main(): Promise<void> {
 			}
 			await sleep(500);
 			client = await startDaemon();
+			outages.push([killAt, Date.now() + OUTAGE_GRACE_MS]);
 			restarted = true;
 		})();
 		await storm(live, ids, REPLIES, "c", async (id, text) => {
@@ -364,6 +418,128 @@ async function main(): Promise<void> {
 		if (check.duplicates > 0) failures.push(`chaos: ${check.duplicates} replies handled twice despite request ids`);
 	}
 
+	if (scenarios.includes("board")) {
+		const s0 = Date.now();
+		// the feed from here on, collected as it grows (the log keeps the last 1000 only)
+		let cursor = (await client.request("events", { limit: 1 })).cursor;
+		const feed: RoostEvent[] = [];
+		const collect = async () => {
+			try {
+				const r = await live().request("events", { after: cursor, limit: 1000 });
+				for (const e of r.events) if (e.seq > cursor) feed.push(e);
+				cursor = Math.max(cursor, ...r.events.map((e) => e.seq));
+			} catch {}
+		};
+		// T tasks, every fifth waiting on the one before
+		const taskIds: number[] = [];
+		for (let i = 0; i < TASKS; i++) {
+			const { task } = await client.request("task", { action: "add", title: `task ${i}`, after: i % 5 === 4 ? [taskIds[i - 1]!] : undefined });
+			taskIds.push(task!.id);
+		}
+		// the hub hands tasks out (the concierge's path is the same op): these agents are
+		// commands that speak the protocol, not sessions that take messages, so every hand-over
+		// is refused, and the task stays as it was
+		let assignRefused = 0;
+		let assignOther = 0;
+		for (const t of (await client.request("task", { action: "list" })).tasks.filter((t) => t.state === "open").slice(0, 20)) {
+			const to = ids[Math.floor(Math.random() * ids.length)]!;
+			try {
+				await client.request("task", { action: "assign", id: t.id, to });
+				assignOther++;
+			} catch (e) {
+				if ((e as DaemonError).code === "unsupported") assignRefused++;
+				else assignOther++;
+			}
+		}
+		if (assignOther > 0) failures.push(`board: ${assignOther} hand-overs to commands were not refused as unsupported`);
+		if ((await client.request("task", { action: "list" })).tasks.some((t) => t.assigned)) failures.push("board: a refused hand-over left the task marked");
+		await collect();
+		// every agent told to work the board; mid-race the daemon dies hard and comes back
+		let restarted = false;
+		let killed = false;
+		const boardChaos = (async () => {
+			await sleep(1500);
+			const killAt = Date.now();
+			try {
+				process.kill(daemon!.pid!, "SIGKILL");
+				killed = true;
+			} catch {}
+			await sleep(500);
+			client = await startDaemon();
+			outages.push([killAt, Date.now() + OUTAGE_GRACE_MS]);
+			restarted = true;
+		})();
+		await storm(live, ids, 1, "board", async (id, text) => {
+			await waitFor(() => restarted, 30_000, "the daemon back");
+			await reply(live, id, text);
+		});
+		await boardChaos;
+		await waitFor(
+			async () => {
+				await collect();
+				const r = await rows(client);
+				return ids.every((id) => /^board done/.test(r.get(id)?.summary ?? ""));
+			},
+			BUDGET.board,
+			"every agent done with the board",
+		);
+		await collect();
+		// the invariants: every task done once, by one session, after what it waited on; nothing released; the store consistent
+		const tasks = (await client.request("task", { action: "list" })).tasks;
+		const notDone = tasks.filter((t) => t.state !== "done");
+		if (notDone.length) failures.push(`board: ${notDone.length} tasks not done: ${notDone.slice(0, 5).map((t) => `#${t.id} ${t.state}${t.owner ? ` by ${t.owner.name}` : ""}`).join(", ")}`);
+		const taskEvents = feed.filter((e) => e.kind === "task");
+		const first = (why: string, id: number) => taskEvents.findIndex((e) => e.why === why && (e.text ?? "").startsWith(`#${id} `));
+		for (const t of tasks) {
+			const dones = taskEvents.filter((e) => e.why === "done" && (e.text ?? "").startsWith(`#${t.id} `)).length;
+			if (dones !== 1) failures.push(`board: #${t.id} finished ${dones} times in the feed`);
+			for (const d of t.after) {
+				const ci = first("claim", t.id);
+				const di = first("done", d);
+				if (ci >= 0 && di >= 0 && ci < di) failures.push(`board: #${t.id} was claimed before #${d}, which it waited on, was done`);
+				if (ci >= 0 && di < 0) failures.push(`board: #${t.id} was claimed while #${d} was never done`);
+			}
+		}
+		const releases = taskEvents.filter((e) => e.why === "release");
+		if (releases.length) failures.push(`board: ${releases.length} claims released although every session lived (${releases.slice(0, 3).map((e) => e.text).join("; ")})`);
+		// the agents' own logs agree: each task finished by exactly one of them
+		const finishedBy = new Map<number, string[]>();
+		let conflicts = 0;
+		let blockedRefusals = 0;
+		let lost = 0;
+		for (const id of ids) {
+			let lines: string[] = [];
+			try {
+				lines = readFileSync(join(logs, `${id}.board.log`), "utf8").split("\n").filter(Boolean);
+			} catch {}
+			for (const l of lines) {
+				const [verb, n, code] = l.split(" ");
+				if (verb === "done") finishedBy.set(Number(n), [...(finishedBy.get(Number(n)) ?? []), id]);
+				else if (verb === "refused" && code === "conflict") conflicts++;
+				else if (verb === "refused" && code === "blocked") blockedRefusals++;
+				else if (verb === "refused" || verb === "list-error" || verb === "done-error") lost++;
+			}
+		}
+		for (const [n, by] of finishedBy) if (by.length > 1) failures.push(`board: #${n} finished by ${by.length} sessions (${by.join(", ")})`);
+		for (const t of tasks) if (!finishedBy.has(t.id) && t.state === "done") failures.push(`board: #${t.id} is done but no agent says it finished it`);
+		const saved = JSON.parse(readFileSync(join(home, "tasks.json"), "utf8")) as { next: number; tasks: { id: number }[] };
+		const savedIds = saved.tasks.map((t) => t.id);
+		if (new Set(savedIds).size !== savedIds.length) failures.push("board: tasks.json has a duplicate id");
+		if (saved.next <= Math.max(0, ...savedIds)) failures.push(`board: tasks.json next ${saved.next} is not past the last id`);
+		results.board = {
+			tasks: TASKS,
+			done: tasks.filter((t) => t.state === "done").length,
+			daemonKilled: killed,
+			assignRefused,
+			conflicts,
+			blockedRefusals,
+			requestsLost: lost,
+			releases: releases.length,
+			events: taskEvents.length,
+			ms: Date.now() - s0,
+		};
+	}
+
 	if (scenarios.includes("soak")) {
 		const until = Date.now() + SOAK_MIN * 60_000;
 		let rounds = 0;
@@ -384,6 +560,7 @@ async function main(): Promise<void> {
 		return ids.every((id) => r.get(id)?.endedAt);
 	}, 60_000, "every job stopped");
 	await client.request("shutdown", {}).catch(() => {});
+	hubsClosing = true;
 	for (const h of hubs) h.close();
 	client.close();
 	clearInterval(sampler);
@@ -419,6 +596,9 @@ function report(): void {
 	const lag = percentiles(lags);
 	const rss = Math.max(0, ...samples.map((s) => s.rssMB));
 	if (ack && !scenarios.includes("chaos") && ack.p95 > BUDGET.ackP95) failures.push(`reply ack p95 ${ack.p95} ms > ${BUDGET.ackP95}`);
+	// M49: the board's op, under the race (a request the restart cut short is counted by its client, not here)
+	const task = percentiles(ops.get("roost.op.task") ?? []);
+	if (scenarios.includes("board") && task && task.p95 > BUDGET.taskP95) failures.push(`task op p95 ${task.p95} ms > ${BUDGET.taskP95}`);
 	if (lag && lag.p95 > BUDGET.eventLagP95) failures.push(`event lag p95 ${lag.p95} ms > ${BUDGET.eventLagP95}`);
 	if (rss > BUDGET.daemonRssMB) failures.push(`daemon RSS ${rss} MB > ${BUDGET.daemonRssMB}`);
 	const data = {
@@ -431,6 +611,7 @@ function report(): void {
 			replyDeliver: hist("roost.reply.deliver_latency"),
 			replyAck: ack,
 			eventLag: lag,
+			eventLagDuringOutage: lagsInOutage,
 			hostStart: hist("roost.host.start"),
 			hostReady: hist("roost.host.ready"),
 			ops: Object.fromEntries([...ops].map(([k, v]) => [k.slice("roost.op.".length), percentiles(v)])),
@@ -451,7 +632,7 @@ function report(): void {
 		`dispatch (client)    ${p(percentiles(dispatchMs))}`,
 		`reply delivered      ${p(data.latency.replyDeliver)}`,
 		`reply acked          ${p(ack)}`,
-		`event lag (hubs)     ${p(lag)}`,
+		`event lag (hubs)     ${p(lag)}${lagsInOutage ? ` · ${lagsInOutage} more made while the daemon was down (not counted)` : ""}`,
 		`host start           ${p(data.latency.hostStart)}`,
 		...[...ops].sort().map(([k, v]) => `op ${k.slice(9).padEnd(17)} ${p(percentiles(v))}`),
 		`request errors       ${opErrors}`,

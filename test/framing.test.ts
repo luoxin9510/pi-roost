@@ -84,6 +84,20 @@ describe("LineReader", () => {
 		expect(r.push("\n")).toEqual(["d"]);
 	});
 
+	it("M49: a line past the limit throws once, then the reader takes nothing; a long line in parts is fine", () => {
+		const r = new LineReader(10);
+		expect(r.push("12345")).toEqual([]);
+		expect(r.push("67890\nab")).toEqual(["1234567890"]);
+		expect(() => r.push("cdefghijk")).toThrow(/longer than 10/);
+		expect(r.push("\nmore\n")).toEqual([]);
+		// a complete line over the limit in one chunk
+		expect(() => new LineReader(3).push("abcd\n")).toThrow(/longer than 3/);
+		// many chunks of one big line: scanned once each (not re-split), joined whole
+		const big = new LineReader();
+		for (let i = 0; i < 1000; i++) expect(big.push("x".repeat(1000))).toEqual([]);
+		expect(big.push("\n")[0]).toHaveLength(1_000_000);
+	});
+
 	it("is utf8-safe across chunk boundaries", () => {
 		const bytes = Buffer.from(encodeLine({ s: "你好" }));
 		const cut = bytes.indexOf(0xe4) + 1;
