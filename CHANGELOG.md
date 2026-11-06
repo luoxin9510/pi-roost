@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-06
+
+Agents of the protocol in the conversation (M50), request ids everywhere (M51), the board by project (M52), and a session's whole conversation when you enter it (M53). The porting guide ([docs/porting.md](docs/porting.md)) describes this release.
+
 - A session's whole conversation when you enter it (M53, [docs/plans/m53-earlier-history.md](docs/plans/m53-earlier-history.md)): pi's chat starts at the latest compaction, so what came before was in the session file but not on the screen; scrolled to the top (the wheel, PgUp, Home), the transcript now loads the earlier messages above it, a dozen at a time, drawn by pi's own components, and the view stays where it was.
 - The board by project, and told when a task opens (M52, [docs/plans/m52-board-projects.md](docs/plans/m52-board-projects.md)): each git repository has its board (a worktree counts as its repository; outside one, the tasks for anyone); a session sees and takes its repository's tasks and the ones for anyone, the hub's `/tasks` shows its repository's and `/tasks all` every one (named), `/tasks add` puts one on the hub's repository's, the concierge's `hub_task_add` takes a `project`; a hand-over to a session of another repository is refused. A session refused a task as blocked is told by a message when it can be claimed (its dependencies done or dropped), and so are the session it was handed to and the job that put it on; the feed says so (`task` events `why: open`).
 - A reply or a new session whose answer was lost when the background service restarted is sent again and taken once (M51, [docs/plans/m51-request-ids.md](docs/plans/m51-request-ids.md)): the agent view, `pi-roost reply`, pi's subagent panel, `/bg` and the phone's start send request ids now (as the stress run and the evals did), and resend on a new connection for up to 15 s; before, the hub showed an error and a second try could queue the reply twice.

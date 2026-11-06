@@ -1,8 +1,8 @@
-# pi-roost 移植说明（基于 v0.1.15：main `51acab8` 加发布提交）
+# pi-roost 移植说明（基于 v0.1.16：main `0031cb0` 加发布提交）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout v0.1.15`（发布提交；代码与 M49 合入的 main `51acab8` 相同）逐节实现，每节末尾有验收标准。
-> **v0.1.15（本文依据）= v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
+> 用法：对照源码 `git checkout v0.1.16`（发布提交；代码与 M53 合入的 main `0031cb0` 相同）逐节实现，每节末尾有验收标准。
+> **v0.1.16（本文依据）= v0.1.15 之上再加 M50–M53；v0.1.15 = v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
 > v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
 >
 > **v0.1.8–v0.1.12 新增**（详见 Step 20–40，附录 C 有提交号）：
@@ -12,6 +12,7 @@
 > - v0.1.13：只有文档（本文同步到 v0.1.12，`docs/` 进发布包）。
 > - **v0.1.14 = hub 作为控制平面（`docs/plans/hub-control-plane.md`，M43–M47）+ peek 加深（M48）**，详见 Step 41–46：M43 事件流/watch/消息规则；M44 值班 agent（hub 自己的 agent，daemon 用摘要唤醒）；M45 升级与策略（建议答案、常规代答、撤回、act）；M46 常备指令；M48 peek 加深（更多信息、编辑器回复框、`/` 命令、补全）；M47 共享任务板（会话认领的锁、依赖、值班 agent 当组长）。
 > - **v0.1.15 = M49 加固**（`docs/plans/m49-hardening.md`，Step 47）：压测加任务板场景；对抗性审查后修的三件事——hub 专属 op 拒绝已表明是会话的连接、socket 的上限（单行 4 MiB、连接数、在途请求、未读积压）、标题/指令/名字一律单行（防伪造摘要行）。
+> - **v0.1.16 = M50–M53**，详见 Step 48–51：M50 协议 agent 也收消息（`send`、`peers`、watch、任务板交办都能到达，客户端 `onMessage`/`on_message`）；M51 hub、CLI、子 agent 面板、`/bg`、手机都带请求 ID，应答丢失时同 ID 重发、只执行一次（`requestOnce`）；M52 任务板按项目（git 仓库）分，依赖完成或丢弃时通知等它的会话；M53 进入会话能看到全部记录：最近一次压缩之前的消息在滚到顶时分批加载。
 > - **Step 20 起（M21 及之后）全部是可选增强**；核心 Step 1–8 不依赖它们。其中真正改变"移植怎么做"的是 M29/M31/M32：现在可以不写适配器代码，直接用档案（级别 0）或协议（级别 1）接入，见 §0 与 §1.3。
 
 ---
@@ -111,6 +112,7 @@
 | `ctx.ui.custom(factory, { overlay: true, overlayOptions: { width:"100%", maxHeight:"100%", row:0, col:0 }, onHandle })` | M19：记录视图作为全屏浮层盖在对话上，`onHandle` 拿到句柄用 `hide()` 关闭 | 记录视图需要；没有浮层就改成独立程序 |
 | `tui.stop({ preserveScreen: true })` / `tui.start()` / `tui.requestRender(true)` | M14：交出终端时不把对话刷进滚动区；worker 收到 attach 信号后在真实终端上重新启动 TUI 并整屏重绘 | M14 必需（宿主默认全屏时尤其） |
 | `ctx.ui.setWidget(key, factory, { placement: "belowEditor" })` | M12 子 agent 面板画在输入框下面；M14 用一个**不画任何内容**的 widget 拿到当前 `TUI` 引用（`worker-extras.ts` `registerAttachRepaint`） | 面板需要；M14 可换成别的拿 TUI 的办法 |
+| M53：`tui.layoutRoot`（全屏时的布局根）→ primary `ScrollView`（`scrollTop` `viewportHeight` `children[0]` 即文档容器，内部字段 `currentScrollTop`）；pi 导出的 `sessionEntryToContextMessages` `getMarkdownTheme` `parseSkillBlock`、消息组件（`UserMessageComponent` `AssistantMessageComponent` `ToolExecutionComponent` `BashExecutionComponent` `CustomMessageComponent` `CompactionSummaryMessageComponent` `BranchSummaryMessageComponent` `SkillInvocationMessageComponent`）、内置工具定义（`createReadToolDefinition` 等，带渲染器）；`pi.getSettings()`、`ctx.ui.getToolsExpanded()`；事件 `session_compact` `session_tree` | 在聊天区上方补上压缩前的记录（Step 51）；走的是布局树而不是正式接口 | 可选；宿主若有"在聊天区前插入内容/滚动位置"的接口就用接口 |
 | `ctx.hasUI`、`ctx.cwd` | 无界面的会话（headless、scratch）不连 daemon、不装 widget | 必需判空 |
 | `ctx.ui.onTerminalInput(fn)`（可 `consume`） | 空提示符按 ← 、Ctrl+Z/Ctrl+D 拦截 | 可降级为命令 |
 | `ctx.ui.getEditorText/setEditorText/notify/setStatus/setWidget/setTitle/select` | UI 小件 | 可选 |
@@ -148,7 +150,7 @@
 
 ## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
 
-**现状（v0.1.15；分层自 v0.1.12 的 M32 起未再变，M43–M48 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 在 core，`adapters/pi/concierge.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+**现状（v0.1.16；分层自 v0.1.12 的 M32 起未再变，M43–M53 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
 
 | 层 | 目录 | 允许 import | 守护 |
 |---|---|---|---|
@@ -1060,6 +1062,53 @@ M47 上线时只跑了通用压测和普通审查。这一步专门压任务板�
 
 移植提示：给每个 op 想清楚"谁能调"，并在连接上记住身份（`peer`、`agentSide`）——"没表明身份就是 hub"只在**同一条连接**上判断才成立；所有会被拼进给模型看的文本（摘要、信封）的短字段都要在入口和渲染两处折成一行。
 
+### Step 48：协议 agent 也收消息（M50，`docs/plans/m50-protocol-messages.md`）
+
+M49 的压测发现：任务板的交办（`/tasks assign`、值班 agent 的 `hub_task_assign`）只能发给 pi 会话。协议里从一开始就有 `agent-items` 能力，但 daemon 的消息层按会话文件找人，协议 agent 没有会话文件，于是被排除；客户端也把 agent 项丢了。
+
+- **daemon**：协议 agent 按 job 寻址，键是 `job:<id>`（`recKey(r)`：pi job 用会话文件，协议 job 用 `job:<id>`，普通命令为空）。它因此能持有消息（`holderOf`）、发送与 watch（`sessionKeyOf`）、出现在 `peers` 里、做 `send`/watch 通知/任务板 `assign` 的目标，任务被 drop 或收回时也会被告知。它收不收由 `hello` 的 `agent-items` 决定：没声明的不进 `peers`，发给它的消息、交办、它自己要的 watch 一律立即 `unsupported`（`refusesItems`），而不是在队列里（最多 20 条）永远等；还没连上的（hello 未知）连上时再收。普通命令仍然没有会话。协议 agent 不能 `spawn`（子会话不会出现在任何面板里，`parentOpen` 是 pi 的）。
+- **客户端**：TS 的 `onMessage(m)`、Python 的 `on_message(m)`。提供了它，客户端在 hello 里声明 `agent-items` 和 `peers`，每次 report 带 `agentItems: true`；daemon 就在这条连接上推送 agent 项，和回复一起按 seq 顺序、一次一条交给处理函数，各自 `exact` ack，最后完成的 seq 与回复一样记下（重启的 agent 不会收两次）。`AgentMessage`/`Message`：`seq` `kind`（`message` `report` `notice`）`text`（信封：来自谁，不带用户权威）`from`（Python 叫 `sender`）`relation`。另有 `peers()` `send(to, message)` `watch(id, when)`。
+- **审查修复**：agent 连上前已排队的项，若它第一次 report 不带 `agentItems`，就丢掉（不会有人 ack，挂着的行永远不会被关闭清理）；agent 自己的 watch 随记录删除（之前按会话文件保存，它没有）；客户端对不处理的 `digest` 也 ack。
+
+**验收**：`daemon.test` 的协议一致性用例（两种客户端）：hub 挂任务并交办给脚本 agent，它作为消息到达，agent 认领并完成，事件流里有交办、没有遗留；`comms.test` 的 "M50"（前台 pi 与协议 agent 按 id 互发并互见于 `peers`、agent watch 一个 job 并被告知、hub drop 它持有的任务时它被告知；没声明 `agent-items` 的不被列出、消息/交办/watch 都被拒且不排队；普通命令仍拒交办；agent 不能 spawn）；`npm run stress` 的 `board` 场景：hub 在抢之前先交办最多 20 个任务，每个送达 agent 的都恰好被做一次（`handed` = `handedSeen`）。
+
+移植提示：消息层的"收件人键"不要绑在某一种 agent 的特征（会话文件）上；能力（收不收）要显式声明，不支持的立即拒绝，不要让队列替它等。
+
+### Step 49：hub 与 CLI 也带请求 ID（M51，`docs/plans/m51-request-ids.md`）
+
+M36 让重发变得安全（同一 `requestId` 的 `reply`/`dispatch` 只执行一次），但只有压测和 evals 带 ID；hub、CLI、pi 的子 agent 面板、`/bg` 都不带，daemon 重启时丢了应答的回复只能显示成错误（发没发出去谁也不知道），手动再发可能排两次（这就是 v0.1.15 限制 23）。
+
+- `lib/client.ts` 的 `requestOnce(via, op, args, {timeoutMs, tag})`：请求带 ID（`newRequestId(tag)`：tag、pid、时间、4 个随机字节，符合 daemon 的规则）；因为连接断了而没有应答（`closed` 错误、socket 错误、连不上）时，用同一个 ID 在 `via()` 给的新连接上重发，等待 200 ms 起翻倍到 2 s，最多 15 s。daemon 明确拒绝（带 code 的应答）不重发。`DaemonClient.isClosed` 表示连接是否已断。
+- **拒绝的判定**：只有 daemon 答的才算（`DaemonError.fromDaemon`）；本地产生的 code（比如 `connectOrStart` 的 `start_timeout`）不算，会重试。请求发出后才放弃，错误是 `lost`（可能已被执行），`refusedByDaemon` 对它为假：`/bg`、手机启动、hub 的 adopt 与 fan-out 不会因此删掉会话可能已在用的 worktree。从没发出去：原样抛出原错误。
+- **hub**：回复（peek、批量、`/model` `/thinking`、peek 里的 `/compact` 等；Ctrl+Y 采纳建议仍用它自己的 ID）与派发（新会话、`/resume`、fan-out）都走它；`live(deadline)` 最多等 10 s（且不超过请求自己的期限）让 hub 的连接重连，hub 关闭时抛 `GiveUp` 立即停止。peek 回复一次只发一条（重发期间再按 Enter 不做事）；批量回复和 fan-out 遇到第一个没有应答的就停，不再逐个等；重发得到 `duplicate` 显示为已发送。pi 的子 agent 面板（回复）、`/bg` 与手机启动（派发）、`pi-roost reply` 同样走它，各自重连；面板为重发开的连接用完关闭。
+
+**验收**：`request-once.test`（应答丢失后同一 ID 重发、连接被拒、拒绝只发一次、重发时的本地错误重试并以 `lost` 放弃、从未发出则原样抛错、`GiveUp` 立即停止、给定的 ID 保留、超时放弃、ID 合规）；`comms.test` 的 "M51"（写出后连接立刻断开的回复被重发且只排队一次，对着真 daemon）；hub 的测试检查回复都带 ID。
+
+移植提示：幂等键要从**所有**用户入口带上，否则服务端的去重形同虚设；区分"对方拒绝"和"本地没送到/不知道送没送到"，后者绝不能触发清理类的副作用（删 worktree）。
+
+### Step 50：任务板按项目分，依赖完成时通知（M52，`docs/plans/m52-board-projects.md`）
+
+补 M47 任务板的两个缺口：整台机器只有一块板；等依赖的会话只能自己反复看，或靠值班 agent 转告（v0.1.15 限制 31）。
+
+- **项目**：任务有 `project`，即 git 仓库根目录（`lib/board.ts` 的 `projectOf`：从目录往上找 `.git`；worktree 的 `.git` 是文件，指向的 git 目录里的 `commondir` 给出主仓库，所以 roost 的隔离会话与所在仓库共用一块板；bare 仓库的 worktree 归到 bare 仓库本身；没有 `commondir`（如子模块）的就是该检出目录本身；结果都取 realpath），或 `null`（给任何会话）。旧任务没有项目。会话的项目是它工作的目录（job 的目录、前台 pi 的目录；daemon 按目录缓存，只缓存找到的结果，所以后来 `git init` 的目录会被重新识别）。会话只能列、认领、完成、交还本项目的和给任何人的任务；别的项目的对它是 `not_found`（它持有的仍是它的）；它添加的任务属于本项目，仓库外的会话添加的给任何人。
+- **hub 与值班 agent** 看全部（`list` 可以用目录指定项目：该项目的加给任何人的）。hub 的 `/tasks` 显示它所在仓库的板（`/tasks all` 看全部；不在仓库里时显示全部），`/tasks add` 加到该仓库；显示的任务属于多个项目时每行带项目名（`[api]`），浮层、摘要、工具里都是。值班 agent 的 `hub_task_add` 有 `project`（目录），不给就是给任何人。`assign` 给一个在任务项目之外工作的会话回 `unsupported`（它认领不了）。
+- **可认领通知**：认领因 `blocked` 被拒的会话记进任务的 `waiting`（最多 20，`TASK_WAITING_MAX`）；一个任务 done 或 dropped 时，所有只等它、现在不再等别的的开放任务被"打开"：`waiting` 里的会话、被交办的会话、挂任务的 job（值班 agent 除外）各收到一条来自 `roost` 的消息（"Task #n (title) can be claimed now: #m, which it waited on, is done"），刚完成依赖的那个会话自己不收；`waiting` 清空；事件流记一条 `task` 事件 `why: "open"`。认领成功也清掉 `waiting`。还有别的依赖没完成的不打开。
+
+**验收**：`board.test`（`projectOf`：仓库、子目录、worktree、bare 仓库的 worktree、没有 commondir 的检出、仓库外；一个项目的会话能看到什么；多项目时行带名字）；`comms.test` 的 "M52"（两个仓库加一个 worktree：worktree 里的 pi 看到并认领 api 的和公共的，看不到 web 的，它加的属于 api；hub 按项目列；跨项目交办被拒；被阻塞的会话在依赖完成时被告知、事件流的 `open`、两个依赖的任务只在第二个完成时打开、drop 也打开、完成依赖的会话自己不被告知）；hub 的 `/tasks` 测试；`npm run stress` 的 `board`。
+
+移植提示：项目的判定用宿主已有的工作目录信息即可；git worktree 要读 `commondir`，不要靠路径模式猜；"依赖满足就通知"挂在完成/丢弃这两个状态迁移上，只通知"刚刚转为可认领"的任务，避免重复。
+
+### Step 51：进入会话能看到全部记录，滚到顶按需加载（M53，`docs/plans/m53-earlier-history.md`）
+
+从 hub 进入会话只能看到一部分对话。原因在 pi 而不在 attach：pi 的聊天区从最近一次压缩开始渲染（`buildContextEntries`：压缩摘要、保留的消息、之后的内容），打开、恢复会话时如此，运行中压缩时也会清空聊天区重画；更早的内容在会话文件里，但不在屏幕上，滚轮停在摘要处。（attach 本身带着 pi 的整个画面：全屏 pi 在备用屏上自己维护滚动视图，host 的回放恢复了鼠标模式，滚轮本来就到得了 pi。）
+
+- **行为**：在 roost 跑的会话（worker）里，最近一次压缩之前的消息插在 pi 聊天区之上、标题之下，每次一打（`HISTORY_CHUNK` = 12）：滚动视图每到顶（滚轮、PgUp、Home、拖滚动条），就加载下一批更早的，视图停在原来那几行上，再往上滚就读到新加载的。上面一行写还剩多少（`↑ 28 earlier messages (before compaction): scroll up to load`），全部加载后写 `── the start of the session ──`。屏幕还没满（压缩后聊天很短）时会自动继续加载直到满。用 pi 自己的消息组件画（与 pi 恢复会话时一样：提示、助手文本（按 `hideThinkingBlock` 隐藏思考）、工具调用及结果、`!` 命令、显示的自定义消息、更早压缩和分支的摘要）。运行中再压缩、`/tree` 换分支、换会话（`/new` `/resume`）都从头开始。
+- **实现**（`adapters/pi/earlier-history.ts`，由 worker 扩展注册）：`earlierEntries(branch)` 取当前分支上最近一次压缩的第一条保留消息之前的条目（与 pi 的 `buildContextEntries` 同一规则），`historyUnits` 用 pi 导出的 `sessionEntryToContextMessages` 转成消息并把工具调用与结果配对。扩展拿不到聊天容器，于是用一个什么都不画的 widget 的工厂函数拿到 TUI（与 M14 的重绘同一手法）；它第一次渲染时，把历史组件插进 pi 的文档容器、聊天容器之前——文档容器是 TUI 布局根下 primary `ScrollView` 的子节点（`transcriptView`）；关闭时移除。加载：组件渲染时发现视图在顶部，就加一批并把视图下移新增的行数。pi-tui 是先渲染滚动内容、再按内容高度钳位位置、最后平移，所以位置要在这次渲染里改（ScrollView 的 `currentScrollTop` 字段）；没有这个字段的版本在帧后 `scrollTo`。
+
+**验收**：`earlier-history.test`（边界：一次压缩、两次、找不到第一条保留消息；保留与配对的消息；用 pi 组件画；只在顶部加载、每帧只加载一次；开头那行；重置；用 pi-tui 真实的 `ScrollView`/`VStack`：找到滚动视图、历史插在聊天之前、加载一批时聊天停在同一行）。手工：在伪终端里跑真的全屏 pi 1.5.0，一个 40 轮对话压缩到只剩最后一轮的会话：第一帧就显示最新的一条更早消息（屏幕未满），滚轮一路滚到 "the start of the session"。
+
+移植提示：先确认宿主"看不到历史"到底是终端回放的问题还是宿主自己只渲染上下文窗口；后者只能在宿主进程里补。宿主若提供"在聊天区前插入内容"和"滚动位置"的正式扩展接口，就不需要像这里这样走布局树。
+
 ---
 
 ## 5. 配置项（`lib/config.ts`）
@@ -1174,6 +1223,12 @@ M47 上线时只跑了通用压测和普通审查。这一步专门压任务板�
 | peek 记录尾读取 / 刷新（M48） | 末尾 256 KB / 2 s | `hub/agent-view.ts`（`readTail`） |
 | 请求单行上限（daemon / 客户端，M49） | 4 MiB / 64 MiB | `daemon/main.ts` `LINE_MAX_REQUEST` / `lib/protocol.ts` `LINE_MAX` |
 | 连接数 / 单连接在途请求 / 未读积压（M49） | 1024 / 256 / 16 MiB | `daemon/main.ts` `CONNS_MAX` `INFLIGHT_MAX` `SEND_BACKLOG_MAX` |
+| 协议 agent 未连上时排队的消息（M50） | 20 | `daemon/main.ts`（与 pi 会话的消息队列同一上限） |
+| 请求重发：总时长 / 间隔（M51） | 15 s / 200 ms 翻倍到 2 s | `lib/client.ts` `requestOnce`（`timeoutMs`） |
+| hub 等连接恢复（M51） | 10 s（且不超过请求期限） | `hub/agent-view.ts` `live()` |
+| 等待可认领的会话（每个任务，M52） | 20 | `lib/board.ts` `TASK_WAITING_MAX` |
+| 目录到项目的缓存（M52） | 500 条（满了清空；只缓存找到的） | `daemon/main.ts` `projectAt` |
+| 滚到顶一次加载的更早消息（M53） | 12 | `adapters/pi/earlier-history.ts` `HISTORY_CHUNK` |
 
 调试用环境变量：`PI_ROOST_HOME` `PI_ROOST_RUNTIME_DIR` `PI_ROOST_CONFIG_DIR` `PI_ROOST_HOST_ENTRY` `PI_ROOST_REAP_MINUTES` `PI_ROOST_REAP_CHECK_MS` `PI_ROOST_SHELL_KEEP_MS` `PI_ROOST_PROGRESS_MS` `PI_ROOST_FIRST_PROGRESS_MS`；v0.1.7 新增：`PI_ROOST_AUTO_CLOSE_MS`（M13）、`PI_ROOST_CLEANUP_DAYS` `PI_ROOST_CLEANUP_CHECK_MS`（M15）、`PI_ROOST_PR_POLL_MS` `PI_ROOST_GH`（M16，`gh` 可执行文件路径）——测试全靠它们把时间缩短、把目录隔离到临时路径、用假的 `gh`。（内部标记变量 `PI_ROOST_RESTORE`、`PI_ROOST_CHILD` 见 §3。）
 
@@ -1241,6 +1296,8 @@ v0.1.14 新增/扩充（M43–M48）：
 
 v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"（hub op 闸门、超长行、畸形请求、单行文本）；`framing` 的 `LineReader` 上限与长行分块。`comms`/`daemon` 里原来一条连接既当会话又当 hub 的用例改成各开一条（`hubc()`、`asWorker()`）。测试总数 433。
 
+v0.1.16 新增（M50–M53）：`comms` 的 "M50"（协议 agent 收发消息、`peers`、watch、交办、拒绝不收的）"M51"（写出后断线的回复只排队一次）"M52"（多仓库与 worktree 的板、可认领通知）；`daemon` 的协议一致性用例改成 hub 交办、agent 收到消息后认领；`request-once.test`（M51）；`board.test`（M52 的 `projectOf` 等纯函数，用真 git）；`earlier-history.test`（M53：边界、用 pi 组件画、在 pi-tui 真实布局帧里的加载与锚定、对着假 pi 的挂载/重置/移除）；测试夹具 `agent-ts.ts`/`agent-py.py` 加了 `onMessage`。测试总数 452。
+
 **单列**：
 - `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos board soak`（默认跑前四个；`board` 是 M49 加的），不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
 - `npm run eval`（M37/M41，`evals/run.ts`）：**真模型，要花钱，需要凭证**，不属于 `npm test`；每个用例一个隔离的 roost（见 Step 36）。`--runs N` 才能谈稳定性，一次通过不说明稳定。
@@ -1270,10 +1327,10 @@ v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"�
 17. （M18）只读 pi-subagents 的定义（`npm/node_modules` 里的包），不支持 chains、skills、runner、`package:` 名字；项目 agent 只能用 `@name` 选；没有选择器 UI 和每 agent 颜色。
 18. （M20）工作区环境只支持 zsh/bash/fish/tcsh/csh 的钩子和 direnv 后备，没有 nushell/xonsh/ksh；整份环境存进 `job.json`（0600），respawn 不重读派发者的环境，只重新求工作区那一层；探针运行你的 shell rc，慢 rc 会吃掉启动预算（8 s 封顶）。
 19. （M30）**档案 agent 的菜单不能靠打字选**：方向键菜单里打 `2` 不会选第二项，随后的 Enter 反而选了第一项；这类提示要 attach（→）自己回答。回复只适合文本提示。档案 agent 的模型/上下文/用量/记录视图/`/resume`/子 agent/peer 都没有（显示破折号）；档案状态是**推断**，没有正则和通知的 agent 只能靠"屏幕静止"，长时间不刷新屏幕时可能被判成"安静"（用 `working` 正则或调大 `settleMs`）。
-20. （M31）协议只是**草案 v1**，在有仓库之外的真实 agent 用过两个客户端之前不冻结；agent 间通信的 op（`handback peers send spawn peer_*`）还没在 `docs/protocol.md` 里完整写出。`hello` 对 M31 之前的 daemon 会得到 `bad_request`，客户端按 v1 行为继续。
+20. （M31）协议只是**草案 v1**，在有仓库之外的真实 agent 用过两个客户端之前不冻结；agent 间通信 op（`handback peers send spawn peer_*`）的参数仍以 `lib/protocol.ts` 为准；协议 agent 收消息、`peers`/`send`/`watch` 的客户端用法 M50 起已写进 `docs/protocol.md`。`hello` 对 M31 之前的 daemon 会得到 `bad_request`，客户端按 v1 行为继续。
 21. （M33）独立 hub 没有 pi 会话：没有"转后台"，pi 的斜杠命令（skill、prompt 模板）不能当首条提示；它用运行 pi-roost 的那个 node 去跑 pi，pi 若装在另一个 node 版本下且不能在这个 node 下运行就会失败；配色跟 pi 的暗色主题，不跟用户选的主题。
 22. （M37/M41）evals **要花钱、要有可用的模型凭证**（`auth.json` 以符号链接接进隔离的 pi 目录）；终端/协议 agent 的用例不报花费；只有 `--runs N` 才能说稳定性；不让模型评判模型，所以只能检查确定性的东西。
-23. （M36）请求 ID 只在客户端带了才有用：v0.1.12 的 hub 和 CLI 并不带（只有压测、evals 的控制端带）。
+23. （M36/M51）请求 ID 只在客户端带了才有用：v0.1.16 起 hub、CLI、子 agent 面板、`/bg`、手机都带；自己写的控制端要自己带（`requestOnce`）。重发最多 15 s，之后放弃的请求报 `lost`（可能已执行），由用户决定是否再发。
 24. （M38/M40）续跑**只重启，不恢复中途的工具调用**：重启后给会话发 "Continue where you left off."，由宿主自己看会话记录决定怎么继续（pi 会看到被打断的工具调用并重跑）；不带 `resume` 的终端 agent、普通命令中断后保持 failed；预算只有连续 3 次；宕机后只对最后进展在 6 小时内的运行自动续跑。
 25. （M39）定时**只认本地时间**，没有时区选项；cron 只有 5 个字段；夏令时重复的那一小时里不会重复运行，春季不存在的时刻改到次日；一个计划的上一次运行没做完就**跳过**而不是排队；定时模板不带 worktree，不带 fan-out；过去运行的行按 `cleanupDays` 清理。
 26. （M22）孤儿进程组的 SIGTSTP 被内核丢弃——宿主若有"Ctrl+Z 挂起自己"，后台 worker 里必须拦下，否则会永久冻结（见 Step 21）。
@@ -1281,13 +1338,16 @@ v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"�
 28. （M44）值班 agent 是**又一个会花钱的会话**：默认 haiku、每小时最多 60 次唤醒、每天 1 美元封顶；预算用完当天不再唤醒，第二天自动恢复；它没有 shell/文件工具，只能看记录尾和屏幕；`?` 的回答靠"用户问题之后的最后一段助手文本"识别，它若在同一轮里既处理摘要又回答，摘要部分会被丢掉。
 29. （M45）"常规问题"的判断在 prompt 里，不在代码里：不可逆清单（push/删除/付款/部署/凭据）靠模型遵守，evals 只能抽样验证；`undo` 只是告诉会话"忽略那条"，已经执行的动作撤不回。
 30. （M46）常备指令的时钟只认 `lib/schedule.ts` 的词汇；到点唤醒受每小时配额和日预算约束，被压住时随下一次摘要带上（只带一次）；指令"应用过"全靠它自己上报（`hub_note_done`）。
-31. （M47）任务板一个 roost home 一块，没有按项目分；没有"我依赖的任务完成了就通知我"（要自己 `roost_watch` 它的会话，或等值班 agent 转交）；任何会话都能把板挂满 200 条开放任务（只清 done/dropped），失控的会话要用户来停；值班 agent 交办只是发消息，对方不认领就一直 `assigned`，hub 里能看到 "handed to … 2m ago"；`/tasks` 浮层是打开时的快照（标题计数是实时的）。
+31. （M47）任务板按项目分（M52 起，见限制 35）；任何会话都能把板挂满 200 条开放任务（只清 done/dropped），失控的会话要用户来停；值班 agent 交办只是发消息，对方不认领就一直 `assigned`，hub 里能看到 "handed to … 2m ago"；`/tasks` 浮层是打开时的快照（标题计数是实时的）。
 32. （M48）peek 的记录尾只读文件末尾 256 KB，长工具输出会被截去头部；`/` 命令只在 peek 的回复框里按会话解释，任务框里仍是 hub 命令；`!` 在 peek 里拒绝（不会把命令当回复发）。
-33. （M49）任务板的 `assign` 和 `send` 一样只能发给 pi 会话（或前台 pi）：讲协议的命令类 job 没有会话，交办回 `unsupported`；名字和标题被折成一行，`/log` 里多行的问题/结果也显示成一行；连接被暂停（在途请求满 256）时察觉不到对端关闭，直到有应答出去；同一用户的进程能占满 1024 个连接。
+33. （M49）任务板的 `assign` 和 `send` 一样只能发给有会话的 job：pi 会话、前台 pi，M50 起还有声明了 `agent-items` 的协议 agent；普通命令和没声明的协议 agent 回 `unsupported`；名字和标题被折成一行，`/log` 里多行的问题/结果也显示成一行；连接被暂停（在途请求满 256）时察觉不到对端关闭，直到有应答出去；同一用户的进程能占满 1024 个连接。
+34. （M50）协议 agent 的消息按 seq 一次一条交给处理函数，处理函数不返回就不会有下一条（和回复一样）；协议 agent 不能 `spawn`；它的消息队列与 pi 会话一样最多 20 条，没连上时排队，第一次 report 说不收就丢弃。
+35. （M52）项目只认 git 仓库（向上找 `.git`，worktree 读 `commondir`）；不在仓库里的会话只看到"给任何人"的任务；会话的项目在任务添加时固定，会话后来换目录不会带走任务（已持有的仍归它）；一个被交办但还没认领的会话换到别的项目后就看不到那个任务了；跨项目交办被拒。
+36. （M53）只在 pi 全屏模式（默认）里生效，主屏模式（`tuiMode: "regular"`）和前台 pi 不变；靠 pi 1.5.0 的布局树（primary `ScrollView`、文档容器最后一个子节点是聊天容器、`currentScrollTop` 字段），pi 改了这些就要跟着改；扩展工具的自定义渲染器拿不到，用通用样式；扩展的自定义条目渲染、cache 预热提示不显示；`hideThinkingBlock`/`outputPad` 只在会话开始时读；Ctrl+O 的展开状态按加载那一刻。
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.15）
+## 附录 A：daemon op 一览（v0.1.16）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -1341,6 +1401,12 @@ v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"�
 - 请求行最长 4 MiB（超了断开连接）；最多 1024 个连接；单连接在途 256 个请求；未读积压 16 MiB 断开。
 - `task add` 的标题、`concierge-order add` 的文本、`dispatch` 的名字、`peer_register`/`hello` 的名字折成一行（`dispatch` 名字最长 200）。
 
+**v0.1.16 的变化**（M50–M53，没有新 op）：
+- **协议 agent 是消息的收件人**（M50）：按 `job:<id>` 寻址；`hello` 的 `capabilities` 含 `agent-items` 才收，含 `peers` 才能列出；`report` 带 `agentItems: true`。`send` `peers` `watch` 与 `task assign` 都可以指向它；不收的立即 `unsupported`；它不能 `spawn`。
+- **`reply` 与 `dispatch` 的 `requestId`**（M51）：hub、CLI、面板、`/bg`、手机都带；没有新字段。
+- **`task`**（M52）：`list {project?}`（hub 与值班 agent 用绝对路径指定项目，否则 `bad_request`）、`add {project?}`；`BoardTask` 新增 `project`（仓库根或 `null`）与 `waiting`（`{id,name}[]`）；会话只能动本项目和给任何人的任务（别的回 `not_found`）；`assign` 给别的项目的会话回 `unsupported`；`claim` 回 `blocked` 时把会话记进 `waiting`。事件流 `task` 的 `why` 多了 `open`（`who: "roost"`）。
+- M53 只在 pi 扩展里，没有协议变化。
+
 **v0.1.7 没有新增 op**：M11–M20 的新功能都复用现有 op，只在字段上扩展——`list`/`job` 事件里的 `JobRow` 新增 `parentOpen`（M13）、`agent`（M18）、`prs`（M16，`PrInfo[]`），M10 的 `worktree`；`dispatch` 的 `DispatchArgs` 新增 `agent` `workspaceEnv` `envDeny` `envForce`；`report` 的 `WorkerReport` 新增 `attachRepaint`（M21 起只有旧 host 读）`remoteAt` `prLinks`。`reply`（M19 记录视图发消息、M12b 面板 `m`）、`respawn`（M13 唤醒休眠的子会话）、`rm`（M15 `.worktreeinclude` 感知的清理）语义不变。host 帧协议新增：attach 的首个回复帧 `HELLO {repaint}`（M14）/ `{replay:true}`（M21，之后第一帧 DATA 是快照），`attached.json` 的 `replay`（M21），数据流里的私有标记 `OSC 7700;pi-roost-repaint`（M21 起 host 只负责剔除）。
 
 推送事件：`{event:"job", job: JobRow}`、`{event:"removed", id}`、`{event:"deliver", id, seq, text, kind?, from?, relation?, ref?}`。
@@ -1391,6 +1457,10 @@ v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"�
 | 45 | M48 peek 加深 | `hub/agent-view.ts`（peek、`TaskEditor`、补全）+ `lib/transcript.ts` `readTail` | 中（全在视图里） |
 | 46 | M47 任务板 | `lib/board.ts` + daemon `taskOp`/四处释放 + 两套工具 + hub `/tasks` + SDK | 中 |
 | 47 | M49 加固 | daemon `requireHub`/`pumpLines`/`send` 积压、`lib/protocol.ts` `LineReader`、单行折叠 + 压测 `board` 场景 | 小 |
+| 48 | M50 协议 agent 收消息 | daemon `recKey`/`refusesItems` + `lib/agent-client.ts` `onMessage` + `sdk/python/roost_agent.py` `on_message` | 小到中 |
+| 49 | M51 请求 ID | `lib/client.ts` `requestOnce` + hub/面板/`/bg`/手机/CLI 的调用点 | 小 |
+| 50 | M52 任务板按项目、可认领通知 | `lib/board.ts` `projectOf` + daemon `taskOp`/`tellOpened` + hub `/tasks` | 小到中 |
+| 51 | M53 压缩前的记录 | `adapters/pi/earlier-history.ts`（依赖宿主 TUI 的内部结构） | 小（有正式接口时）到中 |
 
 ## 附录 C：版本对应
 
@@ -1458,8 +1528,13 @@ v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"�
 | `26c5575` | PR #73：M47 共享任务板（含独立审核的修复） |
 | `14a62bf` | PR #74：发布 v0.1.14（tag `v0.1.14`；代码与 `26c5575` 相同） |
 | `51acab8` | PR #75：M49 任务板之后的加固（压测场景、对抗性审查的修复） |
-| （发布提交） | PR #76：发布 v0.1.15（本文依据，tag `v0.1.15`；代码与 `51acab8` 相同） |
+| `3912808` | PR #76：发布 v0.1.15（tag `v0.1.15`；代码与 `51acab8` 相同） |
+| `d9f2ded` | PR #77：M50 协议 agent 收消息 |
+| `e52a316` | PR #78：M51 hub 与 CLI 的请求 ID |
+| `05a58d2` | PR #79：M52 任务板按项目、可认领通知 |
+| `0031cb0` | PR #80：M53 压缩前的记录，滚到顶按需加载 |
+| （发布提交） | PR #81：发布 v0.1.16（本文依据，tag `v0.1.16`；代码与 `0031cb0` 相同） |
 
-> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=PR #76 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=PR #81 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
 
-所需 pi 最低版本（v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
+所需 pi 最低版本（v0.1.16 / v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证，M53 依赖的布局树结构也是在 1.5.0 上核对的，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
