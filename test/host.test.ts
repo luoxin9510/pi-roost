@@ -51,7 +51,7 @@ afterEach(() => {
 	else process.env.PI_ROOST_RUNTIME_DIR = saved.rt;
 });
 
-async function startHost(script: string, state: Record<string, unknown> = {}): Promise<{ id: string; child: ChildProcess }> {
+async function startHost(script: string, state: Record<string, unknown> = {}, over: Partial<JobRecord> = {}): Promise<{ id: string; child: ChildProcess }> {
 	const id = newJobId();
 	const now = Date.now();
 	const record: JobRecord = {
@@ -64,6 +64,7 @@ async function startHost(script: string, state: Record<string, unknown> = {}): P
 		origin: "bg",
 		createdAt: now,
 		roostVersion: "0.0.0",
+		...over,
 	};
 	createJob(record, { state: "working", startedAt: now, updatedAt: now, ...state });
 	const child = spawn(process.execPath, ["host/main.ts", id], { stdio: "ignore", env: process.env });
@@ -234,5 +235,23 @@ describe("host", () => {
 		await hostControl(id, "terminate");
 		await waitFor(() => exited(child));
 		expect(existsSync(jobDir(id))).toBe(true);
+	});
+
+	it("M61: command types a slash line into a pi worker as a bracketed paste then Enter; refused for a profile and for anything else", async () => {
+		const out = join(home, "typed.txt");
+		const { id } = await startHost(`stty -echo; cat > ${out}`);
+		const typed = () => (existsSync(out) ? readFileSync(out, "utf8") : "");
+		// not one slash line
+		for (const text of ["session", "/a\nb", "/a\x1b[31m", "/" + "x".repeat(500), 5]) {
+			expect(await hostControl(id, "command", 3000, { text })).toEqual({ error: "bad command" });
+		}
+		expect(await hostControl(id, "command", 3000, { text: "/session" })).toEqual({ ok: true });
+		await waitFor(() => typed().includes("\x1b[200~/session\x1b[201~"));
+		expect(typed()).toBe("\x1b[200~/session\x1b[201~\n"); // Enter reaches the pty as \r, which its line discipline makes \n
+		await hostControl(id, "terminate");
+		// an agent profile takes `input`, not `command`
+		const p = await startHost("cat > /dev/null", {}, { kind: "shell", profile: "mine" });
+		expect(await hostControl(p.id, "command", 3000, { text: "/session" })).toEqual({ error: "command is for pi sessions" });
+		await hostControl(p.id, "terminate");
 	});
 });

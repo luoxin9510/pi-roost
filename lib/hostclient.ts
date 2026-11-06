@@ -9,7 +9,7 @@ export interface HostHello {
 	rows?: number;
 }
 
-export type HostControlOp = "snapshot" | "status" | "detach" | "terminate" | "terminate-idle" | "input";
+export type HostControlOp = "snapshot" | "status" | "detach" | "terminate" | "terminate-idle" | "input" | "command";
 
 // Connects and sends HELLO; the caller owns the socket. `id` may be a socket path.
 export function connectHost(id: string, hello: HostHello): Promise<Socket> {
@@ -27,7 +27,7 @@ export function connectHost(id: string, hello: HostHello): Promise<Socket> {
 }
 
 /** `id` is a job id, or a host socket path (workers know the path, not the runtime dir). */
-/** `extra` goes with the op (M30: `{ data }` for input). */
+/** `extra` goes with the op (M30: `{ data }` for input; M61: `{ text }` for command). */
 export async function hostControl(id: string, op: HostControlOp, timeoutMs = 3000, extra: Record<string, unknown> = {}): Promise<unknown> {
 	const sock = await connectHost(id, { role: "control" });
 	return new Promise((resolve, reject) => {

@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeJsonAtomic } from "./atomic.ts";
 import { jobDir, jobTmpDir, jobsDir } from "./paths.ts";
+import { type SessionCommand, sessionCommandsFrom } from "./pi-commands.ts";
 import type { ProfileTerm } from "./profiles.ts";
 
 export interface JobRecord {
@@ -75,6 +76,10 @@ export const screenPath = (id: string) => join(jobDir(id), "screen.txt");
 export const exitPath = (id: string) => join(jobDir(id), "exit.json");
 /** M30: a level 0 agent's terminal signals, written by its host. */
 export const termPath = (id: string) => join(jobDir(id), "term.json");
+/** M61: a pi session's slash commands, written by its worker on every session_start. */
+export const commandsPath = (id: string) => join(jobDir(id), "commands.json");
+export const writeCommands = (id: string, list: unknown): void => writeJsonAtomic(commandsPath(id), sessionCommandsFrom(list), false);
+export const readCommands = (id: string): SessionCommand[] => sessionCommandsFrom(readJson<unknown>(commandsPath(id)));
 
 export function createJob(record: JobRecord, state: JobState): void {
 	mkdirSync(jobDir(record.id), { recursive: true, mode: 0o700 });

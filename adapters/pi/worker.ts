@@ -6,7 +6,7 @@ import { hostControl } from "../../lib/hostclient.ts";
 import { AGENT_MESSAGE_TYPE, isAgentKind, RESULT_MAX } from "../../lib/comms.ts";
 import { messageText } from "../../lib/heuristics.ts";
 import { type ContextInfo, PROTOCOL_VERSION } from "../../lib/protocol.ts";
-import { readJob } from "../../lib/store.ts";
+import { readJob, writeCommands } from "../../lib/store.ts";
 import { worktreeNote } from "../../lib/worktree.ts";
 import { sessionUsage, type UsageInfo } from "../../lib/usage.ts";
 import { type AgentLink, registerAgentTools } from "./agent-tools.ts";
@@ -412,6 +412,10 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity, opts: { agent
 			capabilities: ["report", "replies", "steer", "usage", "context", "model-switch", "transcript", "peers", "agent-items"],
 		});
 		replies.noteSession(ctx);
+		// M61: the session's slash commands, for the hub's peek menu (never breaks the worker)
+		try {
+			writeCommands(job.id, pi.getCommands());
+		} catch {}
 		tracker.start({
 			name: ctx.sessionManager.getSessionName() ?? null,
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,

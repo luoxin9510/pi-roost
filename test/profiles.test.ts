@@ -58,6 +58,11 @@ describe("M30 agent profiles", () => {
 		const proto = profileFrom({ command: ["my-agent"], protocol: true, task: "type" })!;
 		expect(proto.protocol).toBe(true);
 		expect(profileFrom({ command: ["a"], protocol: "yes" })).toBeUndefined();
+		// M61: declared slash commands
+		expect(profileFrom({ command: ["a"], commands: [{ name: "init", description: "set up" }, { name: "help" }] })!.commands).toEqual([{ name: "init", description: "set up" }, { name: "help" }]);
+		for (const commands of ["x", [{ name: "/x" }], [{ name: "a b" }], [{ description: "d" }], [{ name: "a", description: 5 }], Array.from({ length: 101 }, (_, i) => ({ name: `c${i}` }))]) {
+			expect(profileFrom({ command: ["a"], commands })).toBeUndefined();
+		}
 		expect(buildProfileLaunch({ name: "n", profile: "mine", def: proto, task: "go", cwd: "/w", env: {} })).toMatchObject({ protocol: true, command: ["my-agent"], term: { typeTask: "go" } });
 	});
 });

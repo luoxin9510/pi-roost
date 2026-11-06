@@ -110,6 +110,8 @@ export function piHubOptions(h: PiHost): PiHubOptions {
 		},
 		// M30: read again each time (an edited roost.json counts at once)
 		profiles: () => Object.keys(loadConfig(dispatchCwd).agentProfiles ?? {}),
+		// M61: the commands a profile declares, for its peek's menu
+		profileCommands: (profile) => loadConfig(dispatchCwd).agentProfiles?.[profile]?.commands ?? [],
 		launchProfile: (profile, task, o) => {
 			const conf = loadConfig(dispatchCwd);
 			const def = conf.agentProfiles?.[profile];
