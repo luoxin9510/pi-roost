@@ -220,6 +220,8 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 		}),
 		async execute(_id, params) {
 			const r = await link.call("task", { action: "done", id: params.id, result: params.result });
+			// M55: a task in its own worktree goes to review: a person merges it
+			if (r.task?.workspace) return text(`#${params.id} is in review: a person looks at ${r.task.workspace.branch} and merges it. Stop here unless it comes back to you.`);
 			const open = r.tasks.filter((t) => claimable(t, r.tasks));
 			return text(`#${params.id} is done.${open.length > 0 ? ` Open on the board: ${open.map((t) => `#${t.id} ${t.title}`).join("; ")}.` : " Nothing is open on the board."}`);
 		},

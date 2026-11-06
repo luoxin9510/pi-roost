@@ -301,6 +301,22 @@ done (its stage does not count), and a dropped one never holds. The store
 drop `workspace` on its first save, so going back to one is not supported once tasks
 have workspaces.
 
+M55 adds the workspace's actions. `{action: "start", id, workspace: {path, branch,
+baseRef, baseSha}, launch}` (the hub's and the CLI's): the caller made the worktree
+(branch `roost/t<id>-…`, `validWorktree`) and built a pi launch whose cwd is inside it;
+the daemon dispatches it with the job's `task` set (no `worktree`: the task owns it),
+claims the task for the new job and sets `stage: working`; the result has `job`. A
+task with a workspace and no live holder may be started again into the same worktree.
+The holding session's `done` needs a clean worktree (`bad_request` otherwise) and moves
+the task to `review`. `{action: "merge", id, mode?: "ff" | "no-ff"}` (the hub's and the
+CLI's only) syncs the branch with base in its worktree (`git merge`), then moves base
+(`--ff-only`, `--no-ff`, or `update-ref` when base is checked out nowhere) under a lock;
+the result's `note` says how it went (merged, a conflict, refused). `{action: "back",
+id, note?}` (the hub's, the concierge's) returns it to `working` and tells its holder;
+`{action: "abort", id}` gives up a conflicted sync; `{action: "commit", id, message?}`
+commits what its worktree holds. Each change of stage is a `task` event with `why:
+"stage"`. See `docs/plans/m55-start-merge.md`.
+
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
 works (its job's directory, a foreground pi's); outside a repository it has none. A

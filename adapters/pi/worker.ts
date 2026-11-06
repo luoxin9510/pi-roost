@@ -7,7 +7,7 @@ import { AGENT_MESSAGE_TYPE, isAgentKind, RESULT_MAX } from "../../lib/comms.ts"
 import { messageText } from "../../lib/heuristics.ts";
 import { type ContextInfo, PROTOCOL_VERSION } from "../../lib/protocol.ts";
 import { readJob, writeCommands } from "../../lib/store.ts";
-import { worktreeNote } from "../../lib/worktree.ts";
+import { taskWorktreeNote, worktreeNote } from "../../lib/worktree.ts";
 import { sessionUsage, type UsageInfo } from "../../lib/usage.ts";
 import { type AgentLink, registerAgentTools } from "./agent-tools.ts";
 import { onMobileActivity } from "./mobile.ts";
@@ -552,11 +552,11 @@ export function registerWorker(pi: ExtensionAPI, job: JobIdentity, opts: { agent
 	// M53: the conversation from before the latest compaction, loaded as the transcript scrolls up
 	registerEarlierHistory(pi);
 	// M10: a session in its own worktree is told so, every run (it is not in the session file)
-	const worktree = readJob(job.id)?.worktree;
-	if (worktree) {
-		const note = worktreeNote(worktree);
-		pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${note}` }));
-	}
+	const rec = readJob(job.id);
+	const worktree = rec?.worktree;
+	// M55: a session started for a task works in the task's worktree
+	const note = worktree ? worktreeNote(worktree) : rec?.task ? taskWorktreeNote(rec.task) : undefined;
+	if (note) pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${note}` }));
 	const link: AgentLink = { call: (op, args) => (reporter ? reporter.call(op, args) : Promise.reject(new Error("not connected"))) };
 	if (opts.agentTools !== false) registerAgentTools(pi, link);
 

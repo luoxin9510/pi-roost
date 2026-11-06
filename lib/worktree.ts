@@ -57,7 +57,7 @@ async function includedEntriesAsync(dir: string, includeFile: string): Promise<s
 }
 
 /** Copy the .worktreeinclude entries of `from` into `to` (copy-on-write where the disk can); what fails is skipped. */
-function copyIncluded(from: string, to: string): string[] {
+export function copyIncluded(from: string, to: string): string[] {
 	const done: string[] = [];
 	for (const e of includedEntries(from)) {
 		const rel = e.replace(/\/$/, "");
@@ -166,16 +166,16 @@ function git(cwd: string, args: string[]): string {
 	}).trim();
 }
 
-const GIT_ENV = () => ({ ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" });
+export const GIT_ENV = () => ({ ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" });
 
 /** The daemon's git: never blocks its event loop, never throws. */
-function gitAsync(cwd: string, args: string[], timeout = 5_000): Promise<string | undefined> {
+export function gitAsync(cwd: string, args: string[], timeout = 5_000): Promise<string | undefined> {
 	return new Promise((done) => {
 		execFile("git", ["-C", cwd, ...args], { encoding: "utf8", timeout, env: GIT_ENV(), maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => done(err ? undefined : String(stdout).trim()));
 	});
 }
 
-function tryGit(cwd: string, args: string[]): string | undefined {
+export function tryGit(cwd: string, args: string[]): string | undefined {
 	try {
 		return git(cwd, args);
 	} catch {
@@ -183,7 +183,7 @@ function tryGit(cwd: string, args: string[]): string | undefined {
 	}
 }
 
-const real = (p: string) => {
+export const real = (p: string) => {
 	try {
 		return realpathSync(p);
 	} catch {
@@ -198,26 +198,26 @@ export function gitToplevel(cwd: string): string | undefined {
 }
 
 /** Lowercase ASCII words of a session name, for directory and branch names. */
-export function slugOf(name: string): string {
+export function slugOf(name: string, max = 32): string {
 	const s = name
 		.normalize("NFKD")
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
-		.slice(0, 32)
+		.slice(0, Math.max(1, max))
 		.replace(/-+$/, "");
 	return s || "task";
 }
 
 /** The main checkout (worktrees live under it, never nested in another worktree). */
-function mainCheckout(top: string): string {
+export function mainCheckout(top: string): string {
 	const common = tryGit(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
 	if (common && basename(common) === ".git") return real(dirname(common));
 	return top;
 }
 
 /** Keep .pi/worktrees/ out of `git status` without touching tracked files. */
-function ensureExcluded(top: string): void {
+export function ensureExcluded(top: string): void {
 	// --git-path: right for linked worktrees and submodules alike
 	const rel = tryGit(top, ["rev-parse", "--git-path", "info/exclude"]);
 	if (!rel) return;
@@ -239,12 +239,18 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
 	if (!top) throw new WorktreeError(`not in a git repository: ${cwd}`);
 	const base = tryGit(top, ["rev-parse", "--verify", "HEAD^{commit}"]);
 	if (!base) throw new WorktreeError("the repository has no commits yet: a worktree needs one");
-	const root = join(mainCheckout(top), WORKTREES_DIR);
 	const slug = slugOf(name);
+	return addWorktree({ top, cwd, base, tagOf: () => `${slug}-${rand()}`, repo: top });
+}
+
+/** Shared by sessions and tasks: a free tag, `git worktree add -b roost/<tag> <path> <base>`. */
+export function addWorktree(o: { top: string; cwd: string; base: string; tagOf: () => string; repo: string }): CreatedWorktree {
+	const { top, cwd, base } = o;
+	const root = join(mainCheckout(top), WORKTREES_DIR);
 	let path = "";
 	let branch = "";
 	for (let i = 0; i < 8; i++) {
-		const tag = `${slug}-${rand()}`;
+		const tag = o.tagOf();
 		path = join(root, tag);
 		branch = `${BRANCH_PREFIX}${tag}`;
 		if (!existsSync(path) && tryGit(top, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]) === undefined) break;
@@ -264,7 +270,7 @@ export function createWorktree(cwd: string, name: string, rand: () => string = (
 	const inside = rel && !rel.startsWith("..") && !isAbsolute(rel) ? join(path, rel) : path;
 	const sourceDirty = (tryGit(top, ["status", "--porcelain", "--untracked-files=no"]) ?? "") !== "";
 	const included = copyIncluded(top, path);
-	return { path, branch, repo: top, base, cwd: existsSync(inside) ? inside : path, sourceDirty, included };
+	return { path, branch, repo: o.repo, base, cwd: existsSync(inside) ? inside : path, sourceDirty, included };
 }
 
 /**
@@ -281,7 +287,7 @@ export function discardWorktree(w: WorktreeInfo): void {
 	if (tryGit(w.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${w.branch}`]) === w.base) tryGit(w.repo, ["branch", "-D", "--", w.branch]);
 }
 
-const TAG = /^[a-z0-9-]{1,32}-[0-9a-f]{4}$/;
+export const TAG = /^[a-z0-9-]{1,32}-[0-9a-f]{4}$/;
 
 /**
  * Is this a worktree pi-roost made: the shape of every field, the place under the main
@@ -362,6 +368,16 @@ export function worktreeNote(w: WorktreeInfo): string {
 		`This session works in its own git worktree, ${w.path}, on branch ${w.branch}, made from commit ${w.base.slice(0, 8)} of ${w.repo}.`,
 		"Other sessions work in other checkouts, so edits here do not collide with theirs.",
 		`Commit finished work on this branch. Do not switch branches, and do not edit files in ${w.repo} itself.`,
+	].join("\n");
+}
+
+/** M55: the worker's system-prompt note for a session started for a task in the task's worktree. */
+export function taskWorktreeNote(t: { id: number; title: string; path: string; branch: string; baseRef: string }): string {
+	return [
+		"## Task workspace",
+		`This session works on task #${t.id} (${t.title.replace(/\s+/g, " ")}) in its own git worktree, ${t.path}, on branch ${t.branch}, made from ${t.baseRef}.`,
+		"Other sessions work in other checkouts, so edits here do not collide with theirs.",
+		`Do not switch branches, and do not edit files outside ${t.path}. Commit finished work on this branch (git add -A && git commit), then call roost_task_done with a line on what you did: the task goes to review, and a person merges it.`,
 	].join("\n");
 }
 

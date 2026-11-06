@@ -25,7 +25,7 @@ import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/disp
 import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
-import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
+import { changeText, cleanupText, discardWorktree, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
 import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
 import { agoText, parseScheduleInput, untilText } from "../lib/schedule.ts";
 import { TaskEditor } from "./task-editor.ts";
@@ -37,6 +37,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
+import { createTaskWorktree, type TaskWorktree } from "../lib/task-git.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
 import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
@@ -147,6 +148,10 @@ export interface AgentViewOptions {
 	hostControl?: typeof hostControl;
 	/** M10: new sessions get a worktree unless /worktree off (config worktreeIsolation "all"). */
 	worktreeDefault?: boolean;
+	/** M55: how /tasks merge goes into base (config taskMerge). */
+	taskMerge?: "ff" | "no-ff";
+	/** M55: a task's worktree (tests pass a fake). */
+	createTaskWorktree?: typeof createTaskWorktree;
 	/** DI-4: models for the /model picker, as "provider/id". */
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
@@ -2098,8 +2103,87 @@ export class AgentView implements Component {
 				await client.request("task", { action: "release", id });
 				return this.say(`task #${id} is open again`, "muted");
 			}
-			return this.say("/tasks [all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			// M55: a task's own workspace
+			if (verb === "start") {
+				if (id === undefined) return this.say("/tasks start <id>", "warning");
+				return await this.startTask(id);
+			}
+			if (verb === "merge") {
+				if (id === undefined) return this.say("/tasks merge <id>", "warning");
+				this.say(`merging #${id}…`, "muted");
+				const r = await client.request("task", { action: "merge", id, mode: this.o.taskMerge ?? "ff" });
+				const stage = r.task?.workspace?.stage;
+				return this.say(`#${id}: ${r.note ?? stage ?? "?"}`, stage === "merged" ? "success" : "warning");
+			}
+			if (verb === "back") {
+				if (id === undefined) return this.say("/tasks back <id> [what to change]", "warning");
+				const r = await client.request("task", { action: "back", id, note: rest.slice(1).join(" ") || undefined });
+				return this.say(`#${id} back to work · ${r.note ?? ""}`, "success");
+			}
+			if (verb === "abort") {
+				if (id === undefined) return this.say("/tasks abort <id>", "warning");
+				await client.request("task", { action: "abort", id });
+				return this.say(`#${id}: sync aborted, in review again`, "muted");
+			}
+			if (verb === "commit") {
+				if (id === undefined) return this.say("/tasks commit <id> [message]", "warning");
+				const r = await client.request("task", { action: "commit", id, message: rest.slice(1).join(" ") || undefined });
+				return this.say(`#${id}: ${r.note ?? "committed"}`, "success");
+			}
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | merge <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
+			this.say((err as Error).message, "error");
+		}
+	}
+
+	/**
+	 * M55: a task in its own worktree: made here (from the branch checked out in its
+	 * repository's main checkout), a session launched in it as /new launches one, and the
+	 * daemon records the workspace and claims the task for that session. A refused start
+	 * leaves no worktree behind.
+	 */
+	private async startTask(id: number): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		const { tasks } = await client.request("task", { action: "list" });
+		const t = tasks.find((x) => x.id === id);
+		if (!t) return this.say(`no task #${id}`, "warning");
+		if (!t.project) return this.say(`#${id} is for any session: add it in a repository to give it a workspace`, "warning");
+		let made: TaskWorktree | undefined;
+		let w = t.workspace && t.workspace.path ? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha } : undefined;
+		if (!w) {
+			try {
+				made = (this.o.createTaskWorktree ?? createTaskWorktree)(t.project, t.id, t.title);
+			} catch (err) {
+				return this.say((err as Error).message, "error");
+			}
+			w = { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base };
+		}
+		const prompt = [
+			`Task #${t.id}: ${t.title}`,
+			t.detail ?? "",
+			t.workspace ? "Work on it started before in this worktree: read `git log` and the diff against the base branch first." : "",
+			"Commit your work on this branch, then call roost_task_done with a line on what you did.",
+		]
+			.filter(Boolean)
+			.join("\n\n");
+		const discard = () => {
+			if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
+		};
+		let request: DispatchArgs;
+		try {
+			const { discard: _d, note: _n, ...rest } = this.o.launch(prompt, { cwd: w.path, model: this.model, thinking: this.thinking, worktree: false });
+			request = rest as DispatchArgs;
+		} catch (err) {
+			discard();
+			return this.say((err as Error).message, "error");
+		}
+		try {
+			const r = await client.request("task", { action: "start", id, workspace: w, launch: request });
+			if (r.job) this.cursor = { kind: "row", id: r.job.id };
+			this.say(`#${id} started · ${r.job?.name ?? "?"} · ⎇ ${w.branch}${made?.sourceDirty ? " · uncommitted changes in the main checkout are not in it" : ""}`, made?.sourceDirty ? "warning" : "success");
+		} catch (err) {
+			if (refusedByDaemon(err)) discard();
 			this.say((err as Error).message, "error");
 		}
 	}

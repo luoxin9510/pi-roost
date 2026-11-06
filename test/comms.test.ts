@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isAlive } from "../lib/proc.ts";
 import type { Event } from "../lib/protocol.ts";
 import { listJobIds, readJob, readState } from "../lib/store.ts";
+import { createTaskWorktree } from "../lib/task-git.ts";
 import { createWorktree } from "../lib/worktree.ts";
 
 describe("comms pieces", () => {
@@ -1735,5 +1736,150 @@ describe("M52: the board by project, and told when a task can be claimed", () =>
 		await waitFor(async () => (await hub.request("events", {})).events.find((e) => e.kind === "task" && e.why === "open" && e.text?.startsWith(`#${y.id} `)));
 		await new Promise((r) => setTimeout(r, 300));
 		expect(delivered(eager.events, "message").filter((e) => e.text.includes(`Task #${y.id}`))).toHaveLength(0);
+	});
+});
+
+describe("M55: start and merge from the board", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	const gitOut = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+	function repo(name: string): string {
+		mkdirSync(join(work, name), { recursive: true });
+		const r = realpathSync(join(work, name));
+		git(r, "init", "-q", "-b", "main");
+		writeFileSync(join(r, "a.txt"), "a\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "a");
+		return r;
+	}
+	async function started(hub: DaemonClient, r: string, title: string, after?: number[]) {
+		const t = (await hub.request("task", { action: "add", title, project: r, ...(after ? { after } : {}) })).task!;
+		const w = createTaskWorktree(r, t.id, title);
+		const res = await hub.request("task", {
+			action: "start",
+			id: t.id,
+			workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base },
+			launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path },
+		});
+		return { t, w, job: res.job!, res };
+	}
+
+	it("start puts a session in the task's worktree and claims it; its done goes to review once committed; the hub merges; dependents are told", async () => {
+		const hub = await startDaemon();
+		const r = repo("api");
+		const { t, w, job, res } = await started(hub, r, "users table");
+		expect(res.task).toMatchObject({ state: "claimed", owner: { id: job.id }, workspace: { stage: "working", branch: w.branch, baseRef: "main" } });
+		expect(readJob(job.id)?.task).toMatchObject({ id: t.id, branch: w.branch });
+		expect(readJob(job.id)?.worktree).toBeUndefined();
+		const next = (await hub.request("task", { action: "add", title: "migration", project: r, after: [t.id] })).task!;
+		await expect(hub.request("task", { action: "start", id: next.id, workspace: { path: w.path, branch: w.branch, baseRef: "main", baseSha: w.base }, launch: { ...launch("sleep 30"), cwd: w.path } })).rejects.toMatchObject({ code: "blocked" });
+		// the session: uncommitted work is refused, committed work goes to review
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
+		const s = await worker(job.id);
+		writeFileSync(join(w.path, "users.sql"), "create table users;\n");
+		await expect(s.c.request("task", { action: "done", id: t.id, result: "x" })).rejects.toMatchObject({ code: "bad_request" });
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "users");
+		const reviewed = (await s.c.request("task", { action: "done", id: t.id, result: "users table" })).task!;
+		expect(reviewed.workspace).toMatchObject({ stage: "review", note: "not verified" });
+		expect((await hub.request("task", { action: "list" })).tasks.find((x) => x.id === t.id)?.state).toBe("claimed");
+		// merging is a person's: not a session's, not the concierge's
+		await expect(s.c.request("task", { action: "merge", id: t.id })).rejects.toMatchObject({ code: "unsupported" });
+		// base moved meanwhile (another commit on main): the sync takes it in, then a fast-forward
+		writeFileSync(join(r, "b.txt"), "b\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "b");
+		const merged = await hub.request("task", { action: "merge", id: t.id });
+		expect(merged.task).toMatchObject({ state: "done", workspace: { stage: "merged" } });
+		expect(merged.note).toMatch(/^merged into main/);
+		expect(gitOut(r, "rev-parse", "main")).toBe(merged.task!.workspace!.merge!.into);
+		expect(existsSync(join(r, "users.sql"))).toBe(true); // the main checkout moved with base
+		// its session still runs in the worktree: the worktree stays, the session is told to stop
+		expect(merged.note).toContain(`worktree kept while t${t.id} runs`);
+		expect(existsSync(w.path)).toBe(true);
+		expect((await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes("was merged into main")))).from).toBe("roost");
+		// the dependent can start now; the feed has the stages
+		const feed = (await hub.request("events", {})).events.filter((e) => e.kind === "task" && e.why === "stage").map((e) => e.text ?? "");
+		expect(feed.some((x) => x.includes("in review"))).toBe(true);
+		expect(feed.some((x) => x.includes("merged"))).toBe(true);
+		expect((await hub.request("events", {})).events.find((e) => e.kind === "task" && e.why === "open")?.text).toBe(`#${next.id} migration: #${t.id} merged`);
+	});
+
+	it("a conflict stops in the task's worktree with base untouched; abort returns it to review; back sends it to its session", async () => {
+		const hub = await startDaemon();
+		const r = repo("web");
+		const { t, w, job } = await started(hub, r, "edit a");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
+		const s = await worker(job.id);
+		writeFileSync(join(w.path, "a.txt"), "task\n");
+		git(w.path, "commit", "-qam", "task");
+		await s.c.request("task", { action: "done", id: t.id });
+		writeFileSync(join(r, "a.txt"), "main\n");
+		git(r, "commit", "-qam", "main");
+		const before = gitOut(r, "rev-parse", "main");
+		const c = await hub.request("task", { action: "merge", id: t.id });
+		expect(c.task?.workspace).toMatchObject({ stage: "conflict" });
+		expect(c.task?.workspace?.note).toContain("a.txt");
+		expect(gitOut(r, "rev-parse", "main")).toBe(before);
+		expect(existsSync(join(gitOut(w.path, "rev-parse", "--absolute-git-dir"), "MERGE_HEAD"))).toBe(true);
+		expect((await hub.request("task", { action: "abort", id: t.id })).task?.workspace?.stage).toBe("review");
+		const back = await hub.request("task", { action: "back", id: t.id, note: "rebase onto main's a.txt" });
+		expect(back.task?.workspace?.stage).toBe("working");
+		expect(back.note).toContain(`sent back to t${t.id}`);
+		const told = await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes(`Task #${t.id}`)));
+		expect(told.text).toContain("came back from review");
+	});
+
+	it("a worktree off its branch is not merged (a detached HEAD's commits would be lost); a damaged record never reaches git", async () => {
+		const hub = await startDaemon();
+		const r = repo("ops");
+		const { t, w, job } = await started(hub, r, "detach me");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
+		const s = await worker(job.id);
+		writeFileSync(join(w.path, "n.txt"), "n\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "n");
+		await s.c.request("task", { action: "done", id: t.id });
+		git(w.path, "checkout", "-q", "--detach");
+		const before = gitOut(r, "rev-parse", "main");
+		const m = await hub.request("task", { action: "merge", id: t.id });
+		expect(m.task?.workspace).toMatchObject({ stage: "review" });
+		expect(m.task?.workspace?.note).toContain("detached HEAD");
+		expect(gitOut(r, "rev-parse", "main")).toBe(before);
+	});
+
+	it("a damaged workspace record is refused before any git runs", async () => {
+		const base = { after: [], by: { who: "user", whoId: null }, at: 1, project: work, owner: null, waiting: [] };
+		writeFileSync(join(home, "tasks.json"), JSON.stringify({ version: 2, next: 2, tasks: [{ ...base, id: 1, title: "damaged", state: "open", workspace: { stage: "review" } }] }));
+		const hub = await startDaemon();
+		for (const action of ["commit", "merge", "abort"] as const) {
+			await expect(hub.request("task", { action, id: 1 } as never)).rejects.toMatchObject({ code: "bad_request" });
+		}
+	});
+
+	it("a daemon restarted with a merge cut short settles it from the recorded intent", async () => {
+		const r = repo("svc");
+		const w = createTaskWorktree(r, 1, "cut short");
+		writeFileSync(join(w.path, "x.txt"), "x\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "x");
+		const tip = gitOut(w.path, "rev-parse", "HEAD");
+		const oldBase = gitOut(r, "rev-parse", "main");
+		git(r, "merge", "-q", "--ff-only", w.branch); // the merge happened; the record was not written
+		const ws = (stage: string, merge: object) => ({ path: w.path, branch: w.branch, baseRef: "main", baseSha: w.base, stage, note: null, merge });
+		const base = { after: [], by: { who: "user", whoId: null }, at: 1, project: r, owner: null, waiting: [] };
+		writeFileSync(
+			join(home, "tasks.json"),
+			JSON.stringify({ version: 2, next: 3, tasks: [{ ...base, id: 1, title: "cut short", state: "claimed", workspace: ws("merging", { tip, oldBase, at: 1 }) }, { ...base, id: 2, title: "not merged", state: "claimed", workspace: ws("merging", { tip: "f".repeat(40), oldBase, at: 1 }) }] }),
+		);
+		const hub = await startDaemon();
+		const settled = await waitFor(async () => {
+			const ts = (await hub.request("task", { action: "list" })).tasks;
+			return ts.every((t) => t.workspace?.stage !== "merging") && ts;
+		});
+		expect(settled.find((t) => t.id === 1)).toMatchObject({ state: "done", workspace: { stage: "merged" } });
+		// nobody runs in it: the merged branch and its clean worktree go
+		await waitFor(() => !existsSync(w.path));
+		expect(gitOut(r, "branch", "--list", w.branch)).toBe("");
+		expect(settled.find((t) => t.id === 2)?.workspace).toMatchObject({ stage: "review", note: "merge interrupted: /tasks merge again" });
 	});
 });

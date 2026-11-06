@@ -48,6 +48,8 @@ export interface RoostConfig {
 	agentViewSubagents: "hide" | "inline";
 	/** M10: new sessions in their own git worktree: none, roost_spawn children, or every pi dispatch. */
 	worktreeIsolation: "off" | "children" | "all";
+	/** M55: how /tasks merge goes into base: a fast-forward, or always a merge commit. */
+	taskMerge: "ff" | "no-ff";
 	/** M9: the roost_agents / roost_send / roost_spawn tools in every session. */
 	agentTools: boolean;
 	/** M9: messages to sessions outside the sender's spawn tree (user config only). */
@@ -158,6 +160,7 @@ export const DEFAULTS: RoostConfig = {
 	rowDetails: true,
 	notify: "auto",
 	worktreeIsolation: "off",
+	taskMerge: "ff",
 	subagentPanel: true,
 	subagentPanelRows: 5,
 	subagentAutoClose: true,
@@ -197,6 +200,7 @@ function pick(raw: unknown): Partial<RoostConfig> {
 	if (r.autoResume === "interrupted" || r.autoResume === "crash" || r.autoResume === "off") out.autoResume = r.autoResume;
 	if (r.agentViewSubagents === "hide" || r.agentViewSubagents === "inline") out.agentViewSubagents = r.agentViewSubagents;
 	if (r.worktreeIsolation === "off" || r.worktreeIsolation === "children" || r.worktreeIsolation === "all") out.worktreeIsolation = r.worktreeIsolation;
+	if (r.taskMerge === "ff" || r.taskMerge === "no-ff") out.taskMerge = r.taskMerge;
 	for (const k of ["agentTools", "agentExternalMessages"] as const) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
 	for (const k of ["agentMaxDepth", "agentMaxChildren", "agentMaxTree", "agentMaxTotal"] as const) {
 		const v = r[k];
