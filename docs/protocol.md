@@ -338,6 +338,13 @@ the task (`workspace.comments`, at most 200); `back` sends them to the live hold
 message and clears them, or leaves them for the next `start`'s prompt. See
 `docs/plans/m58-review.md`.
 
+M59: `{action: "shelve", id}` (a person's) removes a clean worktree and keeps the branch
+(stage `shelved`, the claim given back; `start` brings it back); `{action: "cleanup",
+dry?}` (a person's, no `id`) removes, or with `dry` lists, worktrees and verify logs left
+behind (the result's `note`, a line each). Listing the board marks a branch merged by
+hand as merged. The daemon builds the launch of a session the concierge starts from the
+concierge's own job. See `docs/plans/m59-shelve-cleanup.md`.
+
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
 works (its job's directory, a foreground pi's); outside a repository it has none. A

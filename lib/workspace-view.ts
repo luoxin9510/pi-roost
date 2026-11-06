@@ -167,12 +167,13 @@ export function wsKeys(t: BoardTask | undefined, s?: WsSession): [string, string
 	if (t && !w && t.state === "open") keys.push(["s", "start"]);
 	if (w) {
 		const live = !!s?.running;
-		if (w.path && w.stage !== "merged") keys.push(["Enter", "review"]);
+		if (w.path && w.stage !== "merged" && w.stage !== "shelved") keys.push(["Enter", "review"]);
 		if (w.stage === "review" || w.stage === "conflict" || w.stage === "failed") keys.push(["m", "merge"]);
 		if (w.stage === "review" || w.stage === "conflict" || w.stage === "failed") keys.push(["b", "back"]);
 		if (w.stage === "review" || w.stage === "failed") keys.push(["v", "verify"]);
 		if (w.stage === "failed") keys.push(["p", "pass"]);
 		if (w.stage === "conflict") keys.push(["x", "abort sync"]);
+		if (!live && ["review", "failed", "working"].includes(w.stage)) keys.push(["h", "shelve"]);
 		if (!live && ["working", "review", "failed", "conflict", "shelved"].includes(w.stage)) keys.push(["s", "start again"]);
 		if (live) keys.push(["t", "attach"]);
 		if (t.project) keys.push(["a", "approve"]);

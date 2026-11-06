@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	abortSync, cleanupMergedTask, commitAll, createTaskWorktree, findCheckout, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, taskChanges, taskTag, withMergeLock, worktreeClean,
+	abortSync, cleanupMergedTask, commitAll, createTaskWorktree, findCheckout, hasIdentity, isAncestor, mergeIntoBase, removeTaskWorktree, restoreTaskWorktree, revParse, syncWithBase, taskChanges, taskTag, taskWorktrees, withMergeLock, worktreeClean,
 } from "../lib/task-git.ts";
 import { WorktreeError, validWorktree } from "../lib/worktree.ts";
 
@@ -386,5 +386,24 @@ describe("M57: taskChanges", () => {
 	it("undefined when git cannot say (no such base)", async () => {
 		const { w } = task();
 		expect(await taskChanges(w.path, "nope")).toBeUndefined();
+	});
+});
+
+describe("M59: shelve and restore", () => {
+	it("removes only a clean worktree, keeps the branch; restores it from the branch; lists task worktrees", async () => {
+		const { r, w, tip } = task();
+		expect((await taskWorktrees(r)).map((x) => x.id)).toEqual([1]);
+		writeFileSync(join(w.path, "wip.txt"), "x\n");
+		expect(await removeTaskWorktree(r, w.path)).toEqual({ ok: false, reason: "it has uncommitted changes" });
+		rmSync(join(w.path, "wip.txt"));
+		expect(await removeTaskWorktree(r, w.path)).toEqual({ ok: true });
+		expect(existsSync(w.path)).toBe(false);
+		expect(git(r, "rev-parse", w.branch)).toBe(tip);
+		expect(await taskWorktrees(r)).toEqual([]);
+		restoreTaskWorktree(r, w.path, w.branch);
+		expect(existsSync(join(w.path, "t.txt"))).toBe(true);
+		expect(git(w.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe(w.branch);
+		expect(() => restoreTaskWorktree(r, w.path, w.branch)).toThrow(WorktreeError);
+		expect(() => restoreTaskWorktree(r, join(r, "elsewhere"), "roost/nope")).toThrow(/is gone/);
 	});
 });

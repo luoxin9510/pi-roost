@@ -68,6 +68,8 @@ export interface TaskWorkspace {
 	/** Written before the merge (the tip and the base it starts from), `into` after it (M55). */
 	merge?: { tip: string; oldBase: string; at: number; into?: string };
 	comments?: ReviewComment[];
+	/** M59: the branch tip its session's done sent to review (a merge by hand is of this tip). */
+	reviewTip?: string;
 }
 
 export const TASK_NOTE_MAX = 500;
@@ -97,6 +99,7 @@ export function parseWorkspace(raw: unknown): TaskWorkspace | null {
 	const v = o.verify as Record<string, unknown> | undefined;
 	if (v && typeof v === "object" && typeof v.ok === "boolean" && Number.isFinite(v.at))
 		w.verify = { ok: v.ok, at: v.at as number, log: strOf(v.log, 4096) ?? "", tail: strOf(v.tail, 4000) ?? "", rounds: Number.isInteger(v.rounds) && (v.rounds as number) >= 0 ? (v.rounds as number) : 0 };
+	if (typeof o.reviewTip === "string" && SHA.test(o.reviewTip)) w.reviewTip = o.reviewTip;
 	const m = o.merge as Record<string, unknown> | undefined;
 	if (m && typeof m === "object" && typeof m.tip === "string" && SHA.test(m.tip) && typeof m.oldBase === "string" && SHA.test(m.oldBase))
 		w.merge = { tip: m.tip, oldBase: m.oldBase, at: Number.isFinite(m.at) ? (m.at as number) : 0, ...(typeof m.into === "string" && SHA.test(m.into) ? { into: m.into } : {}) };

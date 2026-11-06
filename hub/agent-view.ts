@@ -37,7 +37,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
-import { createTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
+import { createTaskWorktree, removeTaskWorktree, restoreTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
 import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
 import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
 import { nextNeedsYou, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
@@ -161,6 +161,8 @@ export interface AgentViewOptions {
 	taskChanges?: typeof taskChanges;
 	/** M58: a task's diff against base (tests pass a fake). */
 	taskDiff?: typeof taskDiff;
+	/** M59: a shelved task's worktree made again (tests pass a fake). */
+	restoreTaskWorktree?: typeof restoreTaskWorktree;
 	/** DI-4: models for the /model picker, as "provider/id". */
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
@@ -2130,6 +2132,20 @@ export class AgentView implements Component {
 				if (id === undefined) return this.say("/tasks start <id>", "warning");
 				return await this.startTask(id);
 			}
+			// M59: shelve a task (worktree removed, branch kept); remove what was left behind
+			if (verb === "shelve") {
+				if (id === undefined) return this.say("/tasks shelve <id>", "warning");
+				const r = await client.request("task", { action: "shelve", id });
+				return this.say(`#${id} ${r.note ?? "shelved"}`, "success");
+			}
+			if (verb === "cleanup") {
+				const go = rest[0] === "yes";
+				const r = await client.request("task", { action: "cleanup", dry: !go });
+				const lines = (r.note ?? "").split("\n").filter(Boolean);
+				const nothing = lines.length === 1 && lines[0] === "nothing left behind";
+				if (nothing) return this.say("nothing left behind", "muted");
+				return this.showLines(go ? "Cleaned up" : "Left behind · /tasks cleanup yes removes it (never a worktree with changes, never an unmerged branch)", lines);
+			}
 			if (verb === "review") {
 				if (id === undefined) return this.say("/tasks review <id>", "warning");
 				return await this.openReview(id);
@@ -2181,7 +2197,7 @@ export class AgentView implements Component {
 				await client.request("task", { action: "pass", id });
 				return this.say(`#${id}: in review (passed by hand)`, "muted");
 			}
-			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | review <id> | merge <id> | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | review <id> | merge <id> | shelve <id> | cleanup [yes] | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -2202,6 +2218,16 @@ export class AgentView implements Component {
 		if (!t.project) return this.say(`#${id} is for any session: add it in a repository to give it a workspace`, "warning");
 		let made: TaskWorktree | undefined;
 		let w = t.workspace && t.workspace.path ? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha } : undefined;
+		// M59: its worktree gone (shelved, or a shelve cut short): made again from its branch; undone when the start is refused
+		let restored = false;
+		if (w && !existsSync(w.path)) {
+			try {
+				(this.o.restoreTaskWorktree ?? restoreTaskWorktree)(t.project, w.path, w.branch);
+				restored = true;
+			} catch (err) {
+				return this.say((err as Error).message, "error");
+			}
+		}
 		if (!w) {
 			try {
 				made = (this.o.createTaskWorktree ?? createTaskWorktree)(t.project, t.id, t.title);
@@ -2213,6 +2239,7 @@ export class AgentView implements Component {
 		const prompt = taskPrompt(t);
 		const discard = () => {
 			if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
+			if (restored && w) void removeTaskWorktree(t.project!, w.path);
 		};
 		let request: DispatchArgs;
 		try {
@@ -2230,6 +2257,28 @@ export class AgentView implements Component {
 			if (refusedByDaemon(err)) discard();
 			this.say((err as Error).message, "error");
 		}
+	}
+
+	/** M59: lines in an overlay (what cleanup found or did); ↑↓ scroll, Esc closes. */
+	private showLines(title: string, lines: string[]): void {
+		const view = this;
+		const t = this.o.theme;
+		let top = 0;
+		this.overlay = {
+			render(width: number) {
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				const body = lines.map((l) => truncateToWidth(`  ${oneLine(l)}`, width));
+				top = Math.max(0, Math.min(top, Math.max(0, body.length - room)));
+				return [t.bold(truncateToWidth(title, width)), "", ...body.slice(top, top + room), "", t.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (key === "up") top = Math.max(0, top - 1);
+				else if (key === "down") top++;
+			},
+		};
+		this.o.tui.requestRender();
 	}
 
 	/** M47: the board as an overlay: open (claimable), blocked, claimed, then done, newest first. */
@@ -2516,7 +2565,7 @@ export class AgentView implements Component {
 				const s = sessionOf(x);
 				const allowed = new Set(wsKeys(x, s).map(([k]) => k));
 				// M58: Enter reviews a task with a workspace (its diff, comments); Esc comes back here
-				if (key === "enter" && x.workspace?.path && x.workspace.stage !== "merged") {
+				if (key === "enter" && x.workspace?.path && x.workspace.stage !== "merged" && x.workspace.stage !== "shelved") {
 					const at = x.id;
 					view.closeOverlay();
 					return void view.openReview(at, () => void view.showWorkspaces(false, at));
@@ -2552,7 +2601,7 @@ export class AgentView implements Component {
 						});
 					return;
 				}
-				const verb = { s: "start", m: "merge", v: "verify", p: "pass", x: "abort" }[data];
+				const verb = { s: "start", m: "merge", v: "verify", p: "pass", x: "abort", h: "shelve" }[data];
 				if (verb) act(verb, x);
 			},
 			dispose() {
@@ -2987,7 +3036,7 @@ export class AgentView implements Component {
 			{ name: "resume", description: "pick a session to resume in the background" },
 			{ name: "usage", description: "what the sessions spent" },
 			{ name: "log", description: "what happened lately" },
-			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "review", "merge", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
+			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "review", "merge", "shelve", "cleanup", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
 			{ name: "concierge", description: "the hub's own agent", argumentHint: "on | off | status | log | attach | ask | answer | act | undo | orders", getArgumentCompletions: (p) => starts(names(["on", "off", "status", "log", "attach", "ask", "answer", "act", "undo", "orders"]), p) },
 			{ name: "workspaces", description: "the tasks in their worktrees: review, merge, send back (Ctrl+N: the next that needs you)" },
 			{ name: "ask", description: "ask the concierge", argumentHint: "question" },
@@ -4238,6 +4287,7 @@ export class AgentView implements Component {
 			["/concierge orders [add|rm]", "the standing orders it keeps (rules in your words, some on a clock); add one, drop one"],
 			["/tasks [add|assign|done|rm|release]", "the shared task board: sessions claim tasks (roost_task_*), the concierge hands them out; add <title> [after #n] [-- detail], assign <id> <session>, done <id> [result], rm <id>, release <id>"],
 			["/workspaces · Ctrl+N", "the tasks in their own worktrees, as a pipeline: Enter review · s start · m merge · b back · v verify · a approve · t attach · n the next that needs you"],
+			["/tasks shelve <id> · cleanup", "put a task away (its worktree removed, its branch kept; start brings it back) · remove worktrees and logs left behind (yes: do it)"],
 			["/tasks review <id>", "a task's diff against base: j/k line · n/p hunk · ]/[ file · c comment · d delete it · b send back with the comments · m merge"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
 			["Ctrl+Y · Ctrl+E", "send the concierge's suggested answer to the session that waits · edit it first (the banner under the header)"],

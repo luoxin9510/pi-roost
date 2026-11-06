@@ -66,6 +66,7 @@ Claude Code's documented behaviour.
 | M56 | [verify before review: the repository's `verify` and `setup`, read from base, approved by a person](m56-verify.md) | 0.1.17 |
 | M57 | [the workspace overlay: the tasks as a pipeline, Ctrl+N, the concierge's `hub_task_start`](m57-workspace-overlay.md) | 0.1.18 |
 | M58 | [review in the TUI: a task's diff, comments on its lines sent back, `pi-roost review`](m58-review.md) | 0.1.18 |
+| M59 | [shelving, leftovers, `/tasks` in pi sessions (the phone), the concierge's launches built by the daemon](m59-shelve-cleanup.md) | — |
 | M61 | [a session's own slash commands in its peek](m61-session-commands.md) | 0.1.17 |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).

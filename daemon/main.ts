@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { constants as osConstants, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { THINKING_LEVELS } from "../lib/dispatch-input.ts";
+import { appendFileSync, chmodSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
@@ -98,8 +99,8 @@ import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.t
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
-import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, withMergeLock, worktreeClean } from "../lib/task-git.ts";
-import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
+import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
+import { type CleanupResult, cleanupWorktree, isInside, validWorktree, WORKTREES_DIR, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
 const CONTINUE = "Continue where you left off.";
@@ -758,6 +759,63 @@ async function conciergeUndo(): Promise<ConciergeStatus> {
 	return conciergeStatus();
 }
 
+/**
+ * M59: a session's first message from another agent (a spawned child, the concierge's) is a
+ * task: never a slash command (pi would run it: `/tasks merge` is a person's), a shell line
+ * or a file to attach. Undefined: there is none.
+ */
+function firstMessage(command: unknown): string | null | undefined {
+	if (!Array.isArray(command)) return undefined;
+	const dash = command.indexOf("--");
+	if (dash < 0) return null;
+	const task = dash === command.length - 2 && typeof command[dash + 1] === "string" ? (command[dash + 1] as string) : undefined;
+	if (task === undefined) throw new OpError("bad_request", "launch: one task after --");
+	if (/^\s*[\/!@]/.test(task)) throw new OpError("bad_request", "a task is plain text, not a command (/, !) or a file (@)");
+	return task;
+}
+
+/**
+ * M59: a session the concierge starts runs what the concierge runs: the daemon builds its
+ * launch from the concierge's own job (its pi, its flags, its environment and policy) and
+ * takes from the concierge's only the task, the directory, a new session file, the name,
+ * and a model and thinking level of the right shape. Nothing else it sent is used.
+ */
+function conciergeLaunch(launch: DispatchArgs): DispatchArgs {
+	const own = concierge.id ? recs.get(concierge.id) : undefined;
+	if (!own || own.kind === "shell" || !Array.isArray(own.command) || own.command.length < 4 || own.command[2] !== "--session") throw new OpError("bad_request", "the concierge's own launch is unknown: it cannot start sessions now");
+	if (!launch || typeof launch !== "object" || !Array.isArray(launch.command)) throw new OpError("bad_request", "launch required");
+	if (launch.kind === "shell" || launch.profile || launch.worktree) throw new OpError("bad_request", "the concierge starts pi sessions only");
+	if (!str(launch.cwd) || !isAbsolute(launch.cwd) || !existsSync(launch.cwd)) throw new OpError("bad_request", "launch: cwd must be a directory");
+	const sf = launch.sessionFile;
+	if (!str(sf) || !isAbsolute(sf) || !sf.endsWith(".jsonl") || existsSync(sf) || [...recs.values()].some((r) => r.sessionFile === sf)) throw new OpError("bad_request", "launch: a new session file");
+	// the task: the argument after "--" (one, the last), plain text
+	const task = firstMessage(launch.command) ?? null;
+	const ownDash = own.command.indexOf("--");
+	const flags = own.command.slice(4, ownDash >= 0 ? ownDash : undefined);
+	const without = (args: string[], flag: string) => args.filter((x, i) => x !== flag && args[i - 1] !== flag && !x.startsWith(`${flag}=`));
+	const model = typeof launch.model === "string" && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._:@\/-]+$/.test(launch.model) ? launch.model : undefined;
+	const thinking = typeof launch.thinking === "string" && (THINKING_LEVELS as readonly string[]).includes(launch.thinking) ? launch.thinking : undefined;
+	let args = flags;
+	if (model) args = [...without(args, "--model"), "--model", model];
+	if (thinking) args = [...without(args, "--thinking"), "--thinking", thinking];
+	const env = Object.fromEntries(Object.entries(own.env ?? {}).filter(([k]) => k !== CONCIERGE_ROLE_ENV && !/^(ROOST|PI_ROOST|PI)_(JOB|SOCKET)/.test(k)));
+	return {
+		kind: "pi",
+		cwd: launch.cwd,
+		sessionFile: sf,
+		command: [own.command[0]!, own.command[1]!, "--session", sf, ...args, ...(task ? ["--", task] : [])],
+		env,
+		name: oneLineText(typeof launch.name === "string" ? launch.name : "", 80) || "session",
+		origin: "dispatch",
+		...(own.workspaceEnv ? { workspaceEnv: own.workspaceEnv } : {}),
+		...(own.envDeny ? { envDeny: own.envDeny } : {}),
+		...(own.envForce ? { envForce: own.envForce } : {}),
+		...(model ? { model } : {}),
+		...(thinking ? { thinking } : {}),
+		...(own.piVersion ? { piVersion: own.piVersion } : {}),
+	};
+}
+
 /** `concierge-act`: stop, restart or start a session, if the policy lets it. */
 async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; launch?: unknown; why?: unknown } | undefined): Promise<{ id: string; name: string }> {
 	const peer = requireConcierge(conn);
@@ -772,12 +830,8 @@ async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; la
 		return { id: row.id, name: row.name };
 	}
 	if (what === "dispatch") {
-		const launch = args?.launch as DispatchArgs | undefined;
-		if (!launch || typeof launch !== "object" || !Array.isArray(launch.command)) throw new OpError("bad_request", "launch required");
-		// a pi session like the hub's: not a command, not a profile, not a worktree; and not a concierge, nor this one's job
-		if (launch.kind === "shell" || launch.profile || launch.worktree) throw new OpError("bad_request", "the concierge starts pi sessions only");
-		const env = Object.fromEntries(Object.entries(launch.env ?? {}).filter(([k]) => k !== CONCIERGE_ROLE_ENV && !/^(ROOST|PI_ROOST|PI)_(JOB|SOCKET)/.test(k)));
-		const r = await dispatch({ ...launch, env, origin: "dispatch", requestId: undefined });
+		// M59: a pi session like the concierge's own, built here (not a command, a profile, a worktree; not a concierge)
+		const r = await dispatch(conciergeLaunch(args?.launch as DispatchArgs));
 		record({ kind: "concierge", id: r.id, name: r.name, who: CONCIERGE_NAME, whoId: peer.id, why: "act", text: `started ${r.name}${why ? `: ${why}` : ""}` });
 		return r;
 	}
@@ -1274,12 +1328,16 @@ function verifyEnded(taskId: number, jobId: string, code: number | null): void {
 async function setupEnded(taskId: number, jobId: string, code: number | null): Promise<void> {
 	const run = setupRuns.get(taskId);
 	if (!run || run.jobId !== jobId) return;
-	setupRuns.delete(taskId);
 	setTimeout(() => void removeRecord(jobId).catch(() => {}), 0).unref?.();
 	const t = tasks.get(taskId);
 	const w = t?.workspace;
-	if (!t || !w || t.state === "dropped") return;
+	// M59: the run holds its place until its session is dispatched (a shelve or start meanwhile is refused)
+	const done = () => {
+		if (setupRuns.get(taskId)?.jobId === jobId) setupRuns.delete(taskId);
+	};
+	if (!t || !w || t.state === "dropped") return done();
 	if (code !== 0) {
+		done();
 		const last = readLogTail(verifyLogPath(t.id, 0)).trim().split("\n").pop() ?? "";
 		setStage(t, "failed", `setup failed (exit ${code ?? "?"})${last ? `: ${last.slice(0, 200)}` : ""}`);
 		return;
@@ -1292,6 +1350,8 @@ async function setupEnded(taskId: number, jobId: string, code: number | null): P
 		setStage(t, "working", null, run.actor, `${job.name} in ${w.branch}`);
 	} catch (err) {
 		setStage(t, "failed", `the session did not start: ${String((err as Error).message ?? err).slice(0, 200)}`);
+	} finally {
+		done();
 	}
 }
 
@@ -1335,7 +1395,7 @@ async function workspaceOp(
 	}
 }
 
-type WorkspaceAction = "start" | "merge" | "back" | "abort" | "commit" | "approve" | "verify" | "pass" | "comment" | "uncomment";
+type WorkspaceAction = "start" | "merge" | "back" | "abort" | "commit" | "approve" | "verify" | "pass" | "comment" | "uncomment" | "shelve";
 
 async function workspaceAction(
 	a: ReturnType<typeof boardActor>,
@@ -1383,17 +1443,12 @@ async function workspaceAction(
 		// M57: base is what the caller says only if it is: the commit on that branch, the worktree's history from it
 		if (!t.workspace && (!(await isAncestor(t.project, w.baseSha, `refs/heads/${w.baseRef}`)) || !(await isAncestor(w.path, w.baseSha, "HEAD"))))
 			throw new OpError("bad_request", `workspace: ${w.baseSha.slice(0, 8)} is not on ${w.baseRef} and under the worktree's branch`);
-		const launch = args.launch as DispatchArgs | undefined;
+		let launch = args.launch as DispatchArgs | undefined;
 		if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
 		if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
 		if (!str(launch.cwd) || !isInside(realPath(launch.cwd), realPath(w.path))) throw new OpError("bad_request", "launch: cwd must be inside the task's worktree");
-		// M57: a session the concierge starts is not a concierge, nor does it carry another job's identity
-		if (a.concierge) {
-			if (launch.profile) throw new OpError("bad_request", "the concierge starts pi sessions only");
-			launch.env = Object.fromEntries(Object.entries(launch.env ?? {}).filter(([k]) => k !== CONCIERGE_ROLE_ENV && !/^(ROOST|PI_ROOST|PI)_(JOB|SOCKET)/.test(k)));
-			launch.origin = "dispatch";
-			launch.requestId = undefined;
-		}
+		// M57/M59: a session the concierge starts runs what the concierge runs (the daemon builds it)
+		if (a.concierge) launch = conciergeLaunch(launch);
 		// M56: a new worktree gets the repository's setup first (approved), then the session
 		if (!t.workspace) {
 			const { config } = await readProjectConfig(t.project, w.baseRef);
@@ -1435,9 +1490,25 @@ async function workspaceAction(
 	const w = t.workspace;
 	if (!w) throw new OpError("bad_request", `#${t.id} has no workspace: /tasks start it first`);
 	if (!t.project) throw new OpError("bad_request", `#${t.id} has no repository`);
+	// M59: on the shelf its worktree is gone: start takes it off (the hub makes the worktree again)
+	if (w.stage === "shelved" && action !== "comment" && action !== "uncomment") throw new OpError("bad_request", `#${t.id} is shelved: /tasks start it to take it off the shelf`);
 	// a damaged record (no path, no branch) never reaches git: `git -C ""` is the daemon's own directory
-	if (action !== "back" && (!w.path || !isAbsolute(w.path) || !w.branch || !BASE_REF.test(w.baseRef) || !existsSync(w.path))) {
+	if (action !== "back" && action !== "comment" && action !== "uncomment" && !(action === "shelve" && w.path && isAbsolute(w.path)) && (!w.path || !isAbsolute(w.path) || !w.branch || !BASE_REF.test(w.baseRef) || !existsSync(w.path))) {
 		throw new OpError("bad_request", `#${t.id}: its worktree ${w.path || "(none recorded)"} is not there: look at it by hand`);
+	}
+	// M59: put away: the worktree removed (clean only), the branch and the record kept; /tasks start brings it back
+	if (action === "shelve") {
+		if (!human) throw new OpError("unsupported", "shelving is a person's (/tasks shelve)");
+		if (!["review", "failed", "working"].includes(w.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(w.stage)}: shelve one in review, failed, or working without a session`);
+		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id}: ${t.owner.name} works in it: stop it first`);
+		if (verifyRuns.has(t.id) || setupRuns.has(t.id) || verifyQueue.includes(t.id)) throw new OpError("conflict", `#${t.id}: a command runs in its worktree`);
+		const r = await removeTaskWorktree(t.project, w.path);
+		if (!r.ok) throw new OpError("bad_request", `#${t.id}: its worktree stays: ${r.reason} (/tasks commit ${t.id} first)`);
+		t.state = "open";
+		t.owner = null;
+		t.claimedAt = null;
+		setStage(t, "shelved", `on the shelf: branch ${w.branch} kept`, a);
+		return { note: `shelved · worktree removed · branch ${w.branch} kept · /tasks start ${t.id} brings it back` };
 	}
 	// M58: a person's comments on lines of the task's diff, sent with `back`
 	if (action === "comment" || action === "uncomment") {
@@ -1599,6 +1670,107 @@ async function finishMerge(a: ReturnType<typeof boardActor>, t: BoardTask, w: Ta
 	return `merged into ${w.baseRef} (${into.slice(0, 8)})${left ? ` · ${left}${c.reason ? ` (${c.reason})` : ""}` : " · worktree and branch removed"}`;
 }
 
+/** M59: tasks whose branch reached base without pi-roost (merged by hand): merged, dependents told. */
+let handMergesAt = 0;
+async function settleHandMerges(): Promise<void> {
+	if (Date.now() - handMergesAt < Number(process.env.PI_ROOST_HAND_MERGE_MS ?? 10_000)) return;
+	handMergesAt = Date.now();
+	for (const t of tasks.values()) {
+		const w = t.workspace;
+		if (!w || !t.project || t.state === "dropped" || !["review", "failed", "conflict", "shelved"].includes(w.stage) || workspaceBusy.has(t.id)) continue;
+		try {
+			// the reviewed tip, still the branch's, with commits of its own, in base: a person merged what was reviewed
+			// (a branch reset onto base, or moved after review, is not)
+			const tip = await revParse(t.project, `refs/heads/${w.branch}`);
+			const base = await revParse(t.project, `refs/heads/${w.baseRef}`);
+			if (!tip || !base || !w.reviewTip || tip !== w.reviewTip || tip === w.baseSha) continue;
+			if (!(await isAncestor(t.project, w.baseSha, tip)) || !(await isAncestor(t.project, tip, base))) continue;
+			if (existsSync(w.path) && (await worktreeClean(w.path)) !== true) continue;
+			workspaceBusy.add(t.id);
+			try {
+				w.merge = { tip, oldBase: w.baseSha, at: Date.now() };
+				await finishMerge({ who: "roost", whoId: null, sessionId: null, concierge: false, project: null }, t, w, t.project, tip, base);
+				if (w.note === null) w.note = "merged by hand";
+				saveTasks();
+			} finally {
+				workspaceBusy.delete(t.id);
+			}
+		} catch (err) {
+			log("warn", "could not check a branch against base", { task: t.id, error: String(err) });
+		}
+	}
+}
+
+/** M59: what `/tasks cleanup` removes (dry: says what it would). Never a worktree with changes; never an unmerged branch. */
+async function cleanupLeftovers(dry: boolean): Promise<string[]> {
+	const out: string[] = [];
+	const busy = (t: BoardTask) => workspaceBusy.has(t.id) || verifyRuns.has(t.id) || setupRuns.has(t.id) || (t.state === "claimed" && !!t.owner && ownerLive(t.owner.id));
+	const repos = new Set<string>();
+	for (const t of tasks.values()) {
+		if (t.project) repos.add(t.project);
+		const w = t.workspace;
+		if (!w || !t.project || !w.path || busy(t)) continue;
+		const merged = w.stage === "merged";
+		if (!(t.state === "dropped" || merged) || !existsSync(w.path)) continue;
+		const clean = await worktreeClean(w.path);
+		if (clean !== true) {
+			out.push(`#${t.id} kept: ${w.path} has uncommitted changes`);
+			continue;
+		}
+		if (dry) {
+			out.push(`#${t.id} ${merged ? "merged" : "dropped"}: remove ${w.path}${merged ? ` and branch ${w.branch} (in ${w.baseRef})` : ` (branch ${w.branch} kept)`}`);
+			continue;
+		}
+		if (merged && w.merge) {
+			const c = await cleanupMergedTask({ repo: t.project, path: w.path, branch: w.branch, tip: w.merge.tip, baseRef: w.baseRef });
+			out.push(`#${t.id}: ${c.worktreeRemoved ? "worktree removed" : "worktree kept"}${c.branchDeleted ? " · branch deleted" : ` · branch ${w.branch} kept`}${c.reason ? ` (${c.reason})` : ""}`);
+		} else {
+			const r = await removeTaskWorktree(t.project, w.path);
+			out.push(`#${t.id}: ${r.ok ? `worktree removed · branch ${w.branch} kept` : `worktree kept (${r.reason})`}`);
+		}
+	}
+	// worktrees of task branches whose task is gone (swept) or never got its workspace recorded
+	for (const repo of repos) {
+		for (const x of await taskWorktrees(repo)) {
+			const t = tasks.get(x.id);
+			if (t?.workspace && t.workspace.branch === x.branch) continue;
+			// only pi-roost's (under .pi/worktrees), not one being started (made by a client moments ago, or under way)
+			if (workspaceBusy.has(x.id) || !isInside(realPath(x.path), realPath(join(repo, WORKTREES_DIR)))) continue;
+			try {
+				if (Date.now() - statSync(x.path).mtimeMs < 10 * 60_000) continue;
+			} catch {
+				continue;
+			}
+			const clean = await worktreeClean(x.path);
+			if (clean !== true) {
+				out.push(`${x.branch} kept: ${x.path} has uncommitted changes (no task holds it)`);
+				continue;
+			}
+			if (dry) out.push(`${x.branch}: remove ${x.path} (no task holds it; branch kept)`);
+			else {
+				const r = await removeTaskWorktree(repo, x.path);
+				out.push(`${x.branch}: ${r.ok ? "worktree removed · branch kept" : `worktree kept (${r.reason})`}`);
+			}
+		}
+	}
+	// verify logs of tasks that are done, dropped or gone
+	const dir = join(roostHome(), "verify");
+	let logs: string[] = [];
+	try {
+		logs = readdirSync(dir).filter((f) => /^\d+-\d+\.log$/.test(f));
+	} catch {}
+	const old = logs.filter((f) => {
+		const t = tasks.get(Number(f.split("-")[0]));
+		return !t || t.state === "done" || t.state === "dropped";
+	});
+	if (old.length > 0) {
+		if (!dry) for (const f of old) rmSync(join(dir, f), { force: true });
+		out.push(`${dry ? "remove" : "removed"} ${old.length} verify log${old.length === 1 ? "" : "s"} of tasks done, dropped or gone`);
+	}
+	if (out.length === 0) out.push("nothing left behind");
+	return out;
+}
+
 /** M55: at start, a merge a crash cut short is settled from its recorded intent. */
 async function settleMerges(): Promise<void> {
 	for (const t of tasks.values()) {
@@ -1634,7 +1806,17 @@ async function taskOp(
 	const all = () =>
 		[...tasks.values()].filter((t) => view === undefined || onBoardOf(t, view)).sort((x, y) => x.id - y.id);
 	const action = args?.action;
-	if (action === "list") return { tasks: all() };
+	if (action === "list") {
+		// M59: a branch merged into base by hand is marked merged (looked at most every 10 s)
+		await settleHandMerges();
+		return { tasks: all() };
+	}
+	// M59: worktrees and logs left behind (dropped tasks, merged ones kept for a session, worktrees of tasks gone); dry: what would go
+	if (action === "cleanup") {
+		if (!(a.sessionId === null && !a.concierge)) throw new OpError("unsupported", "cleanup is a person's (/tasks cleanup)");
+		const r = await cleanupLeftovers(args?.dry === true);
+		return { tasks: all(), note: r.join("\n") };
+	}
 	if (action === "add") {
 		const title = taskTitle(args?.title);
 		if (!title) throw new OpError("bad_request", "a task needs a title");
@@ -1672,7 +1854,7 @@ async function taskOp(
 		pushBoard();
 		return { tasks: all(), task: t };
 	}
-	const ACTIONS = ["claim", "release", "done", "drop", "assign", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment"];
+	const ACTIONS = ["claim", "release", "done", "drop", "assign", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve"];
 	if (typeof action !== "string" || !ACTIONS.includes(action)) throw new OpError("bad_request", "action must be list, add, claim, release, done, drop, assign, start, merge, back, abort or commit");
 	const id = taskId(args?.id);
 	const t = id !== undefined ? tasks.get(id) : undefined;
@@ -1681,7 +1863,7 @@ async function taskOp(
 	// M52: a session acts on its project's tasks and those for any session (one it holds, whatever moved)
 	if (!lead && !mine && !onBoardOf(t, a.project)) throw new OpError("not_found", `no task #${t.id} on this session's board (it is ${projectLabel(t.project)}'s)`);
 	// M55: a task's workspace: start it, merge it, send it back, give up a sync, commit for it
-	if (action === "start" || action === "merge" || action === "back" || action === "abort" || action === "commit" || action === "approve" || action === "verify" || action === "pass" || action === "comment" || action === "uncomment") {
+	if (action === "start" || action === "merge" || action === "back" || action === "abort" || action === "commit" || action === "approve" || action === "verify" || action === "pass" || action === "comment" || action === "uncomment" || action === "shelve") {
 		const r = await workspaceOp(a, t, action, args ?? {});
 		return { tasks: all(), task: t, ...r };
 	}
@@ -1743,6 +1925,9 @@ async function taskOp(
 				workspaceBusy.add(t.id);
 				try {
 					t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
+					// M59: the tip that went to review: only it, found in base, is "merged by hand"
+					const tip = await revParse(t.workspace.path, "HEAD");
+					if (tip) t.workspace.reviewTip = tip;
 					// M56: the repository's verify runs first (approved); review sees work that passed
 					await startVerify(t, a, t.result ?? undefined);
 				} finally {
@@ -4199,6 +4384,8 @@ async function spawnChild(conn: Conn, args: { launch?: DispatchArgs } | undefine
 	const launch = args?.launch;
 	if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch required");
 	if (launch.kind === "shell") throw new OpError("unsupported", "roost_spawn starts pi sessions");
+	// M59: a child's first message is a task, never a command (a child's `/tasks merge` would be a person's)
+	firstMessage(launch.command);
 	// a fresh session for the child, never one that exists or another job uses
 	if (!str(launch.sessionFile) || existsSync(launch.sessionFile) || [...recs.values()].some((r) => r.sessionFile === launch.sessionFile)) {
 		throw new OpError("bad_request", "a spawn needs a new session file");
