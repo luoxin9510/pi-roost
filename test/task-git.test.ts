@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	abortSync, cleanupMergedTask, commitAll, createTaskWorktree, findCheckout, hasIdentity, isAncestor, mergeIntoBase, removeTaskWorktree, restoreTaskWorktree, revParse, syncWithBase, taskChanges, taskTag, taskWorktrees, withMergeLock, worktreeClean,
+	abortSync, cleanupMergedTask, commitAll, createTaskWorktree, findCheckout, hasIdentity, isAncestor, ghRepoOf, mergeIntoBase, removeTaskWorktree, restoreTaskWorktree, revParse, syncWithBase, taskChanges, taskTag, taskWorktrees, withMergeLock, worktreeClean,
 } from "../lib/task-git.ts";
 import { WorktreeError, validWorktree } from "../lib/worktree.ts";
 
@@ -405,5 +405,16 @@ describe("M59: shelve and restore", () => {
 		expect(git(w.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe(w.branch);
 		expect(() => restoreTaskWorktree(r, w.path, w.branch)).toThrow(WorktreeError);
 		expect(() => restoreTaskWorktree(r, join(r, "elsewhere"), "roost/nope")).toThrow(/is gone/);
+	});
+});
+
+describe("M60: the repository gh opens a pull request in", () => {
+	it("from a remote's URL: https, ssh, scp-like; its host when not github.com; none otherwise", () => {
+		expect(ghRepoOf("https://github.com/o/r.git")).toBe("o/r");
+		expect(ghRepoOf("git@github.com:o/r.git")).toBe("o/r");
+		expect(ghRepoOf("ssh://git@github.com/o/r")).toBe("o/r");
+		expect(ghRepoOf("https://user@ghe.example.com/team/repo.git")).toBe("ghe.example.com/team/repo");
+		expect(ghRepoOf("/tmp/remote.git")).toBeUndefined();
+		expect(ghRepoOf("https://github.com/o/r/extra")).toBeUndefined();
 	});
 });

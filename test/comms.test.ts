@@ -2285,7 +2285,8 @@ describe("M60: the pull request exit", () => {
 		// a fake gh on the PATH: says what it was asked and prints a URL
 		const bin = join(work, "bin");
 		mkdirSync(bin, { recursive: true });
-		writeFileSync(join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(work, "gh-args")}"\necho "https://example.com/o/r/pull/7"\n`);
+		// a fake gh: says what it was asked; with gh-exists, create fails and view finds the one there
+		writeFileSync(join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(work, "gh-args")}"\nif [ -f "${join(work, "gh-exists")}" ]; then\n  if [ "$2" = "create" ]; then echo "a pull request already exists" >&2; exit 1; fi\n  echo "https://example.com/o/r/pull/7"; exit 0\nfi\necho "https://example.com/o/r/pull/7"\n`);
 		chmodSync(join(bin, "gh"), 0o755);
 		const path0 = process.env.PATH;
 		process.env.PATH = `${bin}:${path0}`;
@@ -2310,16 +2311,36 @@ describe("M60: the pull request exit", () => {
 			git(w.path, "commit", "-qm", "users");
 			await s.c.request("task", { action: "done", id: t.id, result: "users table added" });
 			await expect(s.c.request("task", { action: "pr", id: t.id, dry: true })).rejects.toMatchObject({ code: "unsupported" });
+			const tip0 = gitOut(w.path, "rev-parse", "HEAD");
 			const shown = await hub.request("task", { action: "pr", id: t.id, dry: true });
-			expect(shown.note).toMatch(new RegExp(`^push ${w.branch} \\(\\w{8}\\) and open a pull request into main$`));
-			await expect(hub.request("task", { action: "pr", id: t.id, hash: "f".repeat(40) })).rejects.toMatchObject({ code: "conflict" });
+			expect(shown.note).toBe(`push ${w.branch} at ${tip0.slice(0, 8)} to origin (${join(work, "remote.git")}) and open a pull request into main (gh picks the repository)`);
+			await expect(hub.request("task", { action: "pr", id: t.id, hash: "f".repeat(64) })).rejects.toMatchObject({ code: "conflict" });
+			// the remote moved after it was shown: refused
+			git(r, "remote", "set-url", "--push", "origin", join(work, "elsewhere.git"));
+			await expect(hub.request("task", { action: "pr", id: t.id, hash: shown.hash })).rejects.toMatchObject({ code: "conflict" });
+			git(r, "config", "--unset", "remote.origin.pushurl");
+			// a commit after it was shown: refused too (what goes is what was shown)
+			writeFileSync(join(w.path, "late.txt"), "late\n");
+			git(w.path, "add", ".");
+			git(w.path, "commit", "-qm", "late");
+			await expect(hub.request("task", { action: "pr", id: t.id, hash: shown.hash })).rejects.toMatchObject({ code: "conflict" });
+			git(w.path, "reset", "-q", "--hard", tip0);
 			const done = await hub.request("task", { action: "pr", id: t.id, hash: shown.hash });
 			expect(done.note).toBe("pushed to origin · https://example.com/o/r/pull/7");
-			expect(gitOut(join(work, "remote.git"), "rev-parse", w.branch)).toBe(shown.hash);
+			expect(gitOut(join(work, "remote.git"), "rev-parse", w.branch)).toBe(tip0);
 			const asked = readFileSync(join(work, "gh-args"), "utf8").split("\n");
 			expect(asked.slice(0, 8)).toEqual(["pr", "create", "--head", w.branch, "--base", "main", "--title", "users table"]);
 			expect(asked.join("\n")).toContain("Done: users table added");
-			expect(done.task?.workspace).toMatchObject({ stage: "review", pr: { url: "https://example.com/o/r/pull/7", tip: shown.hash } });
+			expect(done.task?.workspace).toMatchObject({ stage: "review", pr: { url: "https://example.com/o/r/pull/7", tip: tip0 } });
+			// gh says one exists: it is found and taken
+			writeFileSync(join(work, "gh-exists"), "");
+			const again = await hub.request("task", { action: "pr", id: t.id, hash: (await hub.request("task", { action: "pr", id: t.id, dry: true })).hash });
+			expect(again.note).toBe("pushed to origin · https://example.com/o/r/pull/7");
+			// a remote whose name is an option of git's is not used
+			git(r, "remote", "remove", "origin");
+			execFileSync("git", ["config", "remote.--receive-pack=touch PWNED.url", join(work, "remote.git")], { cwd: r });
+			await expect(hub.request("task", { action: "pr", id: t.id, dry: true })).rejects.toThrow(/not one pi-roost uses/);
+			expect(existsSync(join(w.path, "PWNED"))).toBe(false);
 		} finally {
 			process.env.PATH = path0;
 		}

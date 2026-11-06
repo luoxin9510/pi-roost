@@ -99,7 +99,7 @@ import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.t
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
-import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, openTaskPr, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
+import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, openTaskPr, prTarget, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, WORKTREES_DIR, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
@@ -1503,18 +1503,24 @@ async function workspaceAction(
 		if ((await worktreeClean(w.path)) !== true) throw new OpError("bad_request", `#${t.id}: its worktree has uncommitted changes (/tasks commit ${t.id} first)`);
 		const tip = await revParse(t.project, `refs/heads/${w.branch}`);
 		if (!tip) throw new OpError("bad_request", `#${t.id}: its branch ${w.branch} is gone`);
-		const what = `push ${w.branch} (${tip.slice(0, 8)}) and open a pull request into ${w.baseRef}`;
-		if (args.dry === true) return { note: what, hash: tip };
-		if (args.hash !== tip) throw new OpError("conflict", `the branch moved since it was shown: /tasks pr ${t.id} again to see it`);
+		// where it goes is shown with what goes: the remote's push URL (an agent could have changed it), the repository gh uses
+		const to = await prTarget(w.path);
+		if (!to.ok) throw new OpError("bad_request", `#${t.id}: ${to.reason}`);
+		const what = `push ${w.branch} at ${tip.slice(0, 8)} to ${to.remote} (${to.url}) and open a pull request into ${w.baseRef}${to.repo ? ` on ${to.repo}` : " (gh picks the repository)"}`;
+		// the confirmation names the commit and the place shown
+		const hash = commandHash(`${tip}\n${to.remote}\n${to.url}\n${to.repo ?? ""}`);
+		if (args.dry === true) return { note: what, hash };
+		if (args.hash !== hash) throw new OpError("conflict", `the branch or its remote changed since it was shown: /tasks pr ${t.id} again to see it`);
 		const body = [t.detail ?? "", t.result ? `Done: ${t.result}` : "", w.verify?.ok ? "Verified by the repository's verify command." : "", `Task #${t.id}, opened by pi-roost.`].filter(Boolean).join("\n\n");
-		const r = await openTaskPr({ path: w.path, branch: w.branch, baseRef: w.baseRef, title: t.title, body });
+		const r = await openTaskPr({ path: w.path, branch: w.branch, baseRef: w.baseRef, tip, remote: to.remote, ...(to.repo ? { repo: to.repo } : {}), title: t.title, body });
 		if (!r.ok) throw new OpError("failed", r.reason);
 		w.pr = { url: r.url, tip, at: Date.now() };
-		w.note = `pull request: ${r.url}`;
+		// the push took a while: the note is the stage's own if something else moved it meanwhile
+		if ((w.stage as string) === "review" && (t.state as string) !== "dropped") w.note = `pull request: ${r.url}`;
 		saveTasks();
 		taskEvent(a, "pr", t, r.url);
 		pushBoard();
-		return { note: `pushed to ${r.remote} · ${r.url}` };
+		return { note: `pushed to ${to.remote} · ${r.url}` };
 	}
 	// M59: put away: the worktree removed (clean only), the branch and the record kept; /tasks start brings it back
 	if (action === "shelve") {

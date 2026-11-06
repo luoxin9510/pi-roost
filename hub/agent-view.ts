@@ -4412,7 +4412,7 @@ export function fitScreen(
 }
 
 // Control characters other than newlines would corrupt the line-based renderer.
-const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
+const CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/g;
 
 /** M48: a directory with the home as `~` (the peek's "where"). */
 function tildeDir(dir: string): string {

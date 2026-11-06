@@ -16,8 +16,8 @@ work change the same files.
 - `task pr` (a person's: the hub, the CLI, a pi session's `/tasks`; never a session's, the
   concierge's or a protocol agent's), from review only, with a clean worktree. The dry
   call says what it will do (`push roost/t4-… (abc12345) and open a pull request into
-  main`) and returns the branch tip; the confirmation carries it, and the daemon refuses
-  (`conflict`) if the branch moved in between.
+  main`) and returns a hash of the branch tip and where it goes; the confirmation carries
+  it, and the daemon refuses (`conflict`) if either changed in between.
 - The remote is `origin`, else the only one (several and none named origin: refused).
   `git push --set-upstream <remote> refs/heads/<branch>:refs/heads/<branch>` (never
   forced), then `gh pr create --head <branch> --base <base> --title <the task's title>
@@ -45,3 +45,24 @@ pull requests, not a task's).
 - `test/workspace-view.test.ts`: overlaps (same repository only, renames, merged tasks
   left out); the detail's overlap and PR lines; `o` on a task in review.
 - `test/agent-view.test.ts`, `test/tasks-command.test.ts`: `/tasks pr` twice; `o` then `y`.
+
+## After review
+
+- What goes is what was shown: the push is of the commit shown (`<tip>:refs/heads/<branch>`),
+  not of whatever the branch is when the push runs (a session still alive could commit
+  in between).
+- Where it goes is shown: the remote's name and its push URL (`git remote get-url
+  --push`, so `pushurl` and `insteadOf` count: an agent can edit `.git/config`), and the
+  repository gh opens the pull request in (`--repo`, read from that URL; "gh picks" when
+  it is not a forge URL). The confirmation's hash covers the tip, the remote and both
+  URLs.
+- A remote whose name could be read as an option (`-…`, or characters git names do not
+  use) is refused; the push puts `--` before it.
+- A pull request gh says exists already (or opened before gh was cut short) is found
+  (`gh pr view <branch>`) and recorded, so a second try after a failure succeeds.
+- Only an `https://` URL without control characters is recorded; text from git, gh and
+  hooks is cut to one line without control characters (C1 too, in the hub's filter).
+- After the push, the note is set only if the task is still in review.
+- Stated, not changed: `git push` runs the repository's `pre-push` hook (an agent in the
+  same account could write one, as it could any program); the push carries every commit
+  of the branch the remote lacks, base's local ones included.

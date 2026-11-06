@@ -103,7 +103,7 @@ export function parseWorkspace(raw: unknown): TaskWorkspace | null {
 		w.verify = { ok: v.ok, at: v.at as number, log: strOf(v.log, 4096) ?? "", tail: strOf(v.tail, 4000) ?? "", rounds: Number.isInteger(v.rounds) && (v.rounds as number) >= 0 ? (v.rounds as number) : 0 };
 	if (typeof o.reviewTip === "string" && SHA.test(o.reviewTip)) w.reviewTip = o.reviewTip;
 	const pr = o.pr as Record<string, unknown> | undefined;
-	if (pr && typeof pr === "object" && typeof pr.url === "string" && /^https?:\/\//.test(pr.url) && typeof pr.tip === "string" && SHA.test(pr.tip))
+	if (pr && typeof pr === "object" && typeof pr.url === "string" && /^https:\/\/[^\s\x00-\x1f\x7f-\x9f]+$/.test(pr.url) && typeof pr.tip === "string" && SHA.test(pr.tip))
 		w.pr = { url: pr.url.slice(0, 500), tip: pr.tip, at: Number.isFinite(pr.at) ? (pr.at as number) : 0 };
 	const m = o.merge as Record<string, unknown> | undefined;
 	if (m && typeof m === "object" && typeof m.tip === "string" && SHA.test(m.tip) && typeof m.oldBase === "string" && SHA.test(m.oldBase))
