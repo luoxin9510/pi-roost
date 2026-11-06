@@ -338,6 +338,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 		if (c.workspace) {
 			// M62: as the hub's /tasks start: the task, the commands approved, the worktree, the session in it
 			if (!c.git) throw new Error("a workspace case needs a git repository (git: true)");
+			if (c.extra?.length || c.fanout || c.agent) throw new Error("a workspace case is one pi session: no extra, fanout or agent");
 			const added = await within(cl.request("task", { action: "add", title: c.workspace.title, detail: c.workspace.detail, project: work }), left(), "task add");
 			const t = added.task!;
 			wsTask = t.id;
@@ -394,7 +395,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				settleMs: 1500,
 			};
 			launches.push(buildProfileLaunch({ name: label, profile: "pi-print", def, task: c.task, cwd: work, env: process.env, model, thinking }));
-		} else if (!c.workspace) launches.push(piLaunch(model, work, sessionFile));
+		} else launches.push(piLaunch(model, work, sessionFile));
 		// M44: the other sessions of the case, each a pi task in its own session, or a command
 		for (const [i, x] of (c.extra ?? []).entries()) {
 			if (x.command) launches.push({ kind: "shell", cwd: work, sessionFile: "", command: x.command, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, name: x.name, origin: "dispatch" });
@@ -406,7 +407,6 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			}
 		}
 		for (const l of launches) {
-			if (c.workspace) break;
 			const r = (await within(cl.request("dispatch", l), left(), "dispatch")) as { id: string };
 			ids.push(r.id);
 			if (l.worktree) worktrees.set(r.id, { path: l.worktree.path, base: l.worktree.base });

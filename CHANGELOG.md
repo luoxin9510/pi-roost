@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Evals of the agent development environment loop with a real model (M62, [docs/plans/m62-workspace-evals.md](docs/plans/m62-workspace-evals.md)): a task started in its own worktree, the session commits and says done, verify runs (a failure goes back with its output), the user merges into base; the harness builds the start as `/tasks start` does. Haiku 5.5: 6/6 over 3 runs, $0.0075.
+- Evals of the agent development environment loop with a real model (M62, [docs/plans/m62-workspace-evals.md](docs/plans/m62-workspace-evals.md)): a task started in its own worktree, the session commits and says done, verify runs (a failure goes back with its output), the user merges into base; the harness builds the start as `/tasks start` does. Haiku 5.5: 6/6 over 3 runs, $0.0071.
 
 ## [0.1.19] - 2026-11-06
 

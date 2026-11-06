@@ -35,7 +35,7 @@ describeEval("roost workspaces", { harness: roostHarness, judgeThreshold: null }
 				"the user's merge went into main": (o) => o.workspace?.stage === "merged" && (o.workspace.merged ?? "").startsWith("merged into main"),
 				"main has the work, committed by the session": (o) => (o.files["token.txt"] ?? "").trim() === `TOKEN-${t}` && (o.workspace?.baseLog.length ?? 0) >= 2,
 				"the worktree is gone after the merge": (o) => o.workspace?.worktreeLeft === false,
-				"the session never merged": (o) => !o.taskEvents.some((e) => e.why === "stage" && e.text.includes("merg") && e.who !== "user" && e.who !== "roost"),
+				"only the user merged": (o) => !!o.workspace?.merged && o.taskEvents.filter((e) => e.why === "stage" && /: (merging|merged)\b/.test(e.text)).every((e) => e.who === "user"),
 				"cheap": (o) => (o.costUsd ?? 1) < 0.15,
 			}),
 			{ threshold: null },
@@ -46,11 +46,13 @@ describeEval("roost workspaces", { harness: roostHarness, judgeThreshold: null }
 		const t = token();
 		// the exact greeting is said only by the check's failure
 		const want = `Hello, Ada! Welcome to roost ${t}.`;
+		const hex = Buffer.from(want).toString("hex");
 		const r = await run({
 			task: "",
 			git: true,
 			files: {
-				"check.sh": `#!/bin/sh\ngot=$(sh greet.sh Ada 2>&1)\n[ "$got" = "${want}" ] || { echo "greet.sh Ada printed: $got"; echo "expected exactly: ${want}"; exit 1; }\necho ok\n`,
+				// the wanted line is in the check only hex-encoded: reading it does not give it away
+				"check.sh": `#!/bin/sh\nwant=$(printf '%s' ${hex} | xxd -r -p)\ngot=$(sh greet.sh Ada 2>&1)\n[ "$got" = "$want" ] || { echo "greet.sh Ada printed: $got"; echo "expected exactly: $want"; exit 1; }\necho ok\n`,
 			},
 			workspace: {
 				title: "Write greet.sh",

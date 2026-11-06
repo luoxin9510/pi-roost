@@ -16,7 +16,8 @@ npm run eval -- --only "roost workspaces" --runs 3
   `.roost/project.json`, approved) checks it. Checks: verifying then in review; verify
   passed; merged into main by the user; main has the session's commit; the worktree is
   gone after the merge; the session never merged; cost.
-- **workspace verify loop**: the exact output wanted is said only by the check's failure.
+- **workspace verify loop**: the exact output wanted is said only by the check's failure
+  (the check holds it hex-encoded, so reading the check does not give it away).
   Checks: a verify failure went back to the session (`working · verify failed`); then it
   passed; merged; main's script prints what the check wants; cost.
 
@@ -36,5 +37,16 @@ merge note, whether the worktree is left, and base's log; the observations carry
 
 | case | pass | p50 | cost |
 | --- | --- | --- | --- |
-| workspace loop | 3/3 | 9 s | $0.0016 |
-| workspace verify loop | 3/3 | 21 s | $0.0059 |
+| workspace loop | 3/3 | 9 s | $0.0019 |
+| workspace verify loop | 3/3 | 21 s | $0.0052 |
+
+## After review
+
+- The wanted line is hex-encoded in the check: a session that reads `check.sh` first
+  would pass without the failure the case is about.
+- "Only the user merged": every merging/merged stage event is the user's, and the merge
+  note is there (the old check let a `roost` event through).
+- A workspace case is one pi session: `extra`, `fanout` or `agent` with it is an error,
+  not silently dropped.
+- Every `git: true` case's repository has a local identity (`eval@example.invalid`), so a
+  session's commits there have one.
