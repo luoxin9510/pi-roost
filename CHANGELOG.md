@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-11-06
+
+The screens of the agent development environment: the tasks in their worktrees as a pipeline (M57) and a task's review in the hub, with comments sent back to its session (M58). The porting guide ([docs/porting.md](docs/porting.md)) describes this release.
+
+- The workspace overlay (M57, [docs/plans/m57-workspace-overlay.md](docs/plans/m57-workspace-overlay.md)): `/workspaces` (`/ws`), or `Ctrl+N` at the next task that needs you, shows a repository's tasks as a pipeline (in review; conflict or failed; verifying; working; open; shelved; merged lately), the selected one's detail beside it (below under 100 columns) with what its worktree holds against base; keys act through `/tasks`: `s` start, `m` merge, `b` back with a note, `v` verify, `p` pass, `x` abort a sync, `a` approve (the commands shown, then `y`), `t` attach, `n` next. The concierge's `hub_task_start` (with `/concierge act on`) starts a task in its own worktree; the daemon checks the base it names.
+- Review in the TUI (M58, [docs/plans/m58-review.md](docs/plans/m58-review.md)): Enter on a task in the overlay (or `/tasks review <id>`) shows its diff against the commit its branch shares with base, committed and not, a file at a time: `j`/`k`, `n`/`p` hunks, `]`/`[` files, `c` a comment on a line, `d` delete one, `b` send back with the comments, `m` merge. The daemon keeps the comments on the task and sends them with the send-back (or in the next start's prompt); a comment whose line changed is kept, marked outdated. `pi-roost review <id>` prints the same; `review <id> comment <file>:<line> <text>`, `review <id> back [note]`.
+
 ## [0.1.17] - 2026-11-06
 
 The first steps toward an agent development environment ([docs/plans/ade-roadmap.md](docs/plans/ade-roadmap.md)): a task gets its own worktree and session, is verified, reviewed, and merged into its base branch locally (M54–M56); and a session's own slash commands in its peek (M61). The porting guide ([docs/porting.md](docs/porting.md)) describes this release.

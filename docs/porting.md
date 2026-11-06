@@ -1,8 +1,8 @@
-# pi-roost 移植说明（基于 v0.1.17：main `1f26d30` 加发布提交）
+# pi-roost 移植说明（基于 v0.1.18：main `a10e666` 加发布提交）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout v0.1.17`（发布提交；代码与 M56 合入的 main `1f26d30` 相同）逐节实现，每节末尾有验收标准。
-> **v0.1.17（本文依据）= v0.1.16 之上再加 M54–M56 + M61；v0.1.16 = v0.1.15 之上再加 M50–M53；v0.1.15 = v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
+> 用法：对照源码 `git checkout v0.1.18`（发布提交；代码与 M58 合入的 main `a10e666` 相同）逐节实现，每节末尾有验收标准。
+> **v0.1.18（本文依据）= v0.1.17 之上再加 M57–M58；v0.1.17 = v0.1.16 之上再加 M54–M56 + M61；v0.1.16 = v0.1.15 之上再加 M50–M53；v0.1.15 = v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
 > v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
 >
 > **v0.1.8–v0.1.12 新增**（详见 Step 20–40，附录 C 有提交号）：
@@ -14,6 +14,7 @@
 > - **v0.1.15 = M49 加固**（`docs/plans/m49-hardening.md`，Step 47）：压测加任务板场景；对抗性审查后修的三件事——hub 专属 op 拒绝已表明是会话的连接、socket 的上限（单行 4 MiB、连接数、在途请求、未读积压）、标题/指令/名字一律单行（防伪造摘要行）。
 > - **v0.1.16 = M50–M53**，详见 Step 48–51：M50 协议 agent 也收消息（`send`、`peers`、watch、任务板交办都能到达，客户端 `onMessage`/`on_message`）；M51 hub、CLI、子 agent 面板、`/bg`、手机都带请求 ID，应答丢失时同 ID 重发、只执行一次（`requestOnce`）；M52 任务板按项目（git 仓库）分，依赖完成或丢弃时通知等它的会话；M53 进入会话能看到全部记录：最近一次压缩之前的消息在滚到顶时分批加载。
 > - **v0.1.17 = M54–M56 + M61**（ADE 路线 `docs/plans/ade-roadmap.md`，PR #82 的设计文档），详见 Step 52–55：M54 任务的工作区作为数据（`workspace` 字段、阶段 `stage`、依赖"等合并"、`tasks.json` 版本 2）；M61 会话自己的斜杠命令进 peek（按用户要求提前做）；M55 `/tasks start` 给任务开 worktree 和会话、完成进 review、`/tasks merge` 在本地合进基线分支；M56 完成时跑仓库的 `verify` 命令，项目配置 `.roost/project.json` 与每条命令需人批准。合入顺序 M54、M61、M55、M56。
+> - **v0.1.18 = M57–M58**（ADE 路线的界面部分，`docs/plans/m57-workspace-overlay.md`、`docs/plans/m58-review.md`），详见 Step 56–57：M57 工作区总览（`/workspaces`、`Ctrl+N`，任务按阶段排成流水线，选中的任务旁边显示它的 worktree 相对基线改了什么，按键都走 `/tasks <动作>`）加值班 agent 的 `hub_task_start`（`act on` 时可以替用户开任务）；M58 评审（在 hub 里看任务相对基线的 diff、在行上写评论、一次性连同退回发给会话；`pi-roost review` 在终端做同样的事）。合入顺序 M57、M58。
 > - **Step 20 起（M21 及之后）全部是可选增强**；核心 Step 1–8 不依赖它们。其中真正改变"移植怎么做"的是 M29/M31/M32：现在可以不写适配器代码，直接用档案（级别 0）或协议（级别 1）接入，见 §0 与 §1.3。
 
 ---
@@ -151,7 +152,7 @@
 
 ## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
 
-**现状（v0.1.17；分层自 v0.1.12 的 M32 起未再变，M43–M56 与 M61 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`；v0.1.17 的 M54–M56 把 git 步骤放在 core 的 `lib/task-git.ts`、项目配置与批准放在 `lib/project-config.ts`、M61 的 pi 内建命令清单放在 `lib/pi-commands.ts`，task 的新动作在 `daemon/main.ts`；适配层只改 `adapters/pi/worker.ts`（写 `commands.json`、任务 worktree 的提示）、`agent-tools.ts`（`roost_task_done` 进 review 的回话）与 `hub-options.ts`（`taskMerge`、档案命令）；`/tasks start|merge|…` 和 peek 的命令菜单在 `hub/agent-view.ts`；host 多一个 control op `command`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+**现状（v0.1.18；分层自 v0.1.12 的 M32 起未再变，M43–M58 与 M61 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`；v0.1.17 的 M54–M56 把 git 步骤放在 core 的 `lib/task-git.ts`、项目配置与批准放在 `lib/project-config.ts`、M61 的 pi 内建命令清单放在 `lib/pi-commands.ts`，task 的新动作在 `daemon/main.ts`；适配层只改 `adapters/pi/worker.ts`（写 `commands.json`、任务 worktree 的提示）、`agent-tools.ts`（`roost_task_done` 进 review 的回话）与 `hub-options.ts`（`taskMerge`、档案命令）；`/tasks start|merge|…` 和 peek 的命令菜单在 `hub/agent-view.ts`；host 多一个 control op `command`；v0.1.18 的 M57–M58 同样：core 新增纯函数 `lib/workspace-view.ts`（总览的分组、图标、按键、详情行）、`lib/task-diff.ts`（取 diff 并解析）、`lib/review.ts`（评论落在哪、终端文本），`lib/task-git.ts` 多了 `taskChanges`，`lib/board.ts` 多了 `reviewText`/`taskPrompt`；daemon 多了 `task` 的 `comment`/`uncomment`，并让值班 agent 可以 `start`；适配层只改 `adapters/pi/concierge.ts`（`hub_task_start`）；`/workspaces` 总览与评审界面在 `hub/agent-view.ts`；CLI `review` 在 `bin/pi-roost.ts`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
 
 | 层 | 目录 | 允许 import | 守护 |
 |---|---|---|---|
@@ -1171,6 +1172,39 @@ M61 是用户在 2026-11-06 要求提前做的（和 M48 先于 M47 一样），
 
 移植提示：被信任的命令必须来自 agent **改不了**的地方（基线分支，不是它的 worktree），批准的是"你看到的那段文本"（hash 对账），并且验证命令的输出落文件、只把结尾交回会话。
 
+### Step 56：工作区总览与值班 agent 的 `hub_task_start`（M57，`docs/plans/m57-workspace-overlay.md`）
+
+把"任务 → worktree → 评审 → 合并"的流水线做成 hub 里的一个界面：一眼看出什么在等你，并用按键推进。本步没有新的数据，只读 M54 的 `workspace` 加 git。
+
+- **入口**：`/workspaces`（`/ws`）打开覆盖层，列当前仓库的任务（不在仓库里则列所有项目的）；`Ctrl+N` 打开并停在下一个需要你的任务（hub 列表里；覆盖层里按 `n`）。有任务在工作区时，hub 的板头行写 `Ctrl+N workspaces`，有任务需要你时用警告色。
+- **分组与顺序**（`lib/workspace-view.ts`）：REVIEW；CONFLICT · FAILED；VERIFYING；WORKING（含 merging）；OPEN（仓库里没有工作区的开放任务，附持有它的 `· after #4`）；SHELVED；MERGED（最近一天的，新的在前，最多 10 条：`WS_MERGED_MS` = 1 天、`WS_MERGED_MAX` = 10）。组内按 id。图标：`◆` review、`✕` conflict 或 failed、`⧗` verifying、`●` 会话在干活、`◐` 会话在问（等你）、`○` 空闲或没有会话、`·` 开放、`–` shelved、`✓` merged；颜色只是补充。"需要你"= review、conflict、failed，加上会话在提问的 working 任务。
+- **详情**：任务细节、阶段与 note、分支与基线、会话（名字与状态，或已不在）、相对基线的改动、verify 结果（失败给最后三行）、合并提交、文件（放得下多少列多少）、会话最后一句话、结果。宽度不到 **100 列**时详情移到列表下方（各占一半），选中项始终可见，按键行与提示留在底部。每一行都按宽度截断（测试覆盖 8–120 列）。
+- **改动怎么读**（`lib/task-git.ts` `taskChanges(path, baseRef)`）：基线取 `git merge-base HEAD refs/heads/<baseRef>`（分支与基线的共同祖先，所以基线自己后来的提交不算），然后并行跑 `diff --numstat -M -z`、`diff --name-status -M -z`、`ls-files --others --exclude-standard -z`、`rev-list --count base..HEAD`、`status --porcelain`；已提交和未提交的都算，改名写成 `a → b`，未跟踪文件按新增，另给基线没有的提交数和是否有未提交内容。git 说不清（worktree 没了、没有基线）就是 `undefined`。不拿可选锁，不抢 agent 的 index.lock。总览里每个任务在阶段、note 或 verify 变了时重读，或超过 5 s 时重读；`r` 强制重读。覆盖层跟着 `board` 事件重载（同一时间只载一次，载入期间又来的事件或动作在这次之后再载一次，因为在途的应答可能早于变化）。
+- **按键**（每个字母不同，只有选中任务当前阶段有的才显示、才生效；都等于 `/tasks <动词> <id>`，同样的检查、同样的消息）：`s` start（开放任务，或有工作区而没有活会话的任务再启动）、`m` merge、`b` back（先写一行 note，回车）、`v` verify、`p` pass（failed）、`x` abort（冲突的同步）、`a` approve（先完整显示仓库的命令，再按 `y`；其他键都算否，连按两次 `a` 不算批准，批准带的是当时显示内容的 hash）、`t`/`→`/Enter attach 到它的会话（Enter 在 M58 里改为进评审）、`n` 下一个需要你的、`r` 重载、Esc 关闭。`b` 的 note 属于写它的那个任务，不管输入期间选中项因重载移到哪里。覆盖层若被别的覆盖层顶替而没关，就不再跟随板；`Ctrl+N` 在第一次还在载入时再按不会多开。
+- **值班 agent 的 `hub_task_start`**（`adapters/pi/concierge.ts`，加入 `ACT_TOOLS`，所以只有 `/concierge act on` 才可用）：值班 agent **在自己的进程里**用 `createTaskWorktree` 建 worktree、用 `buildLaunch`（`taskPrompt` 作首条提示）构造 pi 启动参数，再发 `task {action:"start", workspace, launch}`；任务已有工作区（没有活持有者）就复用它，不再新建。拒绝的 start 会丢掉刚建的 worktree（`refusedByDaemon` 才丢，网络错误之类不丢）。daemon 这边：值班 agent 的 `start` 在 `act` 开着时放行，否则回 `policy`（会话和其他人仍回 `unsupported`）；对新的工作区额外校验 `baseSha` 在 `refs/heads/<baseRef>` 上且在 worktree 的 `HEAD` 之下（调用方，包括值班 agent，不能指定别的分支去合并）；去掉 launch 环境里值班 agent 的角色变量和任何 job 的身份变量（`ROOST_JOB*`、`PI_ROOST_SOCKET` 之类）、拒绝档案（只起 pi 会话）、`origin` 记为 `dispatch`、清掉 `requestId`；记一条 `concierge` 事件（`why: "act"`，"started #N (…) in 分支"）。提示词写明：用户要求或有常备指令才启动，合并永远是用户的。
+- **与路线图的出入**：路线图（M55 的范围外一节）原本让 hub 代为执行，需要 daemon 向 hub 发请求，这个通道不存在；实际做法是值班 agent 自己在进程里建 worktree 和 launch（git 步骤和 launch 构造本来就在 `lib/`），daemon 仍做 start 的全部检查。**已知缺口**：daemon 把值班 agent 的 launch（argv、`sessionFile`、环境策略）在上述校验之后原样收下（和 M45 起的 `hub_dispatch` 一样）；由 daemon 为值班 agent 重建 launch 留给 M59 加固。
+- **范围外**：diff 与评论（M58）、搁置（`h`，M59）、鼠标。
+
+**验收标准**：`workspace-view.test`（分组与顺序、已合并的窗口与上限、图标、下一个需要你（回绕、会话在问）、各阶段的按键、详情行、一行）；`task-git.test` 的 `taskChanges`（真仓库：已提交与未提交、新文件、任务自己改名的文件、基线上改名的文件、基线自己的提交不计入、没有基线）；`agent-view.test`（`/workspaces` 宽屏并排、窄屏上下，`Ctrl+N` 停在下一个需要你的，`n` 回绕，`m`、带 note 的 `b`、开放任务的 `s`，阶段没有的键不动作，板头提示）；`comms.test`（值班 agent 的 start 在没有 act 时被拒、有 act 时放行，job 环境里没有值班 agent 的角色，会话被拒）。
+
+移植提示：总览只是 `/tasks` 的一层皮，所有动作都走同一套 op，界面不自己决定什么能做；"相对基线改了什么"要用共同祖先而不是基线当前的头，否则基线前进会让每个任务看起来都"删除"了别人的改动。
+
+### Step 57：评审——diff、行评论与退回（M58，`docs/plans/m58-review.md`）
+
+在 hub 里看一个任务相对基线的 diff，在行上写评论，一次性连同退回发给会话；终端里有同样的 `pi-roost review`。合并前的重新 verify 不在本步（基线动了，验证仍由人按 `v`）。
+
+- **入口**：总览里选中任务按 Enter，或 `/tasks review <id>`；Esc 回总览（从总览进来的话）。键：`j`/`k` 行、`n`/`p` 上/下一个 hunk、`]`/`[` 下/上一个文件、`c` 在光标行写评论、`d` 删该行最后一条、`b` 退回（写 note，回车）、`m` 合并、`r` 重载。`m`/`b` 之后评审关闭；合并或退回没成功（冲突、被拒）则评审保持打开，忙时的 Enter 保留已键入的文字；载入失败回总览；载入期间再按 Enter 不会多开。评审打开时光标在 diff 的第一行，`]` 落在文件第一行，`p` 去的是上一个 hunk（不是停在当前这个）。
+- **diff**（`lib/task-diff.ts` `taskDiff(path, baseRef)`）：从分支与基线的共同祖先（`merge-base HEAD refs/heads/<base>`）到工作树，`git diff -M`，所以已提交和未提交的都在、基线自己后来的提交不在；未跟踪文件当新文件；忽略 `diff.noprefix` 和外部 diff 驱动。按文件、按 hunk 显示，行号是新版本的（被删的行用旧版本的）；改名写 `old → new`；二进制文件一行；变更超过 **2000 行**或 **256 KiB** 的文件只显示一行说明（"用编辑器打开"）；整个 diff 最多读 **4 MiB**（超过则 `truncated`，显示"cut short"）；单行最多 2000 字符再按宽度用 `…` 截断，不折行；tab 显示为四个空格，控制字符显示为空格。没有 hunk 的文件会说明原因（只改名、空文件、只改权限）。
+- **评论**（`lib/board.ts` `ReviewComment` `{file, line, text, lineText, tip, at}`）：`lineText` 是该行的种类加内容（`+drop table users;`），`tip` 是评论时的提交。评论落在"文件相同、行号相同、且（若存了 `lineText`）内容相同"的行下面（`lib/review.ts` `commentOn`）；对不上的是**过期评论**（outdated）：列在文件顶部，保留不丢。指向已不在 diff 里的文件的评论，在最后一个文件之后单独占一页，`d` 在那里也能删。
+- **daemon**（`task comment` / `task uncomment`，只有人——hub 或 CLI；会话和值班 agent 回 `unsupported`；已 merged 的任务回 `bad_request`）：`comment {file, line ≥ 1, text, lineText?, tip?}`，文件名 ≤ 4096、文本走 `taskText`（`TASK_TEXT_MAX`）、`lineText` ≤ 1000、`tip` 必须是 sha；每个任务最多 **200** 条（`REVIEW_COMMENTS_MAX`），满了让先退回；`at` 取 `max(now, 上一条的 at + 1)`，所以同一任务里唯一。`uncomment {comment: {file, line, at}}` 用文件、行号和时间指名（不用列表下标，hub 看到的列表可能已变），找不到回 `not_found`。结果 `note` 是"N comments"。
+- **退回**（M55 的 `back` 增强）：评论随消息发给活着的持有会话（`reviewText`：每条 `- 文件:行 (行内容前 120 字符): 评论`，总长 ≤ **4000** 字符 `REVIEW_TEXT_MAX`，放不下的计入"… and N more comments, sent with the next send-back"）。**只清掉真正送达的**：`tellOwner` 现在被等待并返回是否送达/排队；不收消息的会话（回 false）评论保留，note 说明；放不下的几条留给下一次退回，note 数出来。note 形如 `sent back (2 comments): …`。没有活会话时评论保留，下一次 `/tasks start` 把它们写进会话首条提示（`taskPrompt`："The review asks for changes…"），且只清掉提示里实际带上的那几条（同一份列表、同一个截断）。
+- **CLI**：`pi-roost review <id>` 打印 diff 与评论（文件、hunk、行下评论、过期评论、不在 diff 里的文件的评论）；`review <id> comment <file>:<line> <text>` 取新版本里该行号的行（只有新版本没有时才取被删的行），不在 diff 里的行拒绝；`review <id> back [note]`。打印时名字和评论里的控制字符（C0、DEL、C1、换行）一律换成空格（`termText`）。
+- **范围外**：合并前基线移动后的重新 verify；并排 diff；行区间评论；语法着色。
+
+**验收标准**：`task-diff.test`（解析器：改名、二进制、带引号的路径、末尾无换行、省略的计数、只改权限、各上限；真仓库上的 `taskDiff`：基线后来的提交不计入、未跟踪、二进制、摘要、含空格和非 ASCII 的名字）；`review.test`（评论的位置、过期评论、打印的评审）；`agent-view.test`（总览 Enter 进评审、移动、`c` 发出的内容、评论在行下、`d`、`]` 到二进制文件、Esc 回总览、带 note 的 `b`、`/tasks review`、10–120 列各宽度）；`comms.test`（hub 加评论，会话和坏输入被拒，`uncomment`，`back` 把评论发给会话并清掉）。
+
+移植提示：评论要同时记行号和行内容，行动了就标过期而不是悄悄挂到别的行上或丢掉；"清掉已发送的评论"必须以送达为准，而且按对象身份（不是下标），因为发送期间别的评论可能进来。
+
 ---
 
 ## 5. 配置项（`lib/config.ts`）
@@ -1304,6 +1338,13 @@ M61 是用户在 2026-11-06 要求提前做的（和 M48 先于 M47 一样），
 | host `command` op 的文本上限（M61） | 500 字符（单行、以 `/` 开头、无控制字符） | `host/main.ts` |
 | 会话 `commands.json` 的条数上限（M61） | 300（描述 ≤200 字符） | `lib/pi-commands.ts` `MAX_SESSION_COMMANDS` |
 | 档案声明的命令数上限（M61） | 100 | `lib/profiles.ts` |
+| 评审里一个文件的变更行数 / 字节上限（M58） | 2000 行 / 256 KiB（超过只显示一行说明） | `lib/task-diff.ts` `DIFF_FILE_MAX_LINES` / `DIFF_FILE_MAX_BYTES` |
+| 评审一次读取的 diff 总量（M58） | 4 MiB（超过则 `truncated`） | `lib/task-diff.ts` `DIFF_TOTAL_MAX_BYTES` |
+| 评审里单行的字符上限（M58） | 2000（显示时再按宽度用 `…` 截断） | `lib/task-diff.ts` `DIFF_LINE_MAX` |
+| 一个任务的评审评论条数（M58） | 200 | `lib/board.ts` `REVIEW_COMMENTS_MAX` |
+| 退回时发给会话的评论文本（M58） | 4000 字符（放不下的留给下一次退回） | `lib/board.ts` `REVIEW_TEXT_MAX` |
+| 总览里已合并任务的数量 / 时间窗（M57） | 10 条 / 1 天 | `lib/workspace-view.ts` `WS_MERGED_MAX` / `WS_MERGED_MS` |
+| 总览改为上下排版的宽度（M57） | 小于 100 列 | `hub/agent-view.ts`（`width >= 100` 才并排） |
 
 调试用环境变量：`PI_ROOST_HOME` `PI_ROOST_RUNTIME_DIR` `PI_ROOST_CONFIG_DIR` `PI_ROOST_HOST_ENTRY` `PI_ROOST_REAP_MINUTES` `PI_ROOST_REAP_CHECK_MS` `PI_ROOST_SHELL_KEEP_MS` `PI_ROOST_PROGRESS_MS` `PI_ROOST_FIRST_PROGRESS_MS`；v0.1.7 新增：`PI_ROOST_AUTO_CLOSE_MS`（M13）、`PI_ROOST_CLEANUP_DAYS` `PI_ROOST_CLEANUP_CHECK_MS`（M15）、`PI_ROOST_PR_POLL_MS` `PI_ROOST_GH`（M16，`gh` 可执行文件路径）——测试全靠它们把时间缩短、把目录隔离到临时路径、用假的 `gh`。（内部标记变量 `PI_ROOST_RESTORE`、`PI_ROOST_CHILD` 见 §3。）
 
@@ -1330,7 +1371,7 @@ v0.1.14 新增：`PI_ROOST_WATCH_TTL_MS`（M43）；`PI_ROOST_CONCIERGE_COALESCE
 
 ## 8. 测试策略
 
-`test/` 下 **46 个** vitest 文件（v0.1.7 时 25 个，v0.1.12 时 38 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
+`test/` 下 **49 个** vitest 文件（v0.1.7 时 25 个，v0.1.12 时 38 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
 
 | 测试 | 覆盖 | 移植难度 |
 |---|---|---|
@@ -1374,6 +1415,8 @@ v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"�
 v0.1.16 新增（M50–M53）：`comms` 的 "M50"（协议 agent 收发消息、`peers`、watch、交办、拒绝不收的）"M51"（写出后断线的回复只排队一次）"M52"（多仓库与 worktree 的板、可认领通知）；`daemon` 的协议一致性用例改成 hub 交办、agent 收到消息后认领；`request-once.test`（M51）；`board.test`（M52 的 `projectOf` 等纯函数，用真 git）；`earlier-history.test`（M53：边界、用 pi 组件画、在 pi-tui 真实布局帧里的加载与锚定、对着假 pi 的挂载/重置/移除）；测试夹具 `agent-ts.ts`/`agent-py.py` 加了 `onMessage`。测试总数 452。
 
 v0.1.17 新增（M54–M56、M61）：`task-git.test`（M55：真仓库上的 worktree 创建、同步、ff/no-ff/update-ref 合并、移动的基线、钩子失败、清理、合并锁）；`project-config.test`（M56：从基线分支读配置、覆盖、批准、日志尾）；`pi-commands.test`（M61：内建清单对照已安装的 pi）；`board.test` 加 M54 的工作区、依赖与计数；`comms.test` 加 M54 加载规范化、M55 start/done/merge/重启结算、M56 verify/setup/批准/超时/排队；`host.test` 加 `command` op；`worker-wiring.test` 加 `commands.json`；`agent-view.test` 加 M61 的命令菜单与 `/tasks` 新动作；`profiles.test` 加 `commands` 校验。测试从不运行真的测试命令（M56 的 fork 炸弹教训）。测试总数 522（46 个文件）。
+
+v0.1.18 新增（M57–M58）：`workspace-view.test`（M57：分组、顺序、图标、按键、详情）；`task-diff.test`（M58：diff 解析器与真仓库上的 `taskDiff`）；`review.test`（M58：评论位置、过期评论、打印的评审）；`task-git.test` 加 `taskChanges`；`agent-view.test` 加总览（宽/窄、`Ctrl+N`、各键）与评审（移动、评论、退回、各宽度）；`comms.test` 加值班 agent 的 start（有无 act）、评论/`uncomment`、`back` 带评论。测试总数 565（49 个文件）。
 
 **单列**：
 - `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos board soak`（默认跑前四个；`board` 是 M49 加的），不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
@@ -1422,12 +1465,14 @@ v0.1.17 新增（M54–M56、M61）：`task-git.test`（M55：真仓库上的 wo
 35. （M52）项目只认 git 仓库（向上找 `.git`，worktree 读 `commondir`）；不在仓库里的会话只看到"给任何人"的任务；会话的项目在任务添加时固定，会话后来换目录不会带走任务（已持有的仍归它）；一个被交办但还没认领的会话换到别的项目后就看不到那个任务了；跨项目交办被拒。
 36. （M53）只在 pi 全屏模式（默认）里生效，主屏模式（`tuiMode: "regular"`）和前台 pi 不变；靠 pi 1.5.0 的布局树（primary `ScrollView`、文档容器最后一个子节点是聊天容器、`currentScrollTop` 字段），pi 改了这些就要跟着改；扩展工具的自定义渲染器拿不到，用通用样式；扩展的自定义条目渲染、cache 预热提示不显示；`hideThinkingBlock`/`outputPad` 只在会话开始时读；Ctrl+O 的展开状态按加载那一刻。
 37. （M61）peek 里打内建命令时，若会话的 pi 编辑器里还留着上次 attach 没发的草稿（Ctrl+G/← 离开时可能留下），粘贴的命令接在草稿后面，**一起提交**；扩展命令的参数补全没有（pi 只在自己的编辑器里补，菜单只列名字和描述）；pi 的内建清单是写死的 1.5.0 版，靠测试对照已装的 pi 才能发现过期；每个 peek 一次只跑一个内建命令。
-38. （M55）`no-ff` 合并需要基线分支在某个检出里（否则只能快进）；合并后若仍有会话在任务的 worktree 里，worktree 和分支留着（目录不能在它脚下消失），要手工 `git worktree remove` / `git branch -d`，M59 的 `/tasks cleanup` 才会清；值班 agent 不能 `start` 任务（`hub_task_start` 要 daemon 向 hub 发请求，尚无，计划在 M57），只能 `back` 和发消息；bare 仓库不支持 `start`（没有主检出可分支）；`merge` 只有 hub/CLI，会话和值班 agent 不能合并；回退到 v0.1.16 的 daemon 会在第一次保存时丢掉任务的 `workspace`。
+38. （M55）`no-ff` 合并需要基线分支在某个检出里（否则只能快进）；合并后若仍有会话在任务的 worktree 里，worktree 和分支留着（目录不能在它脚下消失），要手工 `git worktree remove` / `git branch -d`，M59 的 `/tasks cleanup` 才会清；值班 agent 在 `/concierge act on` 时可以 `start` 任务（M57 的 `hub_task_start`，见第 40 条），否则只能 `back` 和发消息；bare 仓库不支持 `start`（没有主检出可分支）；`merge` 只有 hub/CLI，会话和值班 agent 不能合并；回退到 v0.1.16 的 daemon 会在第一次保存时丢掉任务的 `workspace`。
 39. （M56）verify 日志（`<roostHome>/verify/`）在 M59 之前不清理；批准的 hash 只覆盖命令文本，不覆盖它调用的脚本和测试文件；命令拿到的是经用户环境策略过滤的 daemon 环境；排队中的 verify 只能靠 `drop` 取消；`merge` 不会因基线移动而重新 verify（M58）；`teardown` 还没有。
+40. （M57）值班 agent 的 `hub_task_start` 是在它自己的进程里建 worktree 和 launch 的（路线图原本让 hub 做，见 Step 56）：daemon 校验任务、`baseSha`、去掉角色与 job 身份的环境变量，但**不重建**值班 agent 的 launch（argv、`sessionFile`、环境策略原样收下，同 `hub_dispatch`），由 daemon 重建留给 M59；总览里每个任务的改动每 5 s 或在阶段/note/verify 变化时才重读，所以可能略有滞后（`r` 强制）；没有搁置（`h`，M59）和鼠标；总览按仓库分，不在仓库里的 hub 才混列所有项目；已合并的只显示最近一天、最多 10 条。
+41. （M58）评审是按文件一页一页看的纯文本 diff：没有并排、没有行区间评论、没有语法着色；评论只挂在一行上，行号和内容都对得上才算在原处，否则标过期（保留，但要人自己对照）；超过 2000 行或 256 KiB 的文件、超过 4 MiB 的整个 diff 不展示（要在编辑器里看）；合并前基线移动后不会自动重新 verify（按 `v` 手动）；评论是人写的：会话和值班 agent 不能加、不能删；不收消息的会话收不到退回的评论，它们留在任务上，等下一次 `/tasks start` 写进首条提示；`pi-roost review ... comment` 只能挂在 diff 里已有的行上。
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.17）
+## 附录 A：daemon op 一览（v0.1.18）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -1455,7 +1500,7 @@ v0.1.17 新增（M54–M56、M61）：`task-git.test`（M55：真仓库上的 wo
 | `concierge-ask {text}` | hub（M44） | `?` 提问 |
 | `concierge-say {kind, text}` `concierge-policy` `concierge-suggest {id, text, why?}` `concierge-reply {id, text, why?}` `concierge-act {what, id \| launch, why?}` | 值班 agent 自己的连接（M44/M45） | 通知/读策略/建议/代答（闸门：`policy`）/启停（闸门：`policy`） |
 | `concierge-order {action: add \| rm \| list \| applied}` | hub 与值班 agent（M46） | 常备指令 |
-| `task {action: list \| add \| claim \| release \| done \| drop \| assign \| start \| merge \| back \| abort \| commit \| approve \| verify \| pass}` | 任意（M47）；`start merge abort commit approve verify pass` 只有 hub/CLI，`back` 还有值班 agent | 共享任务板；动作者由连接决定，见 Step 46；新动作见 Step 54–55 |
+| `task {action: list \| add \| claim \| release \| done \| drop \| assign \| start \| merge \| back \| abort \| commit \| approve \| verify \| pass \| comment \| uncomment}` | 任意（M47）；`merge abort commit approve verify pass comment uncomment` 只有 hub/CLI，`start` 还有值班 agent（M57，需 `act`），`back` 还有值班 agent | 共享任务板；动作者由连接决定，见 Step 46；新动作见 Step 54–55 |
 
 **v0.1.12 的 op 与字段变化**（在上表 v0.1.7 内容之上）：
 - **新增 op**：`hello`（M31）、`schedules` `schedule-add` `schedule-rm` `schedule-pause` `schedule-run`（M39）。`lib/protocol.ts` 的 `OpArgs`/`OpResults` 是权威清单。
@@ -1494,6 +1539,13 @@ v0.1.17 新增（M54–M56、M61）：`task-git.test`（M55：真仓库上的 wo
 - **`JobRow`/job 记录**：job 记录新增 `task`（M55，为任务在其 worktree 里启动的会话，不带 `worktree`）、`verifyOf`/`setupOf`（M56，那些 shell job 属于哪个任务）；roost home 新增 `approvals.json`、`projects/<hash>.json`、`verify/<id>-<round>.log`；job 目录新增 `commands.json`（M61）。
 - **host 帧协议 control op** 多了 `command {text}`（M61，仅 pi worker，≤500 字符的单行斜杠命令，bracketed paste + `\r`）。
 - **config**：`taskMerge`（M55）；`.roost/project.json`（M56，从基线分支读）；档案的 `commands`（M61）。
+
+**v0.1.18 的变化**（M57–M58，没有新 op，`task` 多了动作）：
+- **`task` 的新动作**（M58）：`comment {id, comment:{file, line, text, lineText?, tip?}}`、`uncomment {id, comment:{file, line, at}}`（只有人：hub、CLI；已 merged 的任务拒绝；每任务最多 200 条）；`back` 现在把评论随消息发给持有者并清掉送达的，没有活会话则留给下一次 `start` 的提示。
+- **值班 agent 可以 `start`**（M57）：`act` 开着时放行，否则回 `policy`；新工作区的 `baseSha` 要在 `refs/heads/<baseRef>` 上且在 worktree 的 `HEAD` 之下；launch 的值班 agent 角色和 job 身份环境变量被去掉，档案被拒；记一条 `concierge` 事件（`why: "act"`）。
+- **`BoardTask.workspace.comments`**（M58，`ReviewComment {file, line, text, lineText, tip, at}`）；`docs/protocol.md` 已描述。
+- **CLI**：`pi-roost review <id>`、`review <id> comment <file>:<line> <text>`、`review <id> back [note]`（M58）。hub 新增 `/workspaces`（`/ws`）、`Ctrl+N`、`/tasks review <id>`。
+- **值班 agent 的工具**：`hub_task_start`（M57，在 `ACT_TOOLS` 里）。
 
 **v0.1.7 没有新增 op**：M11–M20 的新功能都复用现有 op，只在字段上扩展——`list`/`job` 事件里的 `JobRow` 新增 `parentOpen`（M13）、`agent`（M18）、`prs`（M16，`PrInfo[]`），M10 的 `worktree`；`dispatch` 的 `DispatchArgs` 新增 `agent` `workspaceEnv` `envDeny` `envForce`；`report` 的 `WorkerReport` 新增 `attachRepaint`（M21 起只有旧 host 读）`remoteAt` `prLinks`。`reply`（M19 记录视图发消息、M12b 面板 `m`）、`respawn`（M13 唤醒休眠的子会话）、`rm`（M15 `.worktreeinclude` 感知的清理）语义不变。host 帧协议新增：attach 的首个回复帧 `HELLO {repaint}`（M14）/ `{replay:true}`（M21，之后第一帧 DATA 是快照），`attached.json` 的 `replay`（M21），数据流里的私有标记 `OSC 7700;pi-roost-repaint`（M21 起 host 只负责剔除）。
 
@@ -1627,8 +1679,11 @@ v0.1.17 新增（M54–M56、M61）：`task-git.test`（M55：真仓库上的 wo
 | `c470c4f` | PR #84：M61 会话自己的斜杠命令进 peek（按用户要求在 M55 之前做） |
 | `78b47d9` | PR #85：M55 `/tasks start` 与 `/tasks merge` |
 | `1f26d30` | PR #86：M56 合并前验证、项目配置与信任 |
-| （发布提交） | PR #87：发布 v0.1.17（本文依据，tag `v0.1.17`；代码与 `1f26d30` 相同） |
+| `5ce0be7` | PR #87：发布 v0.1.17（tag `v0.1.17`；代码与 `1f26d30` 相同） |
+| `6d96617` | PR #88：M57 工作区总览与值班 agent 的 `hub_task_start` |
+| `a10e666` | PR #89：M58 评审（diff、行评论、退回） |
+| （发布提交） | PR #90：发布 v0.1.18（本文依据，tag `v0.1.18`；代码与 `a10e666` 相同） |
 
-> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=`801e9e9`，`v0.1.17`=PR #87 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=`801e9e9`，`v0.1.17`=`5ce0be7`，`v0.1.18`=PR #90 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
 
-所需 pi 最低版本（v0.1.17 / v0.1.16 / v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证（v0.1.17 的 M61 内建命令清单对照 1.5.0 的 `slash-commands.js` 核对，并在真 pi 1.5.0 上验证了 bracketed paste 的 `/session`），M53 依赖的布局树结构也是在 1.5.0 上核对的，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
+所需 pi 最低版本（v0.1.18 / v0.1.17 / v0.1.16 / v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证（v0.1.17 的 M61 内建命令清单对照 1.5.0 的 `slash-commands.js` 核对，并在真 pi 1.5.0 上验证了 bracketed paste 的 `/session`），M53 依赖的布局树结构也是在 1.5.0 上核对的，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
