@@ -2,6 +2,8 @@
 // pending / in progress / completed, claimed with a lock, dependencies that unblock). The
 // daemon keeps it (tasks.json); sessions take work from it (roost_task_*), the hub shows
 // and edits it (/tasks), the concierge works it as the lead (hub_task_*).
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { eventAgo } from "./events.ts";
 
 export interface BoardTask {
@@ -21,11 +23,67 @@ export interface BoardTask {
 	result: string | null;
 	/** Handed to a session by the hub or the concierge (a message there); open until that session claims it. */
 	assigned: { id: string; name: string; at: number } | null;
+	/** M52: the project it is for (a repository's root, projectOf); null: any session's. */
+	project: string | null;
+	/** M52: sessions told when it can be claimed (refused as blocked); at most TASK_WAITING_MAX. */
+	waiting: { id: string; name: string }[];
 }
 
 export const TASK_MAX = 200;
 export const TASK_TITLE_MAX = 200;
 export const TASK_TEXT_MAX = 2000;
+export const TASK_WAITING_MAX = 20;
+
+/**
+ * M52: the project a directory is in: the root of its git repository, a worktree's being
+ * its repository's (roost's isolated sessions share the board of the repository they
+ * branch); null outside a repository (such a session sees the tasks for anyone).
+ */
+export function projectOf(cwd: string | null | undefined): string | null {
+	if (!cwd || !isAbsolute(cwd)) return null;
+	let dir: string;
+	try {
+		dir = realpathSync(cwd);
+	} catch {
+		dir = resolve(cwd);
+	}
+	for (;;) {
+		const git = join(dir, ".git");
+		try {
+			if (statSync(git).isDirectory()) return dir;
+			// a worktree's .git is a file: `gitdir: <repository's git dir>/worktrees/<name>`
+			const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(git, "utf8"));
+			return m ? repositoryOf(resolve(dir, m[1]!.trim()), dir) : dir;
+		} catch {}
+		const up = dirname(dir);
+		if (up === dir) return null;
+		dir = up;
+	}
+}
+
+/**
+ * M52: the project of a checkout whose .git file points at `gd`. A linked worktree's git dir
+ * has a `commondir` naming the repository's: its parent for a `.git` dir, the bare
+ * repository itself otherwise. A submodule's (no commondir) is the checkout itself.
+ */
+function repositoryOf(gd: string, dir: string): string {
+	let common: string;
+	try {
+		common = resolve(gd, readFileSync(join(gd, "commondir"), "utf8").trim());
+	} catch {
+		return dir;
+	}
+	try {
+		common = realpathSync(common);
+	} catch {}
+	return basename(common) === ".git" ? dirname(common) : common;
+}
+
+/** M52: a project's short name (its directory's), or "any" for the tasks for any session. */
+export const projectLabel = (p: string | null): string => (p ? basename(p) : "any");
+
+/** M52: a task a session of `project` sees and may take: its project's, or one for any session. */
+export const onBoardOf = (t: Pick<BoardTask, "project">, project: string | null): boolean => t.project === null || t.project === project;
 
 export interface BoardSummary {
 	open: number;
@@ -71,8 +129,9 @@ export function summaryLine(s: BoardSummary): string {
 /** M49: one line of a title, a result, a name: the board's lines in a digest are the digest's, whatever was stored. */
 const line = (s: string): string => s.replace(/\s+/g, " ").trim();
 
-export function taskLine(t: BoardTask, all: Iterable<BoardTask>, now = Date.now()): string {
-	const title = line(t.title);
+export function taskLine(t: BoardTask, all: Iterable<BoardTask>, now = Date.now(), projects = false): string {
+	// M52: the project's name, when the tasks shown are of more than one
+	const title = `${projects ? `[${projectLabel(t.project ?? null)}] ` : ""}${line(t.title)}`;
 	if (t.state === "done") return `#${t.id} done${t.doneAt ? ` ${eventAgo(t.doneAt, now)} ago` : ""}${t.owner ? ` by ${line(t.owner.name)}` : ""} · ${title}${t.result ? ` → ${line(t.result)}` : ""}`;
 	if (t.state === "dropped") return `#${t.id} dropped · ${title}`;
 	if (t.state === "claimed") return `#${t.id} claimed by ${line(t.owner?.name ?? "?")}${t.claimedAt ? ` (${eventAgo(t.claimedAt, now)})` : ""} · ${title}`;
@@ -88,13 +147,17 @@ export function liveOrder(t: BoardTask, all: BoardTask[]): number {
 }
 
 /** The board for a digest: the summary line, then every task that is not done or dropped (open, blocked, claimed). */
+/** M52: whether the tasks are of more than one project (then each line names its own). */
+export const manyProjects = (all: BoardTask[]): boolean => new Set(all.map((t) => t.project ?? null)).size > 1;
+
 export function boardLines(all: BoardTask[], now = Date.now()): string[] {
+	const projects = manyProjects(all);
 	const s = boardSummary(all);
 	const out = [`The board (${summaryLine(s)}):`];
 	const live = all.filter((t) => t.state === "open" || t.state === "claimed");
 	if (live.length === 0) out.push(s.done > 0 ? "- every task is done" : "- empty");
 	const order = (t: BoardTask) => liveOrder(t, all);
-	for (const t of [...live].sort((a, b) => order(a) - order(b) || a.id - b.id)) out.push(`- ${taskLine(t, all, now)}`);
+	for (const t of [...live].sort((a, b) => order(a) - order(b) || a.id - b.id)) out.push(`- ${taskLine(t, all, now, projects)}`);
 	return out;
 }
 
@@ -105,7 +168,7 @@ export function boardListing(all: BoardTask[], now = Date.now(), doneMax = 10): 
 	const shown = done.slice(-doneMax);
 	if (shown.length > 0) {
 		out.push(done.length > shown.length ? `Done (the last ${shown.length} of ${done.length}):` : "Done:");
-		for (const t of shown) out.push(`- ${taskLine(t, all, now)}`);
+		for (const t of shown) out.push(`- ${taskLine(t, all, now, manyProjects(all))}`);
 	}
 	return out;
 }

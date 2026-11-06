@@ -311,8 +311,9 @@ export interface OpArgs {
 	 * (the hub's, the concierge's), hand one to a session (a message there).
 	 */
 	task:
-		| { action: "list" }
-		| { action: "add"; title: string; detail?: string; after?: number[] }
+		// M52: the hub and the concierge name a project by a directory in its repository (a session's is where it works)
+		| { action: "list"; project?: string }
+		| { action: "add"; title: string; detail?: string; after?: number[]; project?: string | null }
 		| { action: "claim"; id: number }
 		| { action: "release"; id: number }
 		| { action: "done"; id: number; result?: string }

@@ -425,14 +425,15 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 	pi.registerTool({
 		name: "hub_task_add",
 		label: "Add a task",
-		description: "Put a task on the board, when the user asks for one. A task may wait on others (after: their numbers): it is claimable once those are done.",
+		description: "Put a task on the board, when the user asks for one. A task may wait on others (after: their numbers): it is claimable once those are done. project: a directory in the repository it is for (a session's cwd there): only sessions working in that repository see and take it; left out, any session may.",
 		parameters: Type.Object({
 			title: Type.String({ description: "One line (at most 200 characters)" }),
 			detail: Type.Optional(Type.String({ description: "What doing it means, for the session that takes it (at most 2000 characters)" })),
 			after: Type.Optional(Type.Array(Type.Number(), { description: "Task numbers it waits on" })),
+			project: Type.Optional(Type.String({ description: "An absolute directory in the repository the task is for" })),
 		}),
 		async execute(_id, params) {
-			const r = await link.call("task", { action: "add", title: params.title, detail: params.detail, after: params.after });
+			const r = await link.call("task", { action: "add", title: params.title, detail: params.detail, after: params.after, ...(params.project ? { project: params.project } : {}) });
 			return text(`Added #${r.task?.id}: ${r.task?.title}${params.after?.length ? ` (after ${params.after.map((i) => `#${i}`).join(", ")})` : ""}.`);
 		},
 	});
@@ -440,7 +441,7 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 	pi.registerTool({
 		name: "hub_task_assign",
 		label: "Hand a task over",
-		description: "Hand an open task to a session: it gets a message with the task and claims it with roost_task_claim. Pick an idle session (hub_sessions), or one that works on something related; a blocked task is handed over with its waits named.",
+		description: "Hand an open task to a session: it gets a message with the task and claims it with roost_task_claim. Pick an idle session (hub_sessions), or one that works on something related; a task of a project ([name] on the board) goes to a session working in that repository; a blocked task is handed over with its waits named.",
 		parameters: Type.Object({
 			id: Type.Number({ description: "The task's number" }),
 			to: Type.String({ description: "Session id or exact name" }),

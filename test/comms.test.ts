@@ -1209,12 +1209,14 @@ describe("M47: the shared task board", () => {
 			"user add #2 the tests",
 			"api claim #1 the schema",
 			"api done #1 the schema: applied v2",
+			"roost open #2 the tests: #1 done",
 			"lead claim #2 the tests",
 			"lead release #2 the tests: given back",
 			"lead claim #2 the tests",
 			"user release #2 the tests: released by user",
 			"user add #3 later",
 			"user drop #2 the tests",
+			"roost open #3 later: #2 dropped",
 			"api claim #3 later",
 		]);
 		expect(feed.find((e) => e.why === "claim")).toMatchObject({ whoId: jobId, id: jobId });
@@ -1606,5 +1608,88 @@ describe("M51: a reply whose answer was lost", () => {
 		expect(r.saved || r.delivered).toBe(true);
 		const pending = (readState(id)?.pendingReplies as { text: string }[]).filter((p) => p.text === "only once");
 		expect(pending).toHaveLength(1);
+	});
+});
+
+describe("M52: the board by project, and told when a task can be claimed", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	/** A foreground pi working in `cwd`. */
+	async function foregroundIn(name: string, cwd: string): Promise<{ c: DaemonClient; events: Event[]; id: string }> {
+		const session = join(work, `${name}.jsonl`);
+		expect(acquireWriterLock(session).ok).toBe(true);
+		locks.push(session);
+		const { c, events } = await connect();
+		const { id } = await c.request("peer_register", { session, name, cwd, pid: process.pid });
+		return { c, events, id };
+	}
+
+	it("a session sees and takes its repository's tasks and those for any session; the hub names a project; a hand-over across projects is refused", async () => {
+		const hub = await startDaemon();
+		const api = join(work, "api");
+		const web = join(work, "web");
+		for (const r of [api, web]) {
+			execFileSync("mkdir", ["-p", r]);
+			git(r, "init", "-q");
+			writeFileSync(join(r, "f"), "x");
+			git(r, "add", ".");
+			git(r, "commit", "-qm", "x");
+		}
+		git(api, "worktree", "add", "-q", join(work, "api-iso"), "-b", "iso");
+		const a1 = (await hub.request("task", { action: "add", title: "api work", project: api })).task!;
+		const w1 = (await hub.request("task", { action: "add", title: "web work", project: web })).task!;
+		const any = (await hub.request("task", { action: "add", title: "for anyone" })).task!;
+		expect([a1.project, w1.project, any.project]).toEqual([realpathSync(api), realpathSync(web), null]);
+		await expect(hub.request("task", { action: "add", title: "x", project: "relative" })).rejects.toMatchObject({ code: "bad_request" });
+		// a pi in the api repository's worktree: the api board and the tasks for anyone
+		const p = await foregroundIn("isolated", join(work, "api-iso"));
+		expect((await p.c.request("task", { action: "list" })).tasks.map((t) => t.id)).toEqual([a1.id, any.id]);
+		await expect(p.c.request("task", { action: "claim", id: w1.id })).rejects.toMatchObject({ code: "not_found" });
+		expect((await p.c.request("task", { action: "claim", id: a1.id })).task?.state).toBe("claimed");
+		// what it adds is its project's
+		expect((await p.c.request("task", { action: "add", title: "follow-up" })).task?.project).toBe(realpathSync(api));
+		// the hub: every task, or one project's (and anyone's)
+		expect((await hub.request("task", { action: "list" })).tasks).toHaveLength(4);
+		expect((await hub.request("task", { action: "list", project: web })).tasks.map((t) => t.title)).toEqual(["web work", "for anyone"]);
+		// a session in the api repository is not handed the web task
+		const { id: jid } = await hub.request("dispatch", { ...launch("sleep 30", "api-job"), cwd: api });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === jid)?.pid);
+		await expect(hub.request("task", { action: "assign", id: w1.id, to: jid })).rejects.toMatchObject({ code: "unsupported" });
+	});
+
+	it("a session refused a task as blocked is told when it can be claimed, and so is the one it was handed to; the feed says so", async () => {
+		const hub = await startDaemon();
+		const first = (await hub.request("task", { action: "add", title: "the schema" })).task!;
+		const next = (await hub.request("task", { action: "add", title: "the migration", after: [first.id] })).task!;
+		const eager = await foreground("eager");
+		const doer = await foreground("doer");
+		await expect(eager.c.request("task", { action: "claim", id: next.id })).rejects.toMatchObject({ code: "blocked" });
+		expect((await hub.request("task", { action: "list" })).tasks.find((t) => t.id === next.id)?.waiting).toEqual([{ id: eager.id, name: "eager" }]);
+		await doer.c.request("task", { action: "claim", id: first.id });
+		await doer.c.request("task", { action: "done", id: first.id, result: "v2" });
+		const told = await waitFor(() => delivered(eager.events, "message").find((e) => e.text.includes(`Task #${next.id}`)));
+		expect(told.text).toContain("can be claimed now");
+		expect(told.from).toBe("roost");
+		expect((await hub.request("task", { action: "list" })).tasks.find((t) => t.id === next.id)?.waiting).toEqual([]);
+		const feed = (await hub.request("events", {})).events.filter((e) => e.kind === "task" && e.why === "open");
+		expect(feed.map((e) => e.text)).toEqual([`#${next.id} the migration: #${first.id} done`]);
+		// a task that still waits on another is not opened by one of its two
+		const a = (await hub.request("task", { action: "add", title: "a" })).task!;
+		const b = (await hub.request("task", { action: "add", title: "b" })).task!;
+		const both = (await hub.request("task", { action: "add", title: "after both", after: [a.id, b.id] })).task!;
+		await expect(eager.c.request("task", { action: "claim", id: both.id })).rejects.toMatchObject({ code: "blocked" });
+		await hub.request("task", { action: "done", id: a.id });
+		await new Promise((r) => setTimeout(r, 300));
+		expect(delivered(eager.events, "message").filter((e) => e.text.includes(`Task #${both.id}`))).toHaveLength(0);
+		await hub.request("task", { action: "drop", id: b.id });
+		await waitFor(() => delivered(eager.events, "message").find((e) => e.text.includes(`Task #${both.id}`) && e.text.includes("dropped")));
+		// the session that finished the task it waited on is not told what it did
+		const x = (await hub.request("task", { action: "add", title: "x" })).task!;
+		const y = (await hub.request("task", { action: "add", title: "y", after: [x.id] })).task!;
+		await expect(eager.c.request("task", { action: "claim", id: y.id })).rejects.toMatchObject({ code: "blocked" });
+		await eager.c.request("task", { action: "claim", id: x.id });
+		await eager.c.request("task", { action: "done", id: x.id });
+		await waitFor(async () => (await hub.request("events", {})).events.find((e) => e.kind === "task" && e.why === "open" && e.text?.startsWith(`#${y.id} `)));
+		await new Promise((r) => setTimeout(r, 300));
+		expect(delivered(eager.events, "message").filter((e) => e.text.includes(`Task #${y.id}`))).toHaveLength(0);
 	});
 });

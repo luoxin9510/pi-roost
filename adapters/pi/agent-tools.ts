@@ -175,7 +175,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 	pi.registerTool({
 		name: "roost_tasks",
 		label: "The task board",
-		description: "The shared task board: open tasks (take one with roost_task_claim), blocked ones (they wait on another task), claimed ones (a session works on them), done ones. Read it when you are free, or were handed a task.",
+		description: "The shared task board of the project you work in (your repository), and the tasks for any session: open tasks (take one with roost_task_claim), blocked ones (they wait on another task), claimed ones (a session works on them), done ones. Read it when you are free, or were handed a task.",
 		parameters: Type.Object({}),
 		async execute() {
 			const { tasks } = await link.call("task", { action: "list" });
@@ -186,7 +186,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 	pi.registerTool({
 		name: "roost_task_add",
 		label: "Add a task",
-		description: "Put a task on the board for any session to take: a piece of your work you hand off, or follow-up work you found. after: task numbers it waits on (claimable once those are done).",
+		description: "Put a task on your project's board for a session there to take: a piece of your work you hand off, or follow-up work you found. after: task numbers it waits on (claimable once those are done).",
 		parameters: Type.Object({
 			title: Type.String({ description: "One line (at most 200 characters)" }),
 			detail: Type.Optional(Type.String({ description: "What doing it means (at most 2000 characters)" })),
@@ -201,7 +201,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 	pi.registerTool({
 		name: "roost_task_claim",
 		label: "Claim a task",
-		description: "Take an open task: it is yours until roost_task_done or roost_task_release. Refused when another live session holds it (conflict), when it waits on tasks not done yet (blocked), or when it is done or dropped.",
+		description: "Take an open task: it is yours until roost_task_done or roost_task_release. Refused when another live session holds it (conflict), when it waits on tasks not done yet (blocked: you get a message when it can be claimed), or when it is done or dropped.",
 		parameters: Type.Object({ id: Type.Number({ description: "The task's number" }) }),
 		async execute(_id, params) {
 			const r = await link.call("task", { action: "claim", id: params.id });

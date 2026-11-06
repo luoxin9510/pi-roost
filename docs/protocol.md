@@ -286,17 +286,29 @@ moves on when that digest reached the concierge). `concierge` events: `why: "ord
 foreground pi's. The result is `{tasks: BoardTask[], task?, sent?}`, the tasks oldest
 first, with `{id, title, detail, state: open | claimed | done | dropped, after: ids,
 by: {who, whoId}, at, owner: {id, name} | null, claimedAt, doneAt, result, assigned:
-{id, name, at} | null}`.
+{id, name, at} | null, project: string | null, waiting: {id, name}[]}`.
 
-- `{action: "list"}`: the lot (done and dropped ones too; at most 200 are kept, the
-  done and dropped ones going first when it is full).
-- `{action: "add", title, detail?, after?: ids}`: a new task, `open`; `after` names
-  tasks on the board (`bad_request` otherwise); `full` at 200.
+Projects (M52): a task is for a project, the root of a git repository (a worktree counts
+as its repository), or for any session (`project: null`). A session's project is where it
+works (its job's directory, a foreground pi's); outside a repository it has none. A
+session lists, claims and finishes its project's tasks and the ones for any session (one
+of another project is `not_found` to it), and what it adds is its project's. The hub and
+the concierge see every task, or name a project by a directory in it (`project`, an
+absolute path; `bad_request` otherwise).
+
+- `{action: "list", project?}`: the lot (done and dropped ones too; at most 200 are kept,
+  the done and dropped ones going first when it is full).
+- `{action: "add", title, detail?, after?: ids, project?}`: a new task, `open`; `after`
+  names tasks on the board (`bad_request` otherwise); `full` at 200.
 - `{action: "claim", id}`: a session takes it (the hub and the concierge may not:
   `unsupported`). `blocked` while a task in `after` is neither done nor dropped;
   `conflict` while another live session holds it (one whose session is gone, failed,
   stopped or removed holds nothing: the task is released, with a `task` event, and taken
-  over); `bad_request` when done or dropped; one's own claim again is fine.
+  over); `bad_request` when done or dropped; one's own claim again is fine. Refused as
+  `blocked`, the session is kept in `waiting` (at most 20): when the tasks it waits on
+  are done or dropped, those sessions, the one it was handed to and the job that put it
+  on are told in a `message` (from `roost`) that it can be claimed, and the feed has a
+  `task` event with `why: "open"`.
 - `{action: "done", id, result?}` and `{action: "release", id}`: the owner's (the hub
   and the concierge may too, and the holder is then told in a `message`);
   `unsupported` for another session; `bad_request` when the state does not fit (done
@@ -304,7 +316,8 @@ by: {who, whoId}, at, owner: {id, name} | null, claimedAt, doneAt, result, assig
 - `{action: "drop", id}` and `{action: "assign", id, to}`: the hub's and the
   concierge's only. `drop` takes an open or claimed task off the board (a done one is
   `bad_request`); its holder is told in a `message`. `assign` sends the session (an
-  id or a unique name; `not_found`; a command is `unsupported`) a `message` delivery
+  id or a unique name; `not_found`; a command is `unsupported`, and so is a session
+  working outside the task's project) a `message` delivery
   with the task and how to claim it, and when the message reached it (`sent` is
   `delivered`, `queued` or `started`) marks the task `assigned` (cleared by the claim);
   a session that was not reached (`sent` says so) is not handed the task. An open task

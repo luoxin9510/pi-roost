@@ -65,7 +65,7 @@ describe("M51: requestOnce", () => {
 	it("a local error on a resend is not a refusal: it is tried again, and given up as lost (which undoes nothing)", async () => {
 		const asked: unknown[] = [];
 		let n = 0;
-		const err = await requestOnce(
+		const err = (await requestOnce(
 			async () => {
 				n++;
 				if (n === 1) return fake([new DaemonError("daemon connection closed", "closed")], asked);
@@ -75,19 +75,19 @@ describe("M51: requestOnce", () => {
 			"dispatch",
 			{ cwd: "/", sessionFile: "/s.jsonl", command: ["x"], env: {}, name: "n", origin: "dispatch" },
 			{ timeoutMs: 900 },
-		).catch((e: unknown) => e as DaemonError);
+		).catch((e: unknown) => e)) as DaemonError;
 		expect(n).toBeGreaterThan(2);
 		expect(err.code).toBe("lost");
 		expect(refusedByDaemon(err)).toBe(false);
 		// never sent: the error as it was (a new session's worktree may go)
-		const unsent = await requestOnce(
+		const unsent = (await requestOnce(
 			async () => {
 				throw new DaemonError("daemon did not start", "start_timeout");
 			},
 			"reply",
 			{ id: "j", text: "t" },
 			{ timeoutMs: 300 },
-		).catch((e: unknown) => e as DaemonError);
+		).catch((e: unknown) => e)) as DaemonError;
 		expect(unsent.code).toBe("start_timeout");
 		// a caller that is closing gives up at once
 		const t0 = Date.now();

@@ -46,7 +46,7 @@ import {
 } from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
-import { type BoardTask, blockedOn, boardSummary, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX } from "../lib/board.ts";
+import { type BoardTask, blockedOn, boardSummary, onBoardOf, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -924,6 +924,9 @@ function loadTasks(): void {
 				t.assigned && typeof t.assigned === "object" && str(t.assigned.id)
 					? { id: t.assigned.id, name: str(t.assigned.name) ? t.assigned.name : t.assigned.id, at: Number.isFinite(t.assigned.at) ? t.assigned.at : Date.now() }
 					: null,
+			// M52: tasks from before projects are any session's
+			project: str(t.project) && isAbsolute(t.project) ? t.project : null,
+			waiting: Array.isArray(t.waiting) ? t.waiting.filter((w) => w && str(w.id)).slice(0, TASK_WAITING_MAX).map((w) => ({ id: w.id, name: str(w.name) ? w.name : w.id })) : [],
 		});
 	}
 	const kept = Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
@@ -963,16 +966,39 @@ function sweepTasks(): void {
 	while (tasks.size >= TASK_MAX && gone.length > 0) tasks.delete(gone.shift()!.id);
 }
 
+/**
+ * M52: a directory's project, kept once found (a repository does not move under a running
+ * session); one outside a repository is looked up again (it may become one: git init).
+ */
+const projects = new Map<string, string>();
+function projectAt(cwd: string | null | undefined): string | null {
+	if (!cwd) return null;
+	const kept = projects.get(cwd);
+	if (kept !== undefined) return kept;
+	const p = projectOf(cwd);
+	if (p !== null) {
+		if (projects.size > 500) projects.clear();
+		projects.set(cwd, p);
+	}
+	return p;
+}
+
+/** M52: the project a session works in (its job's directory, a foreground pi's). */
+function sessionProject(id: string): string | null {
+	const p = fgPeers.get(id)?.peer;
+	return projectAt(recs.get(id)?.cwd ?? (p?.kind === "fg" ? p.cwd : null));
+}
+
 /** Who acts on the board: the hub ("user"), the concierge, or a session (a job by its id, a foreground pi by its peer id). */
-function boardActor(conn: Conn): { who: string; whoId: string | null; sessionId: string | null; concierge: boolean } {
+function boardActor(conn: Conn): { who: string; whoId: string | null; sessionId: string | null; concierge: boolean; project: string | null } {
 	const peer = conn.peer;
 	if (!peer) {
 		// an agent's connection before its report is accepted (or for a job that ended) is not the hub's
 		if (conn.agentSide) throw new OpError("unauthorized", "a session acts on the board after its report is accepted");
-		return { who: "user", whoId: null, sessionId: null, concierge: false };
+		return { who: "user", whoId: null, sessionId: null, concierge: false, project: null };
 	}
-	if (isConciergePeer(peer)) return { who: CONCIERGE_NAME, whoId: peer.id, sessionId: null, concierge: true };
-	return { who: peerName(peer), whoId: peer.kind === "job" ? peer.id : null, sessionId: peer.id, concierge: false };
+	if (isConciergePeer(peer)) return { who: CONCIERGE_NAME, whoId: peer.id, sessionId: null, concierge: true, project: null };
+	return { who: peerName(peer), whoId: peer.kind === "job" ? peer.id : null, sessionId: peer.id, concierge: false, project: peer.kind === "fg" ? projectAt(peer.cwd) : sessionProject(peer.id) };
 }
 
 const taskText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ").trim().slice(0, max) : "");
@@ -1010,6 +1036,29 @@ function releaseTask(t: BoardTask, why: string, a?: ReturnType<typeof boardActor
 	pushBoard();
 }
 
+/**
+ * M52: `d` was done or dropped: the tasks that waited on it and wait on nothing else now
+ * can be claimed. The sessions that were refused one as blocked, the one it was handed
+ * to, and the job that put it on are told (once; the feed says it too).
+ */
+function tellOpened(d: BoardTask, by: string | null): void {
+	const all = [...tasks.values()];
+	for (const t of all) {
+		if (t.state !== "open" || !t.after.includes(d.id) || blockedOn(t, all).length > 0) continue;
+		const told = new Map<string, string>();
+		for (const w of t.waiting) told.set(w.id, w.name);
+		if (t.assigned) told.set(t.assigned.id, t.assigned.name);
+		if (t.by.whoId && recs.has(t.by.whoId) && !isConcierge(t.by.whoId)) told.set(t.by.whoId, t.by.who);
+		if (by !== null) told.delete(by); // the session that did it knows
+		t.waiting = [];
+		saveTasks();
+		record({ kind: "task", id: d.owner?.id ?? "", name: "roost", who: "roost", whoId: null, why: "open", text: clipText(`#${t.id} ${t.title}: #${d.id} ${d.state}`) });
+		for (const [id, name] of told) {
+			tellOwner({ id, name }, "roost", `Task #${t.id} (${t.title}) can be claimed now: #${d.id}, which it waited on, is ${d.state}. Claim it with roost_task_claim if it is yours to do.`);
+		}
+	}
+}
+
 /** A session that ended (failed, stopped, removed) holds nothing: its claims are released. */
 function releaseClaimsOf(sessionId: string, why: string): void {
 	for (const t of tasks.values()) if (t.state === "claimed" && t.owner?.id === sessionId) releaseTask(t, why);
@@ -1025,10 +1074,19 @@ function ownerLive(id: string): boolean {
 /** The `task` op: the board, for the hub, the concierge and the sessions. */
 async function taskOp(
 	conn: Conn,
-	args: { action?: unknown; id?: unknown; title?: unknown; detail?: unknown; after?: unknown; result?: unknown; to?: unknown } | undefined,
+	args: { action?: unknown; id?: unknown; title?: unknown; detail?: unknown; after?: unknown; result?: unknown; to?: unknown; project?: unknown } | undefined,
 ): Promise<{ tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"] }> {
 	const a = boardActor(conn);
-	const all = () => [...tasks.values()].sort((x, y) => x.id - y.id);
+	// M52: the lead names a project by a directory in it (its repository); a session's is where it works
+	const named = (v: unknown): string | null => {
+		if (typeof v !== "string" || !isAbsolute(v)) throw new OpError("bad_request", "project: an absolute path in the repository");
+		return projectAt(v);
+	};
+	const lead = a.sessionId === null; // the hub, the concierge
+	const view = lead ? (args?.project !== undefined && args.project !== null ? named(args.project) : undefined) : a.project;
+	// a session sees its project's tasks and those for any session; the lead every task, or one project's
+	const all = () =>
+		[...tasks.values()].filter((t) => view === undefined || onBoardOf(t, view)).sort((x, y) => x.id - y.id);
 	const action = args?.action;
 	if (action === "list") return { tasks: all() };
 	if (action === "add") {
@@ -1059,6 +1117,8 @@ async function taskOp(
 			doneAt: null,
 			result: null,
 			assigned: null,
+			project: lead ? (args?.project !== undefined && args.project !== null ? named(args.project) : null) : a.project,
+			waiting: [],
 		};
 		tasks.set(t.id, t);
 		saveTasks();
@@ -1071,7 +1131,8 @@ async function taskOp(
 	const t = id !== undefined ? tasks.get(id) : undefined;
 	if (!t) throw new OpError("not_found", `no task #${String(args?.id)}`);
 	const mine = a.sessionId !== null && t.owner?.id === a.sessionId;
-	const lead = a.sessionId === null; // the hub, the concierge
+	// M52: a session acts on its project's tasks and those for any session (one it holds, whatever moved)
+	if (!lead && !mine && !onBoardOf(t, a.project)) throw new OpError("not_found", `no task #${t.id} on this session's board (it is ${projectLabel(t.project)}'s)`);
 	switch (action) {
 		case "claim": {
 			if (a.concierge) throw new OpError("unsupported", "the concierge hands tasks over (hub_task_assign); it does not take them");
@@ -1083,12 +1144,20 @@ async function taskOp(
 				releaseTask(t, "its session is gone");
 			}
 			const waits = blockedOn(t, tasks.values());
-			if (waits.length > 0) throw new OpError("blocked", `#${t.id} waits on ${waits.map((i) => `#${i}`).join(", ")}: not done yet`);
+			if (waits.length > 0) {
+				// M52: it is told when it can be claimed
+				if (!t.waiting.some((w) => w.id === a.sessionId) && t.waiting.length < TASK_WAITING_MAX) {
+					t.waiting.push({ id: a.sessionId, name: a.who });
+					saveTasks();
+				}
+				throw new OpError("blocked", `#${t.id} waits on ${waits.map((i) => `#${i}`).join(", ")}: not done yet (you are told when it can be claimed)`);
+			}
 			if (t.state !== "claimed") {
 				t.state = "claimed";
 				t.owner = { id: a.sessionId, name: a.who };
 				t.claimedAt = Date.now();
 				t.assigned = null;
+				t.waiting = [];
 				saveTasks();
 				taskEvent(a, "claim", t);
 				pushBoard();
@@ -1110,9 +1179,11 @@ async function taskOp(
 			t.doneAt = Date.now();
 			t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
 			if (!t.owner && a.sessionId !== null) t.owner = { id: a.sessionId, name: a.who };
+			t.waiting = [];
 			saveTasks();
 			taskEvent(a, "done", t, t.result ?? undefined);
 			pushBoard();
+			tellOpened(t, a.sessionId);
 			return { tasks: all(), task: t };
 		case "drop": {
 			if (!lead) throw new OpError("unsupported", "the hub and the concierge drop tasks; a session gives its back (roost_task_release)");
@@ -1122,9 +1193,11 @@ async function taskOp(
 			t.owner = null;
 			t.claimedAt = null;
 			t.assigned = null;
+			t.waiting = [];
 			saveTasks();
 			taskEvent(a, "drop", t);
 			pushBoard();
+			tellOpened(t, a.sessionId);
 			if (held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was dropped by ${a.who}: stop working on it.`);
 			return { tasks: all(), task: t };
 		}
@@ -1141,6 +1214,8 @@ async function taskOp(
 			// M50: an agent of the protocol takes it as a message, when it takes agent items
 			if (!rec || (rec.kind === "shell" && !isProtocolJob(rec))) throw new OpError("unsupported", `${target.name} is a command, not a session that takes tasks`);
 			if (refusesItems(rec.id)) throw new OpError("unsupported", `${target.name} takes no messages (its agent did not say agent-items)`);
+			// M52: a session takes its project's tasks
+			if (t.project !== null && sessionProject(rec.id) !== t.project) throw new OpError("unsupported", `${target.name} works outside ${projectLabel(t.project)} (${t.project}): it could not claim #${t.id}`);
 			const waits = blockedOn(t, tasks.values());
 			const body = [
 				`Task #${t.id} on the board: ${t.title}`,
