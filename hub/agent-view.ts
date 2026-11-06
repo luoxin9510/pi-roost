@@ -313,6 +313,8 @@ export class AgentView implements Component {
 	private overlay: Overlay | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
+	/** M56: the commands /tasks approve showed, by their hash. */
+	private approveShown: { id: number; at: number; hash: string } | undefined;
 	/** M61: a built-in command on its way (a second Enter meanwhile is ignored). */
 	private commandBusy = false;
 	/** M61: sessions' command lists by the mtime of the file they were read from. */
@@ -2135,16 +2137,16 @@ export class AgentView implements Component {
 			// M56: the repository's commands: shown, then approved by the same command again
 			if (verb === "approve") {
 				if (id === undefined) return this.say("/tasks approve <id>", "warning");
-				const key = `approve:${id}`;
-				const armed = this.armedStop?.id === key && Date.now() - this.armedStop.at < APPROVE_MS;
-				if (!armed) {
+				const shown = this.approveShown;
+				if (!shown || shown.id !== id || Date.now() - shown.at >= APPROVE_MS) {
 					const r = await client.request("task", { action: "approve", id, dry: true });
-					if (r.note?.startsWith("no commands")) return this.say(r.note, "warning");
-					this.armedStop = { id: key, at: Date.now() };
+					if (!r.hash) return this.say(r.note ?? "nothing to approve", "warning");
+					this.approveShown = { id, at: Date.now(), hash: r.hash };
 					return this.say(`${r.note} · they run in your account: /tasks approve ${id} again within 30 s to approve`, "warning");
 				}
-				this.armedStop = undefined;
-				const r = await client.request("task", { action: "approve", id });
+				this.approveShown = undefined;
+				// what is approved is what was shown (the daemon refuses if the commands changed)
+				const r = await client.request("task", { action: "approve", id, hash: shown.hash });
 				return this.say(r.note ?? "approved", "success");
 			}
 			if (verb === "verify") {

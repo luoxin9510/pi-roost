@@ -326,7 +326,7 @@ export interface OpArgs {
 		| { action: "abort"; id: number }
 		| { action: "commit"; id: number; message?: string }
 		// M56: the repository's commands approved (dry: shown); verify again; a failure accepted
-		| { action: "approve"; id: number; dry?: boolean }
+		| { action: "approve"; id: number; dry?: boolean; hash?: string }
 		| { action: "verify"; id: number }
 		| { action: "pass"; id: number };
 }
@@ -374,7 +374,7 @@ export interface OpResults {
 	"concierge-act": { id: string; name: string };
 	"concierge-order": { orders: StandingOrder[]; order?: StandingOrder };
 	/** M47: the board as it stands (and the task acted on; `sent`: how the hand-over message went). */
-	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string };
+	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string; hash?: string };
 }
 
 export type Op = keyof OpArgs;

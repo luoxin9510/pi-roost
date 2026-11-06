@@ -107,3 +107,21 @@ a person's).
 - A lesson from building it: a unit test ran its example command (`... && npm test`)
   for real, and `npm test` ran that test again: a fork bomb. Tests here never run a real
   test command.
+
+## After review
+
+- `/tasks approve` approves what was shown: the dry call returns the commands' hash,
+  the approval carries it, and the daemon refuses (`conflict`) if the commands on base
+  changed in between (an agent could move the base branch).
+- A drop while a verify or setup runs stops its job and keeps the worktree (it was in
+  use); a dropped task's stage is never rewritten by a job that ends later.
+- `/tasks start` is refused while the task's setup runs; a second `done` while the first
+  is being handled is refused; a slot is counted and taken in one step, so two verifies
+  never both see the last free slot.
+- Verify and setup jobs left by a restart are stopped and removed; a setup or verify
+  that cannot be dispatched leaves the task `failed` / `review` with the reason.
+- A pass starts the failure count again; the stored tail keeps its 4000 characters.
+- Not changed: the commands get the daemon's environment through the user's policy (the
+  daemon was started by a pi in the user's shell, as the hub was); verify logs are kept
+  (M59's cleanup will remove them with the worktree); a queued verify is cancelled by
+  `drop` only.

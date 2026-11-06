@@ -97,7 +97,7 @@ import { termFrom } from "../lib/profiles.ts";
 import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.ts";
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
-import { approve, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
+import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
 import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, withMergeLock, worktreeClean } from "../lib/task-git.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
@@ -1128,6 +1128,8 @@ const verifyRuns = new Map<number, { jobId: string; round: number; log: string; 
 const setupRuns = new Map<number, { jobId: string; launch: DispatchArgs; actor: ReturnType<typeof boardActor> }>();
 const setupNote = new Map<number, string>();
 const verifyQueue: number[] = [];
+/** Verifies counted in a slot while their job is being dispatched. */
+const verifyReserved = new Set<number>();
 /** At most this many verifies at once in one repository. */
 const VERIFY_SLOTS = 2;
 
@@ -1178,14 +1180,24 @@ async function startVerify(t: BoardTask, a?: ReturnType<typeof boardActor>, extr
 		setStage(t, "review", `not verified: /tasks approve ${t.id} to run \`${config.verify}\``, a, extra);
 		return `not verified: approve \`${config.verify}\` first`;
 	}
-	const running = [...verifyRuns.keys()].filter((id) => tasks.get(id)?.project === repo).length;
-	if (running >= VERIFY_SLOTS) {
-		if (!verifyQueue.includes(t.id)) verifyQueue.push(t.id);
+	// counted and taken in one go (no await between): two verifies cannot both see a free slot
+	const running = [...verifyRuns.keys(), ...verifyReserved].filter((id) => tasks.get(id)?.project === repo).length;
+	if (running >= VERIFY_SLOTS || verifyRuns.has(t.id) || verifyReserved.has(t.id)) {
+		if (!verifyQueue.includes(t.id) && !verifyRuns.has(t.id) && !verifyReserved.has(t.id)) verifyQueue.push(t.id);
 		setStage(t, "verifying", "queued", a, extra);
 		return "verify queued";
 	}
+	verifyReserved.add(t.id);
 	const round = (w.verify?.rounds ?? 0) + 1;
-	const job = await runCommandJob(t, "verify", config.verify, round);
+	let job: { id: string; log: string };
+	try {
+		job = await runCommandJob(t, "verify", config.verify, round);
+	} catch (err) {
+		setStage(t, "review", `not verified: ${String((err as Error).message ?? err).slice(0, 200)}`, a, extra);
+		return "verify did not start";
+	} finally {
+		verifyReserved.delete(t.id);
+	}
 	const timer = setTimeout(() => {
 		const run = verifyRuns.get(t.id);
 		if (!run || run.jobId !== job.id) return;
@@ -1225,11 +1237,12 @@ function verifyEnded(taskId: number, jobId: string, code: number | null): void {
 		void removeRecord(jobId).catch(() => {});
 		pumpVerifyQueue();
 	}, 0).unref?.();
-	if (!t || !w || w.stage !== "verifying") return;
+	if (!t || !w || w.stage !== "verifying" || t.state === "dropped") return;
 	const secs = Math.round((Date.now() - run.started) / 1000);
 	const tail = readLogTail(run.log);
 	const ok = code === 0 && !run.timedOut;
-	const failures = (w.verify?.rounds ?? 0) + (ok ? 0 : 1);
+	// a pass starts the count again
+	const failures = ok ? 0 : (w.verify?.rounds ?? 0) + 1;
 	w.verify = { ok, at: Date.now(), log: run.log, tail, rounds: failures };
 	if (ok) {
 		setStage(t, "review", `verified: ${run.command} (${secs}s)`);
@@ -1269,6 +1282,18 @@ async function setupEnded(taskId: number, jobId: string, code: number | null): P
 }
 
 /** M56: at start, what a restart cut short: verifies and setups ran in jobs that are gone. */
+function settleCommandJobs(): void {
+	// verify and setup jobs from before the restart have no run to report to: stopped and removed
+	for (const r of [...recs.values()]) {
+		if (r.verifyOf === undefined && r.setupOf === undefined) continue;
+		if (verifyRuns.get(r.verifyOf ?? -1)?.jobId === r.id || setupRuns.get(r.setupOf ?? -1)?.jobId === r.id) continue;
+		void (async () => {
+			if (roster.has(r.id)) await terminateHost(r.id).catch(() => {});
+			await removeRecord(r.id).catch(() => {});
+		})();
+	}
+}
+
 function settleVerifies(): void {
 	for (const t of tasks.values()) {
 		const w = t.workspace;
@@ -1283,8 +1308,8 @@ async function workspaceOp(
 	a: ReturnType<typeof boardActor>,
 	t: BoardTask,
 	action: WorkspaceAction,
-	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown },
-): Promise<{ job?: { id: string; name: string }; note?: string }> {
+	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown },
+): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
 	if (a.sessionId !== null) throw new OpError("unsupported", `/tasks ${action} is the hub's`);
 	// one action on a task's workspace at a time (two starts, a drop during a merge)
 	if (workspaceBusy.has(t.id)) throw new OpError("conflict", `#${t.id}: another action on its workspace is under way`);
@@ -1302,8 +1327,8 @@ async function workspaceAction(
 	a: ReturnType<typeof boardActor>,
 	t: BoardTask,
 	action: WorkspaceAction,
-	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown },
-): Promise<{ job?: { id: string; name: string }; note?: string }> {
+	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown },
+): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
 	const human = a.sessionId === null && !a.concierge; // the hub, the CLI
 	// M56: trust is a person's: the repository's commands, shown, then approved
 	if (action === "approve") {
@@ -1315,7 +1340,10 @@ async function workspaceAction(
 		const cmds = [config.verify, config.setup].filter((c): c is string => !!c);
 		if (cmds.length === 0) return { note: `no commands in ${projectLabel(t.project)}'s .roost/project.json on ${baseRef}${error ? ` (${error})` : ""}` };
 		const list = [config.verify ? `verify: ${config.verify}` : "", config.setup ? `setup: ${config.setup}` : ""].filter(Boolean).join(" · ");
-		if (args.dry === true) return { note: list };
+		// what is approved is what was shown: the commands' hash travels with the confirmation
+		const shown = commandHash(cmds.join("\n"));
+		if (args.dry === true) return { note: list, hash: shown };
+		if (args.hash !== shown) throw new OpError("conflict", `the commands changed since they were shown (now ${list}): /tasks approve ${t.id} again to see them`);
 		approve(t.project, cmds);
 		record({ kind: "task", id: "", name: a.who, who: a.who, whoId: null, why: "approve", text: clipText(`#${t.id} ${projectLabel(t.project)}: ${list}`) });
 		return { note: `approved for ${projectLabel(t.project)}: ${list}` };
@@ -1325,6 +1353,8 @@ async function workspaceAction(
 		if (!human) throw new OpError("unsupported", "the hub starts a task in its workspace (/tasks start)");
 		if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: a workspace is a repository's (add it in a repository)`);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);
+		// M56: its setup runs: the session follows by itself
+		if (setupRuns.has(t.id)) throw new OpError("conflict", `#${t.id} is being set up: its session starts after`);
 		const waits = blockedOn(t, tasks.values());
 		if (waits.length > 0) throw new OpError("blocked", `#${t.id} waits on ${waits.map((i) => `#${i}`).join(", ")}`);
 		const w = args.workspace as { path?: unknown; branch?: unknown; baseRef?: unknown; baseSha?: unknown } | undefined;
@@ -1348,7 +1378,13 @@ async function workspaceAction(
 				t.assigned = null;
 				t.waiting = [];
 				t.workspace = { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, stage: "working", note: `setting up: ${config.setup}` };
-				const job = await runCommandJob(t, "setup", config.setup, 0);
+				let job: { id: string };
+				try {
+					job = await runCommandJob(t, "setup", config.setup, 0);
+				} catch (err) {
+					setStage(t, "failed", `setup did not start: ${String((err as Error).message ?? err).slice(0, 200)}`, a);
+					throw err;
+				}
 				setupRuns.set(t.id, { jobId: job.id, launch, actor: a });
 				setStage(t, "working", `setting up: ${config.setup}`, a);
 				return { note: `setting up (${config.setup}); the session starts when it is done` };
@@ -1519,9 +1555,9 @@ async function settleMerges(): Promise<void> {
 async function taskOp(
 	conn: Conn,
 	args:
-		| { action?: unknown; id?: unknown; title?: unknown; detail?: unknown; after?: unknown; result?: unknown; to?: unknown; project?: unknown; workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown }
+		| { action?: unknown; id?: unknown; title?: unknown; detail?: unknown; after?: unknown; result?: unknown; to?: unknown; project?: unknown; workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown }
 		| undefined,
-): Promise<{ tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string }> {
+): Promise<{ tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string; hash?: string }> {
 	const a = boardActor(conn);
 	// M52: the lead names a project by a directory in it (its repository); a session's is where it works
 	const named = (v: unknown): string | null => {
@@ -1638,9 +1674,16 @@ async function taskOp(
 				const clean = await worktreeClean(t.workspace.path);
 				if (clean === undefined) throw new OpError("bad_request", `cannot read the worktree ${t.workspace.path}`);
 				if (!clean) throw new OpError("bad_request", `#${t.id}: commit your work first (git add -A && git commit), then roost_task_done again`);
-				t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
-				// M56: the repository's verify runs first (approved); review sees work that passed
-				await startVerify(t, a, t.result ?? undefined);
+				// one done at a time (a second while the first reads the config would start a second verify)
+				if (workspaceBusy.has(t.id)) throw new OpError("conflict", `#${t.id}: its done is being handled`);
+				workspaceBusy.add(t.id);
+				try {
+					t.result = taskText(args?.result, TASK_TEXT_MAX) || null;
+					// M56: the repository's verify runs first (approved); review sees work that passed
+					await startVerify(t, a, t.result ?? undefined);
+				} finally {
+					workspaceBusy.delete(t.id);
+				}
 				return { tasks: all(), task: t };
 			}
 			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours: claim it first"}`);
@@ -1670,9 +1713,20 @@ async function taskOp(
 			pushBoard();
 			tellOpened(t, a.sessionId);
 			if (held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was dropped by ${a.who}: stop working on it.`);
-			// M55: its worktree goes when clean; the branch stays (it may hold work)
+			// M56: a verify or setup running in its worktree is stopped (the worktree stays: it was in use)
 			let note: string | undefined;
-			if (t.workspace && t.project && t.workspace.path) {
+			const cmdJob = verifyRuns.get(t.id)?.jobId ?? setupRuns.get(t.id)?.jobId;
+			if (cmdJob) {
+				const run = verifyRuns.get(t.id);
+				if (run) clearTimeout(run.timer);
+				verifyRuns.delete(t.id);
+				setupRuns.delete(t.id);
+				void terminateHost(cmdJob).catch(() => {});
+				note = `its ${recs.get(cmdJob)?.verifyOf !== undefined ? "verify" : "setup"} was stopped · worktree kept: ${t.workspace?.path}`;
+			}
+			const qi = verifyQueue.indexOf(t.id);
+			if (qi >= 0) verifyQueue.splice(qi, 1);
+			if (!cmdJob && t.workspace && t.project && t.workspace.path) {
 				const w = t.workspace;
 				const clean = await worktreeClean(w.path);
 				if (clean) {
@@ -2714,7 +2768,10 @@ function loadJobs(): void {
 	loadOrders();
 	loadTasks();
 	// M55: merges a crash cut short (after the roster: nothing waits on it)
-	setTimeout(() => void settleMerges(), 0).unref?.();
+	setTimeout(() => {
+		void settleMerges();
+		settleCommandJobs();
+	}, 0).unref?.();
 	// M56: verifies and setups a restart cut short
 	settleVerifies();
 	const saved = readJson<Record<string, HostRef>>(rosterPath()) ?? {};
