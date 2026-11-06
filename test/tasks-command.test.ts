@@ -37,7 +37,7 @@ describe("M59: /tasks in a pi session", () => {
 	});
 
 	it("merge, back with a note, shelve; approve is shown first, then approved with what was shown; errors are said", async () => {
-		const h = harness((a) => (a.action === "approve" ? (a.dry ? { tasks: [], note: "verify: npm test", hash: "h1" } : { tasks: [], note: "approved" }) : a.action === "merge" ? new Error("#4 is working") : { tasks: [], note: "ok" }));
+		const h = harness((a) => (a.action === "approve" || a.action === "pr" ? (a.dry ? { tasks: [], note: "verify: npm test", hash: "h1" } : { tasks: [], note: "approved" }) : a.action === "merge" ? new Error("#4 is working") : { tasks: [], note: "ok" }));
 		await h.run("merge 4");
 		expect(h.notes.at(-1)).toEqual(["#4 is working", "error"]);
 		await h.run("back #4 use a transaction");
@@ -48,6 +48,10 @@ describe("M59: /tasks in a pi session", () => {
 		expect(h.notes.at(-1)![0]).toContain("verify: npm test · they run in your account");
 		await h.run("approve 4");
 		expect(h.sent.at(-1)).toEqual({ action: "approve", id: 4, hash: "h1" });
+		await h.run("pr 4");
+		expect(h.sent.at(-1)).toEqual({ action: "pr", id: 4, dry: true });
+		await h.run("pr 4");
+		expect(h.sent.at(-1)).toEqual({ action: "pr", id: 4, hash: "h1" });
 		await h.run("cleanup");
 		expect(h.sent.at(-1)).toEqual({ action: "cleanup", dry: true });
 		await h.run("frobnicate 4");

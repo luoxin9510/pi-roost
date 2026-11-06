@@ -40,7 +40,7 @@ import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.
 import { createTaskWorktree, removeTaskWorktree, restoreTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
 import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
 import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
-import { nextNeedsYou, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
+import { nextNeedsYou, overlaps, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
 import { type BoardSummary, type BoardTask, type ReviewComment, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
@@ -314,6 +314,8 @@ export class AgentView implements Component {
 	private renameInput = new Input({ prompt: "rename › " });
 	/** M57: the workspace overlay's reload, while it is open (a board event refreshes it). */
 	private wsReload: (() => void) | undefined;
+	/** M60: the pull request shown for a task, confirmed by /tasks pr again within 30 s. */
+	private prShown: { id: number; at: number; hash: string } | undefined;
 	private groupBy: "state" | "directory" = "state";
 	/** DI-4: defaults for the next dispatches. */
 	private model: string | undefined;
@@ -2187,6 +2189,20 @@ export class AgentView implements Component {
 				const r = await client.request("task", { action: "approve", id, hash: shown.hash });
 				return this.say(r.note ?? "approved", "success");
 			}
+			// M60: the optional exit: shown, then the same command again within 30 s (for the tip shown)
+			if (verb === "pr") {
+				if (id === undefined) return this.say("/tasks pr <id>", "warning");
+				const shown = this.prShown;
+				if (!shown || shown.id !== id || Date.now() - shown.at >= APPROVE_MS) {
+					const r = await client.request("task", { action: "pr", id, dry: true });
+					this.prShown = { id, at: Date.now(), hash: r.hash ?? "" };
+					return this.say(`#${id}: ${r.note} · /tasks pr ${id} again within 30 s to do it`, "warning");
+				}
+				this.prShown = undefined;
+				this.say(`#${id}: pushing…`, "muted");
+				const r = await client.request("task", { action: "pr", id, hash: shown.hash });
+				return this.say(`#${id}: ${r.note ?? "opened"}`, "success");
+			}
 			if (verb === "verify") {
 				if (id === undefined) return this.say("/tasks verify <id>", "warning");
 				const r = await client.request("task", { action: "verify", id });
@@ -2197,7 +2213,7 @@ export class AgentView implements Component {
 				await client.request("task", { action: "pass", id });
 				return this.say(`#${id}: in review (passed by hand)`, "muted");
 			}
-			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | review <id> | merge <id> | shelve <id> | cleanup [yes] | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
+			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | review <id> | merge <id> | pr <id> | shelve <id> | cleanup [yes] | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -2355,7 +2371,7 @@ export class AgentView implements Component {
 		let top = 0;
 		let back: { id: number; input: Input } | undefined;
 		// approve: the commands shown in full, then y (the dry call's hash goes with it)
-		let confirm: { id: number; note: string; hash: string } | undefined;
+		let confirm: { id: number; note: string; hash: string; kind: "approve" | "pr" } | undefined;
 		let busy = false;
 		let closed = false;
 		const changes = new Map<number, { key: string; at: number; c?: TaskChanges; loading: boolean }>();
@@ -2434,7 +2450,10 @@ export class AgentView implements Component {
 				reload();
 			});
 		};
+		// M60: tasks changing the same files (from what was read of each worktree)
+		let overlapNow = new Map<number, { id: number; files: string[] }[]>();
 		const listLines = (width: number): { lines: string[]; selAt: number } => {
+			overlapNow = overlaps(entries, (id) => changes.get(id)?.c);
 			const lines: string[] = [];
 			let selAt = 0;
 			let group = "";
@@ -2447,7 +2466,8 @@ export class AgentView implements Component {
 				const icon = wsIcon(e.task, s);
 				const isSel = e.task.id === sel;
 				if (isSel) selAt = lines.length;
-				const right = changeShort(changes.get(e.task.id)?.c) || (e.task.workspace?.stage === "working" && s && !s.running ? "idle" : "");
+				const shared = overlapNow.has(e.task.id) ? "⚠ " : "";
+				const right = `${shared}${changeShort(changes.get(e.task.id)?.c) || (e.task.workspace?.stage === "working" && s && !s.running ? "idle" : "")}`.trim();
 				const head = `${isSel ? t.fg("accent", "▶") : " "} ${t.fg(icon.tone, icon.glyph)} `;
 				const room = Math.max(1, width - visibleWidth(head) - (right ? visibleWidth(right) + 1 : 0));
 				const text = truncateToWidth(oneLine(wsRowText(e.task, tasks)), room);
@@ -2463,7 +2483,7 @@ export class AgentView implements Component {
 			const s = sessionOf(x);
 			const row = x.owner ? view.rows.get(x.owner.id) : undefined;
 			const hit = changes.get(x.id);
-			const items = wsDetail(x, { session: s, sentence: row ? sentenceOf(row) : undefined, changes: hit?.c ?? (hit?.loading ? "loading" : undefined), fileMax: Math.max(2, max - 12) });
+			const items = wsDetail(x, { session: s, sentence: row ? sentenceOf(row) : undefined, changes: hit?.c ?? (hit?.loading ? "loading" : undefined), fileMax: Math.max(2, max - 12), overlap: overlapNow.get(x.id) });
 			const out = [t.bold(truncateToWidth(`#${x.id} ${oneLine(x.title)}`, width))];
 			for (const it of items) {
 				const label = it.label ? it.label.padEnd(7) : " ".repeat(7);
@@ -2501,11 +2521,11 @@ export class AgentView implements Component {
 				}
 				out.push("");
 				if (back) out.push(...back.input.render(width));
-				if (confirm) for (const l of wrap(`approve for #${confirm.id}: ${confirm.note} · they run in your account`, width)) out.push(t.fg("warning", l));
+				if (confirm) for (const l of wrap(confirm.kind === "approve" ? `approve for #${confirm.id}: ${confirm.note} · they run in your account` : `#${confirm.id}: ${confirm.note}?`, width)) out.push(t.fg("warning", l));
 				const n = view.notice;
 				if (n && n.until > Date.now()) out.push(t.fg(n.tone, truncateToWidth(oneLine(n.text), width)));
 				const x = selected();
-				const keys = back ? "Enter send back with this note (empty: none) · Esc cancel" : confirm ? "y approve these commands · any other key: no" : [...wsKeys(x, x ? sessionOf(x) : undefined).map(([k, v]) => `${k} ${v}`), "↑↓ select", "Esc close"].join(" · ");
+				const keys = back ? "Enter send back with this note (empty: none) · Esc cancel" : confirm ? `y ${confirm.kind === "approve" ? "approve these commands" : "push and open it"} · any other key: no` : [...wsKeys(x, x ? sessionOf(x) : undefined).map(([k, v]) => `${k} ${v}`), "↑↓ select", "Esc close"].join(" · ");
 				out.push(t.fg("dim", truncateToWidth(keys, width)));
 				return out;
 			},
@@ -2525,10 +2545,11 @@ export class AgentView implements Component {
 				if (confirm) {
 					const c = confirm;
 					confirm = undefined;
-					if (data !== "y" || busy) return view.say("not approved", "muted");
+					if (data !== "y" || busy) return view.say(c.kind === "approve" ? "not approved" : "no pull request", "muted");
 					busy = true;
+					if (c.kind === "pr") view.say(`#${c.id}: pushing…`, "muted");
 					void client
-						.request("task", { action: "approve", id: c.id, hash: c.hash })
+						.request("task", { action: c.kind, id: c.id, hash: c.hash })
 						.then((r) => view.say(r.note ?? "approved", "success"))
 						.catch((err: unknown) => view.say((err as Error).message, "error"))
 						.finally(() => {
@@ -2585,13 +2606,28 @@ export class AgentView implements Component {
 					back.input.focused = true;
 					return;
 				}
+				if (data === "o") {
+					if (busy) return;
+					busy = true;
+					void client
+						.request("task", { action: "pr", id: x.id, dry: true })
+						.then((r) => {
+							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash, kind: "pr" };
+						})
+						.catch((err: unknown) => view.say((err as Error).message, "error"))
+						.finally(() => {
+							busy = false;
+							view.o.tui.requestRender();
+						});
+					return;
+				}
 				if (data === "a") {
 					if (busy) return;
 					busy = true;
 					void client
 						.request("task", { action: "approve", id: x.id, dry: true })
 						.then((r) => {
-							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash };
+							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash, kind: "approve" };
 							else view.say(r.note ?? "nothing to approve", "muted");
 						})
 						.catch((err: unknown) => view.say((err as Error).message, "error"))
@@ -3036,7 +3072,7 @@ export class AgentView implements Component {
 			{ name: "resume", description: "pick a session to resume in the background" },
 			{ name: "usage", description: "what the sessions spent" },
 			{ name: "log", description: "what happened lately" },
-			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "review", "merge", "shelve", "cleanup", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
+			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "review", "merge", "pr", "shelve", "cleanup", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
 			{ name: "concierge", description: "the hub's own agent", argumentHint: "on | off | status | log | attach | ask | answer | act | undo | orders", getArgumentCompletions: (p) => starts(names(["on", "off", "status", "log", "attach", "ask", "answer", "act", "undo", "orders"]), p) },
 			{ name: "workspaces", description: "the tasks in their worktrees: review, merge, send back (Ctrl+N: the next that needs you)" },
 			{ name: "ask", description: "ask the concierge", argumentHint: "question" },
@@ -4287,6 +4323,7 @@ export class AgentView implements Component {
 			["/concierge orders [add|rm]", "the standing orders it keeps (rules in your words, some on a clock); add one, drop one"],
 			["/tasks [add|assign|done|rm|release]", "the shared task board: sessions claim tasks (roost_task_*), the concierge hands them out; add <title> [after #n] [-- detail], assign <id> <session>, done <id> [result], rm <id>, release <id>"],
 			["/workspaces · Ctrl+N", "the tasks in their own worktrees, as a pipeline: Enter review · s start · m merge · b back · v verify · a approve · t attach · n the next that needs you"],
+			["/tasks pr <id>", "the optional exit: push the task's branch and open a pull request into its base (shown first; again within 30 s does it)"],
 			["/tasks shelve <id> · cleanup", "put a task away (its worktree removed, its branch kept; start brings it back) · remove worktrees and logs left behind (yes: do it)"],
 			["/tasks review <id>", "a task's diff against base: j/k line · n/p hunk · ]/[ file · c comment · d delete it · b send back with the comments · m merge"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
@@ -4375,7 +4412,7 @@ export function fitScreen(
 }
 
 // Control characters other than newlines would corrupt the line-based renderer.
-const CONTROL = /[\x00-\x09\x0b-\x1f\x7f]/g;
+const CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/g;
 
 /** M48: a directory with the home as `~` (the peek's "where"). */
 function tildeDir(dir: string): string {

@@ -321,3 +321,58 @@ export async function taskWorktrees(repo: string): Promise<{ path: string; branc
 	}
 	return out;
 }
+
+/** M60: a text from git, gh or a hook, safe for a terminal: one line, no control characters. */
+const plain = (t: string, max = 300): string => t.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ").trim().slice(0, max);
+const REMOTE = /^(?!-)[A-Za-z0-9._\/-]{1,100}$/;
+const PR_URL = /^https:\/\/[^\s\x00-\x1f\x7f-\x9f]{1,400}$/;
+
+/** `owner/repo` (with its host when not github.com) from a remote's URL, for `gh --repo`; undefined when it is not one. */
+export function ghRepoOf(url: string): string | undefined {
+	const m = /^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|[^@/\s]+@)([A-Za-z0-9.-]+)(?::\d+)?[:/]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(url);
+	if (!m) return undefined;
+	return m[1] === "github.com" ? `${m[2]}/${m[3]}` : `${m[1]}/${m[2]}/${m[3]}`;
+}
+
+/**
+ * M60: where a task's pull request goes: the remote (`origin`, else the only one), the URL
+ * git pushes to (pushurl and insteadOf applied), the repository gh opens it in.
+ */
+export async function prTarget(path: string): Promise<{ ok: true; remote: string; url: string; repo?: string } | { ok: false; reason: string }> {
+	const remotes = (await run(path, ["remote"])).stdout.split("\n").filter(Boolean);
+	const remote = remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0]! : undefined;
+	if (!remote) return { ok: false, reason: remotes.length === 0 ? "the repository has no remote" : "several remotes and none is origin" };
+	// a remote's name is not an option of git's (one written in .git/config could be)
+	if (!REMOTE.test(remote)) return { ok: false, reason: `the remote's name is not one pi-roost uses: ${plain(remote, 60)}` };
+	const u = await run(path, ["remote", "get-url", "--push", "--", remote]);
+	if (u.code !== 0 || !u.stdout) return { ok: false, reason: `the remote ${remote} has no URL` };
+	const url = plain(u.stdout.split("\n")[0]!, 400);
+	return { ok: true, remote, url, ...(ghRepoOf(url) ? { repo: ghRepoOf(url) } : {}) };
+}
+
+/**
+ * M60: the optional exit: the commit shown (`tip`, not whatever the branch is now) pushed
+ * to the branch on the remote shown, never forced; then a pull request into base with
+ * `gh` (in the repository the push went to). A pull request gh says exists already, or
+ * opened before gh was cut short, is found and taken.
+ */
+export async function openTaskPr(o: { path: string; branch: string; baseRef: string; tip: string; remote: string; repo?: string; title: string; body: string }): Promise<{ ok: true; url: string } | { ok: false; reason: string }> {
+	const push = await run(o.path, ["push", "--set-upstream", "--", o.remote, `${o.tip}:refs/heads/${o.branch}`], 120_000);
+	if (push.code !== 0) return { ok: false, reason: `git push: ${plain(lastLines(push, 2))}` };
+	const gh = (args: string[]) =>
+		new Promise<Run>((done) => {
+			execFile("gh", [...args, ...(o.repo ? ["--repo", o.repo] : [])], { cwd: o.path, encoding: "utf8", timeout: 60_000, env: GIT_ENV() }, (err, stdout, stderr) => {
+				const code = err ? (typeof (err as { code?: unknown }).code === "number" ? ((err as { code: number }).code as number) : 127) : 0;
+				done({ code, stdout: String(stdout).trim(), stderr: String(stderr).trim() });
+			});
+		});
+	const made = await gh(["pr", "create", "--head", o.branch, "--base", o.baseRef, "--title", o.title, "--body", o.body]);
+	const urlIn = (t: string) => t.split(/\s+/).find((w) => PR_URL.test(w));
+	const url = made.code === 0 ? urlIn(made.stdout) : undefined;
+	if (url) return { ok: true, url };
+	// one that exists (gh says so, or opened it before it was cut short)
+	const seen = await gh(["pr", "view", o.branch, "--json", "url", "--jq", ".url"]);
+	const found = seen.code === 0 ? urlIn(seen.stdout) : undefined;
+	if (found) return { ok: true, url: found };
+	return { ok: false, reason: `pushed to ${o.remote}; gh pr create: ${plain(lastLines(made, 2))}` };
+}

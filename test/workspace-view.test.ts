@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardTask, TaskWorkspace } from "../lib/board.ts";
-import { changeShort, nextNeedsYou, WS_MERGED_MAX, workspaceEntries, wsCounts, wsDetail, wsGroup, wsIcon, wsKeys, wsNeedsYou, wsRowText } from "../lib/workspace-view.ts";
+import { changeShort, nextNeedsYou, overlaps, WS_MERGED_MAX, workspaceEntries, wsCounts, wsDetail, wsGroup, wsIcon, wsKeys, wsNeedsYou, wsRowText } from "../lib/workspace-view.ts";
 
 const now = 10_000_000_000;
 const ws = (stage: TaskWorkspace["stage"], extra: Partial<TaskWorkspace> = {}): TaskWorkspace => ({ path: "/r/.pi/worktrees/x", branch: "roost/t1-x-ab12", baseRef: "main", baseSha: "a".repeat(40), stage, note: null, ...extra });
@@ -61,9 +61,9 @@ describe("M57: the workspace pipeline", () => {
 	it("the keys a stage has", () => {
 		const k = (t: BoardTask, running = false) => wsKeys(t, running ? { name: "a", state: "idle", running } : undefined).map(([x]) => x);
 		expect(k(task(1))).toEqual(["s", "n", "r"]);
-		expect(k(task(1, { workspace: ws("review") }))).toEqual(["Enter", "m", "b", "v", "h", "s", "a", "n", "r"]);
+		expect(k(task(1, { workspace: ws("review") }))).toEqual(["Enter", "m", "b", "v", "o", "h", "s", "a", "n", "r"]);
 		expect(k(task(1, { workspace: ws("shelved") }))).toEqual(["s", "a", "n", "r"]);
-		expect(k(task(1, { workspace: ws("review") }), true)).toEqual(["Enter", "m", "b", "v", "t", "a", "n", "r"]);
+		expect(k(task(1, { workspace: ws("review") }), true)).toEqual(["Enter", "m", "b", "v", "o", "t", "a", "n", "r"]);
 		expect(k(task(1, { workspace: ws("failed") }))).toContain("p");
 		expect(k(task(1, { workspace: ws("conflict") }))).toContain("x");
 		expect(k(task(1, { workspace: ws("verifying") }))).not.toContain("m");
@@ -94,5 +94,17 @@ describe("M57: the workspace pipeline", () => {
 		expect(wsRowText(blocked, [t, blocked])).toBe("#9 task 9 · after #4");
 		expect(changeShort(c)).toBe("+12 −1");
 		expect(changeShort(undefined)).toBe("");
+	});
+
+	it("M60: tasks at work on the same files, in one repository; the detail says so, and the pull request", () => {
+		const c = (...paths: string[]) => ({ files: paths.map((path) => ({ status: "M", path, add: 1, del: 0 })), insertions: 1, deletions: 0, commits: 1, dirty: false });
+		const list = [task(1, { workspace: ws("working") }), task(2, { workspace: ws("review") }), task(3, { workspace: ws("working"), project: "/other" }), task(4, { workspace: ws("merged"), state: "done" })];
+		const by: Record<number, ReturnType<typeof c>> = { 1: c("a.ts", "b.ts"), 2: c("x → b.ts", "c.ts"), 3: c("a.ts"), 4: c("a.ts") };
+		const o = overlaps(workspaceEntries(list, now), (id) => by[id]);
+		expect(o.get(1)).toEqual([{ id: 2, files: ["b.ts"] }]);
+		expect(o.get(2)).toEqual([{ id: 1, files: ["b.ts"] }]);
+		expect(o.has(3)).toBe(false);
+		const d = wsDetail(task(1, { workspace: ws("review", { pr: { url: "https://example.com/pr/7", tip: "b".repeat(40), at: 0 } }) }), { overlap: o.get(1) });
+		expect(d.map((x) => `${x.label}|${x.text}`)).toEqual(expect.arrayContaining(["overlap|#2 changes b.ts too", "PR|https://example.com/pr/7"]));
 	});
 });

@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -2274,5 +2274,75 @@ describe("M59: a child's first message", () => {
 		await expect(p.c.request("spawn", { launch: child("  !rm -rf x") })).rejects.toMatchObject({ code: "bad_request" });
 		await expect(p.c.request("spawn", { launch: child("@/etc/passwd") })).rejects.toMatchObject({ code: "bad_request" });
 		await expect(p.c.request("spawn", { launch: child("write the tests") })).resolves.toMatchObject({ name: "kid" });
+	});
+});
+
+describe("M60: the pull request exit", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	const gitOut = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+	it("a person's, from review: shown, then for the tip shown; pushes the branch and runs gh pr create", async () => {
+		// a fake gh on the PATH: says what it was asked and prints a URL
+		const bin = join(work, "bin");
+		mkdirSync(bin, { recursive: true });
+		// a fake gh: says what it was asked; with gh-exists, create fails and view finds the one there
+		writeFileSync(join(bin, "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(work, "gh-args")}"\nif [ -f "${join(work, "gh-exists")}" ]; then\n  if [ "$2" = "create" ]; then echo "a pull request already exists" >&2; exit 1; fi\n  echo "https://example.com/o/r/pull/7"; exit 0\nfi\necho "https://example.com/o/r/pull/7"\n`);
+		chmodSync(join(bin, "gh"), 0o755);
+		const path0 = process.env.PATH;
+		process.env.PATH = `${bin}:${path0}`;
+		try {
+			const hub = await startDaemon();
+			mkdirSync(join(work, "pr"), { recursive: true });
+			const r = realpathSync(join(work, "pr"));
+			git(r, "init", "-q", "-b", "main");
+			writeFileSync(join(r, "a.txt"), "a\n");
+			git(r, "add", ".");
+			git(r, "commit", "-qm", "a");
+			execFileSync("git", ["init", "-q", "--bare", join(work, "remote.git")]);
+			git(r, "remote", "add", "origin", join(work, "remote.git"));
+			const t = (await hub.request("task", { action: "add", title: "users table", detail: "the users table", project: r })).task!;
+			const w = createTaskWorktree(r, t.id, t.title);
+			const { job } = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "u"), cwd: w.path } });
+			await expect(hub.request("task", { action: "pr", id: t.id, dry: true })).rejects.toMatchObject({ code: "bad_request" });
+			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job!.id)?.pid);
+			const s = await worker(job!.id);
+			writeFileSync(join(w.path, "u.sql"), "create table users;\n");
+			git(w.path, "add", ".");
+			git(w.path, "commit", "-qm", "users");
+			await s.c.request("task", { action: "done", id: t.id, result: "users table added" });
+			await expect(s.c.request("task", { action: "pr", id: t.id, dry: true })).rejects.toMatchObject({ code: "unsupported" });
+			const tip0 = gitOut(w.path, "rev-parse", "HEAD");
+			const shown = await hub.request("task", { action: "pr", id: t.id, dry: true });
+			expect(shown.note).toBe(`push ${w.branch} at ${tip0.slice(0, 8)} to origin (${join(work, "remote.git")}) and open a pull request into main (gh picks the repository)`);
+			await expect(hub.request("task", { action: "pr", id: t.id, hash: "f".repeat(64) })).rejects.toMatchObject({ code: "conflict" });
+			// the remote moved after it was shown: refused
+			git(r, "remote", "set-url", "--push", "origin", join(work, "elsewhere.git"));
+			await expect(hub.request("task", { action: "pr", id: t.id, hash: shown.hash })).rejects.toMatchObject({ code: "conflict" });
+			git(r, "config", "--unset", "remote.origin.pushurl");
+			// a commit after it was shown: refused too (what goes is what was shown)
+			writeFileSync(join(w.path, "late.txt"), "late\n");
+			git(w.path, "add", ".");
+			git(w.path, "commit", "-qm", "late");
+			await expect(hub.request("task", { action: "pr", id: t.id, hash: shown.hash })).rejects.toMatchObject({ code: "conflict" });
+			git(w.path, "reset", "-q", "--hard", tip0);
+			const done = await hub.request("task", { action: "pr", id: t.id, hash: shown.hash });
+			expect(done.note).toBe("pushed to origin · https://example.com/o/r/pull/7");
+			expect(gitOut(join(work, "remote.git"), "rev-parse", w.branch)).toBe(tip0);
+			const asked = readFileSync(join(work, "gh-args"), "utf8").split("\n");
+			expect(asked.slice(0, 8)).toEqual(["pr", "create", "--head", w.branch, "--base", "main", "--title", "users table"]);
+			expect(asked.join("\n")).toContain("Done: users table added");
+			expect(done.task?.workspace).toMatchObject({ stage: "review", pr: { url: "https://example.com/o/r/pull/7", tip: tip0 } });
+			// gh says one exists: it is found and taken
+			writeFileSync(join(work, "gh-exists"), "");
+			const again = await hub.request("task", { action: "pr", id: t.id, hash: (await hub.request("task", { action: "pr", id: t.id, dry: true })).hash });
+			expect(again.note).toBe("pushed to origin · https://example.com/o/r/pull/7");
+			// a remote whose name is an option of git's is not used
+			git(r, "remote", "remove", "origin");
+			execFileSync("git", ["config", "remote.--receive-pack=touch PWNED.url", join(work, "remote.git")], { cwd: r });
+			await expect(hub.request("task", { action: "pr", id: t.id, dry: true })).rejects.toThrow(/not one pi-roost uses/);
+			expect(existsSync(join(w.path, "PWNED"))).toBe(false);
+		} finally {
+			process.env.PATH = path0;
+		}
 	});
 });

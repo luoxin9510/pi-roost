@@ -144,6 +144,32 @@ export interface TaskChanges {
 	dirty: boolean;
 }
 
+/**
+ * M60: tasks of one repository at work at once (working, verifying, in review, to fix)
+ * that change the same files: each with the others and the files they share. A merge of
+ * one will conflict with, or silently reshape, the other's work.
+ */
+export function overlaps(entries: WsEntry[], changesOf: (id: number) => TaskChanges | undefined): Map<number, { id: number; files: string[] }[]> {
+	const live = entries.filter((e) => e.task.workspace && ["working", "verifying", "review", "fix"].includes(e.group));
+	const files = new Map<number, Set<string>>();
+	for (const e of live) {
+		const c = changesOf(e.task.id);
+		if (c) files.set(e.task.id, new Set(c.files.map((f) => f.path.split(" → ").pop()!)));
+	}
+	const out = new Map<number, { id: number; files: string[] }[]>();
+	for (const a of live) {
+		for (const b of live) {
+			if (a.task.id === b.task.id || a.task.project !== b.task.project) continue;
+			const fa = files.get(a.task.id);
+			const fb = files.get(b.task.id);
+			if (!fa || !fb) continue;
+			const both = [...fa].filter((f) => fb.has(f)).sort();
+			if (both.length > 0) out.set(a.task.id, [...(out.get(a.task.id) ?? []), { id: b.task.id, files: both }]);
+		}
+	}
+	return out;
+}
+
 /** `+82 −3`, for a row (empty when there is nothing). */
 export function changeShort(c: TaskChanges | undefined): string {
 	if (!c || c.files.length === 0) return "";
@@ -171,6 +197,7 @@ export function wsKeys(t: BoardTask | undefined, s?: WsSession): [string, string
 		if (w.stage === "review" || w.stage === "conflict" || w.stage === "failed") keys.push(["m", "merge"]);
 		if (w.stage === "review" || w.stage === "conflict" || w.stage === "failed") keys.push(["b", "back"]);
 		if (w.stage === "review" || w.stage === "failed") keys.push(["v", "verify"]);
+		if (w.stage === "review") keys.push(["o", "open a PR"]);
 		if (w.stage === "failed") keys.push(["p", "pass"]);
 		if (w.stage === "conflict") keys.push(["x", "abort sync"]);
 		if (!live && ["review", "failed", "working"].includes(w.stage)) keys.push(["h", "shelve"]);
@@ -188,7 +215,7 @@ const fmtSecs = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : ms 
  * The detail of a task, as plain lines (the hub colours and cuts them): branch, agent,
  * change, verify, the note, the files, what its session said last.
  */
-export function wsDetail(t: BoardTask, o: { session?: WsSession; sentence?: string; changes?: TaskChanges | "loading"; now?: number; fileMax?: number }): { label: string; text: string; tone?: WsTone }[] {
+export function wsDetail(t: BoardTask, o: { session?: WsSession; sentence?: string; changes?: TaskChanges | "loading"; now?: number; fileMax?: number; overlap?: { id: number; files: string[] }[] }): { label: string; text: string; tone?: WsTone }[] {
 	const now = o.now ?? Date.now();
 	const out: { label: string; text: string; tone?: WsTone }[] = [];
 	const w = t.workspace;
@@ -218,6 +245,8 @@ export function wsDetail(t: BoardTask, o: { session?: WsSession; sentence?: stri
 		out.push({ label: "verify", text: `${v.ok ? "✓ passed" : "✕ failed"}${v.rounds > 0 ? ` · round ${v.rounds}` : ""} · ${fmtSecs(Math.max(0, now - v.at))} ago`, tone: v.ok ? "success" : "error" });
 		if (!v.ok && v.tail) for (const l of v.tail.trimEnd().split("\n").slice(-3)) out.push({ label: "", text: l, tone: "dim" });
 	}
+	for (const x of o.overlap ?? []) out.push({ label: "overlap", text: `#${x.id} changes ${x.files.slice(0, 3).join(", ")}${x.files.length > 3 ? ` and ${x.files.length - 3} more` : ""} too`, tone: "warning" });
+	if (w.pr) out.push({ label: "PR", text: w.pr.url });
 	if (w.merge?.into) out.push({ label: "merged", text: `into ${w.baseRef} (${w.merge.into.slice(0, 8)})`, tone: "success" });
 	if (c && c !== "loading" && c.files.length > 0) {
 		const max = o.fileMax ?? 8;
