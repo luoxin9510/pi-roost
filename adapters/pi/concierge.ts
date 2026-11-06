@@ -2,23 +2,19 @@
 // are the hub's (hub_sessions, hub_read, hub_send, hub_notify, hub_watch, hub_events)
 // instead of the roost_* ones, with the concierge's system prompt, pi's own tools
 // switched off, and its plain answer to a question from the hub handed back to it.
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { boardListing, taskPrompt } from "../../lib/board.ts";
+import { boardListing } from "../../lib/board.ts";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../../lib/comms.ts";
 import { CONCIERGE_DEFAULTS, CONCIERGE_ROLE_ENV, type ConciergePolicy, conciergeSystemPrompt, fleetLine } from "../../lib/concierge.ts";
-import { envPolicy, loadConfig, loadUserConfig } from "../../lib/config.ts";
-import { buildLaunch, fallbackName, refusedByDaemon } from "../../lib/dispatch.ts";
-import { createTaskWorktree, type TaskWorktree } from "../../lib/task-git.ts";
-import { discardWorktree } from "../../lib/worktree.ts";
+import { loadUserConfig } from "../../lib/config.ts";
 import { eventAgo, eventLine } from "../../lib/events.ts";
-import type { DispatchArgs } from "../../lib/protocol.ts";
 import { screenPath } from "../../lib/store.ts";
 import { readTail, transcriptItems } from "../../lib/transcript.ts";
 import type { AgentLink } from "./agent-tools.ts";
+import { dispatchLaunch, startTaskInPi } from "./task-start.ts";
 import { envelopeBody, sendLine } from "./agent-tools.ts";
 
 export const HUB_TOOLS = ["hub_sessions", "hub_events", "hub_read", "hub_send", "hub_notify", "hub_watch", "hub_suggest"] as const;
@@ -77,33 +73,6 @@ function answerText(ctx: ExtensionContext): string {
 		}
 	}
 	return answer;
-}
-
-/** M45: a launch for `hub_dispatch`: a pi session like the hub's, in the concierge's directory unless told. */
-function dispatchLaunch(ctx: ExtensionContext, params: { task: string; name?: string; cwd?: string; model?: string }): DispatchArgs {
-	const task = params.task.trim();
-	if (!task) throw new Error("task is empty");
-	const cwd = params.cwd ? resolve(ctx.cwd, params.cwd) : ctx.cwd;
-	if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
-	const sessionFile = SessionManager.create(cwd).getSessionFile();
-	if (!sessionFile) throw new Error("could not allocate a session file");
-	const config = loadConfig(cwd);
-	// not a concierge itself
-	const env = { ...process.env };
-	delete env[CONCIERGE_ROLE_ENV];
-	return buildLaunch({
-		task,
-		cwd,
-		sessionFile,
-		name: params.name?.trim() || fallbackName(task),
-		origin: "dispatch",
-		argv: process.argv,
-		execPath: process.execPath,
-		env,
-		...envPolicy(config),
-		piVersion: VERSION,
-		model: params.model?.trim() || undefined,
-	});
 }
 
 export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
@@ -381,31 +350,7 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 			model: Type.Optional(Type.String({ description: "provider/model, else the default" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const { tasks } = await link.call("task", { action: "list" });
-			const t = tasks.find((x) => x.id === params.id);
-			if (!t) throw new Error(`no task #${params.id}`);
-			if (!t.project) throw new Error(`#${t.id} is for any session: a workspace is a repository's`);
-			let made: TaskWorktree | undefined;
-			const w = t.workspace?.path
-				? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha }
-				: ((made = createTaskWorktree(t.project, t.id, t.title)), { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base });
-			const discard = () => {
-				if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
-			};
-			let launch: DispatchArgs;
-			try {
-				launch = dispatchLaunch(ctx, { task: taskPrompt(t), cwd: w.path, name: fallbackName(t.title), model: params.model });
-			} catch (err) {
-				discard();
-				throw err;
-			}
-			try {
-				const r = await link.call("task", { action: "start", id: t.id, workspace: w, launch });
-				return text(r.job ? `Started #${t.id} in ${w.branch}: ${r.job.name} works on it; it goes to review when done (the user merges).` : `#${t.id}: ${r.note ?? "starting"}`);
-			} catch (err) {
-				if (refusedByDaemon(err)) discard();
-				throw err;
-			}
+			return text(await startTaskInPi((args) => link.call("task", args as never) as never, ctx, params.id, params.model));
 		},
 	});
 

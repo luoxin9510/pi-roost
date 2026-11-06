@@ -331,7 +331,10 @@ export interface OpArgs {
 		| { action: "pass"; id: number }
 		// M58: a person's comments on lines of the task's diff (sent with back)
 		| { action: "comment"; id: number; comment: { file: string; line: number; text: string; lineText?: string; tip?: string } }
-		| { action: "uncomment"; id: number; comment: { file: string; line: number; at: number } };
+		| { action: "uncomment"; id: number; comment: { file: string; line: number; at: number } }
+		// M59: put away (worktree removed, branch kept; start brings it back); leftovers removed (dry: listed)
+		| { action: "shelve"; id: number }
+		| { action: "cleanup"; dry?: boolean };
 }
 
 export interface OpResults {

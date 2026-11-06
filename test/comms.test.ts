@@ -9,7 +9,7 @@ import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isAlive } from "../lib/proc.ts";
 import type { Event } from "../lib/protocol.ts";
 import { listJobIds, readJob, readState } from "../lib/store.ts";
-import { createTaskWorktree } from "../lib/task-git.ts";
+import { createTaskWorktree, restoreTaskWorktree } from "../lib/task-git.ts";
 import { createWorktree } from "../lib/worktree.ts";
 
 describe("comms pieces", () => {
@@ -163,6 +163,14 @@ const launch = (script: string, name = `child${n}`) => ({
 	name,
 	origin: "dispatch" as const,
 });
+
+/** M59: a concierge whose command looks like pi's (`<node> <pi> --session <file> …`): the daemon builds its sessions from it. */
+const piLike = (name: string, env: Record<string, string> = {}) => {
+	const script = join(work, `fake-pi-${n}.sh`);
+	writeFileSync(script, "exec sleep 30\n");
+	const sessionFile = join(work, `c${n++}.jsonl`);
+	return { cwd: work, sessionFile, command: ["/bin/sh", script, "--session", sessionFile, "--flag"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env }, name, origin: "dispatch" as const };
+};
 
 const report = (over: Record<string, unknown> = {}) => ({
 	state: "working" as const,
@@ -680,7 +688,7 @@ describe("M43: the event feed, watches and message rules", () => {
 describe("M44: the concierge", () => {
 	const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 	const digests = (events: Event[]) => delivered(events, "digest");
-	const conciergeLaunch = () => ({ ...launch("sleep 30", "concierge"), env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge" } });
+	const conciergeLaunch = () => piLike("concierge", { ROOST_ROLE: "concierge", SECRET_OF_CONCIERGE: "kept" });
 	/** The hub turns it on; its (fake) worker reports on a connection of its own. */
 	async function conciergeOn(hub: DaemonClient) {
 		const st = await hub.request("concierge", { action: "on", launch: conciergeLaunch() });
@@ -2046,7 +2054,7 @@ describe("M57: the concierge starts a task in its workspace", () => {
 
 	it("only with act on; the session it starts is not a concierge; a session never starts one", async () => {
 		const hub = await startDaemon();
-		const st = await hub.request("concierge", { action: "on", launch: { ...launch("sleep 30", "concierge"), env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge" } } });
+		const st = await hub.request("concierge", { action: "on", launch: piLike("concierge", { ROOST_ROLE: "concierge" }) });
 		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === st.id)?.pid);
 		const wc = await worker(st.id!);
 		const r = repo("svc");
@@ -2056,7 +2064,7 @@ describe("M57: the concierge starts a task in its workspace", () => {
 			action: "start" as const,
 			id: t.id,
 			workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base },
-			launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge", ROOST_JOB_ID: "x" } },
+			launch: { ...launch("sleep 30", `t${t.id}`), command: ["/bin/sh", "-c", "evil", "--", "Task #1"], cwd: w.path, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge", ROOST_JOB_ID: "x" } },
 		});
 		await expect(wc.c.request("task", args())).rejects.toMatchObject({ code: "policy" });
 		await hub.request("concierge", { action: "act", act: true });
@@ -2064,6 +2072,9 @@ describe("M57: the concierge starts a task in its workspace", () => {
 		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, profile: "aider" } })).rejects.toMatchObject({ code: "bad_request" });
 		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, kind: "shell" } })).rejects.toMatchObject({ code: "bad_request" });
 		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, cwd: r } })).rejects.toMatchObject({ code: "bad_request" });
+		// a session file that exists (another session's) is not taken
+		writeFileSync(join(work, "taken.jsonl"), "{}\n");
+		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, sessionFile: join(work, "taken.jsonl") } })).rejects.toMatchObject({ code: "bad_request" });
 		git(r, "branch", "other", "HEAD");
 		git(r, "checkout", "-q", "other");
 		writeFileSync(join(r, "o.txt"), "o\n");
@@ -2078,6 +2089,12 @@ describe("M57: the concierge starts a task in its workspace", () => {
 		expect(job.task).toMatchObject({ id: t.id });
 		expect(JSON.stringify(job)).not.toContain("ROOST_ROLE");
 		expect(job.env.ROOST_JOB_ID).toBeUndefined();
+		// M59: built from the concierge's own launch: its program and flags, the task after "--"; not what it sent
+		const own = readJob(st.id!)!;
+		expect(job.command.slice(0, 2)).toEqual(own.command.slice(0, 2));
+		expect(job.command).toContain("--flag");
+		expect(job.command).not.toContain("-c");
+		expect(job.command.at(-2)).toBe("--");
 		expect((await hub.request("events", {})).events.some((e) => e.kind === "concierge" && e.why === "act" && !!e.text?.includes(`started #${t.id}`))).toBe(true);
 		// a session (not the concierge, not the hub) is refused
 		const s = await worker(res.job!.id);
@@ -2131,5 +2148,107 @@ describe("M58: review comments", () => {
 		const back2 = await hub.request("task", { action: "back", id: t.id });
 		expect(back2.note).toContain("(1 did not fit: send back again)");
 		expect(back2.task?.workspace?.comments?.map((c) => c.text.slice(0, 1))).toEqual(["3"]);
+	});
+});
+
+describe("M59: shelve, hand merges, cleanup", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	const gitOut = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+	function repo(name: string): string {
+		mkdirSync(join(work, name), { recursive: true });
+		const r = realpathSync(join(work, name));
+		git(r, "init", "-q", "-b", "main");
+		writeFileSync(join(r, "a.txt"), "a\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "a");
+		return r;
+	}
+	/** A task started in its worktree, its work committed, in review (its session stopped). */
+	async function inReview(hub: DaemonClient, r: string, title: string) {
+		const t = (await hub.request("task", { action: "add", title, project: r })).task!;
+		const w = createTaskWorktree(r, t.id, title);
+		const { job } = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job!.id)?.pid);
+		const s = await worker(job!.id);
+		writeFileSync(join(w.path, `${t.id}.txt`), `${title}\n`);
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", title);
+		await s.c.request("task", { action: "done", id: t.id, result: title });
+		return { t, w, job: job! };
+	}
+	const stopped = async (hub: DaemonClient, id: string) => {
+		await hub.request("stop", { id });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.pid === null);
+	};
+
+	it("shelve: not while its session runs, not with changes; the worktree goes, the branch stays; start brings it back", async () => {
+		const hub = await startDaemon();
+		const r = repo("sh");
+		const { t, w, job } = await inReview(hub, r, "users");
+		await expect(hub.request("task", { action: "shelve", id: t.id })).rejects.toMatchObject({ code: "conflict" });
+		await stopped(hub, job.id);
+		writeFileSync(join(w.path, "dirty.txt"), "x\n");
+		await expect(hub.request("task", { action: "shelve", id: t.id })).rejects.toMatchObject({ code: "bad_request" });
+		rmSync(join(w.path, "dirty.txt"));
+		const sh = await hub.request("task", { action: "shelve", id: t.id });
+		expect(sh.task).toMatchObject({ state: "open", owner: null, workspace: { stage: "shelved" } });
+		expect(existsSync(w.path)).toBe(false);
+		expect(gitOut(r, "branch", "--list", w.branch)).toContain(w.branch);
+		await expect(hub.request("task", { action: "merge", id: t.id })).rejects.toThrow(/shelved/);
+		restoreTaskWorktree(r, w.path, w.branch);
+		const again = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "again"), cwd: w.path } });
+		expect(again.task).toMatchObject({ state: "claimed", workspace: { stage: "working" } });
+		expect(existsSync(join(w.path, `${t.id}.txt`))).toBe(true);
+	});
+
+	it("a branch merged into base by hand is marked merged when the board is listed; dependents are free", async () => {
+		const restore = (() => {
+			process.env.PI_ROOST_HAND_MERGE_MS = "0";
+			return () => delete process.env.PI_ROOST_HAND_MERGE_MS;
+		})();
+		try {
+			const hub = await startDaemon();
+			const r = repo("hm");
+			const { t, w, job } = await inReview(hub, r, "schema");
+			const next = (await hub.request("task", { action: "add", title: "after", project: r, after: [t.id] })).task!;
+			await stopped(hub, job.id);
+			git(r, "merge", "--ff-only", "-q", w.branch);
+			const list = (await hub.request("task", { action: "list" })).tasks;
+			expect(list.find((x) => x.id === t.id)).toMatchObject({ state: "done", workspace: { stage: "merged" } });
+			// the next one can be started now
+			const w2 = createTaskWorktree(r, next.id, "after");
+			await expect(hub.request("task", { action: "start", id: next.id, workspace: { path: w2.path, branch: w2.branch, baseRef: w2.baseRef, baseSha: w2.base }, launch: { ...launch("sleep 30", "n"), cwd: w2.path } })).resolves.toBeTruthy();
+		} finally {
+			restore();
+		}
+	});
+
+	it("cleanup: dry lists, yes removes clean worktrees of dropped tasks and of task branches no task holds, and old verify logs; never one with changes", async () => {
+		const hub = await startDaemon();
+		const r = repo("cl");
+		const { t: a, w: wa, job: ja } = await inReview(hub, r, "kept clean");
+		const { t: b, w: wb, job: jb } = await inReview(hub, r, "dirty");
+		await stopped(hub, ja.id);
+		await stopped(hub, jb.id);
+		writeFileSync(join(wb.path, "wip.txt"), "x\n");
+		// drop: a session's worktree in use is kept by drop when dirty; a clean one goes at once, so make it come back
+		await hub.request("task", { action: "drop", id: b.id });
+		await hub.request("task", { action: "drop", id: a.id });
+		const orphan = createTaskWorktree(r, 999, "orphan");
+		const logs = join(process.env.PI_ROOST_HOME ?? join(work, "home"), "verify");
+		mkdirSync(logs, { recursive: true });
+		writeFileSync(join(logs, `${a.id}-1.log`), "ok\n");
+		const dry = (await hub.request("task", { action: "cleanup", dry: true })).note!;
+		expect(dry).toContain(`#${b.id} kept: ${wb.path} has uncommitted changes`);
+		expect(dry).toContain(`${orphan.branch}: remove ${orphan.path}`);
+		expect(existsSync(orphan.path)).toBe(true);
+		const done = (await hub.request("task", { action: "cleanup" })).note!;
+		expect(done).toContain(`${orphan.branch}: worktree removed · branch kept`);
+		expect(existsSync(orphan.path)).toBe(false);
+		expect(existsSync(wb.path)).toBe(true);
+		expect(existsSync(wa.path)).toBe(false);
+		expect(done).toContain("removed 1 verify log");
+		expect(existsSync(join(logs, `${a.id}-1.log`))).toBe(false);
+		await expect((await foreground("lead")).c.request("task", { action: "cleanup" })).rejects.toMatchObject({ code: "unsupported" });
 	});
 });

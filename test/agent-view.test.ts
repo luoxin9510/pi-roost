@@ -133,6 +133,8 @@ class FakeClient {
 		if (op === "task") {
 			const a = args as { action: string; id?: number; title?: string; detail?: string; after?: number[]; result?: string; to?: string };
 			if (a.action === "list") return { tasks: this.tasks };
+			// M59: cleanup has no id
+			if (a.action === "cleanup") return { tasks: this.tasks, note: (a as { dry?: boolean }).dry ? "#3 dropped: remove /r/wt3 (branch kept)\nremove 2 verify logs" : "#3: worktree removed · branch kept" };
 			if (a.action === "add") {
 				const task: BoardTask = { id: this.tasks.length + 1, title: a.title ?? "", detail: a.detail ?? null, state: "open", after: a.after ?? [], by: { who: "user", whoId: null }, at: Date.now(), owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: null, waiting: [] };
 				this.tasks = [...this.tasks, task];
@@ -2668,5 +2670,37 @@ describe("M58: review, after review", () => {
 		view.handleInput("m");
 		await sleep(40);
 		expect(view.render(120).join("\n")).toContain("#4 t · M a.ts");
+	});
+});
+
+describe("M59: shelve and cleanup in the hub", () => {
+	const sha = "a".repeat(40);
+	it("/tasks shelve; /tasks cleanup lists, yes removes; start of a shelved task makes its worktree again first", async () => {
+		const restored: unknown[] = [];
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { restoreTaskWorktree: ((...a: unknown[]) => void restored.push(a)) as never } });
+		client.tasks = [{ id: 3, title: "users", detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], workspace: { path: "/nonexistent/wt3", branch: "roost/t3-users-ab12", baseRef: "main", baseSha: sha, stage: "shelved", note: null } }];
+		await view.start();
+		type(view, "/tasks shelve 3");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "shelve", id: 3 });
+		type(view, "/tasks cleanup");
+		view.handleInput("\r");
+		await sleep(20);
+		let out = view.render(120).join("\n");
+		expect(out).toContain("/tasks cleanup yes removes it");
+		expect(out).toContain("#3 dropped: remove /r/wt3 (branch kept)");
+		view.handleInput("\x1b");
+		type(view, "/tasks cleanup yes");
+		view.handleInput("\r");
+		await sleep(20);
+		out = view.render(120).join("\n");
+		expect(out).toContain("Cleaned up");
+		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "cleanup", dry: false });
+		view.handleInput("\x1b");
+		type(view, "/tasks start 3");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(restored).toEqual([["/r", "/nonexistent/wt3", "roost/t3-users-ab12"]]);
 	});
 });

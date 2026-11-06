@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, open, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { addWorktree, GIT_ENV, mainCheckout, real, slugOf, tryGit, WorktreeError } from "./worktree.ts";
+import { addWorktree, copyIncluded, GIT_ENV, mainCheckout, real, slugOf, tryGit, WorktreeError } from "./worktree.ts";
 
 interface Run {
 	code: number;
@@ -280,4 +280,44 @@ export async function taskChanges(path: string, baseRef: string): Promise<import
 		commits: Number(count.stdout) || 0,
 		dirty: status.code === 0 && status.stdout.length > 0,
 	};
+}
+
+/** M59: a task's worktree removed (shelved): only a clean one; its branch stays. */
+export async function removeTaskWorktree(repo: string, path: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+	if (!existsSync(path)) {
+		await run(repo, ["worktree", "prune"]);
+		return { ok: true };
+	}
+	const clean = await worktreeClean(path);
+	if (clean !== true) return { ok: false, reason: clean === false ? "it has uncommitted changes" : "cannot read it" };
+	const r = await run(repo, ["worktree", "remove", "--", path], 30_000);
+	return r.code === 0 ? { ok: true } : { ok: false, reason: lastLines(r, 1) };
+}
+
+/**
+ * M59: a shelved task's worktree made again at its old path from its branch (the branch
+ * checked out there again, `.worktreeinclude` copied as for a new one).
+ */
+export function restoreTaskWorktree(repo: string, path: string, branch: string): void {
+	if (existsSync(path)) throw new WorktreeError(`${path} exists: not restoring over it`);
+	if (tryGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]) === undefined) throw new WorktreeError(`its branch ${branch} is gone`);
+	tryGit(repo, ["worktree", "prune"]);
+	if (tryGit(repo, ["worktree", "add", "--", path, branch]) === undefined) throw new WorktreeError(`git could not make ${path} from ${branch}`);
+	try {
+		copyIncluded(mainCheckout(repo), path);
+	} catch {}
+}
+
+/** M59: the task worktrees git knows in a repository: path, branch (without refs/heads/), the task id in its name. */
+export async function taskWorktrees(repo: string): Promise<{ path: string; branch: string; id: number }[]> {
+	const r = await run(repo, ["worktree", "list", "--porcelain"]);
+	if (r.code !== 0) return [];
+	const out: { path: string; branch: string; id: number }[] = [];
+	for (const block of r.stdout.split("\n\n")) {
+		const path = /^worktree (.+)$/m.exec(block)?.[1];
+		const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+		const id = branch ? /^roost\/t(\d+)-/.exec(branch)?.[1] : undefined;
+		if (path && branch && id) out.push({ path, branch, id: Number(id) });
+	}
+	return out;
 }

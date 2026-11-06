@@ -1,3 +1,4 @@
+import { registerTasksCommand } from "./tasks-command.ts";
 import { discoverAgents, findAgent } from "../../lib/agents.ts";
 import { setJobEventBus } from "../../lib/job-events.ts";
 import { resolve as resolvePath } from "node:path";
@@ -52,6 +53,9 @@ export function register(pi: ExtensionAPI, via: "adapters/pi" | "extensions"): v
 			await openAgentView(ctx, { cwdFilter: agentsCwd(pi, ctx) });
 		},
 	});
+
+	// M59: the task board from any pi session (and the phone, through pi-mobile)
+	registerTasksCommand(pi);
 
 	let lockedFile: string | undefined;
 
