@@ -316,21 +316,23 @@ export const REVIEW_TEXT_MAX = 4000;
  * M58: the review comments as a message for the session: each with its place and the line
  * it is about, bounded (the rest counted).
  */
-export function reviewText(comments: ReviewComment[], max = REVIEW_TEXT_MAX): string {
+export function reviewText(comments: ReviewComment[], max = REVIEW_TEXT_MAX): { text: string; count: number } {
 	const one = (s: string) => s.replace(/\s+/g, " ").trim();
 	const out: string[] = [];
 	let used = 0;
+	let count = 0;
 	for (let i = 0; i < comments.length; i++) {
 		const c = comments[i]!;
-		const line = `- ${c.file}:${c.line}${c.lineText ? ` (${one(c.lineText).slice(0, 120)})` : ""}: ${one(c.text)}`;
-		if (used + line.length + 1 > max) {
-			out.push(`… and ${comments.length - i} more comment${comments.length - i === 1 ? "" : "s"} (the review shows them)`);
+		const line = `- ${c.file}:${c.line}${c.lineText ? ` (${one(c.lineText).slice(0, 120)})` : ""}: ${one(c.text)}`.slice(0, max);
+		if (used + line.length + 1 > max && count > 0) {
+			out.push(`… and ${comments.length - i} more comment${comments.length - i === 1 ? "" : "s"}, sent with the next send-back`);
 			break;
 		}
 		out.push(line);
 		used += line.length + 1;
+		count++;
 	}
-	return out.join("\n");
+	return { text: out.join("\n"), count };
 }
 
 /** M55/M57: the first prompt of a task's session (the hub's /tasks start, the concierge's hub_task_start). */
@@ -340,7 +342,7 @@ export function taskPrompt(t: Pick<BoardTask, "id" | "title" | "detail" | "works
 		`Task #${t.id}: ${t.title}`,
 		t.detail ?? "",
 		t.workspace ? "Work on it started before in this worktree: read `git log` and the diff against the base branch first." : "",
-		comments.length > 0 ? `The review asks for changes (line numbers are of the reviewed version):\n${reviewText(comments)}` : "",
+		comments.length > 0 ? `The review asks for changes (line numbers are of the reviewed version):\n${reviewText(comments).text}` : "",
 		"Commit your work on this branch, then call roost_task_done with a line on what you did.",
 	]
 		.filter(Boolean)

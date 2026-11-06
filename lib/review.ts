@@ -17,26 +17,29 @@ export function outdatedIn(f: DiffFile, comments: ReviewComment[]): ReviewCommen
 }
 
 /** The review as plain lines: each file, its hunks, the comments under their lines; comments on files not in the diff last. */
+/** A text for a terminal: tabs as four spaces, control characters (C0, DEL, C1, newlines too) as spaces. */
+export const termText = (s: string): string => s.replace(/\t/g, "    ").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+
 export function reviewLines(d: TaskDiff, comments: ReviewComment[]): string[] {
 	const out: string[] = [];
-	const clean = (s: string) => s.replace(/\t/g, "    ").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, " ");
+	const clean = termText;
 	for (const f of d.files) {
-		out.push(`${f.status} ${f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}`);
-		for (const c of outdatedIn(f, comments)) out.push(`  ✎ outdated (line ${c.line}): ${c.text}`);
+		out.push(clean(`${f.status} ${f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}`));
+		for (const c of outdatedIn(f, comments)) out.push(clean(`  ✎ outdated (line ${c.line}): ${c.text}`));
 		if (f.summary) out.push(`  ${f.summary}`);
 		else if (f.binary) out.push("  binary file");
 		for (const h of f.hunks) {
 			out.push(`  ${clean(h.header)}`);
 			for (const l of h.lines) {
 				out.push(`${String(l.newNo ?? l.oldNo ?? "").padStart(5)} ${l.kind} ${clean(l.text)}`);
-				for (const c of comments) if (commentOn(c, f.path, l)) out.push(`        └ ✎ ${c.text}`);
+				for (const c of comments) if (commentOn(c, f.path, l)) out.push(clean(`        └ ✎ ${c.text}`));
 			}
 		}
 		out.push("");
 	}
 	const files = new Set(d.files.map((f) => f.path));
 	const elsewhere = comments.filter((c) => !files.has(c.file));
-	for (const c of elsewhere) out.push(`✎ ${c.file}:${c.line} (not in the diff now): ${c.text}`);
+	for (const c of elsewhere) out.push(clean(`✎ ${c.file}:${c.line} (not in the diff now): ${c.text}`));
 	if (d.files.length === 0) out.push("nothing changed against base");
 	if (d.truncated) out.push("(the diff was cut short: it is larger than pi-roost shows)");
 	return out;

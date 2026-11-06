@@ -146,12 +146,17 @@ class FakeClient {
 			}
 			// M55: start and merge
 			if (a.action === "start") return { tasks: this.tasks, task, job: { id: "w9", name: "users" } };
+			if (a.action === "back" && task.workspace) task.workspace.stage = "working";
 			// M58: comments on the task's diff
 			if (a.action === "comment" || a.action === "uncomment") {
 				const w = (task.workspace ??= { path: "/r", branch: "b", baseRef: "main", baseSha: "", stage: "review", note: null });
 				const list = (w.comments ??= []);
-				if (a.action === "comment") list.push({ ...(a as unknown as { comment: ReviewComment }).comment, lineText: (a as unknown as { comment: ReviewComment }).comment.lineText ?? "", tip: "", at: 0 });
-				else list.splice((a as unknown as { index: number }).index, 1);
+				if (a.action === "comment") list.push({ ...(a as unknown as { comment: ReviewComment }).comment, lineText: (a as unknown as { comment: ReviewComment }).comment.lineText ?? "", tip: "", at: 100 + list.length });
+				else {
+					const k = (a as unknown as { comment: { file: string; line: number; at: number } }).comment;
+					const i = list.findIndex((c) => c.file === k.file && c.line === k.line && c.at === k.at);
+					if (i >= 0) list.splice(i, 1);
+				}
 				return { tasks: this.tasks, task, note: `${list.length} comments` };
 			}
 			// M57: approve: shown (dry), then with the hash
@@ -2571,8 +2576,9 @@ describe("M58: review in the hub", () => {
 		expect(out).toContain("file 1/2 · hunk 1/1 · 1 comment");
 		expect(out).toContain("outdated (line 7): an old one");
 		expect(out).toContain("    2 + drop table users;");
-		// down to the added line (hunk header, context, removed, added)
-		for (let i = 0; i < 3; i++) view.handleInput("j");
+		// it opens on the first line of the diff (context); down to the added line (removed, added)
+		expect(view.render(120).find((l) => l.startsWith("▶"))).toContain("create table users;");
+		for (let i = 0; i < 2; i++) view.handleInput("j");
 		expect(view.render(120).find((l) => l.startsWith("▶"))).toContain("drop table users;");
 		view.handleInput("c");
 		for (const ch of "drop the index first") view.handleInput(ch);
@@ -2584,7 +2590,15 @@ describe("M58: review in the hub", () => {
 		expect(out).toMatch(/drop table users;\n\s+└ ✎ drop the index first/);
 		view.handleInput("d");
 		await sleep(20);
-		expect(client.requests.some((r) => r.op === "task" && (r.args as { action: string; index?: number }).action === "uncomment" && (r.args as { index: number }).index === 1)).toBe(true);
+		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "uncomment", id: 4, comment: { file: "db/users.sql", line: 2, at: 101 } });
+		expect(view.render(120).join("\n")).not.toContain("drop the index first");
+		// the outdated one is a row of its own at the top: d deletes it there
+		view.handleInput("\x1b[H");
+		for (let i = 0; i < 9; i++) view.handleInput("k");
+		expect(view.render(120).find((l) => l.startsWith("▶"))).toContain("✎ outdated (line 7): an old one");
+		view.handleInput("d");
+		await sleep(20);
+		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "uncomment", id: 4, comment: { file: "db/users.sql", line: 7, at: 0 } });
 		// the next file: binary
 		view.handleInput("]");
 		expect(view.render(120).join("\n")).toContain("binary file");
@@ -2607,5 +2621,52 @@ describe("M58: review in the hub", () => {
 		await sleep(30);
 		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "back", id: 4, note: "see comments" });
 		expect(view.render(120).join("\n")).not.toContain("hunk 1/1");
+	});
+});
+
+describe("M58: review, after review", () => {
+	const sha = "a".repeat(40);
+	const line = (kind: "+" | "-" | " ", text: string, n: number) => ({ kind, text, oldNo: kind === "+" ? null : n, newNo: kind === "-" ? null : n });
+	const diff = (async () => ({
+		base: sha,
+		tip: "b".repeat(40),
+		truncated: false,
+		files: [{ path: "a.ts", status: "M", binary: false, hunks: [{ header: "@@ -1 +1 @@", lines: [line("+", "one", 1)] }, { header: "@@ -9 +9 @@", lines: [line("+", "nine", 9), line(" ", "ten", 10)] }] }],
+	})) as never;
+	const task = (comments: ReviewComment[]): BoardTask => ({ id: 4, title: "t", detail: null, state: "claimed", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: 1, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], workspace: { path: "/r/wt", branch: "roost/t4-t-ab12", baseRef: "main", baseSha: sha, stage: "review", note: null, comments } });
+
+	it("n and p go hunk to hunk both ways; comments on files no longer in the diff have a page of their own", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff } });
+		client.tasks = [task([{ file: "gone.ts", line: 3, lineText: "+x", text: "about gone", tip: "", at: 5 }])];
+		await view.start();
+		type(view, "/tasks review 4");
+		view.handleInput("\r");
+		await sleep(30);
+		const cursor = () => view.render(120).find((l) => l.startsWith("▶")) ?? "";
+		expect(view.render(120).join("\n")).toContain("file 1/2");
+		view.handleInput("n");
+		expect(cursor()).toContain("+ nine");
+		view.handleInput("j");
+		view.handleInput("p");
+		expect(cursor()).toContain("+ one");
+		view.handleInput("]");
+		expect(view.render(120).join("\n")).toContain("comments on files not in the diff now");
+		expect(cursor()).toContain("✎ gone.ts (line 3): about gone");
+	});
+
+	it("a merge that did not happen keeps the review open", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff } });
+		client.tasks = [task([])];
+		client.request = (async (op: string, args: unknown) => {
+			if (op === "task" && (args as { action: string }).action === "merge") return { tasks: client.tasks, task: client.tasks[0], note: "conflict in a.ts" };
+			return FakeClient.prototype.request.call(client, op as never, args as never);
+		}) as never;
+		await view.start();
+		type(view, "/tasks review 4");
+		view.handleInput("\r");
+		await sleep(30);
+		view.handleInput("m");
+		await sleep(40);
+		expect(view.render(120).join("\n")).toContain("#4 t · M a.ts");
 	});
 });

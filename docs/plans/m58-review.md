@@ -69,3 +69,27 @@ range of lines; syntax colours.
   note; `/tasks review`; widths from 10 to 120 columns.
 - `test/comms.test.ts`: comments by the hub, refused for a session and for bad input,
   `uncomment`, `back` delivers them to the session and clears them.
+
+## After review
+
+- A send-back clears only the comments that reached the session: the message is awaited
+  (`tellOwner` says whether it was delivered or queued); a session that takes no messages
+  keeps them, and the note says so.
+- The message holds what fits in 4000 characters; the comments it had no room for stay
+  for the next send-back (the note counts them), never dropped. A start clears only the
+  ones its prompt carried (the same list, the same cut).
+- `uncomment` names the comment (its file, line and time, unique per task), not an
+  index from a list the hub saw earlier.
+- Outdated comments are rows at the top of their file, and the comments on files no
+  longer in the diff have a page of their own after the last file; `d` deletes them
+  there.
+- `p` goes to the previous hunk (it stayed in the current one); the review opens on the
+  first line of the diff; `]` lands on a file's first line.
+- A merge or send-back that did not happen (a conflict, a refusal) keeps the review open;
+  a busy Enter keeps the typed text; a review that cannot load returns to the overlay;
+  a second Enter while it loads opens nothing more.
+- `pi-roost review N comment f:n` takes the line of the new version with that number (a
+  removed line only when none has it) and refuses a line not in the diff; the printed
+  review drops control characters (C0, DEL, C1, newlines) from names and comments.
+- A file without hunks says what it is: renamed with its text unchanged, an empty file,
+  a mode change.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ReviewComment } from "../lib/board.ts";
-import { commentAnchor, commentOn, outdatedIn, reviewLines } from "../lib/review.ts";
+import { commentAnchor, commentOn, outdatedIn, reviewLines, termText } from "../lib/review.ts";
 import type { DiffFile, TaskDiff } from "../lib/task-diff.ts";
 
 const file: DiffFile = {
@@ -44,5 +44,11 @@ describe("M58: comments on a diff", () => {
 		expect(lines).toContain("  binary file");
 		expect(lines).toContain("✎ README.md:1 (not in the diff now): elsewhere");
 		expect(lines.at(-1)).toContain("cut short");
+	});
+
+	it("names and comments reach a terminal without its control characters", () => {
+		expect(termText("a\x1b[2Jb\nc\x9bd\te")).toBe("a [2Jb c d    e");
+		const d: TaskDiff = { base: "", tip: "", truncated: false, files: [{ path: "x\x1b[2J.txt", status: "A", binary: true, hunks: [] }] };
+		expect(reviewLines(d, [c(1, "", "line\none", "x\x1b[2J.txt")]).join("\n")).not.toMatch(/[\x1b\x9b]/);
 	});
 });

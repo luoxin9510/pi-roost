@@ -47,7 +47,7 @@ import {
 } from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
-import { type BoardTask, blockedOn, REVIEW_COMMENTS_MAX, reviewText, boardSummary, onBoardOf, parseWorkspace, stageLabel, TASK_NOTE_MAX, type TaskWorkspace, type WorkspaceStage, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
+import { type BoardTask, blockedOn, REVIEW_COMMENTS_MAX, type ReviewComment, reviewText, boardSummary, onBoardOf, parseWorkspace, stageLabel, TASK_NOTE_MAX, type TaskWorkspace, type WorkspaceStage, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -1036,13 +1036,19 @@ const assigning = new Set<number>();
 const FG_CLAIM_GRACE_MS = Number(process.env.PI_ROOST_FG_CLAIM_GRACE_MS) || 5000;
 
 /** The session that holds a task is told when the hub or the concierge takes it from it. */
-function tellOwner(owner: { id: string; name: string }, from: string, body: string): void {
+/** Whether it reached the session (delivered or queued for it); false when it takes no messages. */
+async function tellOwner(owner: { id: string; name: string }, from: string, body: string): Promise<boolean> {
 	const p = fgPeers.get(owner.id)?.peer;
 	const rec = recs.get(owner.id);
 	const key = (rec ? recKey(rec) : undefined) || (p?.kind === "fg" ? p.session : undefined);
-	if (!key || refusesItems(owner.id)) return;
+	if (!key || refusesItems(owner.id)) return false;
 	const text = envelope({ from, id: from, relation: "external", kind: "message", body });
-	void deliverAgent(key, "message", text, { from, relation: "external" }).catch(() => {});
+	try {
+		await deliverAgent(key, "message", text, { from, relation: "external" });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function taskEvent(a: ReturnType<typeof boardActor>, why: string, t: BoardTask, extra?: string): void {
@@ -1112,6 +1118,14 @@ function setStage(t: BoardTask, stage: WorkspaceStage, note: string | null, a?: 
 	const who = a ?? { who: "roost", whoId: null };
 	record({ kind: "task", id: who.whoId ?? t.owner?.id ?? "", name: who.who, who: who.who, whoId: who.whoId, why: "stage", text: clipText(`#${t.id} ${t.title}: ${stageLabel(stage)}${note ? ` (${note})` : ""}${extra ? `: ${extra}` : ""}`) });
 	pushBoard();
+}
+
+/** M58: the comments sent go (by identity: others may have come or gone meanwhile). */
+function dropSent(w: TaskWorkspace, sent: ReviewComment[]): void {
+	if (!w.comments) return;
+	w.comments = w.comments.filter((c) => !sent.includes(c));
+	if (w.comments.length === 0) delete w.comments;
+	saveTasks();
 }
 
 /** M55: repositories a merge is under way in (one at a time; the lock file guards against another daemon). */
@@ -1308,7 +1322,7 @@ async function workspaceOp(
 	a: ReturnType<typeof boardActor>,
 	t: BoardTask,
 	action: WorkspaceAction,
-	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown; index?: unknown },
+	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown },
 ): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
 	if (a.sessionId !== null) throw new OpError("unsupported", `/tasks ${action} is the hub's`);
 	// one action on a task's workspace at a time (two starts, a drop during a merge)
@@ -1327,7 +1341,7 @@ async function workspaceAction(
 	a: ReturnType<typeof boardActor>,
 	t: BoardTask,
 	action: WorkspaceAction,
-	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown; index?: unknown },
+	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown },
 ): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
 	const human = a.sessionId === null && !a.concierge; // the hub, the CLI
 	// M56: trust is a person's: the repository's commands, shown, then approved
@@ -1409,8 +1423,8 @@ async function workspaceAction(
 		t.assigned = null;
 		t.waiting = [];
 		const again = !!t.workspace;
-		// M58: the prompt carried the review's comments
-		if (t.workspace?.comments) delete t.workspace.comments;
+		// M58: the prompt carried the review's comments (as many as reviewText took: the same list, the same cut)
+		if (t.workspace?.comments) dropSent(t.workspace, t.workspace.comments.slice(0, reviewText(t.workspace.comments).count));
 		t.workspace ??= { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, stage: "working", note: null };
 		const pending = setupNote.get(t.id) ?? null;
 		setupNote.delete(t.id);
@@ -1431,16 +1445,20 @@ async function workspaceAction(
 		if (w.stage === "merged") throw new OpError("bad_request", `#${t.id} is merged`);
 		const list = (w.comments ??= []);
 		if (action === "uncomment") {
-			const i = args.index;
-			if (!Number.isInteger(i) || (i as number) < 0 || (i as number) >= list.length) throw new OpError("not_found", `#${t.id} has no comment ${String(i)}`);
-			list.splice(i as number, 1);
+			// which one: its file, line and time (an index from a list seen earlier could name another)
+			const k = (args.comment ?? {}) as Record<string, unknown>;
+			const i = list.findIndex((c) => c.file === k.file && c.line === k.line && c.at === k.at);
+			if (i < 0) throw new OpError("not_found", `#${t.id} has no such comment (it was sent or removed)`);
+			list.splice(i, 1);
 		} else {
 			const c = (args.comment ?? {}) as Record<string, unknown>;
 			const file = typeof c.file === "string" ? c.file.slice(0, 4096) : "";
 			const text = taskText(c.text, TASK_TEXT_MAX);
 			if (!file || !Number.isInteger(c.line) || (c.line as number) < 1 || !text) throw new OpError("bad_request", "comment: {file, line (from 1), text, lineText?, tip?}");
 			if (list.length >= REVIEW_COMMENTS_MAX) throw new OpError("bad_request", `#${t.id} has ${REVIEW_COMMENTS_MAX} comments: send them back first`);
-			list.push({ file, line: c.line as number, text, lineText: typeof c.lineText === "string" ? c.lineText.slice(0, 1000) : "", tip: typeof c.tip === "string" && SHA_RE.test(c.tip) ? c.tip : "", at: Date.now() });
+			// its time names it (uncomment): never the same as the last one's
+			const at = Math.max(Date.now(), (list.at(-1)?.at ?? 0) + 1);
+			list.push({ file, line: c.line as number, text, lineText: typeof c.lineText === "string" ? c.lineText.slice(0, 1000) : "", tip: typeof c.tip === "string" && SHA_RE.test(c.tip) ? c.tip : "", at });
 		}
 		if (list.length === 0) delete w.comments;
 		saveTasks();
@@ -1455,11 +1473,15 @@ async function workspaceAction(
 		const counted = comments.length > 0 ? ` (${comments.length} comment${comments.length === 1 ? "" : "s"})` : "";
 		setStage(t, "working", text ? `sent back${counted}: ${text}` : `sent back${counted}`, a);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) {
-			const review = comments.length > 0 ? `\nReview comments (line numbers are of the version reviewed):\n${reviewText(comments)}` : "";
-			tellOwner(t.owner, a.who, `Task #${t.id} (${t.title}) came back from review${text ? `: ${text}` : ""}.${review}\nWork on it in ${w.path} (branch ${w.branch}), commit, then roost_task_done again.`);
-			delete w.comments;
-			saveTasks();
-			return { note: `sent back to ${t.owner.name}${counted}` };
+			const rt = reviewText(comments);
+			const review = comments.length > 0 ? `\nReview comments (line numbers are of the version reviewed):\n${rt.text}` : "";
+			const owner = t.owner;
+			// the comments go once they reached it; those the message had no room for stay for the next send-back
+			if (await tellOwner(owner, a.who, `Task #${t.id} (${t.title}) came back from review${text ? `: ${text}` : ""}.${review}\nWork on it in ${w.path} (branch ${w.branch}), commit, then roost_task_done again.`)) {
+				dropSent(w, comments.slice(0, rt.count));
+				return { note: `sent back to ${owner.name}${counted}${rt.count < comments.length ? ` (${comments.length - rt.count} did not fit: send back again)` : ""}` };
+			}
+			return { note: `${owner.name} takes no messages: the comments stay (/tasks start it again, or tell it)` };
 		}
 		return { note: "no session holds it: /tasks start it to start one (it gets the comments)" };
 	}

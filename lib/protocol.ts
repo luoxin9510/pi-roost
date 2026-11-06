@@ -331,7 +331,7 @@ export interface OpArgs {
 		| { action: "pass"; id: number }
 		// M58: a person's comments on lines of the task's diff (sent with back)
 		| { action: "comment"; id: number; comment: { file: string; line: number; text: string; lineText?: string; tip?: string } }
-		| { action: "uncomment"; id: number; index: number };
+		| { action: "uncomment"; id: number; comment: { file: string; line: number; at: number } };
 }
 
 export interface OpResults {

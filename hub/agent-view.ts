@@ -39,7 +39,7 @@ import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
 import { createTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
 import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
-import { commentAnchor, commentOn } from "../lib/review.ts";
+import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
 import { nextNeedsYou, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
@@ -2568,16 +2568,28 @@ export class AgentView implements Component {
 	 * person's comments under their lines; c comments, b sends back with them, m merges.
 	 * `onClose`: where Esc goes (the workspace overlay it came from).
 	 */
+	private reviewOpening = false;
 	private async openReview(id: number, onClose?: () => void): Promise<void> {
 		const client = this.client;
 		if (!client) return this.say("background service unavailable", "error");
+		// a second Enter while it loads opens nothing more
+		if (this.reviewOpening) return;
+		this.reviewOpening = true;
+		try {
+			await this.reviewOverlay(client, id, onClose);
+		} finally {
+			this.reviewOpening = false;
+		}
+	}
+
+	private async reviewOverlay(client: DaemonClient, id: number, onClose?: () => void): Promise<void> {
 		const view = this;
 		const t = this.o.theme;
 		const diffOf = this.o.taskDiff ?? taskDiff;
 		let task: BoardTask | undefined;
 		let diff: TaskDiff | undefined;
 		let fi = 0;
-		let ri = 0;
+		let ri = -1; // -1: the file's first line of diff
 		let top = 0;
 		let input: { kind: "comment" | "back"; box: Input } | undefined;
 		let busy = false;
@@ -2596,16 +2608,28 @@ export class AgentView implements Component {
 		try {
 			await load();
 		} catch (err) {
-			return this.say((err as Error).message, "error");
+			this.say((err as Error).message, "error");
+			return onClose?.();
 		}
 		const comments = () => task?.workspace?.comments ?? [];
-		type Row = { kind: "hunk"; text: string; h: number } | { kind: "line"; line: DiffLine; h: number } | { kind: "note"; text: string };
+		// the files, and one more holding the comments on files no longer in the diff
+		const filesOf = (): DiffFile[] => {
+			const fs = diff?.files ?? [];
+			const there = new Set(fs.map((f) => f.path));
+			return comments().some((c) => !there.has(c.file)) ? [...fs, { path: "", status: "M", binary: false, hunks: [] }] : fs;
+		};
+		type Row = { kind: "hunk"; text: string; h: number } | { kind: "line"; line: DiffLine; h: number } | { kind: "note"; text: string } | { kind: "stale"; c: ReviewComment };
 		const rowsOf = (f: DiffFile | undefined): Row[] => {
 			if (!f) return [];
-			if (f.summary) return [{ kind: "note", text: f.summary }];
-			if (f.binary) return [{ kind: "note", text: "binary file" }];
-			if (f.hunks.length === 0) return [{ kind: "note", text: "no changes in its text (its mode changed)" }];
-			const out: Row[] = [];
+			// comments not under a line of it now (outdated), first; d deletes them there
+			if (!f.path) {
+				const there = new Set((diff?.files ?? []).map((x) => x.path));
+				return comments().filter((c) => !there.has(c.file)).map((c) => ({ kind: "stale", c }));
+			}
+			const out: Row[] = outdatedIn(f, comments()).map((c) => ({ kind: "stale", c }));
+			if (f.summary) return [...out, { kind: "note", text: f.summary }];
+			if (f.binary) return [...out, { kind: "note", text: "binary file" }];
+			if (f.hunks.length === 0) return [...out, { kind: "note", text: f.status === "R" ? "renamed, its text unchanged" : f.status === "A" ? "an empty file" : f.status === "D" ? "an empty file, deleted" : "its text unchanged (its mode changed)" }];
 			f.hunks.forEach((hk, h) => {
 				out.push({ kind: "hunk", text: hk.header, h });
 				for (const line of hk.lines) out.push({ kind: "line", line, h });
@@ -2615,31 +2639,34 @@ export class AgentView implements Component {
 		const anchor = commentAnchor;
 		// a comment sits under its line while that line is where it was; otherwise it is outdated (kept)
 		const placed = (f: DiffFile, rows: Row[]) => {
-			const at = new Map<number, { c: ReviewComment; i: number }[]>();
-			const outdated: { c: ReviewComment; i: number }[] = [];
-			comments().forEach((c, i) => {
-				if (c.file !== f.path) return;
+			const at = new Map<number, ReviewComment[]>();
+			for (const c of comments()) {
+				if (c.file !== f.path) continue;
 				const r = rows.findIndex((x) => x.kind === "line" && commentOn(c, f.path, x.line));
-				if (r < 0) outdated.push({ c, i });
-				else at.set(r, [...(at.get(r) ?? []), { c, i }]);
-			});
-			return { at, outdated };
+				if (r >= 0) at.set(r, [...(at.get(r) ?? []), c]);
+			}
+			return { at };
 		};
-		const clean = (s: string) => s.replace(/\t/g, "    ").replace(CONTROL, " ");
+		const clean = (s: string) => s.replace(/\t/g, "    ").replace(CONTROL, " ").replace(/[\x80-\x9f]/g, " ");
+		// merge and back close the review when they did it (the task merged, at work again); else it stays
 		const act = (verb: string, extra = "") => {
-			if (busy) return;
+			if (busy) return view.say("busy: try again in a moment", "muted");
 			busy = true;
-			void view.tasksCommand(`${verb} ${id}${extra ? ` ${extra}` : ""}`).finally(() => {
-				busy = false;
-				if (verb === "merge" || verb === "back") return close();
-				void reload();
-			});
+			void view
+				.tasksCommand(`${verb} ${id}${extra ? ` ${extra}` : ""}`)
+				.then(() => reload())
+				.finally(() => {
+					busy = false;
+					const stage = task?.workspace?.stage;
+					if ((verb === "merge" && stage === "merged") || (verb === "back" && stage === "working")) close();
+				});
 		};
 		const reload = async () => {
 			try {
 				await load();
 			} catch (err) {
-				view.say((err as Error).message, "error");
+				// a merged task's worktree is gone: nothing to diff any more
+				if (task?.workspace?.stage !== "merged") view.say((err as Error).message, "error");
 			}
 			if (!closed) view.o.tui.requestRender();
 		};
@@ -2654,24 +2681,26 @@ export class AgentView implements Component {
 		this.overlay = self = {
 			render(width: number) {
 				const room = Math.max(4, (view.o.tui.terminal.rows || 30) - 9);
-				const files = diff?.files ?? [];
+				const files = filesOf();
+				fi = Math.min(fi, Math.max(0, files.length - 1));
 				const f = files[fi];
 				const rows = rowsOf(f);
+				if (ri < 0) ri = Math.max(0, rows.findIndex((r) => r.kind === "line"));
 				moveLine(rows, ri);
-				const { at, outdated } = f ? placed(f, rows) : { at: new Map(), outdated: [] };
+				const { at } = f ? placed(f, rows) : { at: new Map<number, ReviewComment[]>() };
 				const hunks = f?.hunks.length ?? 0;
 				const cur = rows[ri];
-				const h = cur && cur.kind !== "note" ? cur.h + 1 : 0;
-				const name = f ? (f.oldPath ? `${f.oldPath} → ${f.path}` : f.path) : "no changes";
-				const head = `#${id} ${oneLine(task?.title ?? "")} · ${f ? `${f.status} ` : ""}${name}`;
+				const h = cur && (cur.kind === "line" || cur.kind === "hunk") ? cur.h + 1 : 0;
+				const name = !f ? "no changes" : !f.path ? "comments on files not in the diff now" : clean(f.oldPath ? `${f.oldPath} → ${f.path}` : f.path);
+				const head = `#${id} ${oneLine(task?.title ?? "")} · ${f?.path ? `${f.status} ` : ""}${name}`;
 				const facts = [files.length > 1 ? `file ${fi + 1}/${files.length}` : "", hunks > 0 ? `hunk ${h || 1}/${hunks}` : "", comments().length > 0 ? `${comments().length} comment${comments().length === 1 ? "" : "s"}` : "", diff?.truncated ? "diff cut short" : ""].filter(Boolean).join(" · ");
 				const out = [t.bold(truncateToWidth(oneLine(head), width)), t.fg("dim", truncateToWidth(facts || " ", width)), t.fg("dim", "─".repeat(Math.max(1, Math.min(width, 120))))];
-				for (const o of outdated) out.push(t.fg("warning", truncateToWidth(`  outdated (line ${o.c.line}): ${oneLine(o.c.text)}`, width)));
 				// the body: the rows with the comments under theirs, the cursor in view
 				const body: { text: string; row: number }[] = [];
 				rows.forEach((r, i) => {
 					const mark = i === ri ? t.fg("accent", "▶") : " ";
 					if (r.kind === "note") body.push({ text: `${mark} ${t.fg("dim", r.text)}`, row: i });
+					else if (r.kind === "stale") body.push({ text: `${mark} ${t.fg("warning", truncateToWidth(clean(`✎ ${f?.path ? "outdated" : r.c.file} (line ${r.c.line}): ${oneLine(r.c.text)}`), Math.max(1, width - 2)))}`, row: i });
 					else if (r.kind === "hunk") body.push({ text: `${mark} ${t.fg("dim", truncateToWidth(clean(r.text), Math.max(1, width - 2)))}`, row: i });
 					else {
 						const l = r.line;
@@ -2679,7 +2708,7 @@ export class AgentView implements Component {
 						const text = truncateToWidth(clean(`${l.kind} ${l.text}`), Math.max(1, width - 8), "…");
 						body.push({ text: `${mark}${t.fg("dim", no)} ${l.kind === "+" ? t.fg("success", text) : l.kind === "-" ? t.fg("error", text) : text}`, row: i });
 					}
-					for (const c of at.get(i) ?? []) for (const w of wrap(`└ ✎ ${oneLine(c.c.text)}`, Math.max(1, width - 8))) body.push({ text: `       ${t.fg("warning", w)}`, row: i });
+					for (const c of at.get(i) ?? []) for (const w of wrap(clean(`└ ✎ ${oneLine(c.text)}`), Math.max(1, width - 8))) body.push({ text: `       ${t.fg("warning", w)}`, row: i });
 				});
 				const first = body.findIndex((b) => b.row === ri);
 				let last = first;
@@ -2701,18 +2730,20 @@ export class AgentView implements Component {
 			},
 			handleInput(data: string) {
 				const key = parseKey(data);
-				const files = diff?.files ?? [];
+				const files = filesOf();
 				const f = files[fi];
 				const rows = rowsOf(f);
 				if (input) {
 					if (key === "escape" || key === "ctrl+c") input = undefined;
 					else if (key === "enter") {
+						// busy: the text stays in the box for another Enter
+						if (busy) return view.say("busy: Enter again in a moment", "muted");
 						const text = oneLine(input.box.getValue()).trim();
 						const kind = input.kind;
 						input = undefined;
 						if (kind === "back") return act("back", text);
 						const r = rows[ri];
-						if (!text || !f || r?.kind !== "line" || busy) return;
+						if (!text || !f?.path || r?.kind !== "line") return;
 						busy = true;
 						void client
 							.request("task", { action: "comment", id, comment: { file: f.path, ...anchor(r.line), text, tip: diff?.tip } })
@@ -2733,15 +2764,22 @@ export class AgentView implements Component {
 				if (key === "pageDown") return moveLine(rows, ri + 10);
 				if (key === "pageUp") return moveLine(rows, ri - 10);
 				if (data === "n" || data === "p") {
-					const step = data === "n" ? 1 : -1;
-					for (let i = ri + step; i >= 0 && i < rows.length; i += step) if (rows[i]!.kind === "hunk") return moveLine(rows, i + (i + 1 < rows.length ? 1 : 0));
+					// to the first line of the next (previous) hunk; p from a hunk's start goes to the one before
+					const cur = rows[ri];
+					const h = cur && (cur.kind === "line" || cur.kind === "hunk") ? cur.h : data === "n" ? -1 : Number.MAX_SAFE_INTEGER;
+					const want = data === "n" ? h + 1 : h - 1;
+					const at = rows.findIndex((r) => r.kind === "hunk" && r.h === want);
+					if (at >= 0) moveLine(rows, at + 1 < rows.length ? at + 1 : at);
 					return;
 				}
 				if (data === "]" || data === "[") {
 					const to = fi + (data === "]" ? 1 : -1);
 					if (to >= 0 && to < files.length) {
 						fi = to;
-						ri = 1;
+						// the first line of its diff (past its outdated comments and its first hunk's header)
+						const next = rowsOf(files[to]);
+						const first = next.findIndex((r) => r.kind === "line");
+						ri = first >= 0 ? first : 0;
 						top = 0;
 					}
 					return;
@@ -2754,12 +2792,14 @@ export class AgentView implements Component {
 					return;
 				}
 				if (data === "d") {
-					if (!f || rows[ri]?.kind !== "line" || busy) return;
-					const mine = placed(f, rows).at.get(ri);
-					if (!mine || mine.length === 0) return view.say("no comment on this line", "muted");
+					if (!f || busy) return;
+					const r = rows[ri];
+					const mine = r?.kind === "stale" ? [r.c] : r?.kind === "line" ? placed(f, rows).at.get(ri) : undefined;
+					if (!mine || mine.length === 0) return view.say("no comment here", "muted");
+					const c = mine[mine.length - 1]!;
 					busy = true;
 					void client
-						.request("task", { action: "uncomment", id, index: mine[mine.length - 1]!.i })
+						.request("task", { action: "uncomment", id, comment: { file: c.file, line: c.line, at: c.at } })
 						.then((res) => {
 							if (task?.workspace) task.workspace.comments = res.task?.workspace?.comments;
 						})

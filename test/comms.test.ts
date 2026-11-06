@@ -2115,7 +2115,9 @@ describe("M58: review comments", () => {
 		await hub.request("task", { action: "comment", id: t.id, comment: { file: "users.sql", line: 1, text: "drop the index first", lineText: "+drop table users;" } });
 		const two = await hub.request("task", { action: "comment", id: t.id, comment: { file: "a.txt", line: 1, text: "typo" } });
 		expect(two.task?.workspace?.comments).toHaveLength(2);
-		const one = await hub.request("task", { action: "uncomment", id: t.id, index: 1 });
+		const second = two.task!.workspace!.comments![1]!;
+		await expect(hub.request("task", { action: "uncomment", id: t.id, comment: { file: second.file, line: second.line, at: second.at + 99 } })).rejects.toMatchObject({ code: "not_found" });
+		const one = await hub.request("task", { action: "uncomment", id: t.id, comment: { file: second.file, line: second.line, at: second.at } });
 		expect(one.task?.workspace?.comments).toHaveLength(1);
 		const back = await hub.request("task", { action: "back", id: t.id, note: "see the comment" });
 		expect(back.note).toContain("(1 comment)");
@@ -2123,5 +2125,11 @@ describe("M58: review comments", () => {
 		expect(msg.text).toContain("- users.sql:1 (+drop table users;): drop the index first");
 		expect(back.task?.workspace?.comments).toBeUndefined();
 		expect(back.task?.workspace?.note).toBe("sent back (1 comment): see the comment");
+		// more than one message holds: the ones that did not fit stay for the next send-back
+		await s.c.request("task", { action: "done", id: t.id, result: "again" });
+		for (const n of [1, 2, 3]) await hub.request("task", { action: "comment", id: t.id, comment: { file: "users.sql", line: 1, text: `${n} ${"x".repeat(1900)}` } });
+		const back2 = await hub.request("task", { action: "back", id: t.id });
+		expect(back2.note).toContain("(1 did not fit: send back again)");
+		expect(back2.task?.workspace?.comments?.map((c) => c.text.slice(0, 1))).toEqual(["3"]);
 	});
 });

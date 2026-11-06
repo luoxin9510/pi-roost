@@ -14,7 +14,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import type { JobRow } from "../lib/protocol.ts";
 import { screenPath } from "../lib/store.ts";
 import { taskDiff } from "../lib/task-diff.ts";
-import { commentAnchor, reviewLines } from "../lib/review.ts";
+import { commentAnchor, reviewLines, termText } from "../lib/review.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 
 const USAGE = `pi-roost ${ROOST_VERSION} — background pi sessions
@@ -264,14 +264,16 @@ async function cmdReview(args: string[]): Promise<void> {
 			if (!m || !text) throw new UsageError("review <task> comment <file>:<line> <text>");
 			const file = m[1]!;
 			const n = Number(m[2]);
-			// the line's text, when the diff shows it (an outdated mark needs it)
-			const line = d.files.find((f) => f.path === file)?.hunks.flatMap((h) => h.lines).find((l) => (l.newNo ?? l.oldNo) === n);
-			const r = await c.request("task", { action: "comment", id, comment: { file, line: n, text, ...(line ? { lineText: commentAnchor(line).lineText } : {}), tip: d.tip } });
-			process.stdout.write(`#${id}: ${r.note ?? "kept"}${line ? "" : " (that line is not in the diff)"}\n`);
+			// the line of the new version with that number (a removed line only when no line of the new one has it)
+			const lines = d.files.find((f) => f.path === file)?.hunks.flatMap((h) => h.lines) ?? [];
+			const line = lines.find((l) => l.newNo === n) ?? lines.find((l) => l.newNo === null && l.oldNo === n);
+			if (!line) throw new Error(`${file}:${n} is not a line of the diff (pi-roost review ${id} shows them)`);
+			const r = await c.request("task", { action: "comment", id, comment: { file, line: n, text, lineText: commentAnchor(line).lineText, tip: d.tip } });
+			process.stdout.write(`#${id}: ${r.note ?? "kept"}\n`);
 			return;
 		}
 		if (verb !== undefined) throw new UsageError("review <task> [comment <file>:<line> <text> | back [note]]");
-		process.stdout.write(`#${id} ${t.title} · ${w.branch} against ${w.baseRef} (${d.base.slice(0, 8)}..${d.tip.slice(0, 8)}${w.stage ? ` · ${w.stage}` : ""})\n\n`);
+		process.stdout.write(`#${id} ${termText(t.title)} · ${w.branch} against ${w.baseRef} (${d.base.slice(0, 8)}..${d.tip.slice(0, 8)}${w.stage ? ` · ${w.stage}` : ""})\n\n`);
 		for (const l of reviewLines(d, w.comments ?? [])) process.stdout.write(`${l}\n`);
 	});
 }
