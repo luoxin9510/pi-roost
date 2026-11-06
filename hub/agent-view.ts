@@ -37,10 +37,11 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
-import { createTaskWorktree, type TaskWorktree } from "../lib/task-git.ts";
+import { createTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
+import { nextNeedsYou, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
-import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
+import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -154,6 +155,8 @@ export interface AgentViewOptions {
 	taskMerge?: "ff" | "no-ff";
 	/** M55: a task's worktree (tests pass a fake). */
 	createTaskWorktree?: typeof createTaskWorktree;
+	/** M57: what a task's worktree holds against base (tests pass a fake). */
+	taskChanges?: typeof taskChanges;
 	/** DI-4: models for the /model picker, as "provider/id". */
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
@@ -303,6 +306,8 @@ export class AgentView implements Component {
 	/** AV-K10: the row being renamed, edited in its own input. */
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
+	/** M57: the workspace overlay's reload, while it is open (a board event refreshes it). */
+	private wsReload: (() => void) | undefined;
 	private groupBy: "state" | "directory" = "state";
 	/** DI-4: defaults for the next dispatches. */
 	private model: string | undefined;
@@ -554,6 +559,8 @@ export class AgentView implements Component {
 		} else if (e.event === "board") {
 			// M47: the counts for the header; an open /tasks overlay fetches the tasks itself
 			this.board = e.board;
+			// M57: the workspace overlay follows the board
+			this.wsReload?.();
 		}
 		this.render0();
 	}
@@ -702,6 +709,9 @@ export class AgentView implements Component {
 				return this.cycleThinking();
 			case "ctrl+t":
 				return void this.togglePin();
+			case "ctrl+n":
+				// M57: the workspace overlay, at the next task that needs you
+				return void this.showWorkspaces(true);
 			case "ctrl+o":
 				if (this.peek) break;
 				return this.toggleMark();
@@ -1025,6 +1035,10 @@ export class AgentView implements Component {
 			case "tasks":
 			case "task":
 				void this.tasksCommand(arg);
+				return done();
+			case "workspaces":
+			case "ws":
+				void this.showWorkspaces(false);
 				return done();
 			case "fanout": {
 				if (arg === "off") {
@@ -2188,14 +2202,7 @@ export class AgentView implements Component {
 			}
 			w = { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base };
 		}
-		const prompt = [
-			`Task #${t.id}: ${t.title}`,
-			t.detail ?? "",
-			t.workspace ? "Work on it started before in this worktree: read `git log` and the diff against the base branch first." : "",
-			"Commit your work on this branch, then call roost_task_done with a line on what you did.",
-		]
-			.filter(Boolean)
-			.join("\n\n");
+		const prompt = taskPrompt(t);
 		const discard = () => {
 			if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
 		};
@@ -2256,6 +2263,286 @@ export class AgentView implements Component {
 				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
 				else if (key === "up") top = Math.max(0, top - 1);
 				else if (key === "down") top++;
+			},
+		};
+		this.o.tui.requestRender();
+	}
+
+	/**
+	 * M57: the workspace overlay: this repository's tasks (every project's outside one) as a
+	 * pipeline, what needs you first; the selected one's detail beside it (below it under 100
+	 * columns); the keys act on it. `next`: open at the next task that needs you.
+	 */
+	private wsOpening = false;
+	private async showWorkspaces(next: boolean): Promise<void> {
+		const client = this.client;
+		if (!client) return this.say("background service unavailable", "error");
+		// a second Ctrl+N while the first loads opens nothing more
+		if (this.wsOpening) return;
+		this.wsOpening = true;
+		try {
+			await this.openWorkspaces(client, next);
+		} finally {
+			this.wsOpening = false;
+		}
+	}
+
+	private async openWorkspaces(client: DaemonClient, next: boolean): Promise<void> {
+		const view = this;
+		const t = this.o.theme;
+		const here = projectOf(this.dispatchCwd());
+		const changesOf = this.o.taskChanges ?? taskChanges;
+		let tasks: BoardTask[] = [];
+		let entries: WsEntry[] = [];
+		let sel: number | undefined;
+		let top = 0;
+		let back: { id: number; input: Input } | undefined;
+		// approve: the commands shown in full, then y (the dry call's hash goes with it)
+		let confirm: { id: number; note: string; hash: string } | undefined;
+		let busy = false;
+		let closed = false;
+		const changes = new Map<number, { key: string; at: number; c?: TaskChanges; loading: boolean }>();
+		const sessionOf = (x: BoardTask): WsSession | undefined => {
+			const r = x.owner ? view.rows.get(x.owner.id) : undefined;
+			return r ? { name: oneLine(rowName(r)), state: r.state, waitingFor: r.waitingFor ?? null, running: r.pid !== null } : undefined;
+		};
+		const selected = (): BoardTask | undefined => entries.find((e) => e.task.id === sel)?.task;
+		// what each worktree holds: read again when its stage, note or verify changed, or after 5 s
+		const fetchChanges = () => {
+			const now = Date.now();
+			for (const e of entries) {
+				const w = e.task.workspace;
+				if (!w || !w.path || w.stage === "merged" || !w.baseRef) continue;
+				const key = `${w.stage}:${w.note ?? ""}:${w.verify?.at ?? 0}`;
+				const hit = changes.get(e.task.id);
+				if (hit && (hit.loading || (hit.key === key && now - hit.at < 5000))) continue;
+				changes.set(e.task.id, { key, at: now, c: hit?.c, loading: true });
+				void changesOf(w.path, w.baseRef).then(
+					(c) => {
+						changes.set(e.task.id, { key, at: Date.now(), c, loading: false });
+						if (!closed) view.o.tui.requestRender();
+					},
+					() => changes.set(e.task.id, { key, at: Date.now(), loading: false }),
+				);
+			}
+		};
+		const load = async (pickNext: boolean): Promise<void> => {
+			const r = await client.request("task", { action: "list", ...(here ? { project: here } : {}) });
+			if (closed) return;
+			tasks = r.tasks;
+			entries = workspaceEntries(tasks);
+			if (pickNext) sel = nextNeedsYou(entries, undefined, sessionOf) ?? sel;
+			if (sel === undefined || !entries.some((e) => e.task.id === sel)) sel = entries[0]?.task.id;
+			fetchChanges();
+			view.o.tui.requestRender();
+		};
+		let reloading: Promise<void> | undefined;
+		let again = false;
+		let self: Overlay | undefined;
+		const reload = () => {
+			// replaced by another overlay without closing: stop following the board
+			if (self && view.overlay !== self) closed = true;
+			if (closed) {
+				if (view.wsReload === reload) view.wsReload = undefined;
+				return;
+			}
+			// one load at a time; one more after it when asked meanwhile (its answer may predate the change)
+			if (reloading) {
+				again = true;
+				return;
+			}
+			reloading = load(false)
+				.catch((err: unknown) => view.say((err as Error).message, "error"))
+				.finally(() => {
+					reloading = undefined;
+					if (again) {
+						again = false;
+						reload();
+					}
+				});
+		};
+		try {
+			await load(next);
+		} catch (err) {
+			return this.say((err as Error).message, "error");
+		}
+		if (next && (sel === undefined || !nextNeedsYou(entries, undefined, sessionOf))) this.say(entries.length > 0 ? "nothing needs you" : "no tasks in workspaces: /tasks add, then s on it here", "muted");
+		// a verb of /tasks on the selected task; the overlay reloads after it
+		const act = (verb: string, x: BoardTask, extra = "") => {
+			if (busy) return;
+			busy = true;
+			void view.tasksCommand(`${verb} ${x.id}${extra ? ` ${extra}` : ""}`).finally(() => {
+				busy = false;
+				reload();
+			});
+		};
+		const listLines = (width: number): { lines: string[]; selAt: number } => {
+			const lines: string[] = [];
+			let selAt = 0;
+			let group = "";
+			for (const e of entries) {
+				if (e.group !== group) {
+					group = e.group;
+					lines.push(t.fg("dim", truncateToWidth(WS_GROUP_TITLES[e.group], width)));
+				}
+				const s = sessionOf(e.task);
+				const icon = wsIcon(e.task, s);
+				const isSel = e.task.id === sel;
+				if (isSel) selAt = lines.length;
+				const right = changeShort(changes.get(e.task.id)?.c) || (e.task.workspace?.stage === "working" && s && !s.running ? "idle" : "");
+				const head = `${isSel ? t.fg("accent", "▶") : " "} ${t.fg(icon.tone, icon.glyph)} `;
+				const room = Math.max(1, width - visibleWidth(head) - (right ? visibleWidth(right) + 1 : 0));
+				const text = truncateToWidth(oneLine(wsRowText(e.task, tasks)), room);
+				const gap = " ".repeat(Math.max(1, width - visibleWidth(head) - visibleWidth(text) - visibleWidth(right)));
+				lines.push(truncateToWidth(`${head}${isSel ? t.bold(text) : text}${right ? `${gap}${t.fg("dim", right)}` : ""}`, width));
+			}
+			if (entries.length === 0) lines.push(t.fg("dim", truncateToWidth(here ? "no tasks here: /tasks add <title>" : "no tasks", width)));
+			return { lines, selAt };
+		};
+		const detailLines = (width: number, max: number): string[] => {
+			const x = selected();
+			if (!x) return [];
+			const s = sessionOf(x);
+			const row = x.owner ? view.rows.get(x.owner.id) : undefined;
+			const hit = changes.get(x.id);
+			const items = wsDetail(x, { session: s, sentence: row ? sentenceOf(row) : undefined, changes: hit?.c ?? (hit?.loading ? "loading" : undefined), fileMax: Math.max(2, max - 12) });
+			const out = [t.bold(truncateToWidth(`#${x.id} ${oneLine(x.title)}`, width))];
+			for (const it of items) {
+				const label = it.label ? it.label.padEnd(7) : " ".repeat(7);
+				const text = truncateToWidth(oneLine(it.text), Math.max(1, width - 8));
+				out.push(`${t.fg("dim", label)} ${it.tone ? t.fg(it.tone, text) : text}`);
+			}
+			return out.slice(0, max);
+		};
+		this.wsReload = reload;
+		this.overlay = self = {
+			render(width: number) {
+				const rows = view.o.tui.terminal.rows || 30;
+				const room = Math.max(4, rows - 8);
+				const title = `${here ? projectLabel(here) : "all projects"} · workspaces`;
+				const counts = wsCounts(entries);
+				const pad = Math.max(1, width - visibleWidth(title) - visibleWidth(counts));
+				const out = [truncateToWidth(`${t.bold(title)}${" ".repeat(pad)}${t.fg("dim", counts)}`, width), ""];
+				const wide = width >= 100;
+				const listW = wide ? Math.min(48, Math.floor(width * 0.42)) : width;
+				const { lines: list, selAt } = listLines(listW);
+				const listRoom = wide ? room : Math.max(3, Math.floor(room / 2));
+				// the selection stays in view
+				if (selAt < top) top = selAt;
+				if (selAt >= top + listRoom) top = selAt - listRoom + 1;
+				top = Math.max(0, Math.min(top, Math.max(0, list.length - listRoom)));
+				const shown = list.slice(top, top + listRoom);
+				if (wide) {
+					const detail = detailLines(width - listW - 3, room);
+					for (let i = 0; i < Math.max(shown.length, detail.length); i++) {
+						const l = shown[i] ?? "";
+						out.push(`${l}${" ".repeat(Math.max(0, listW - visibleWidth(l)))} ${t.fg("dim", "│")} ${detail[i] ?? ""}`);
+					}
+				} else {
+					out.push(...shown, t.fg("dim", "─".repeat(Math.min(width, 40))), ...detailLines(width, Math.max(3, room - shown.length - 1)));
+				}
+				out.push("");
+				if (back) out.push(...back.input.render(width));
+				if (confirm) for (const l of wrap(`approve for #${confirm.id}: ${confirm.note} · they run in your account`, width)) out.push(t.fg("warning", l));
+				const n = view.notice;
+				if (n && n.until > Date.now()) out.push(t.fg(n.tone, truncateToWidth(oneLine(n.text), width)));
+				const x = selected();
+				const keys = back ? "Enter send back with this note (empty: none) · Esc cancel" : confirm ? "y approve these commands · any other key: no" : [...wsKeys(x, x ? sessionOf(x) : undefined).map(([k, v]) => `${k} ${v}`), "↑↓ select", "Esc close"].join(" · ");
+				out.push(t.fg("dim", truncateToWidth(keys, width)));
+				return out;
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (back) {
+					if (key === "escape" || key === "ctrl+c") back = undefined;
+					else if (key === "enter") {
+						// the task the note was written for, wherever the selection went meanwhile
+						const note = oneLine(back.input.getValue()).trim();
+						const x = tasks.find((y) => y.id === back!.id);
+						back = undefined;
+						if (x) act("back", x, note);
+					} else back.input.handleInput(data);
+					return;
+				}
+				if (confirm) {
+					const c = confirm;
+					confirm = undefined;
+					if (data !== "y" || busy) return view.say("not approved", "muted");
+					busy = true;
+					void client
+						.request("task", { action: "approve", id: c.id, hash: c.hash })
+						.then((r) => view.say(r.note ?? "approved", "success"))
+						.catch((err: unknown) => view.say((err as Error).message, "error"))
+						.finally(() => {
+							busy = false;
+							reload();
+						});
+					return;
+				}
+				if (key === "escape" || key === "ctrl+c" || data === "q") return view.closeOverlay();
+				const i = entries.findIndex((e) => e.task.id === sel);
+				if (key === "up" || key === "down") {
+					const j = Math.max(0, Math.min(entries.length - 1, (i < 0 ? 0 : i) + (key === "up" ? -1 : 1)));
+					sel = entries[j]?.task.id;
+					fetchChanges();
+					return;
+				}
+				if (key === "home" || key === "end") {
+					sel = (key === "home" ? entries[0] : entries[entries.length - 1])?.task.id;
+					fetchChanges();
+					return;
+				}
+				if (data === "n" || key === "ctrl+n") {
+					const to = nextNeedsYou(entries, sel, sessionOf);
+					if (to === undefined) view.say("nothing needs you", "muted");
+					else sel = to;
+					return;
+				}
+				if (data === "r") {
+					changes.clear();
+					return reload();
+				}
+				const x = selected();
+				if (!x) return;
+				const s = sessionOf(x);
+				const allowed = new Set(wsKeys(x, s).map(([k]) => k));
+				const attach = data === "t" || key === "right" || key === "enter";
+				if (attach) {
+					if (s?.running && x.owner) {
+						view.closeOverlay();
+						return void view.attachTo(x.owner.id).catch((err: unknown) => view.say(String((err as Error).message ?? err), "error"));
+					}
+					if (data === "t" || key === "right") view.say(`#${x.id} has no session running${allowed.has("s") ? ": s starts one" : ""}`, "muted");
+					return;
+				}
+				if (!allowed.has(data)) return;
+				if (data === "b") {
+					back = { id: x.id, input: new Input({ prompt: `#${x.id} back › ` }) };
+					back.input.focused = true;
+					return;
+				}
+				if (data === "a") {
+					if (busy) return;
+					busy = true;
+					void client
+						.request("task", { action: "approve", id: x.id, dry: true })
+						.then((r) => {
+							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash };
+							else view.say(r.note ?? "nothing to approve", "muted");
+						})
+						.catch((err: unknown) => view.say((err as Error).message, "error"))
+						.finally(() => {
+							busy = false;
+							view.o.tui.requestRender();
+						});
+					return;
+				}
+				const verb = { s: "start", m: "merge", v: "verify", p: "pass", x: "abort" }[data];
+				if (verb) act(verb, x);
+			},
+			dispose() {
+				closed = true;
+				if (view.wsReload === reload) view.wsReload = undefined;
 			},
 		};
 		this.o.tui.requestRender();
@@ -2424,8 +2711,9 @@ export class AgentView implements Component {
 			{ name: "resume", description: "pick a session to resume in the background" },
 			{ name: "usage", description: "what the sessions spent" },
 			{ name: "log", description: "what happened lately" },
-			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "assign", "done", "rm", "release"]), p) },
+			{ name: "tasks", description: "the shared task board (this project's; all: every project's)", argumentHint: "all | add <title> [after #n] [-- detail] | assign <id> <session> | done <id> [result] | rm <id> | release <id>", getArgumentCompletions: (p) => starts(names(["all", "add", "start", "merge", "back", "approve", "verify", "pass", "abort", "commit", "assign", "done", "rm", "release"]), p) },
 			{ name: "concierge", description: "the hub's own agent", argumentHint: "on | off | status | log | attach | ask | answer | act | undo | orders", getArgumentCompletions: (p) => starts(names(["on", "off", "status", "log", "attach", "ask", "answer", "act", "undo", "orders"]), p) },
+			{ name: "workspaces", description: "the tasks in their worktrees: review, merge, send back (Ctrl+N: the next that needs you)" },
 			{ name: "ask", description: "ask the concierge", argumentHint: "question" },
 			{ name: "schedule", description: "a task on a schedule", argumentHint: "<name> <when> <task> | run | pause | resume | rm" },
 			{ name: "fanout", description: "the next task once per model", argumentHint: "model model … | off" },
@@ -3319,7 +3607,7 @@ export class AgentView implements Component {
 		if (this.concierge?.on) out.push(t.fg(this.concierge.notice?.kind === "need" && !this.concierge.overBudget && !esc ? "warning" : "dim", truncateToWidth(this.conciergeLine(), w)));
 		// M47: the board's line, while something is on it
 		const b = this.board;
-		if (b && (b.open > 0 || b.claimed > 0 || b.blocked > 0 || (b.workspaces ?? 0) > 0)) out.push(t.fg("dim", truncateToWidth(`tasks ${summaryLine(b)} · /tasks`, w)));
+		if (b && (b.open > 0 || b.claimed > 0 || b.blocked > 0 || (b.workspaces ?? 0) > 0)) out.push(t.fg(b.needsYou ? "warning" : "dim", truncateToWidth(`tasks ${summaryLine(b)} · /tasks${(b.workspaces ?? 0) > 0 ? " · Ctrl+N workspaces" : ""}`, w)));
 		if (this.fanout) {
 			const n = this.fanout.length;
 			const list = this.fanout.map(shortModel).join(", ");
@@ -3673,6 +3961,7 @@ export class AgentView implements Component {
 			["/concierge answer|act|undo", "may it answer routine questions itself (never|routine|always), start/stop sessions (on|off); withdraw its last answer"],
 			["/concierge orders [add|rm]", "the standing orders it keeps (rules in your words, some on a clock); add one, drop one"],
 			["/tasks [add|assign|done|rm|release]", "the shared task board: sessions claim tasks (roost_task_*), the concierge hands them out; add <title> [after #n] [-- detail], assign <id> <session>, done <id> [result], rm <id>, release <id>"],
+			["/workspaces · Ctrl+N", "the tasks in their own worktrees, as a pipeline: s start · m merge · b back · v verify · a approve · t attach · n the next that needs you"],
 			["? question", "ask the concierge about the sessions (with it on; help is /help)"],
 			["Ctrl+Y · Ctrl+E", "send the concierge's suggested answer to the session that waits · edit it first (the banner under the header)"],
 			["/schedule name when task", "run a task on a schedule (every 1h, daily 09:00, weekdays 09:00, cron \"…\"): a pi session, the /profile agent, or a ! command; bare: list"],

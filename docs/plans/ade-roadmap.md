@@ -85,8 +85,8 @@ as a reset. Protocol: a `workspaces` capability in `hello`; the board event gain
 - Who does it: the client that asks (the hub, the CLI, pi-mobile) makes the worktree and
   builds the pi launch with `lib/dispatch.ts`'s `buildLaunch`, as `/new`, pi-mobile and
   the session tools already do; then the daemon's new `task start` op records the
-  workspace and dispatches. The concierge's `hub_task_start` is carried out by the
-  connected hub (refused with no hub); the daemon's rule that the concierge never
+  workspace and dispatches. The concierge's `hub_task_start` (M57, as built) makes the
+  worktree and the launch in the concierge's own process, as the hub does; the daemon's rule that the concierge never
   dispatches worktrees itself (`daemon/main.ts`, the concierge dispatch check) stays.
 - Preconditions: the task is `open`, not blocked, not dropped, in a repository
   (`project` not null), with a free claim; a second `start` with the same request id

@@ -2031,3 +2031,57 @@ describe("M56: verify before review, setup before the session", () => {
 		expect((await hub.request("task", { action: "list" })).tasks[0]!.workspace).toMatchObject({ stage: "review", note: "not verified (interrupted)" });
 	});
 });
+
+describe("M57: the concierge starts a task in its workspace", () => {
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, stdio: "ignore" });
+	function repo(name: string): string {
+		mkdirSync(join(work, name), { recursive: true });
+		const r = realpathSync(join(work, name));
+		git(r, "init", "-q", "-b", "main");
+		writeFileSync(join(r, "a.txt"), "a\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "a");
+		return r;
+	}
+
+	it("only with act on; the session it starts is not a concierge; a session never starts one", async () => {
+		const hub = await startDaemon();
+		const st = await hub.request("concierge", { action: "on", launch: { ...launch("sleep 30", "concierge"), env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge" } } });
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === st.id)?.pid);
+		const wc = await worker(st.id!);
+		const r = repo("svc");
+		const t = (await hub.request("task", { action: "add", title: "health check", project: r })).task!;
+		const w = createTaskWorktree(r, t.id, t.title);
+		const args = () => ({
+			action: "start" as const,
+			id: t.id,
+			workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base },
+			launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge", ROOST_JOB_ID: "x" } },
+		});
+		await expect(wc.c.request("task", args())).rejects.toMatchObject({ code: "policy" });
+		await hub.request("concierge", { action: "act", act: true });
+		// not a profile, a shell job, a worktree of its own, a cwd outside, a base that is not
+		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, profile: "aider" } })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, kind: "shell" } })).rejects.toMatchObject({ code: "bad_request" });
+		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, cwd: r } })).rejects.toMatchObject({ code: "bad_request" });
+		git(r, "branch", "other", "HEAD");
+		git(r, "checkout", "-q", "other");
+		writeFileSync(join(r, "o.txt"), "o\n");
+		git(r, "add", ".");
+		git(r, "commit", "-qm", "o");
+		const other = execFileSync("git", ["rev-parse", "HEAD"], { cwd: r, encoding: "utf8" }).trim();
+		git(r, "checkout", "-q", "main");
+		await expect(wc.c.request("task", { ...args(), workspace: { ...args().workspace, baseRef: "other", baseSha: other } })).rejects.toMatchObject({ code: "bad_request" });
+		const res = await wc.c.request("task", args());
+		expect(res.task).toMatchObject({ state: "claimed", workspace: { stage: "working", branch: w.branch } });
+		const job = readJob(res.job!.id)!;
+		expect(job.task).toMatchObject({ id: t.id });
+		expect(JSON.stringify(job)).not.toContain("ROOST_ROLE");
+		expect(job.env.ROOST_JOB_ID).toBeUndefined();
+		expect((await hub.request("events", {})).events.some((e) => e.kind === "concierge" && e.why === "act" && !!e.text?.includes(`started #${t.id}`))).toBe(true);
+		// a session (not the concierge, not the hub) is refused
+		const s = await worker(res.job!.id);
+		const t2 = (await hub.request("task", { action: "add", title: "other", project: r })).task!;
+		await expect(s.c.request("task", { action: "start", id: t2.id, workspace: args().workspace, launch: args().launch })).rejects.toMatchObject({ code: "unsupported" });
+	});
+});

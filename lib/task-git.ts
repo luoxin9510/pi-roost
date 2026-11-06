@@ -228,3 +228,56 @@ export async function currentBranch(path: string): Promise<string | undefined> {
 	const r = await run(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
 	return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
 }
+
+/**
+ * M57: what a task's worktree holds against its base: the files changed since the commit
+ * its branch shares with base (committed and not, tracked; new files too), the commits
+ * base does not have, whether anything is uncommitted. Undefined when git cannot say (the
+ * worktree gone, no base). Read-only, without the index lock.
+ */
+export async function taskChanges(path: string, baseRef: string): Promise<import("./workspace-view.ts").TaskChanges | undefined> {
+	const mb = await run(path, ["merge-base", "HEAD", `refs/heads/${baseRef}`]);
+	if (mb.code !== 0 || !mb.stdout) return undefined;
+	const base = mb.stdout.trim();
+	const [num, names, others, count, status] = await Promise.all([
+		run(path, ["diff", "--numstat", "-M", "-z", base]),
+		run(path, ["diff", "--name-status", "-M", "-z", base]),
+		run(path, ["ls-files", "--others", "--exclude-standard", "-z"]),
+		run(path, ["rev-list", "--count", `${base}..HEAD`]),
+		run(path, ["status", "--porcelain"]),
+	]);
+	if (num.code !== 0 || names.code !== 0) return undefined;
+	const counts = new Map<string, { add: number | null; del: number | null }>();
+	const nf = num.stdout.split("\0");
+	for (let i = 0; i < nf.length; i++) {
+		const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(nf[i]!);
+		if (!m) continue;
+		// a rename: the path field is empty, the old and the new path follow
+		let p = m[3]!;
+		if (!p) {
+			i += 2;
+			p = nf[i] ?? "";
+		}
+		counts.set(p, { add: m[1] === "-" ? null : Number(m[1]), del: m[2] === "-" ? null : Number(m[2]) });
+	}
+	const files: { status: string; path: string; add: number | null; del: number | null }[] = [];
+	const sf = names.stdout.split("\0").filter((x, i, a) => x !== "" || i < a.length - 1);
+	for (let i = 0; i < sf.length; i++) {
+		const st = sf[i]!;
+		if (!/^[A-Z]\d*$/.test(st)) continue;
+		const two = st[0] === "R" || st[0] === "C";
+		const p = two ? `${sf[i + 1]} → ${sf[i + 2]}` : (sf[i + 1] ?? "");
+		const key = two ? (sf[i + 2] ?? "") : p;
+		i += two ? 2 : 1;
+		const c = counts.get(key) ?? { add: null, del: null };
+		files.push({ status: st[0]!, path: p, ...c });
+	}
+	for (const p of others.stdout.split("\0").filter(Boolean)) files.push({ status: "A", path: p, add: null, del: null });
+	return {
+		files,
+		insertions: files.reduce((n, f) => n + (f.add ?? 0), 0),
+		deletions: files.reduce((n, f) => n + (f.del ?? 0), 0),
+		commits: Number(count.stdout) || 0,
+		dirty: status.code === 0 && status.stdout.length > 0,
+	};
+}

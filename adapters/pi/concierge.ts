@@ -7,11 +7,13 @@ import { resolve } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { boardListing } from "../../lib/board.ts";
+import { boardListing, taskPrompt } from "../../lib/board.ts";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../../lib/comms.ts";
 import { CONCIERGE_DEFAULTS, CONCIERGE_ROLE_ENV, type ConciergePolicy, conciergeSystemPrompt, fleetLine } from "../../lib/concierge.ts";
 import { envPolicy, loadConfig, loadUserConfig } from "../../lib/config.ts";
-import { buildLaunch, fallbackName } from "../../lib/dispatch.ts";
+import { buildLaunch, fallbackName, refusedByDaemon } from "../../lib/dispatch.ts";
+import { createTaskWorktree, type TaskWorktree } from "../../lib/task-git.ts";
+import { discardWorktree } from "../../lib/worktree.ts";
 import { eventAgo, eventLine } from "../../lib/events.ts";
 import type { DispatchArgs } from "../../lib/protocol.ts";
 import { screenPath } from "../../lib/store.ts";
@@ -22,7 +24,7 @@ import { envelopeBody, sendLine } from "./agent-tools.ts";
 export const HUB_TOOLS = ["hub_sessions", "hub_events", "hub_read", "hub_send", "hub_notify", "hub_watch", "hub_suggest"] as const;
 /** M45: the tools the policy switches on: an answer in the user's place; starting, stopping, restarting sessions. */
 export const ANSWER_TOOLS = ["hub_reply"] as const;
-export const ACT_TOOLS = ["hub_stop", "hub_respawn", "hub_dispatch"] as const;
+export const ACT_TOOLS = ["hub_stop", "hub_respawn", "hub_dispatch", "hub_task_start"] as const;
 /** M46: standing orders: always. */
 export const ORDER_TOOLS = ["hub_note", "hub_note_done", "hub_note_drop"] as const;
 /** M47: the task board, as the lead: always. */
@@ -364,6 +366,46 @@ export function registerConcierge(pi: ExtensionAPI, link: AgentLink): void {
 			const launch = dispatchLaunch(ctx, params);
 			const r = await link.call("concierge-act", { what: "dispatch", launch, why: `dispatch ${params.name ?? ""}`.trim() });
 			return text(`Started ${r.name} (${r.id}). What it does reaches you in the digests.`);
+		},
+	});
+
+	// M57: a task in its own worktree, as the hub's /tasks start (the worktree made here, the
+	// session started by the daemon; a refused start leaves no worktree behind)
+	pi.registerTool({
+		name: "hub_task_start",
+		label: "Start a task in its workspace",
+		description:
+			"Start a task of a repository in its own worktree and branch (roost/t<id>-…) with a session on it, as the user's /tasks start: it works there, commits, and the task goes to review (the user merges it). Only when the user asked you to, or a standing order says so. Refused when the policy does not allow it, or the task is blocked, claimed, or for any session.",
+		parameters: Type.Object({
+			id: Type.Number({ description: "The task's number" }),
+			model: Type.Optional(Type.String({ description: "provider/model, else the default" })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const { tasks } = await link.call("task", { action: "list" });
+			const t = tasks.find((x) => x.id === params.id);
+			if (!t) throw new Error(`no task #${params.id}`);
+			if (!t.project) throw new Error(`#${t.id} is for any session: a workspace is a repository's`);
+			let made: TaskWorktree | undefined;
+			const w = t.workspace?.path
+				? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha }
+				: ((made = createTaskWorktree(t.project, t.id, t.title)), { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base });
+			const discard = () => {
+				if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
+			};
+			let launch: DispatchArgs;
+			try {
+				launch = dispatchLaunch(ctx, { task: taskPrompt(t), cwd: w.path, name: fallbackName(t.title), model: params.model });
+			} catch (err) {
+				discard();
+				throw err;
+			}
+			try {
+				const r = await link.call("task", { action: "start", id: t.id, workspace: w, launch });
+				return text(r.job ? `Started #${t.id} in ${w.branch}: ${r.job.name} works on it; it goes to review when done (the user merges).` : `#${t.id}: ${r.note ?? "starting"}`);
+			} catch (err) {
+				if (refusedByDaemon(err)) discard();
+				throw err;
+			}
 		},
 	});
 

@@ -327,6 +327,11 @@ worktree, at most two per repository; the task is `verifying`, then `review` (ex
 session (the result has no `job` then; the session follows). See
 `docs/plans/m56-verify.md`.
 
+M57: the concierge may `start` a task too (its `hub_task_start`), when its policy lets it
+act (`policy` otherwise): it makes the worktree and the launch as the hub does; the
+daemon drops the concierge's role and any job's identity from the launch's environment.
+See `docs/plans/m57-workspace-overlay.md`.
+
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
 works (its job's directory, a foreground pi's); outside a repository it has none. A

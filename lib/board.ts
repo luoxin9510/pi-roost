@@ -307,3 +307,15 @@ export function boardListing(all: BoardTask[], now = Date.now(), doneMax = 10): 
 	}
 	return out;
 }
+
+/** M55/M57: the first prompt of a task's session (the hub's /tasks start, the concierge's hub_task_start). */
+export function taskPrompt(t: Pick<BoardTask, "id" | "title" | "detail" | "workspace">): string {
+	return [
+		`Task #${t.id}: ${t.title}`,
+		t.detail ?? "",
+		t.workspace ? "Work on it started before in this worktree: read `git log` and the diff against the base branch first." : "",
+		"Commit your work on this branch, then call roost_task_done with a line on what you did.",
+	]
+		.filter(Boolean)
+		.join("\n\n");
+}

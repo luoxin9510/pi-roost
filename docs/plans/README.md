@@ -64,6 +64,7 @@ Claude Code's documented behaviour.
 | M54 | [a task's workspace, as data: stages, dependencies until merged, the store's version 2](m54-workspace-model.md) | 0.1.17 |
 | M55 | [start and merge from `/tasks`: a task's worktree and session, review, a local merge into base](m55-start-merge.md) | 0.1.17 |
 | M56 | [verify before review: the repository's `verify` and `setup`, read from base, approved by a person](m56-verify.md) | 0.1.17 |
+| M57 | [the workspace overlay: the tasks as a pipeline, Ctrl+N, the concierge's `hub_task_start`](m57-workspace-overlay.md) | — |
 | M61 | [a session's own slash commands in its peek](m61-session-commands.md) | 0.1.17 |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).

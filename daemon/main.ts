@@ -1350,7 +1350,8 @@ async function workspaceAction(
 	}
 	if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.workspace?.stage === "merged" ? "merged" : t.state}`);
 	if (action === "start") {
-		if (!human) throw new OpError("unsupported", "the hub starts a task in its workspace (/tasks start)");
+		// M57: the concierge too, when its policy lets it start sessions
+		if (!human && !(a.concierge && conciergePolicy().act)) throw new OpError(a.concierge ? "policy" : "unsupported", a.concierge ? "the concierge may not start sessions (act: off): ask the user to /tasks start it" : "the hub starts a task in its workspace (/tasks start)");
 		if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: a workspace is a repository's (add it in a repository)`);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);
 		// M56: its setup runs: the session follows by itself
@@ -1365,10 +1366,20 @@ async function workspaceAction(
 		if (t.workspace && !["working", "review", "failed", "conflict", "shelved"].includes(t.workspace.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(t.workspace.stage)}: it cannot be started now`);
 		// checked again when it is started again: the worktree may be gone or moved off its branch
 		if (!(await validWorktree({ path: w.path, branch: w.branch, repo: t.project, base: t.workspace?.baseSha || w.baseSha }))) throw new OpError("bad_request", "workspace is not a worktree pi-roost made for this repository (or it is gone)");
+		// M57: base is what the caller says only if it is: the commit on that branch, the worktree's history from it
+		if (!t.workspace && (!(await isAncestor(t.project, w.baseSha, `refs/heads/${w.baseRef}`)) || !(await isAncestor(w.path, w.baseSha, "HEAD"))))
+			throw new OpError("bad_request", `workspace: ${w.baseSha.slice(0, 8)} is not on ${w.baseRef} and under the worktree's branch`);
 		const launch = args.launch as DispatchArgs | undefined;
 		if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
 		if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
 		if (!str(launch.cwd) || !isInside(realPath(launch.cwd), realPath(w.path))) throw new OpError("bad_request", "launch: cwd must be inside the task's worktree");
+		// M57: a session the concierge starts is not a concierge, nor does it carry another job's identity
+		if (a.concierge) {
+			if (launch.profile) throw new OpError("bad_request", "the concierge starts pi sessions only");
+			launch.env = Object.fromEntries(Object.entries(launch.env ?? {}).filter(([k]) => k !== CONCIERGE_ROLE_ENV && !/^(ROOST|PI_ROOST|PI)_(JOB|SOCKET)/.test(k)));
+			launch.origin = "dispatch";
+			launch.requestId = undefined;
+		}
 		// M56: a new worktree gets the repository's setup first (approved), then the session
 		if (!t.workspace) {
 			const { config } = await readProjectConfig(t.project, w.baseRef);
@@ -1402,6 +1413,7 @@ async function workspaceAction(
 		const pending = setupNote.get(t.id) ?? null;
 		setupNote.delete(t.id);
 		setStage(t, "working", again ? "started again" : pending, a, `${job.name} in ${w.branch}`);
+		if (a.concierge) record({ kind: "concierge", id: job.id, name: job.name, who: CONCIERGE_NAME, whoId: a.whoId, why: "act", text: `started #${t.id} (${clipText(t.title)}) in ${w.branch}` });
 		return { job };
 	}
 	const w = t.workspace;
