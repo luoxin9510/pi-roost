@@ -19,6 +19,8 @@ import { randomBytes } from "node:crypto";
 import { createHarness, type JsonValue } from "vitest-evals/harness";
 import { DaemonClient } from "../lib/client.ts";
 import { buildLaunch, buildProfileLaunch, prepareIsolation } from "../lib/dispatch.ts";
+import { taskPrompt } from "../lib/board.ts";
+import { createTaskWorktree } from "../lib/task-git.ts";
 import type { AgentProfile } from "../lib/profiles.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { readState, readWorkerPid, screenPath } from "../lib/store.ts";
@@ -72,6 +74,14 @@ export interface RoostCase {
 	orders?: { text: string; when?: string }[];
 	/** M47: tasks the user put on the board before the sessions start (after: by position, 1-based, among these). */
 	tasks?: { title: string; detail?: string; after?: number[] }[];
+	/**
+	 * M62: the ADE loop instead of a plain dispatch: a task of the repository (needs `git`;
+	 * the case's files are committed first), started in its own worktree as `/tasks start`
+	 * does, with `.roost/project.json` on base (`verify`, approved by the user first when
+	 * `approve`); the case settles in review or failed; `merge` then merges it as the user.
+	 * The session's task is the task's prompt (the case's `task` is not used).
+	 */
+	workspace?: { title: string; detail?: string; verify?: string; maxRounds?: number; approve?: boolean; merge?: boolean };
 }
 
 export interface RoostOutcome {
@@ -123,6 +133,8 @@ export interface RoostOutcome {
 	/** M47: the task board as the case ended, and what happened on it (who, why: add|claim|release|done|drop|assign, `#id title[: result]`). */
 	board: { id: number; title: string; state: string; owner: string | null; result: string | null; assigned: string | null; by: string }[];
 	taskEvents: { who: string; why: string; text: string }[];
+	/** M62: the task's workspace as the case ended (null: not a workspace case), and the merge's answer. */
+	workspace: { stage: string; note: string | null; verifyOk: boolean | null; verifyRounds: number; branch: string; merged: string | null; worktreeLeft: boolean; baseLog: string[] } | null;
 }
 
 export const DEFAULT_MODEL = "anthropic/claude-haiku-5-5";
@@ -198,6 +210,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 	let client: DaemonClient | undefined;
 	let error: string | null = null;
 	let outcome: RoostOutcome | undefined;
+	let wsTask: number | undefined;
+	let mergeNote: string | null = null;
 	try {
 		mkdirSync(home, { recursive: true });
 		mkdirSync(work, { recursive: true });
@@ -207,7 +221,18 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 		}
 		if (c.git) {
 			execFileSync("git", ["init", "-q", "-b", "main"], { cwd: work });
-			execFileSync("git", ["-c", "user.email=eval@example.invalid", "-c", "user.name=eval", "commit", "-q", "--allow-empty", "-m", "start"], { cwd: work });
+			// M62: an identity of the repository's own (the session commits; a merge commit needs one)
+			execFileSync("git", ["config", "user.email", "eval@example.invalid"], { cwd: work });
+			execFileSync("git", ["config", "user.name", "eval"], { cwd: work });
+			if (c.workspace) {
+				// the repository's config on base, the case's files with it
+				if (c.workspace.verify) {
+					mkdirSync(join(work, ".roost"), { recursive: true });
+					writeFileSync(join(work, ".roost", "project.json"), JSON.stringify({ verify: c.workspace.verify, verifyTimeout: 120, ...(c.workspace.maxRounds ? { maxRounds: c.workspace.maxRounds } : {}) }));
+				}
+				execFileSync("git", ["add", "-A"], { cwd: work });
+			}
+			execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "start"], { cwd: work });
 		}
 		// pi's own directory, empty but for the user's logins: the user's settings, system
 		// prompt, extensions and skills would make the runs theirs. A link, not a copy: pi
@@ -310,7 +335,33 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			taskIds.push(r.task?.id ?? 0);
 		}
 		const launches: DispatchArgs[] = [];
-		if (c.fanout) {
+		if (c.workspace) {
+			// M62: as the hub's /tasks start: the task, the commands approved, the worktree, the session in it
+			if (!c.git) throw new Error("a workspace case needs a git repository (git: true)");
+			const added = await within(cl.request("task", { action: "add", title: c.workspace.title, detail: c.workspace.detail, project: work }), left(), "task add");
+			const t = added.task!;
+			wsTask = t.id;
+			if (c.workspace.approve) {
+				const shown = await within(cl.request("task", { action: "approve", id: t.id, dry: true }), left(), "approve dry");
+				if (shown.hash) await within(cl.request("task", { action: "approve", id: t.id, hash: shown.hash }), left(), "approve");
+			}
+			const w = createTaskWorktree(work, t.id, t.title);
+			const base = buildLaunch({
+				task: taskPrompt(t),
+				cwd: w.path,
+				sessionFile,
+				name: label,
+				origin: "dispatch",
+				argv: [process.execPath, pi, "-ne", "-e", EXT],
+				execPath: process.execPath,
+				env: process.env,
+				model,
+				thinking,
+			});
+			const r = await within(cl.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: base }), left(), "task start");
+			if (!r.job) throw new Error(`the task did not start: ${r.note ?? "?"}`);
+			ids.push(r.job.id);
+		} else if (c.fanout) {
 			// M26: one task per model, each in its own worktree, the sessions sharing a fan-out id
 			if (!c.git) throw new Error("a fan-out needs a git workspace (git: true)");
 			const fanout = randomBytes(4).toString("hex");
@@ -343,7 +394,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				settleMs: 1500,
 			};
 			launches.push(buildProfileLaunch({ name: label, profile: "pi-print", def, task: c.task, cwd: work, env: process.env, model, thinking }));
-		} else launches.push(piLaunch(model, work, sessionFile));
+		} else if (!c.workspace) launches.push(piLaunch(model, work, sessionFile));
 		// M44: the other sessions of the case, each a pi task in its own session, or a command
 		for (const [i, x] of (c.extra ?? []).entries()) {
 			if (x.command) launches.push({ kind: "shell", cwd: work, sessionFile: "", command: x.command, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, name: x.name, origin: "dispatch" });
@@ -355,6 +406,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			}
 		}
 		for (const l of launches) {
+			if (c.workspace) break;
 			const r = (await within(cl.request("dispatch", l), left(), "dispatch")) as { id: string };
 			ids.push(r.id);
 			if (l.worktree) worktrees.set(r.id, { path: l.worktree.path, base: l.worktree.base });
@@ -455,6 +507,14 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				settledAt = 0;
 				continue;
 			}
+			// M62: the loop too: not while its verify runs or a merge is under way
+			if (wsTask !== undefined) {
+				const st = (await within(cl.request("task", { action: "list" }), left(), "task list")).tasks.find((x) => x.id === wsTask)?.workspace?.stage;
+				if (st === "verifying" || st === "merging") {
+					settledAt = 0;
+					continue;
+				}
+			}
 			// M44: the concierge too: nothing it has not been woken with, and it not at work
 			if (c.concierge) {
 				const s = await within(cl.request("concierge", { action: "status" }), left(), "concierge status");
@@ -465,6 +525,20 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			}
 			settledAt ||= Date.now();
 			if (Date.now() - settledAt >= 3000) break;
+		}
+		// M62: the user merges what is in review
+		if (wsTask !== undefined && c.workspace?.merge) {
+			const st = (await within(cl.request("task", { action: "list" }), left(), "task list")).tasks.find((x) => x.id === wsTask)?.workspace?.stage;
+			if (st === "review") {
+				// as a user who closes the finished session first: a live holder keeps the worktree
+				for (const id of ids) await within(cl.request("stop", { id }), left(), "stop").catch(() => {});
+				for (const end = Date.now() + 15_000; Date.now() < end; await sleep(200)) {
+					const jobs = (await within(cl.request("list", {}), left(), "list")).jobs as { id: string; pid: number | null }[];
+					if (jobs.every((j) => !ids.includes(j.id) || j.pid === null)) break;
+				}
+				const m = await within(cl.request("task", { action: "merge", id: wsTask, mode: "ff" }), left(), "merge");
+				mergeNote = m.note ?? null;
+			}
 		}
 	} catch (err) {
 		error = (err as Error).message;
@@ -617,6 +691,21 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 			concierge,
 			board,
 			taskEvents,
+			workspace: await (async () => {
+				if (wsTask === undefined || !client) return null;
+				try {
+					const t = (await within(client.request("task", { action: "list" }), 5000, "task list")).tasks.find((x) => x.id === wsTask);
+					const w = t?.workspace;
+					if (!w) return null;
+					let baseLog: string[] = [];
+					try {
+						baseLog = execFileSync("git", ["log", "--format=%s", "main"], { cwd: work, encoding: "utf8" }).trim().split("\n");
+					} catch {}
+					return { stage: w.stage, note: w.note, verifyOk: w.verify ? w.verify.ok : null, verifyRounds: w.verify?.rounds ?? 0, branch: w.branch, merged: mergeNote, worktreeLeft: !!w.path && existsSync(w.path), baseLog };
+				} catch {
+					return null;
+				}
+			})(),
 		};
 	} finally {
 		await teardown(client, daemon, rows);
@@ -695,7 +784,7 @@ export function checks(name: string, list: Record<string, (o: RoostOutcome) => b
 			if (dir) {
 				appendFileSync(
 					join(dir, "observations.jsonl"),
-					`${JSON.stringify({ case: name, score, failed, error: output.error, states: output.states, costUsd: output.costUsd, tokens: output.tokens, ms: output.ms, ackP50: output.ackP50, answer: output.answer.slice(0, 500), ...(output.concierge ? { concierge: { wakes: output.concierge.wakes, notices: output.concierge.notices.map((n) => `${n.kind}: ${n.text.slice(0, 300)}`), sent: output.concierge.sent.map((m) => `→ ${m.to}: ${m.text.slice(0, 200)}`), answers: output.concierge.answers.map((a) => a.slice(0, 300)), answered: output.concierge.answered.map((a) => `→ ${a.to}: ${a.text.slice(0, 200)}`), suggestions: output.concierge.suggestions.map((s) => `→ ${s.to}: ${s.text.slice(0, 200)}`), acts: output.concierge.acts } } : {}) })}\n`,
+					`${JSON.stringify({ case: name, score, failed, error: output.error, states: output.states, costUsd: output.costUsd, tokens: output.tokens, ms: output.ms, ackP50: output.ackP50, answer: output.answer.slice(0, 500), ...(output.concierge ? { concierge: { wakes: output.concierge.wakes, notices: output.concierge.notices.map((n) => `${n.kind}: ${n.text.slice(0, 300)}`), sent: output.concierge.sent.map((m) => `→ ${m.to}: ${m.text.slice(0, 200)}`), answers: output.concierge.answers.map((a) => a.slice(0, 300)), answered: output.concierge.answered.map((a) => `→ ${a.to}: ${a.text.slice(0, 200)}`), suggestions: output.concierge.suggestions.map((s) => `→ ${s.to}: ${s.text.slice(0, 200)}`), acts: output.concierge.acts } } : {}), ...(output.workspace ? { workspace: output.workspace } : {}) })}\n`,
 				);
 			}
 			return { score, metadata: { rationale: failed.length ? `failed: ${failed.join(", ")}${output.error ? ` (${output.error})` : ""}` : "all checks pass" } };

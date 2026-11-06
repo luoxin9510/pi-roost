@@ -69,6 +69,7 @@ Claude Code's documented behaviour.
 | M59 | [shelving, leftovers, `/tasks` in pi sessions (the phone), the concierge's launches built by the daemon](m59-shelve-cleanup.md) | 0.1.19 |
 | M60 | [optional exits: `/tasks pr` (push and open a pull request), a warning when tasks change the same files](m60-exits.md) | 0.1.19 |
 | M61 | [a session's own slash commands in its peek](m61-session-commands.md) | 0.1.17 |
+| M62 | [the ADE loop with a real model: evals of a task in its worktree, verify, merge](m62-workspace-evals.md) | — |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
 

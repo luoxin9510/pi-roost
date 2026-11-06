@@ -30,6 +30,7 @@ const outcome = (o: Partial<RoostOutcome> = {}): RoostOutcome => ({
 	concierge: null,
 	board: [],
 	taskEvents: [],
+	workspace: null,
 	...o,
 });
 
