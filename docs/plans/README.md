@@ -62,6 +62,8 @@ Claude Code's documented behaviour.
 | M52 | [the board by project (a repository's), and told when a task can be claimed](m52-board-projects.md) | 0.1.16 |
 | M53 | [a session's whole conversation: what came before the last compaction loads as the transcript scrolls up](m53-earlier-history.md) | 0.1.16 |
 
-Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers, and a shared task board (M43–M47, all done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
+Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
+
+Before: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers, and a shared task board (M43–M47, all done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 
 Porting pi-roost to another agent: [`../porting.md`](../porting.md) (in Chinese).
