@@ -3064,7 +3064,7 @@ export class AgentView implements Component {
 		if (this.concierge?.on) out.push(t.fg(this.concierge.notice?.kind === "need" && !this.concierge.overBudget && !esc ? "warning" : "dim", truncateToWidth(this.conciergeLine(), w)));
 		// M47: the board's line, while something is on it
 		const b = this.board;
-		if (b && (b.open > 0 || b.claimed > 0 || b.blocked > 0)) out.push(t.fg("dim", truncateToWidth(`tasks ${summaryLine(b)} · /tasks`, w)));
+		if (b && (b.open > 0 || b.claimed > 0 || b.blocked > 0 || (b.workspaces ?? 0) > 0)) out.push(t.fg("dim", truncateToWidth(`tasks ${summaryLine(b)} · /tasks`, w)));
 		if (this.fanout) {
 			const n = this.fanout.length;
 			const list = this.fanout.map(shortModel).join(", ");

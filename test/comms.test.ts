@@ -1379,6 +1379,50 @@ describe("M47: the board's store, its limits, and who may act", () => {
 		const p = await foreground("lead");
 		expect((await p.c.request("task", { action: "claim", id: 3 })).task?.state).toBe("claimed");
 	});
+
+	it("M54: workspaces load normalised, unknown fields are kept, the store is version 2, a task in review holds its dependents", async () => {
+		const sha = "c".repeat(40);
+		const base = { after: [], by: { who: "user", whoId: null }, at: 1, project: null };
+		const w = (stage: string) => ({ path: "/r/.pi/worktrees/t1-a-ab12", branch: "roost/t1-a-ab12", baseRef: "main", baseSha: sha, stage });
+		writeFileSync(
+			join(home, "tasks.json"),
+			JSON.stringify({
+				next: 6,
+				tasks: [
+					{ ...base, id: 1, title: "merged", state: "claimed", workspace: w("merged"), future: { kept: true } },
+					{ ...base, id: 2, title: "damaged", state: "open", workspace: { stage: "review" } },
+					{ ...base, id: 3, title: "done by hand", state: "done", workspace: w("review") },
+					{ ...base, id: 4, title: "in review", state: "open", workspace: w("review") },
+					{ ...base, id: 5, title: "after", state: "open", after: [1, 4] },
+				],
+			}),
+		);
+		const hub = await startDaemon();
+		const { tasks } = await hub.request("task", { action: "list" });
+		const by = (id: number) => tasks.find((t) => t.id === id)!;
+		expect([by(1).state, by(1).workspace?.stage]).toEqual(["done", "merged"]);
+		expect([by(2).state, by(2).workspace?.stage]).toEqual(["open", "failed"]);
+		expect(by(2).workspace?.note).toMatch(/damaged/);
+		expect([by(3).state, by(3).workspace?.stage]).toEqual(["open", "failed"]);
+		expect(by(5).workspace).toBeUndefined();
+		// #5 waits on #4, which is in review: blocked
+		const p = await foreground("lead");
+		await expect(p.c.request("task", { action: "claim", id: 5 })).rejects.toMatchObject({ code: "blocked" });
+		// a task with a workspace is not claimed, handed over or marked done by a word
+		await expect(p.c.request("task", { action: "claim", id: 4 })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(hub.request("task", { action: "assign", id: 4, to: "lead" })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(hub.request("task", { action: "done", id: 4 })).rejects.toMatchObject({ code: "bad_request" });
+		// dropped with its workspace unmerged: never swept (its worktree may hold work)
+		await hub.request("task", { action: "drop", id: 4 });
+		// the next save is version 2 and keeps what it does not know
+		await hub.request("task", { action: "add", title: "save" });
+		const saved = JSON.parse(readFileSync(join(home, "tasks.json"), "utf8")) as { version: number; tasks: Record<string, unknown>[] };
+		expect(saved.version).toBe(2);
+		expect(saved.tasks.find((t) => t.id === 1)!.future).toEqual({ kept: true });
+		expect("workspace" in saved.tasks.find((t) => t.id === 5)!).toBe(false);
+		const { c } = await connect();
+		expect((await c.request("hello", { protocol: 1 })).capabilities).toContain("workspaces");
+	});
 });
 
 describe("M48: the row's task and queued replies", () => {

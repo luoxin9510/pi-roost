@@ -46,7 +46,7 @@ import {
 } from "../lib/concierge.ts";
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { checkTemplate, nextRun, parseWhen, runLaunch, runSlot, type Schedule, SCHEDULE_NAME, templateAgent } from "../lib/schedule.ts";
-import { type BoardTask, blockedOn, boardSummary, onBoardOf, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
+import { type BoardTask, blockedOn, boardSummary, onBoardOf, parseWorkspace, TASK_NOTE_MAX, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
 import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/locks.ts";
@@ -897,6 +897,8 @@ function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: un
 // as the lead. The daemon keeps them (tasks.json); a claim is a lock a live session holds.
 
 const tasksPath = () => join(roostHome(), "tasks.json");
+/** M54: the store's version: 2 since tasks carry workspaces. */
+const TASKS_VERSION = 2;
 const tasks = new Map<number, BoardTask>();
 /** The next task's id: never one that was used. */
 let taskNext = 1;
@@ -908,7 +910,11 @@ function loadTasks(): void {
 	for (const t of saved) {
 		if (!t || typeof t !== "object" || !Number.isInteger(t.id) || t.id <= 0 || !str(t.title)) continue;
 		const state = t.state === "claimed" || t.state === "done" || t.state === "dropped" ? t.state : "open";
+		// M54: a workspace normalised (a damaged one kept as failed); merged is done
+		const workspace = parseWorkspace((t as { workspace?: unknown }).workspace);
 		tasks.set(t.id, {
+			// M54: fields this version does not know are kept (a newer daemon's), never dropped on save
+			...(t as object),
 			id: t.id,
 			title: taskTitle(t.title) || t.title.slice(0, TASK_TITLE_MAX),
 			detail: str(t.detail) ? taskText(t.detail, TASK_TEXT_MAX) : null,
@@ -927,7 +933,20 @@ function loadTasks(): void {
 			// M52: tasks from before projects are any session's
 			project: str(t.project) && isAbsolute(t.project) ? t.project : null,
 			waiting: Array.isArray(t.waiting) ? t.waiting.filter((w) => w && str(w.id)).slice(0, TASK_WAITING_MAX).map((w) => ({ id: w.id, name: str(w.name) ? w.name : w.id })) : [],
+			...(workspace ? { workspace } : { workspace: undefined }),
 		});
+		const kept = tasks.get(t.id)!;
+		if (!kept.workspace) delete kept.workspace;
+		else if (kept.workspace.stage === "merged" && kept.state !== "dropped" && kept.state !== "done") {
+			kept.state = "done";
+			kept.doneAt ??= kept.at;
+		} else if (kept.state === "done" && kept.workspace.stage !== "merged") {
+			// done without its merge (a file edited by hand): it holds its dependents, and a person looks at it
+			kept.state = "open";
+			kept.doneAt = null;
+			kept.workspace.stage = "failed";
+			kept.workspace.note = `marked done without a merge: check its branch${kept.workspace.note ? ` (${kept.workspace.note})` : ""}`.slice(0, TASK_NOTE_MAX);
+		}
 	}
 	const kept = Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
 	taskNext = Math.max(kept, Math.max(0, ...tasks.keys()) + 1);
@@ -949,7 +968,8 @@ function loadTasks(): void {
 
 function saveTasks(): void {
 	try {
-		writeJsonAtomic(tasksPath(), { next: taskNext, tasks: [...tasks.values()] });
+		// M54: version 2 (tasks may carry a workspace); an older daemon would drop it on save
+		writeJsonAtomic(tasksPath(), { version: TASKS_VERSION, next: taskNext, tasks: [...tasks.values()] });
 	} catch (err) {
 		log("error", "the task board was not saved", { error: String(err) });
 	}
@@ -962,7 +982,8 @@ function pushBoard(): void {
 
 /** Done and dropped tasks beyond the cap go, oldest first. */
 function sweepTasks(): void {
-	const gone = [...tasks.values()].filter((t) => t.state === "done" || t.state === "dropped").sort((a, b) => (a.doneAt ?? a.at) - (b.doneAt ?? b.at));
+	// M54: a dropped task whose workspace was not merged keeps its record (its worktree and branch may hold work)
+	const gone = [...tasks.values()].filter((t) => (t.state === "done" || t.state === "dropped") && (!t.workspace || t.workspace.stage === "merged")).sort((a, b) => (a.doneAt ?? a.at) - (b.doneAt ?? b.at));
 	while (tasks.size >= TASK_MAX && gone.length > 0) tasks.delete(gone.shift()!.id);
 }
 
@@ -1044,7 +1065,7 @@ function releaseTask(t: BoardTask, why: string, a?: ReturnType<typeof boardActor
 function tellOpened(d: BoardTask, by: string | null): void {
 	const all = [...tasks.values()];
 	for (const t of all) {
-		if (t.state !== "open" || !t.after.includes(d.id) || blockedOn(t, all).length > 0) continue;
+		if (t.state !== "open" || t.workspace || !t.after.includes(d.id) || blockedOn(t, all).length > 0) continue;
 		const told = new Map<string, string>();
 		for (const w of t.waiting) told.set(w.id, w.name);
 		if (t.assigned) told.set(t.assigned.id, t.assigned.name);
@@ -1052,9 +1073,11 @@ function tellOpened(d: BoardTask, by: string | null): void {
 		if (by !== null) told.delete(by); // the session that did it knows
 		t.waiting = [];
 		saveTasks();
-		record({ kind: "task", id: d.owner?.id ?? "", name: "roost", who: "roost", whoId: null, why: "open", text: clipText(`#${t.id} ${t.title}: #${d.id} ${d.state}`) });
+		// M54: a task merged from its workspace says so
+		const how = d.workspace?.stage === "merged" && d.state === "done" ? "merged" : d.state;
+		record({ kind: "task", id: d.owner?.id ?? "", name: "roost", who: "roost", whoId: null, why: "open", text: clipText(`#${t.id} ${t.title}: #${d.id} ${how}`) });
 		for (const [id, name] of told) {
-			tellOwner({ id, name }, "roost", `Task #${t.id} (${t.title}) can be claimed now: #${d.id}, which it waited on, is ${d.state}. Claim it with roost_task_claim if it is yours to do.`);
+			tellOwner({ id, name }, "roost", `Task #${t.id} (${t.title}) can be claimed now: #${d.id}, which it waited on, is ${how}. Claim it with roost_task_claim if it is yours to do.`);
 		}
 	}
 }
@@ -1138,6 +1161,8 @@ async function taskOp(
 			if (a.concierge) throw new OpError("unsupported", "the concierge hands tasks over (hub_task_assign); it does not take them");
 			if (a.sessionId === null) throw new OpError("unsupported", "a session claims a task (roost_task_claim); the hub hands one over (/tasks assign)");
 			if (t.state === "done" || t.state === "dropped") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
+			// M54: a task with a workspace is worked in its worktree: a session already running elsewhere cannot move there
+			if (t.workspace && !mine) throw new OpError("unsupported", `#${t.id} has its own workspace (${t.workspace.branch}): start it with /tasks start`);
 			if (t.state === "claimed" && t.owner && t.owner.id !== a.sessionId) {
 				// a lock a live session holds; one whose session is gone is taken over
 				if (ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);
@@ -1174,6 +1199,8 @@ async function taskOp(
 		}
 		case "done":
 			if (t.state === "done" || t.state === "dropped") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
+			// M54: a task with a workspace is done when its branch is merged, never by a word
+			if (t.workspace) throw new OpError("bad_request", `#${t.id} has its own workspace (${t.workspace.branch}): it is done when it is merged`);
 			if (!mine && !lead) throw new OpError("unsupported", `#${t.id} is ${t.owner ? `${t.owner.name}'s` : "not yours: claim it first"}`);
 			t.state = "done";
 			t.doneAt = Date.now();
@@ -1204,6 +1231,8 @@ async function taskOp(
 		case "assign": {
 			if (!lead) throw new OpError("unsupported", "the hub and the concierge hand tasks over; a session claims one (roost_task_claim)");
 			if (t.state !== "open") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
+			// M54: a task with a workspace gets a session in its worktree (/tasks start), not a message to one elsewhere
+			if (t.workspace) throw new OpError("unsupported", `#${t.id} has its own workspace (${t.workspace.branch}): start it with /tasks start`);
 			const to = typeof args?.to === "string" ? args.to.trim() : "";
 			if (!to) throw new OpError("bad_request", "to: a session id or exact name");
 			const rows = list(undefined).filter((r) => r.role !== "concierge");
@@ -3046,7 +3075,7 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
 }
 
 /** M31: what the daemon offers agents beyond report, ack and hello. */
-const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks"];
+const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks", "workspaces"];
 
 /**
  * M31: an agent's hello. Informational (a report is what proves a job): the daemon keeps

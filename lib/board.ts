@@ -27,6 +27,116 @@ export interface BoardTask {
 	project: string | null;
 	/** M52: sessions told when it can be claimed (refused as blocked); at most TASK_WAITING_MAX. */
 	waiting: { id: string; name: string }[];
+	/** M54: its own worktree and where it is in the loop (absent: a task without one). */
+	workspace?: TaskWorkspace | null;
+}
+
+/**
+ * M54 (docs/plans/ade-roadmap.md): where a task with a workspace is, task → worktree →
+ * verify → review → local merge. The stage is the truth for such a task; `state` follows
+ * the claim as for any task, except that `merged` is `done`.
+ */
+export type WorkspaceStage = "working" | "verifying" | "review" | "merging" | "conflict" | "failed" | "shelved" | "merged";
+export const WORKSPACE_STAGES: readonly WorkspaceStage[] = ["working", "verifying", "review", "merging", "conflict", "failed", "shelved", "merged"];
+/** The stages that wait on a person. */
+export const NEEDS_YOU_STAGES: ReadonlySet<WorkspaceStage> = new Set(["review", "conflict", "failed"]);
+
+/** A review comment on a line of the task's diff (M58). */
+export interface ReviewComment {
+	file: string;
+	line: number;
+	text: string;
+	/** The line's text when it was written: the comment is outdated once it is not there. */
+	lineText: string;
+	/** The branch tip it was written on. */
+	tip: string;
+	at: number;
+}
+
+export interface TaskWorkspace {
+	/** The worktree's top directory ("" when a damaged record lost it). */
+	path: string;
+	branch: string;
+	/** The base branch's name, e.g. "main". */
+	baseRef: string;
+	/** The commit the worktree was made from (40 or 64 hex; "" when unknown). */
+	baseSha: string;
+	stage: WorkspaceStage;
+	/** Why it is where it is, for a person: "not verified (interrupted)", a git message. */
+	note: string | null;
+	verify?: { ok: boolean; at: number; log: string; tail: string; rounds: number };
+	/** Written before the merge (the tip and the base it starts from), `into` after it (M55). */
+	merge?: { tip: string; oldBase: string; at: number; into?: string };
+	comments?: ReviewComment[];
+}
+
+export const TASK_NOTE_MAX = 500;
+const SHA = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
+const strOf = (v: unknown, max: number): string | null => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
+
+/**
+ * A stored workspace, normalised: null when there is none; a damaged one (no path or
+ * branch, an unknown stage) is kept as `failed` for a person to look at, never dropped
+ * (its worktree and branch may hold work).
+ */
+export function parseWorkspace(raw: unknown): TaskWorkspace | null {
+	if (raw === undefined || raw === null) return null;
+	const o = (typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+	const path = strOf(o.path, 4096);
+	const branch = strOf(o.branch, 255);
+	const stage = typeof o.stage === "string" && (WORKSPACE_STAGES as readonly string[]).includes(o.stage) ? (o.stage as WorkspaceStage) : null;
+	const damaged = !path || !isAbsolute(path) || !branch || !stage;
+	const w: TaskWorkspace = {
+		path: path && isAbsolute(path) ? path : "",
+		branch: branch ?? "",
+		baseRef: strOf(o.baseRef, 255) ?? "",
+		baseSha: typeof o.baseSha === "string" && SHA.test(o.baseSha) ? o.baseSha : "",
+		stage: damaged ? "failed" : stage,
+		note: damaged ? "the stored workspace was damaged: check its worktree and branch by hand" : strOf(o.note, TASK_NOTE_MAX),
+	};
+	const v = o.verify as Record<string, unknown> | undefined;
+	if (v && typeof v === "object" && typeof v.ok === "boolean" && Number.isFinite(v.at))
+		w.verify = { ok: v.ok, at: v.at as number, log: strOf(v.log, 4096) ?? "", tail: strOf(v.tail, TASK_TEXT_MAX) ?? "", rounds: Number.isInteger(v.rounds) && (v.rounds as number) >= 0 ? (v.rounds as number) : 0 };
+	const m = o.merge as Record<string, unknown> | undefined;
+	if (m && typeof m === "object" && typeof m.tip === "string" && SHA.test(m.tip) && typeof m.oldBase === "string" && SHA.test(m.oldBase))
+		w.merge = { tip: m.tip, oldBase: m.oldBase, at: Number.isFinite(m.at) ? (m.at as number) : 0, ...(typeof m.into === "string" && SHA.test(m.into) ? { into: m.into } : {}) };
+	if (Array.isArray(o.comments)) {
+		const cs = o.comments
+			.filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+			.filter((c) => strOf(c.file, 4096) && Number.isInteger(c.line) && (c.line as number) >= 1 && strOf(c.text, TASK_TEXT_MAX))
+			.slice(0, 200)
+			.map((c) => ({
+				file: (c.file as string).slice(0, 4096),
+				line: c.line as number,
+				text: (c.text as string).slice(0, TASK_TEXT_MAX),
+				lineText: typeof c.lineText === "string" ? c.lineText.slice(0, 1000) : "",
+				tip: typeof c.tip === "string" && SHA.test(c.tip) ? c.tip : "",
+				at: Number.isFinite(c.at) ? (c.at as number) : 0,
+			}));
+		if (cs.length > 0) w.comments = cs;
+	}
+	return w;
+}
+
+/** How a stage reads in a line: `in review`, `conflict`. */
+export function stageLabel(s: WorkspaceStage): string {
+	return s === "review" ? "in review" : s;
+}
+
+/** The task needs a person (review, a conflict, a failure). */
+export const needsYou = (t: BoardTask): boolean => !!t.workspace && t.state !== "dropped" && NEEDS_YOU_STAGES.has(t.workspace.stage);
+
+/**
+ * M54: whether `d`, which `t` waits on, no longer holds it. Dropped: never holds. Of
+ * another project: done (its code is not in this repository). With a workspace: merged
+ * (its state is then done; a task marked done by hand without its merge still holds).
+ * Otherwise: done.
+ */
+export function dependencyMet(d: BoardTask, t: Pick<BoardTask, "project">): boolean {
+	if (d.state === "dropped") return true;
+	if ((d.project ?? null) !== (t.project ?? null)) return d.state === "done";
+	if (d.workspace) return d.workspace.stage === "merged" && d.state === "done";
+	return d.state === "done";
 }
 
 export const TASK_MAX = 200;
@@ -90,24 +200,37 @@ export interface BoardSummary {
 	claimed: number;
 	blocked: number;
 	done: number;
+	/** M54: tasks in their workspaces (not merged, not dropped); not in the counts above. */
+	workspaces?: number;
+	/** M54: of those, the ones waiting on a person (review, conflict, failed). */
+	needsYou?: number;
 }
 
-/** The ids a task still waits on: the ones that exist and are neither done nor dropped. */
+/** The ids a task still waits on: the ones that exist and still hold it (dependencyMet). */
 export function blockedOn(t: BoardTask, all: Iterable<BoardTask>): number[] {
 	const by = new Map<number, BoardTask>();
 	for (const x of all) by.set(x.id, x);
 	return t.after.filter((id) => {
 		const d = by.get(id);
-		return d !== undefined && d.state !== "done" && d.state !== "dropped";
+		return d !== undefined && !dependencyMet(d, t);
 	});
 }
 
-/** Open, claimed, blocked (open but waiting on another) and done, counted. */
+/** M54: a session can claim it now: open, waiting on nothing, without a workspace (one with a workspace is started: /tasks start). */
+export const claimable = (t: BoardTask, all: Iterable<BoardTask>): boolean => t.state === "open" && !t.workspace && blockedOn(t, all).length === 0;
+
+/** A task in its workspace: one with a workspace that is neither merged (done) nor dropped. */
+const inWorkspace = (t: BoardTask): boolean => !!t.workspace && t.state !== "done" && t.state !== "dropped";
+
+/** Open, claimed, blocked (open but waiting on another), done; M54: in workspaces, needing you. */
 export function boardSummary(all: BoardTask[]): BoardSummary {
-	const s: BoardSummary = { open: 0, claimed: 0, blocked: 0, done: 0 };
+	const s: BoardSummary = { open: 0, claimed: 0, blocked: 0, done: 0, workspaces: 0, needsYou: 0 };
 	for (const t of all) {
 		if (t.state === "done") s.done++;
-		else if (t.state === "claimed") s.claimed++;
+		else if (inWorkspace(t)) {
+			s.workspaces!++;
+			if (needsYou(t)) s.needsYou!++;
+		} else if (t.state === "claimed") s.claimed++;
 		else if (t.state === "open") {
 			if (blockedOn(t, all).length > 0) s.blocked++;
 			else s.open++;
@@ -116,9 +239,10 @@ export function boardSummary(all: BoardTask[]): BoardSummary {
 	return s;
 }
 
-/** `3 open · 2 claimed · 1 blocked · 5 done` (what is zero left out; "none" when the board is empty). */
+/** `3 open · 2 claimed · 1 blocked · 2 in workspaces (1 needs you) · 5 done` (zeros left out; "none" when empty). */
 export function summaryLine(s: BoardSummary): string {
-	const parts = [s.open && `${s.open} open`, s.claimed && `${s.claimed} claimed`, s.blocked && `${s.blocked} blocked`, s.done && `${s.done} done`].filter(Boolean);
+	const ws = s.workspaces ? `${s.workspaces} in workspace${s.workspaces === 1 ? "" : "s"}${s.needsYou ? ` (${s.needsYou} need${s.needsYou === 1 ? "s" : ""} you)` : ""}` : 0;
+	const parts = [s.open && `${s.open} open`, s.claimed && `${s.claimed} claimed`, s.blocked && `${s.blocked} blocked`, ws, s.done && `${s.done} done`].filter(Boolean);
 	return parts.length > 0 ? parts.join(" · ") : "none";
 }
 
@@ -134,16 +258,27 @@ export function taskLine(t: BoardTask, all: Iterable<BoardTask>, now = Date.now(
 	const title = `${projects ? `[${projectLabel(t.project ?? null)}] ` : ""}${line(t.title)}`;
 	if (t.state === "done") return `#${t.id} done${t.doneAt ? ` ${eventAgo(t.doneAt, now)} ago` : ""}${t.owner ? ` by ${line(t.owner.name)}` : ""} · ${title}${t.result ? ` → ${line(t.result)}` : ""}`;
 	if (t.state === "dropped") return `#${t.id} dropped · ${title}`;
+	// M54: a task in its workspace says where in the loop it is, and who works on it
+	if (t.workspace) return `#${t.id} ${stageLabel(t.workspace.stage)}${t.owner ? ` · ${line(t.owner.name)}` : ""} · ${title}${t.workspace.note ? ` (${line(t.workspace.note)})` : ""}`;
 	if (t.state === "claimed") return `#${t.id} claimed by ${line(t.owner?.name ?? "?")}${t.claimedAt ? ` (${eventAgo(t.claimedAt, now)})` : ""} · ${title}`;
 	const waits = blockedOn(t, all);
-	if (waits.length > 0) return `#${t.id} blocked on ${waits.map((i) => `#${i}`).join(" ")} · ${title}`;
+	if (waits.length > 0) {
+		// M54: what holds it, when that is a task in its workspace: `#4 (in review)`
+		const by = new Map<number, BoardTask>();
+		for (const x of all) by.set(x.id, x);
+		const held = (i: number) => {
+			const w = by.get(i)?.workspace;
+			return w && w.stage !== "merged" ? `#${i} (${stageLabel(w.stage)})` : `#${i}`;
+		};
+		return `#${t.id} blocked on ${waits.map(held).join(" ")} · ${title}`;
+	}
 	const to = t.assigned ? ` · handed to ${line(t.assigned.name)} ${eventAgo(t.assigned.at, now)} ago` : "";
 	return `#${t.id} open · ${title}${to}`;
 }
 
-/** Open (claimable) first, then blocked, then claimed: the order the digest and the hub list live tasks in. */
+/** Open (claimable) first, then blocked, then claimed, then (M54) those in workspaces: the order the digest and the hub list live tasks in. */
 export function liveOrder(t: BoardTask, all: BoardTask[]): number {
-	return t.state === "claimed" ? 2 : blockedOn(t, all).length > 0 ? 1 : 0;
+	return t.workspace ? 3 : t.state === "claimed" ? 2 : blockedOn(t, all).length > 0 ? 1 : 0;
 }
 
 /** The board for a digest: the summary line, then every task that is not done or dropped (open, blocked, claimed). */

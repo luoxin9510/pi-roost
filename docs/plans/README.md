@@ -61,6 +61,7 @@ Claude Code's documented behaviour.
 | M51 | [request ids from the hub and the CLI: a reply or a dispatch whose answer was lost is sent again, taken once](m51-request-ids.md) | 0.1.16 |
 | M52 | [the board by project (a repository's), and told when a task can be claimed](m52-board-projects.md) | 0.1.16 |
 | M53 | [a session's whole conversation: what came before the last compaction loads as the transcript scrolls up](m53-earlier-history.md) | 0.1.16 |
+| M54 | [a task's workspace, as data: stages, dependencies until merged, the store's version 2](m54-workspace-model.md) | — |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
 

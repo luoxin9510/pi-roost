@@ -286,7 +286,20 @@ moves on when that digest reached the concierge). `concierge` events: `why: "ord
 foreground pi's. The result is `{tasks: BoardTask[], task?, sent?}`, the tasks oldest
 first, with `{id, title, detail, state: open | claimed | done | dropped, after: ids,
 by: {who, whoId}, at, owner: {id, name} | null, claimedAt, doneAt, result, assigned:
-{id, name, at} | null, project: string | null, waiting: {id, name}[]}`.
+{id, name, at} | null, project: string | null, waiting: {id, name}[], workspace?}`.
+
+Workspaces (M54, the `workspaces` capability): a task may carry `workspace: {path,
+branch, baseRef, baseSha, stage, note, verify?, merge?, comments?}`, its own git
+worktree and where it is in the loop task → worktree → verify → review → local merge
+(`docs/plans/ade-roadmap.md`). `stage` is `working | verifying | review | merging |
+conflict | failed | shelved | merged`; for such a task the stage is the truth, `state`
+follows the claim as for any task, and `merged` is `state: done`. A client that does not
+know the field ignores it. Dependencies: a task waited on holds until it is done, except
+that one with a workspace holds until it is merged, one of another project until it is
+done (its stage does not count), and a dropped one never holds. The store
+(`tasks.json`) is version 2 and keeps fields it does not know; an older daemon would
+drop `workspace` on its first save, so going back to one is not supported once tasks
+have workspaces.
 
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
@@ -329,7 +342,9 @@ A job that fails, is stopped or is removed holds nothing: its claims are release
 `task` event with `why: "release"`); a foreground pi's go five seconds after it
 disconnected (`PI_ROOST_FG_CLAIM_GRACE_MS`), unless a pi re-opened on the session is
 back. The counts go to subscribed hubs as a `board` event `{open, claimed, blocked,
-done}` on every change; each change is a `task` event in the feed (`why: add | claim |
+done, workspaces, needsYou}` on every change (M54: tasks in workspaces, not merged or
+dropped, are counted in `workspaces` only; `needsYou` counts those in review, conflict
+or failed); each change is a `task` event in the feed (`why: add | claim |
 release | done | drop | assign`, `text: "#id title"`, with `: result`, `: to name` or
 `: why released`). The TypeScript client has `call(op, args)` and `tasks() /
 claimTask(id) / taskDone(id, result?) / releaseTask(id) / addTask(title, {detail?,
