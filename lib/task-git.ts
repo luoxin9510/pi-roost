@@ -15,7 +15,7 @@ interface Run {
 /** Never throws: the exit code, and both streams trimmed. */
 function run(cwd: string, args: string[], timeout = 60_000): Promise<Run> {
 	return new Promise((done) => {
-		execFile("git", ["-C", cwd, ...args], { encoding: "utf8", timeout, env: { ...GIT_ENV(), GIT_OPTIONAL_LOCKS: "1" }, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+		execFile("git", ["-C", cwd, ...args], { encoding: "utf8", timeout, env: GIT_ENV(), maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
 			const code = err ? (typeof (err as { code?: unknown }).code === "number" ? ((err as { code: number }).code as number) : 128) : 0;
 			done({ code, stdout: String(stdout).trim(), stderr: String(stderr).trim() });
 		});
@@ -221,4 +221,10 @@ export async function withMergeLock<T>(repo: string, fn: () => Promise<T>, stale
 	} finally {
 		await rm(file, { force: true });
 	}
+}
+
+/** M55: the branch checked out in a worktree (refs/heads/… without the prefix), or undefined (detached, unreadable). */
+export async function currentBranch(path: string): Promise<string | undefined> {
+	const r = await run(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+	return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : undefined;
 }

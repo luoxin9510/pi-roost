@@ -1793,8 +1793,10 @@ describe("M55: start and merge from the board", () => {
 		expect(merged.note).toMatch(/^merged into main/);
 		expect(gitOut(r, "rev-parse", "main")).toBe(merged.task!.workspace!.merge!.into);
 		expect(existsSync(join(r, "users.sql"))).toBe(true); // the main checkout moved with base
-		expect(existsSync(w.path)).toBe(false);
-		expect(gitOut(r, "branch", "--list", w.branch)).toBe("");
+		// its session still runs in the worktree: the worktree stays, the session is told to stop
+		expect(merged.note).toContain(`worktree kept while t${t.id} runs`);
+		expect(existsSync(w.path)).toBe(true);
+		expect((await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes("was merged into main")))).from).toBe("roost");
 		// the dependent can start now; the feed has the stages
 		const feed = (await hub.request("events", {})).events.filter((e) => e.kind === "task" && e.why === "stage").map((e) => e.text ?? "");
 		expect(feed.some((x) => x.includes("in review"))).toBe(true);
@@ -1827,6 +1829,33 @@ describe("M55: start and merge from the board", () => {
 		expect(told.text).toContain("came back from review");
 	});
 
+	it("a worktree off its branch is not merged (a detached HEAD's commits would be lost); a damaged record never reaches git", async () => {
+		const hub = await startDaemon();
+		const r = repo("ops");
+		const { t, w, job } = await started(hub, r, "detach me");
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
+		const s = await worker(job.id);
+		writeFileSync(join(w.path, "n.txt"), "n\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "n");
+		await s.c.request("task", { action: "done", id: t.id });
+		git(w.path, "checkout", "-q", "--detach");
+		const before = gitOut(r, "rev-parse", "main");
+		const m = await hub.request("task", { action: "merge", id: t.id });
+		expect(m.task?.workspace).toMatchObject({ stage: "review" });
+		expect(m.task?.workspace?.note).toContain("detached HEAD");
+		expect(gitOut(r, "rev-parse", "main")).toBe(before);
+	});
+
+	it("a damaged workspace record is refused before any git runs", async () => {
+		const base = { after: [], by: { who: "user", whoId: null }, at: 1, project: work, owner: null, waiting: [] };
+		writeFileSync(join(home, "tasks.json"), JSON.stringify({ version: 2, next: 2, tasks: [{ ...base, id: 1, title: "damaged", state: "open", workspace: { stage: "review" } }] }));
+		const hub = await startDaemon();
+		for (const action of ["commit", "merge", "abort"] as const) {
+			await expect(hub.request("task", { action, id: 1 } as never)).rejects.toMatchObject({ code: "bad_request" });
+		}
+	});
+
 	it("a daemon restarted with a merge cut short settles it from the recorded intent", async () => {
 		const r = repo("svc");
 		const w = createTaskWorktree(r, 1, "cut short");
@@ -1848,6 +1877,9 @@ describe("M55: start and merge from the board", () => {
 			return ts.every((t) => t.workspace?.stage !== "merging") && ts;
 		});
 		expect(settled.find((t) => t.id === 1)).toMatchObject({ state: "done", workspace: { stage: "merged" } });
+		// nobody runs in it: the merged branch and its clean worktree go
+		await waitFor(() => !existsSync(w.path));
+		expect(gitOut(r, "branch", "--list", w.branch)).toBe("");
 		expect(settled.find((t) => t.id === 2)?.workspace).toMatchObject({ stage: "review", note: "merge interrupted: /tasks merge again" });
 	});
 });

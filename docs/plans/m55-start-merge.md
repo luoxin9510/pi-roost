@@ -125,3 +125,28 @@ taken over):
   without as review).
 - The hub's `/tasks start | merge | back | abort | commit`; config `taskMerge`
   (`"ff"` default, `"no-ff"`), user or project.
+
+## After review
+
+- One action at a time per task's workspace (two starts, a drop or a `back` during a
+  merge get `conflict`); a merging task cannot be dropped.
+- A damaged record (no path, the path gone) never reaches git: `commit`, `merge`, `abort`
+  are refused (`git -C ""` would run in the daemon's own directory).
+- What merges is the branch (`refs/heads/<branch>`), and only while the worktree is on it:
+  a worktree moved to a detached HEAD or another branch goes back to review with a note.
+- A merge that throws is settled at once as at a restart (tip in base: merged; else
+  review), never left at `merging`.
+- `start` checks `baseRef` (a branch name) and `baseSha` (a commit id), checks the
+  worktree again when a task is started again, and refuses while it is verifying or
+  merging.
+- After a merge, a session still running in the worktree keeps it (its directory would
+  vanish under it) and is told the task was merged; that worktree and its branch stay
+  until removed by hand (`git worktree remove`, `git branch -d`); M59's `/tasks cleanup`
+  will list and remove such leftovers.
+- `git status` and friends run with optional locks off, so they never take the index lock
+  from an agent committing at the same time.
+- Differences from the text above, as built: the preflight is the sync, then the clean
+  check (a conflicted sync is dirty by nature); `no-ff` needs a checkout of base (with
+  base checked out nowhere the update is a fast-forward); a settled restart does not
+  abort a `MERGE_HEAD` (the `merging` stage is only reached after a clean sync); `back`
+  with no live session says to `/tasks start` it rather than starting one.

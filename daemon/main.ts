@@ -96,7 +96,7 @@ import { termFrom } from "../lib/profiles.ts";
 import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.ts";
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
-import { abortSync, cleanupMergedTask, commitAll, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, withMergeLock, worktreeClean } from "../lib/task-git.ts";
+import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, revParse, syncWithBase, withMergeLock, worktreeClean } from "../lib/task-git.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
@@ -1114,6 +1114,10 @@ function setStage(t: BoardTask, stage: WorkspaceStage, note: string | null, a?: 
 
 /** M55: repositories a merge is under way in (one at a time; the lock file guards against another daemon). */
 const mergingRepos = new Set<string>();
+/** M55: tasks an action on the workspace is under way for (start, merge, …): another waits its turn. */
+const workspaceBusy = new Set<number>();
+const BASE_REF = /^(?!-)(?!.*\.\.)[A-Za-z0-9._\/-]{1,200}$/;
+const SHA_RE = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
 /** How many times a merge goes back to the sync when base moved under it. */
 const MERGE_TRIES = 3;
 
@@ -1124,8 +1128,24 @@ async function workspaceOp(
 	action: "start" | "merge" | "back" | "abort" | "commit",
 	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown },
 ): Promise<{ job?: { id: string; name: string }; note?: string }> {
-	const human = a.sessionId === null && !a.concierge; // the hub, the CLI
 	if (a.sessionId !== null) throw new OpError("unsupported", `/tasks ${action} is the hub's`);
+	// one action on a task's workspace at a time (two starts, a drop during a merge)
+	if (workspaceBusy.has(t.id)) throw new OpError("conflict", `#${t.id}: another action on its workspace is under way`);
+	workspaceBusy.add(t.id);
+	try {
+		return await workspaceAction(a, t, action, args);
+	} finally {
+		workspaceBusy.delete(t.id);
+	}
+}
+
+async function workspaceAction(
+	a: ReturnType<typeof boardActor>,
+	t: BoardTask,
+	action: "start" | "merge" | "back" | "abort" | "commit",
+	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown },
+): Promise<{ job?: { id: string; name: string }; note?: string }> {
+	const human = a.sessionId === null && !a.concierge; // the hub, the CLI
 	if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.workspace?.stage === "merged" ? "merged" : t.state}`);
 	if (action === "start") {
 		if (!human) throw new OpError("unsupported", "the hub starts a task in its workspace (/tasks start)");
@@ -1136,8 +1156,11 @@ async function workspaceOp(
 		const w = args.workspace as { path?: unknown; branch?: unknown; baseRef?: unknown; baseSha?: unknown } | undefined;
 		if (!w || !str(w.path) || !str(w.branch) || !str(w.baseRef) || !str(w.baseSha)) throw new OpError("bad_request", "workspace: {path, branch, baseRef, baseSha}");
 		if (!w.branch.startsWith(`roost/t${t.id}-`)) throw new OpError("bad_request", `workspace: the branch of #${t.id} is roost/t${t.id}-…`);
+		if (!BASE_REF.test(w.baseRef) || !SHA_RE.test(w.baseSha)) throw new OpError("bad_request", "workspace: baseRef a branch name, baseSha a commit id");
 		if (t.workspace && (t.workspace.path !== w.path || t.workspace.branch !== w.branch)) throw new OpError("bad_request", `#${t.id} has its workspace already: ${t.workspace.branch}`);
-		if (!t.workspace && !(await validWorktree({ path: w.path, branch: w.branch, repo: t.project, base: w.baseSha }))) throw new OpError("bad_request", "workspace is not a worktree pi-roost made for this repository");
+		if (t.workspace && !["working", "review", "failed", "conflict", "shelved"].includes(t.workspace.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(t.workspace.stage)}: it cannot be started now`);
+		// checked again when it is started again: the worktree may be gone or moved off its branch
+		if (!(await validWorktree({ path: w.path, branch: w.branch, repo: t.project, base: t.workspace?.baseSha || w.baseSha }))) throw new OpError("bad_request", "workspace is not a worktree pi-roost made for this repository (or it is gone)");
 		const launch = args.launch as DispatchArgs | undefined;
 		if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
 		if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
@@ -1156,6 +1179,10 @@ async function workspaceOp(
 	const w = t.workspace;
 	if (!w) throw new OpError("bad_request", `#${t.id} has no workspace: /tasks start it first`);
 	if (!t.project) throw new OpError("bad_request", `#${t.id} has no repository`);
+	// a damaged record (no path, no branch) never reaches git: `git -C ""` is the daemon's own directory
+	if (action !== "back" && (!w.path || !isAbsolute(w.path) || !w.branch || !BASE_REF.test(w.baseRef) || !existsSync(w.path))) {
+		throw new OpError("bad_request", `#${t.id}: its worktree ${w.path || "(none recorded)"} is not there: look at it by hand`);
+	}
 	if (action === "back") {
 		const text = taskText(args.note, TASK_TEXT_MAX);
 		if (!["review", "failed", "conflict"].includes(w.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(w.stage)}: nothing to send back`);
@@ -1189,6 +1216,14 @@ async function workspaceOp(
 		const out = await withMergeLock(repo, () => mergeTask(a, t, w, repo, mode));
 		if (typeof out === "object" && out && "locked" in out) throw new OpError("conflict", `another merge holds ${projectLabel(repo)}'s lock`);
 		return { note: out as string };
+	} catch (err) {
+		// never left at merging: settled as at a restart (the tip in base: merged; else review)
+		if (w.stage === "merging") {
+			const base = await revParse(repo, `refs/heads/${w.baseRef}`);
+			if (w.merge && base && (await isAncestor(repo, w.merge.tip, base))) await finishMerge(a, t, w, repo, w.merge.tip, base);
+			else setStage(t, "review", `merge failed: ${String((err as Error).message ?? err).slice(0, 200)}`, a);
+		}
+		throw err;
 	} finally {
 		mergingRepos.delete(repo);
 	}
@@ -1211,7 +1246,13 @@ async function mergeTask(a: ReturnType<typeof boardActor>, t: BoardTask, w: Task
 			setStage(t, "review", "uncommitted changes in its worktree", a);
 			return `uncommitted changes in ${w.path}: /tasks commit ${t.id} or /tasks back ${t.id}`;
 		}
-		const tip = await revParse(w.path, "HEAD");
+		// what merges is the branch: the worktree must be on it (a detached HEAD's commits would not be)
+		const on = await currentBranch(w.path);
+		if (on !== w.branch) {
+			setStage(t, "review", `its worktree is on ${on ?? "a detached HEAD"}, not ${w.branch}`, a);
+			return `check out ${w.branch} in ${w.path} again, then /tasks merge ${t.id}`;
+		}
+		const tip = await revParse(repo, `refs/heads/${w.branch}`);
 		const oldBase = await revParse(repo, `refs/heads/${w.baseRef}`);
 		if (!tip || !oldBase) {
 			setStage(t, "review", `cannot read ${tip ? w.baseRef : w.branch}`, a);
@@ -1243,8 +1284,14 @@ async function mergeTask(a: ReturnType<typeof boardActor>, t: BoardTask, w: Task
 /** M55: merged: the record, the dependents, then the worktree and branch go (what holds no work). */
 async function finishMerge(a: ReturnType<typeof boardActor>, t: BoardTask, w: TaskWorkspace, repo: string, tip: string, into: string): Promise<string> {
 	w.merge = { ...(w.merge ?? { tip, oldBase: "", at: Date.now() }), tip, into };
+	const holder = t.owner;
 	setStage(t, "merged", null, a, `into ${w.baseRef} at ${into.slice(0, 8)}`);
 	tellOpened(t, null);
+	// a session still working in the worktree keeps it (its directory would vanish under it): told to stop
+	if (holder && ownerLive(holder.id)) {
+		tellOwner(holder, "roost", `Task #${t.id} (${t.title}) was merged into ${w.baseRef}: your work is done; stop here.`);
+		return `merged into ${w.baseRef} (${into.slice(0, 8)}) · worktree kept while ${holder.name} runs`;
+	}
 	const c = await cleanupMergedTask({ repo, path: w.path, branch: w.branch, tip, baseRef: w.baseRef });
 	const left = [c.worktreeRemoved ? "" : `worktree kept: ${w.path}`, c.branchDeleted ? "" : `branch ${w.branch} kept`].filter(Boolean).join(" · ");
 	return `merged into ${w.baseRef} (${into.slice(0, 8)})${left ? ` · ${left}${c.reason ? ` (${c.reason})` : ""}` : " · worktree and branch removed"}`;
@@ -1406,6 +1453,8 @@ async function taskOp(
 			return { tasks: all(), task: t };
 		case "drop": {
 			if (!lead) throw new OpError("unsupported", "the hub and the concierge drop tasks; a session gives its back (roost_task_release)");
+			// M55: not while its workspace is being started or merged
+			if (workspaceBusy.has(t.id) || t.workspace?.stage === "merging") throw new OpError("conflict", `#${t.id}: its workspace is being ${t.workspace?.stage === "merging" ? "merged" : "worked on"}: try again after`);
 			if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
 			const held = t.state === "claimed" ? t.owner : null;
 			t.state = "dropped";
