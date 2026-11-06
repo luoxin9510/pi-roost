@@ -1366,6 +1366,9 @@ async function workspaceAction(
 		if (t.workspace && !["working", "review", "failed", "conflict", "shelved"].includes(t.workspace.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(t.workspace.stage)}: it cannot be started now`);
 		// checked again when it is started again: the worktree may be gone or moved off its branch
 		if (!(await validWorktree({ path: w.path, branch: w.branch, repo: t.project, base: t.workspace?.baseSha || w.baseSha }))) throw new OpError("bad_request", "workspace is not a worktree pi-roost made for this repository (or it is gone)");
+		// M57: base is what the caller says only if it is: the commit on that branch, the worktree's history from it
+		if (!t.workspace && (!(await isAncestor(t.project, w.baseSha, `refs/heads/${w.baseRef}`)) || !(await isAncestor(w.path, w.baseSha, "HEAD"))))
+			throw new OpError("bad_request", `workspace: ${w.baseSha.slice(0, 8)} is not on ${w.baseRef} and under the worktree's branch`);
 		const launch = args.launch as DispatchArgs | undefined;
 		if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
 		if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
@@ -1410,6 +1413,7 @@ async function workspaceAction(
 		const pending = setupNote.get(t.id) ?? null;
 		setupNote.delete(t.id);
 		setStage(t, "working", again ? "started again" : pending, a, `${job.name} in ${w.branch}`);
+		if (a.concierge) record({ kind: "concierge", id: job.id, name: job.name, who: CONCIERGE_NAME, whoId: a.whoId, why: "act", text: `started #${t.id} (${clipText(t.title)}) in ${w.branch}` });
 		return { job };
 	}
 	const w = t.workspace;

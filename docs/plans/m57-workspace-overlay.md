@@ -32,8 +32,8 @@ Ctrl+N                the overlay at the next task that needs you (the hub's lis
 Keys (each a different letter; only those the selected task's stage has are shown and
 work): `s` start (an open task; or start again, one with a workspace and no live session),
 `m` merge, `b` back (a one-line note, then Enter), `v` verify again, `p` pass (failed),
-`x` abort a conflicted sync, `a` approve the repository's commands (twice, as `/tasks
-approve`), `t` `→` `Enter` attach to its session, `n` the next that needs you, `r` reload,
+`x` abort a conflicted sync, `a` approve the repository's commands (shown in full, then
+`y`; any other key is a no), `t` `→` `Enter` attach to its session, `n` the next that needs you, `r` reload,
 `Esc` close. Each is `/tasks <verb> <id>`: the same checks, the same messages.
 
 ## Behaviour
@@ -95,3 +95,24 @@ M59), mouse input.
   stage has not does nothing; the header's hint.
 - `test/comms.test.ts`: the concierge's start refused without act, allowed with it; the
   job's environment without the concierge's role; a session refused.
+
+## After review
+
+- `b`'s note goes to the task it was written for (kept with the input), wherever the
+  selection moved while it was typed (a reload).
+- One load at a time, and one more after it when a board event or an action asked
+  meanwhile (the answer in flight may predate the change).
+- An overlay that replaced this one without closing it stops it following the board (the
+  reload checks it is still the open overlay); a second `Ctrl+N` while the first loads
+  opens nothing more.
+- `a` shows the commands in full in the overlay and approves on `y` only, with the hash
+  of what was shown: pressing `a` twice is not a yes.
+- Every list line is cut to the width (a tested bound at 8–120 columns).
+- The daemon checks a new workspace's base: `baseSha` on `baseRef` and under the
+  worktree's `HEAD` (a caller, the concierge included, cannot name another branch to
+  merge into); a start by the concierge is a `concierge` event (`why: "act"`), as its
+  other acts.
+- Known, not changed here (as for `hub_dispatch` since M45): the daemon takes the
+  concierge's launch as built (its argv, `sessionFile`, environment policy) after the
+  checks above; the concierge builds it with `buildLaunch` in its own process. Rebuilding
+  launches in the daemon for the concierge is a hardening for M59.

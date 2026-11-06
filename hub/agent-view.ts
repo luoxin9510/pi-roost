@@ -2273,9 +2273,21 @@ export class AgentView implements Component {
 	 * pipeline, what needs you first; the selected one's detail beside it (below it under 100
 	 * columns); the keys act on it. `next`: open at the next task that needs you.
 	 */
+	private wsOpening = false;
 	private async showWorkspaces(next: boolean): Promise<void> {
 		const client = this.client;
 		if (!client) return this.say("background service unavailable", "error");
+		// a second Ctrl+N while the first loads opens nothing more
+		if (this.wsOpening) return;
+		this.wsOpening = true;
+		try {
+			await this.openWorkspaces(client, next);
+		} finally {
+			this.wsOpening = false;
+		}
+	}
+
+	private async openWorkspaces(client: DaemonClient, next: boolean): Promise<void> {
 		const view = this;
 		const t = this.o.theme;
 		const here = projectOf(this.dispatchCwd());
@@ -2284,7 +2296,9 @@ export class AgentView implements Component {
 		let entries: WsEntry[] = [];
 		let sel: number | undefined;
 		let top = 0;
-		let back: Input | undefined;
+		let back: { id: number; input: Input } | undefined;
+		// approve: the commands shown in full, then y (the dry call's hash goes with it)
+		let confirm: { id: number; note: string; hash: string } | undefined;
 		let busy = false;
 		let closed = false;
 		const changes = new Map<number, { key: string; at: number; c?: TaskChanges; loading: boolean }>();
@@ -2323,12 +2337,28 @@ export class AgentView implements Component {
 			view.o.tui.requestRender();
 		};
 		let reloading: Promise<void> | undefined;
+		let again = false;
+		let self: Overlay | undefined;
 		const reload = () => {
-			if (reloading || closed) return;
+			// replaced by another overlay without closing: stop following the board
+			if (self && view.overlay !== self) closed = true;
+			if (closed) {
+				if (view.wsReload === reload) view.wsReload = undefined;
+				return;
+			}
+			// one load at a time; one more after it when asked meanwhile (its answer may predate the change)
+			if (reloading) {
+				again = true;
+				return;
+			}
 			reloading = load(false)
 				.catch((err: unknown) => view.say((err as Error).message, "error"))
 				.finally(() => {
 					reloading = undefined;
+					if (again) {
+						again = false;
+						reload();
+					}
 				});
 		};
 		try {
@@ -2364,7 +2394,7 @@ export class AgentView implements Component {
 				const room = Math.max(1, width - visibleWidth(head) - (right ? visibleWidth(right) + 1 : 0));
 				const text = truncateToWidth(oneLine(wsRowText(e.task, tasks)), room);
 				const gap = " ".repeat(Math.max(1, width - visibleWidth(head) - visibleWidth(text) - visibleWidth(right)));
-				lines.push(`${head}${isSel ? t.bold(text) : text}${right ? `${gap}${t.fg("dim", right)}` : ""}`);
+				lines.push(truncateToWidth(`${head}${isSel ? t.bold(text) : text}${right ? `${gap}${t.fg("dim", right)}` : ""}`, width));
 			}
 			if (entries.length === 0) lines.push(t.fg("dim", truncateToWidth(here ? "no tasks here: /tasks add <title>" : "no tasks", width)));
 			return { lines, selAt };
@@ -2385,7 +2415,7 @@ export class AgentView implements Component {
 			return out.slice(0, max);
 		};
 		this.wsReload = reload;
-		this.overlay = {
+		this.overlay = self = {
 			render(width: number) {
 				const rows = view.o.tui.terminal.rows || 30;
 				const room = Math.max(4, rows - 8);
@@ -2412,11 +2442,12 @@ export class AgentView implements Component {
 					out.push(...shown, t.fg("dim", "─".repeat(Math.min(width, 40))), ...detailLines(width, Math.max(3, room - shown.length - 1)));
 				}
 				out.push("");
-				if (back) out.push(...back.render(width));
+				if (back) out.push(...back.input.render(width));
+				if (confirm) for (const l of wrap(`approve for #${confirm.id}: ${confirm.note} · they run in your account`, width)) out.push(t.fg("warning", l));
 				const n = view.notice;
 				if (n && n.until > Date.now()) out.push(t.fg(n.tone, truncateToWidth(oneLine(n.text), width)));
 				const x = selected();
-				const keys = back ? "Enter send back with this note (empty: none) · Esc cancel" : [...wsKeys(x, x ? sessionOf(x) : undefined).map(([k, v]) => `${k} ${v}`), "↑↓ select", "Esc close"].join(" · ");
+				const keys = back ? "Enter send back with this note (empty: none) · Esc cancel" : confirm ? "y approve these commands · any other key: no" : [...wsKeys(x, x ? sessionOf(x) : undefined).map(([k, v]) => `${k} ${v}`), "↑↓ select", "Esc close"].join(" · ");
 				out.push(t.fg("dim", truncateToWidth(keys, width)));
 				return out;
 			},
@@ -2425,11 +2456,27 @@ export class AgentView implements Component {
 				if (back) {
 					if (key === "escape" || key === "ctrl+c") back = undefined;
 					else if (key === "enter") {
-						const note = oneLine(back.getValue()).trim();
+						// the task the note was written for, wherever the selection went meanwhile
+						const note = oneLine(back.input.getValue()).trim();
+						const x = tasks.find((y) => y.id === back!.id);
 						back = undefined;
-						const x = selected();
 						if (x) act("back", x, note);
-					} else back.handleInput(data);
+					} else back.input.handleInput(data);
+					return;
+				}
+				if (confirm) {
+					const c = confirm;
+					confirm = undefined;
+					if (data !== "y" || busy) return view.say("not approved", "muted");
+					busy = true;
+					void client
+						.request("task", { action: "approve", id: c.id, hash: c.hash })
+						.then((r) => view.say(r.note ?? "approved", "success"))
+						.catch((err: unknown) => view.say((err as Error).message, "error"))
+						.finally(() => {
+							busy = false;
+							reload();
+						});
 					return;
 				}
 				if (key === "escape" || key === "ctrl+c" || data === "q") return view.closeOverlay();
@@ -2442,6 +2489,7 @@ export class AgentView implements Component {
 				}
 				if (key === "home" || key === "end") {
 					sel = (key === "home" ? entries[0] : entries[entries.length - 1])?.task.id;
+					fetchChanges();
 					return;
 				}
 				if (data === "n" || key === "ctrl+n") {
@@ -2469,11 +2517,27 @@ export class AgentView implements Component {
 				}
 				if (!allowed.has(data)) return;
 				if (data === "b") {
-					back = new Input({ prompt: `#${x.id} back › ` });
-					back.focused = true;
+					back = { id: x.id, input: new Input({ prompt: `#${x.id} back › ` }) };
+					back.input.focused = true;
 					return;
 				}
-				const verb = { s: "start", m: "merge", v: "verify", p: "pass", x: "abort", a: "approve" }[data];
+				if (data === "a") {
+					if (busy) return;
+					busy = true;
+					void client
+						.request("task", { action: "approve", id: x.id, dry: true })
+						.then((r) => {
+							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash };
+							else view.say(r.note ?? "nothing to approve", "muted");
+						})
+						.catch((err: unknown) => view.say((err as Error).message, "error"))
+						.finally(() => {
+							busy = false;
+							view.o.tui.requestRender();
+						});
+					return;
+				}
+				const verb = { s: "start", m: "merge", v: "verify", p: "pass", x: "abort" }[data];
 				if (verb) act(verb, x);
 			},
 			dispose() {

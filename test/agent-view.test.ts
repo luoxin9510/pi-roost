@@ -146,6 +146,8 @@ class FakeClient {
 			}
 			// M55: start and merge
 			if (a.action === "start") return { tasks: this.tasks, task, job: { id: "w9", name: "users" } };
+			// M57: approve: shown (dry), then with the hash
+			if (a.action === "approve") return (a as { dry?: boolean }).dry ? { tasks: this.tasks, task, note: "verify: npm test", hash: "h1" } : { tasks: this.tasks, task, note: "approved for r: verify: npm test" };
 			if (a.action === "merge") return { tasks: this.tasks, task: { ...task, workspace: { stage: "merged" } }, note: "merged into main (abc12345)" };
 			if (a.action === "done") Object.assign(task, { state: "done", doneAt: Date.now(), result: a.result ?? null });
 			if (a.action === "drop") task.state = "dropped";
@@ -2474,6 +2476,44 @@ describe("M57: the workspace overlay", () => {
 		view.handleInput("s");
 		await sleep(30);
 		expect(acts().some((a) => (a as { action: string; id: number }).action === "start" && (a as { id: number }).id === 9)).toBe(true);
+	});
+
+	it("a shows the commands in full and approves on y only, with the shown hash; a note goes to the task it was written for", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes } });
+		client.tasks = board();
+		await view.start();
+		view.handleInput("\x0e");
+		await sleep(30);
+		const acts = () => client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action !== "list").map((r) => r.args);
+		view.handleInput("a");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("approve for #4: verify: npm test · they run in your account");
+		// a second a is not a yes
+		view.handleInput("a");
+		await sleep(20);
+		expect(acts()).toEqual([{ action: "approve", id: 4, dry: true }]);
+		view.handleInput("a");
+		await sleep(20);
+		view.handleInput("y");
+		await sleep(20);
+		expect(acts()).toContainEqual({ action: "approve", id: 4, hash: "h1" });
+		// b on #4, then the selection moves (a reload): the note still goes to #4
+		view.handleInput("b");
+		for (const ch of "fix it") view.handleInput(ch);
+		client.tasks = client.tasks.filter((t) => t.id !== 4);
+		client.tasks.push(task(4, "users migration", { workspace: ws("review") }));
+		view.handleInput("\r");
+		await sleep(30);
+		expect(acts()).toContainEqual({ action: "back", id: 4, note: "fix it" });
+	});
+
+	it("no line is wider than the terminal", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes } });
+		client.tasks = board();
+		await view.start();
+		view.handleInput("\x0e");
+		await sleep(30);
+		for (const w of [8, 12, 20, 40, 99, 100, 120]) for (const l of view.render(w)) expect(visibleWidth(l)).toBeLessThanOrEqual(w);
 	});
 
 	it("under 100 columns the detail goes below the list", async () => {
