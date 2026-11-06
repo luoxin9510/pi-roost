@@ -51,6 +51,8 @@ export interface JobRecord {
 	rootSession?: string;
 	/** M10: its own git worktree (made at dispatch, cleaned up on rm). */
 	worktree?: { path: string; branch: string; repo: string; base: string };
+	/** M55: started for a task in the task's worktree (the task's, never removed with the job). */
+	task?: { id: number; title: string; path: string; branch: string; baseRef: string };
 }
 
 export interface JobState {

@@ -144,6 +144,9 @@ class FakeClient {
 				task.assigned = { id: "w1", name: a.to ?? "", at: Date.now() };
 				return { tasks: this.tasks, task, sent: "delivered" };
 			}
+			// M55: start and merge
+			if (a.action === "start") return { tasks: this.tasks, task, job: { id: "w9", name: "users" } };
+			if (a.action === "merge") return { tasks: this.tasks, task: { ...task, workspace: { stage: "merged" } }, note: "merged into main (abc12345)" };
 			if (a.action === "done") Object.assign(task, { state: "done", doneAt: Date.now(), result: a.result ?? null });
 			if (a.action === "drop") task.state = "dropped";
 			if (a.action === "release") task.state = "open";
@@ -1875,6 +1878,46 @@ describe("AgentView agent profiles (M30)", () => {
 		expect(rowDetailsOf({ ...agentRow, model: null })).toMatchObject({ model: "codex" });
 		expect(rowDetailsOf(cmd)).toBeNull();
 		expect(modelFacts(agentRow)).toEqual(["agent codex", "o3"]);
+	});
+});
+
+describe("M55: /tasks start and merge in the hub", () => {
+	it("start makes the task's worktree, launches a session in it with the task as its prompt, and sends both; merge sends the configured mode", async () => {
+		const made: unknown[] = [];
+		const fake = ((repo: string, id: number, title: string) => {
+			made.push([repo, id, title]);
+			return { path: "/r/.pi/worktrees/t1-users-ab12", branch: "roost/t1-users-ab12", repo: "/r", base: "a".repeat(40), baseRef: "main", cwd: "/r/.pi/worktrees/t1-users-ab12", sourceDirty: false, included: [] };
+		}) as never;
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { createTaskWorktree: fake, taskMerge: "no-ff" } });
+		client.tasks = [{ id: 1, title: "users", detail: "a users table", state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [] }];
+		await view.start();
+		launches.length = 0;
+		type(view, "/tasks start 1");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(made).toEqual([["/r", 1, "users"]]);
+		expect(launches[0]!.opts).toMatchObject({ cwd: "/r/.pi/worktrees/t1-users-ab12", worktree: false });
+		expect(launches[0]!.task).toContain("Task #1: users");
+		expect(launches[0]!.task).toContain("a users table");
+		expect(launches[0]!.task).toContain("roost_task_done");
+		const start = client.requests.find((r) => r.op === "task" && (r.args as { action: string }).action === "start")!.args as { workspace: unknown; launch: { name: string } };
+		expect(start.workspace).toEqual({ path: "/r/.pi/worktrees/t1-users-ab12", branch: "roost/t1-users-ab12", baseRef: "main", baseSha: "a".repeat(40) });
+		expect(view.render(120).join("\n")).toContain("#1 started · users · ⎇ roost/t1-users-ab12");
+		type(view, "/tasks merge 1");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "task").map((r) => r.args)).toContainEqual({ action: "merge", id: 1, mode: "no-ff" });
+		expect(view.render(120).join("\n")).toContain("#1: merged into main (abc12345)");
+	});
+
+	it("a task for any session gets no workspace", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { createTaskWorktree: (() => { throw new Error("not called"); }) as never } });
+		client.tasks = [{ id: 1, title: "x", detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: null, waiting: [] }];
+		await view.start();
+		type(view, "/tasks start 1");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("#1 is for any session");
 	});
 });
 

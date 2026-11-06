@@ -36,6 +36,7 @@ export function piHubOptions(h: PiHost): PiHubOptions {
 	return {
 		cwd: dispatchCwd,
 		worktreeDefault: isolationDefault(config.worktreeIsolation, false),
+		taskMerge: config.taskMerge,
 		launch: (task, o = {}) => {
 			const name = o.name ?? fallbackName(task);
 			// M10: only a new session can start in a worktree; a resumed one keeps its cwd

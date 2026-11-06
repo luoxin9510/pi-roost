@@ -318,7 +318,13 @@ export interface OpArgs {
 		| { action: "release"; id: number }
 		| { action: "done"; id: number; result?: string }
 		| { action: "drop"; id: number }
-		| { action: "assign"; id: number; to: string };
+		| { action: "assign"; id: number; to: string }
+		// M55: a task's own worktree and a session in it; review, merge into base locally
+		| { action: "start"; id: number; workspace: { path: string; branch: string; baseRef: string; baseSha: string }; launch: DispatchArgs }
+		| { action: "merge"; id: number; mode?: "ff" | "no-ff" }
+		| { action: "back"; id: number; note?: string }
+		| { action: "abort"; id: number }
+		| { action: "commit"; id: number; message?: string };
 }
 
 export interface OpResults {
@@ -364,7 +370,7 @@ export interface OpResults {
 	"concierge-act": { id: string; name: string };
 	"concierge-order": { orders: StandingOrder[]; order?: StandingOrder };
 	/** M47: the board as it stands (and the task acted on; `sent`: how the hand-over message went). */
-	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"] };
+	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string };
 }
 
 export type Op = keyof OpArgs;
