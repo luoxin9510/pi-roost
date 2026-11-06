@@ -57,6 +57,7 @@ Claude Code's documented behaviour.
 | M48 | [the peek, deeper: more to see, an editor to answer in, commands, completion](m48-peek.md) (before M47, at the user's request) | 0.1.14 |
 | M47 | [the shared task board: tasks any session takes, a lock, dependencies, the concierge as the lead](m47-tasks.md) | 0.1.14 |
 | M49 | [hardening after the board: a stress scenario, an adversarial pass (the hub's ops, the socket's bounds, one-line text)](m49-hardening.md) | 0.1.15 |
+| M50 | [agents of the protocol take messages: send, peers, watches and the board's hand-overs reach them](m50-protocol-messages.md) | next |
 
 Next: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers, and a shared task board (M43–M47, all done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 

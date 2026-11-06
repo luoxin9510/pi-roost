@@ -1,5 +1,6 @@
 # M31: the scripted agent of the conformance tests, on the Python client (see agent-ts.ts).
 import os
+import re
 import sys
 import threading
 import time
@@ -31,7 +32,19 @@ def on_reply(reply):
     agent.report("done", summary="did %s (#%d)" % (reply.text, handled), model="scripted-1")
 
 
-agent = RoostAgent.from_env("scripted-py", version="1.0", capabilities=["usage"], on_reply=on_reply)
+def on_message(message):
+    # M50: a task the hub hands over comes as a message: claimed and done
+    m = re.search(r"Task #(\d+) on the board", message.text)
+    if not m:
+        agent.report("done", summary="%s from %s" % (message.kind, message.sender))
+        return
+    task_id = int(m.group(1))
+    agent.claim_task(task_id)
+    agent.task_done(task_id, "done as handed")
+    agent.report("done", summary="handed #%d from %s" % (task_id, message.sender))
+
+
+agent = RoostAgent.from_env("scripted-py", version="1.0", capabilities=["usage"], on_reply=on_reply, on_message=on_message)
 if agent is None:
     print("not in a roost job", file=sys.stderr)
     sys.exit(2)

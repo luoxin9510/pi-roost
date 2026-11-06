@@ -11,7 +11,7 @@ import { readJobEnv } from "./identity.ts";
 import { writeJsonAtomic } from "./atomic.ts";
 import type { BoardTask } from "./board.ts";
 import { DaemonClient } from "./client.ts";
-import { type ArgsOf, type Event, type HelloArgs, type HelloResult, type Op, PROTOCOL_VERSION, type ResultOf, type WorkerReport } from "./protocol.ts";
+import { type ArgsOf, type Event, type HelloArgs, type HelloResult, type Op, type PeerRow, PROTOCOL_VERSION, type ResultOf, type SendResult, type WorkerReport } from "./protocol.ts";
 import { sameUsage } from "./usage.ts";
 import { SUMMARY_INTERVAL_MS, sameContext, stateChanged } from "./worker-state.ts";
 
@@ -225,6 +225,21 @@ export interface AgentReply {
 /** M31: the report an agent gives; what it leaves out is filled in (a full snapshot goes). */
 export type AgentReport = Partial<WorkerReport> & Pick<WorkerReport, "state">;
 
+/**
+ * M50: an item from another session (the `agent-items` capability): a message (a peer's,
+ * or a task the hub or the concierge handed over), a child's report, or a notice (a watch
+ * that fired). `text` is the envelope the daemon wraps it in: who it is from, that it
+ * carries no user authority.
+ */
+export interface AgentMessage {
+	seq: number;
+	kind: "message" | "report" | "notice";
+	text: string;
+	/** The sender's name, and what it is to this session (parent, child, sibling, tree, external). */
+	from: string;
+	relation: string;
+}
+
 export interface RoostAgentOptions {
 	name: string;
 	version?: string;
@@ -232,6 +247,12 @@ export interface RoostAgentOptions {
 	capabilities?: string[];
 	/** A user's reply; acked once this returns (or its promise settles). */
 	onReply?: (reply: AgentReply) => void | Promise<void>;
+	/**
+	 * M50: messages, reports and notices from other sessions. Given, the agent takes them
+	 * (it says `agent-items` and `peers`): they come in seq order with the replies, one at a
+	 * time, each acked once this returns. Not given, other sessions cannot message it.
+	 */
+	onMessage?: (message: AgentMessage) => void | Promise<void>;
 	/** Defaults to this process's environment. */
 	env?: NodeJS.ProcessEnv;
 }
@@ -254,12 +275,14 @@ export class RoostAgent {
 	private completed = 0;
 	private queue: Promise<void> = Promise.resolve();
 	private onReply: RoostAgentOptions["onReply"];
+	private onMessage: RoostAgentOptions["onMessage"];
 
 	/** M35: where the last finished seq is kept, so a restarted agent does not redo a reply whose ack was lost. */
 	private mark: string | undefined;
 
 	private constructor(job: JobIdentity, o: RoostAgentOptions, dir: string | undefined) {
 		this.onReply = o.onReply;
+		this.onMessage = o.onMessage;
 		this.mark = dir ? join(dir, "agent.json") : undefined;
 		if (this.mark) {
 			try {
@@ -267,7 +290,7 @@ export class RoostAgent {
 				if (typeof done === "number" && done > 0) this.handled = this.completed = done;
 			} catch {}
 		}
-		const capabilities = [...new Set(["report", "replies", ...(o.capabilities ?? [])])];
+		const capabilities = [...new Set(["report", "replies", ...(o.onMessage ? ["agent-items", "peers"] : []), ...(o.capabilities ?? [])])];
 		this.reporter = new Reporter(job, (item) => this.deliver(item), SUMMARY_INTERVAL_MS, {
 			protocol: PROTOCOL_VERSION,
 			agent: { name: o.name, ...(o.version ? { version: o.version } : {}) },
@@ -295,6 +318,8 @@ export class RoostAgent {
 				name: null,
 				model: null,
 				...r,
+				// M50: the daemon sends agent items only on a connection that says it takes them
+				...(this.onMessage ? { agentItems: true } : {}),
 			},
 			false,
 		);
@@ -313,6 +338,23 @@ export class RoostAgent {
 	/** M47: any op of the protocol (docs/protocol.md), as this job: answered, or refused by the daemon (an Error with its message). */
 	call<O extends Op>(op: O, args: ArgsOf<O>): Promise<ResultOf<O>> {
 		return this.reporter.call(op, args);
+	}
+
+	// M50: other sessions (with onMessage): who is there, a message to one, a watch on one
+
+	/** The sessions this one can reach (its tree; others when the user allows external messages). */
+	async peers(): Promise<PeerRow[]> {
+		return (await this.call("peers", {})).peers;
+	}
+
+	/** A message to a session, by id or by a name peers lists; the answer says whether it was delivered, queued or started it. */
+	send(to: string, message: string): Promise<SendResult> {
+		return this.call("send", { to, message });
+	}
+
+	/** Be told once (a notice to onMessage) when that session is next idle, or has ended. */
+	watch(id: string, when: "idle" | "ended"): Promise<ResultOf<"watch">> {
+		return this.call("watch", { id, when });
 	}
 
 	// M47: the shared task board (the `tasks` capability): open, blocked, claimed and done tasks
@@ -343,31 +385,35 @@ export class RoostAgent {
 	}
 
 	private deliver(item: DeliverItem): void {
-		// agent items (peer messages) are pi's; a plain agent takes user replies only
-		if (item.kind === "message" || item.kind === "report" || item.kind === "notice") return;
+		const agentItem = item.kind === "message" || item.kind === "report" || item.kind === "notice";
+		// agent items go only to an agent that takes them (onMessage); a digest is the concierge's
+		if (item.kind === "digest" || (agentItem && !this.onMessage)) return;
 		if (item.seq <= this.handled) {
 			// sent again (a reconnect): ack only what is finished; the rest is acked when it is
-			if (item.seq <= this.completed) this.reporter.ack(item.seq);
+			if (item.seq <= this.completed) this.reporter.ack(item.seq, agentItem);
 			return;
 		}
 		this.handled = item.seq;
-		const reply: AgentReply = { seq: item.seq, text: item.text, ...(item.mode ? { mode: item.mode } : {}) };
+		const run = agentItem
+			? () => this.onMessage?.({ seq: item.seq, kind: item.kind as AgentMessage["kind"], text: item.text, from: item.from ?? "?", relation: item.relation ?? "external" })
+			: () => this.onReply?.({ seq: item.seq, text: item.text, ...(item.mode ? { mode: item.mode } : {}) });
 		this.queue = this.queue
 			.then(async () => {
 				try {
-					await this.onReply?.(reply);
+					await run();
 				} catch {}
 			})
 			.then(() => {
-				this.completed = reply.seq;
+				this.completed = item.seq;
 				// kept before the ack: if the ack is lost with this process, the next one skips it
 				if (this.mark) {
 					try {
 						// a process crash is what it guards against: atomic, no fsync
-						writeJsonAtomic(this.mark, { handled: reply.seq }, false);
+						writeJsonAtomic(this.mark, { handled: item.seq }, false);
 					} catch {}
 				}
-				this.reporter.ack(reply.seq);
+				// a user reply's ack covers every reply up to it; an agent item is acked by itself
+				this.reporter.ack(item.seq, agentItem);
 			});
 	}
 }

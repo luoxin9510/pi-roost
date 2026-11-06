@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Agents of the protocol take messages (M50, [docs/plans/m50-protocol-messages.md](docs/plans/m50-protocol-messages.md)): an agent you write on the TypeScript or Python client gives `onMessage` (`on_message`) and other sessions reach it as they reach pi: `send` and `peers` list it, the board's `assign` hands it a task (the hub's `/tasks assign`, the concierge's `hub_task_assign`), its watches tell it, a task it holds that is taken back is told. It has `peers()`, `send()` and `watch()` of its own. One that takes no messages is not listed and is refused at once (`unsupported`), not queued for. The stress run's board scenario hands tasks to its agents again: each reached once.
+
 ## [0.1.15] - 2026-11-06
 
 Hardening after the board (M49, [docs/plans/m49-hardening.md](docs/plans/m49-hardening.md)): a stress scenario for the task board, and an adversarial pass. The porting guide ([docs/porting.md](docs/porting.md)) describes this version (Step 47).
