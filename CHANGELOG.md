@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.15] - 2026-11-06
 
-Hardening after the board (M49, [docs/plans/m49-hardening.md](docs/plans/m49-hardening.md)): a stress scenario for the task board, and an adversarial pass.
+Hardening after the board (M49, [docs/plans/m49-hardening.md](docs/plans/m49-hardening.md)): a stress scenario for the task board, and an adversarial pass. The porting guide ([docs/porting.md](docs/porting.md)) describes this version (Step 47).
 
 - The hub's ops are the hub's: `dispatch`, `stop`, `rm`, `respawn`, `reply`, `pin`, `rename`, `reorder`, `subscribe`, `schedule-*` and `shutdown` refuse (`unsupported`) a connection that identified as a session (a worker's `hello` or `report`, a foreground pi's `peer_register`); `events`, `concierge` and `concierge-ask` also refuse an agent that said `hello`. A session could stop other sessions, answer their questions as the user or shut the service down; an agent could set the concierge's policy. Clients that use these ops open a connection of their own (the hub, the CLI, pi's panel already did).
 - The socket has bounds: a request line of at most 4 MiB (a longer one ends that connection; the reader no longer re-reads a long line on every chunk, which let one connection take gigabytes and a core), at most 1024 connections, 256 requests in flight per connection (it is not read meanwhile), and a client that leaves 16 MiB unread is dropped.
