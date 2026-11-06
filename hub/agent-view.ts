@@ -34,7 +34,9 @@ import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
-import { screenPath } from "../lib/store.ts";
+import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
+import { hostControl } from "../lib/hostclient.ts";
+import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
 import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
@@ -137,6 +139,12 @@ export interface AgentViewOptions {
 	launchProfile?: (profile: string, task: string, opts: { cwd: string; model?: string; thinking?: string; worktree?: boolean }) => LaunchRequest;
 	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
 	commands?: () => { name: string; source: string }[];
+	/** M61: a pi session's own slash commands (its worker's commands.json); tests pass a fake. */
+	sessionCommands?: (id: string) => SessionCommand[];
+	/** M61: the slash commands an agent profile declares. */
+	profileCommands?: (profile: string) => { name: string; description?: string }[];
+	/** M61: the host's control socket (type a command into pi, read its screen); tests pass a fake. */
+	hostControl?: typeof hostControl;
 	/** M10: new sessions get a worktree unless /worktree off (config worktreeIsolation "all"). */
 	worktreeDefault?: boolean;
 	/** DI-4: models for the /model picker, as "provider/id". */
@@ -298,6 +306,10 @@ export class AgentView implements Component {
 	private overlay: Overlay | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
+	/** M61: a built-in command on its way (a second Enter meanwhile is ignored). */
+	private commandBusy = false;
+	/** M61: sessions' command lists by the mtime of the file they were read from. */
+	private commandsCache = new Map<string, { mtime: number; list: SessionCommand[] }>();
 	private ctrlCAt = 0;
 	private frame = 0;
 	private spinner: NodeJS.Timeout | undefined;
@@ -1988,6 +2000,17 @@ export class AgentView implements Component {
 			}
 			return;
 		}
+		// M61: pi's own commands (/session, /tree, …) are typed into the session's pi: its worker never sees them
+		const builtin = name ? piCommand(name) : undefined;
+		if (cmd && name && builtin && builtin.how !== "hub" && row.kind === "pi") {
+			try {
+				// pi matches its commands exactly: the name as pi spells it, the arguments as typed
+				await this.piBuiltin(row, name, builtin.how, `/${name}${cmd[2]?.trim() ? ` ${cmd[2].trim()}` : ""}`);
+			} catch (err) {
+				this.say((err as Error).message, "error");
+			}
+			return;
+		}
 		if (text.startsWith("!")) return this.say("shell commands are not sent to a session; attach (→) to run one", "warning");
 		try {
 			// M51: one at a time (a second Enter while it is sent again would send it twice)
@@ -2000,7 +2023,9 @@ export class AgentView implements Component {
 			else if (r.stopped) this.say(`stopped · ${row.name}`);
 			else if (r.delivered) {
 				const how = row.state !== "working" ? "" : mode === "steer" ? " · joins its current work" : " · after its current work";
-				this.say(row.waitingFor === "dialog" ? "queued; attach (→) to answer the dialog" : `sent · ${row.name}${how}`, "success");
+				// M61: the session's own command says so
+				const own = name && this.sessionCommandList(row).some((c) => c.name.toLowerCase() === name);
+				this.say(row.waitingFor === "dialog" ? "queued; attach (→) to answer the dialog" : `${own ? `/${name}` : "sent"} · ${row.name}${how}`, "success");
 			} else if (r.respawned) this.say(`sent · starting ${row.name} again`, "success");
 			else if (r.saved) this.say(`saved; it is sent when the session starts again${r.error ? ` (${r.error})` : ""}`, "warning");
 			else this.say("not delivered: the session is not running", "error");
@@ -2300,16 +2325,133 @@ export class AgentView implements Component {
 		return [...own, ...pi];
 	}
 
-	/** A peek's commands: for that session. */
+	/** M61: the session's own commands, from the worker's commands.json (cached by its mtime). */
+	private sessionCommandList(row: JobRow): { name: string; description?: string; source: string }[] {
+		if (isProfileRow(row)) return (this.o.profileCommands?.(row.profile!) ?? []).map((c) => ({ ...c, source: row.profile! }));
+		if (row.kind !== "pi") return [];
+		if (this.o.sessionCommands) return this.o.sessionCommands(row.id);
+		try {
+			const mtime = statSync(commandsPath(row.id)).mtimeMs;
+			const hit = this.commandsCache.get(row.id);
+			if (hit?.mtime === mtime) return hit.list;
+			const list = readCommands(row.id);
+			this.commandsCache.set(row.id, { mtime, list });
+			return list;
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * A peek's commands: for that session, in groups tagged at the start of the description:
+	 * the hub's, pi's built-ins (not those the hub has), then the session's own (M61).
+	 */
 	private peekCommands(): SlashCommand[] {
 		const starts = (items: { value: string; label: string }[], prefix: string) => items.filter((i) => i.value.toLowerCase().startsWith(prefix.toLowerCase()));
-		return PEEK_COMMANDS.map((c) =>
-			c.name === "model"
-				? { ...c, getArgumentCompletions: (p: string) => starts((this.o.models?.() ?? []).map((m) => ({ value: m, label: m })), p) }
+		const row = this.peekId ? this.rows.get(this.peekId) : undefined;
+		const gone = row !== undefined && row.pid === null;
+		const busy = row?.state === "working" || row?.waitingFor === "dialog";
+		const out: SlashCommand[] = PEEK_COMMANDS.map((c) => {
+			// M61: what needs a running pi session says so
+			const mark = row && gone && row.kind === "pi" && ["stop", "name", "compact"].includes(c.name) ? " (not running)" : "";
+			const base = { ...c, description: `hub · ${c.description}${mark}` };
+			return c.name === "model"
+				? { ...base, getArgumentCompletions: (p: string) => starts((this.o.models?.() ?? []).map((m) => ({ value: m, label: m })), p) }
 				: c.name === "thinking"
-					? { ...c, getArgumentCompletions: (p: string) => starts([...THINKING_LEVELS].map((v) => ({ value: v, label: v })), p) }
-					: { ...c },
-		);
+					? { ...base, getArgumentCompletions: (p: string) => starts([...THINKING_LEVELS].map((v) => ({ value: v, label: v })), p) }
+					: base;
+		});
+		const seen = new Set(out.map((c) => c.name));
+		const add = (c: SlashCommand) => {
+			if (seen.has(c.name)) return;
+			seen.add(c.name);
+			out.push(c);
+		};
+		if (!row || row.kind === "pi") {
+			for (const c of PI_COMMANDS) {
+				if (c.how === "hub") continue;
+				const mark = gone ? " (not running)" : busy ? " (when idle)" : "";
+				add({ name: c.name, description: `pi · ${c.description}${mark}`, ...(c.argumentHint ? { argumentHint: c.argumentHint } : {}) });
+			}
+		}
+		if (row) for (const c of this.sessionCommandList(row)) add({ name: c.name, description: `${c.source} · ${c.description ?? ""}`.replace(/ · $/, "") });
+		return out;
+	}
+
+	/**
+	 * M61: one of pi's built-in commands, typed into the session's pi (the worker never sees
+	 * these): `screen` ones show the session's screen once it settles, `picker` ones attach so
+	 * the picker is in front of the user, `quit` asks twice.
+	 */
+	private async piBuiltin(row: JobRow, name: string, how: "screen" | "picker" | "confirm", text: string): Promise<void> {
+		const host = this.o.hostControl ?? hostControl;
+		// pi matches a command without arguments exactly: words after it would go to the model as a prompt
+		const spec = piCommand(name);
+		const hasArgs = /\s/.test(text.trim());
+		if (hasArgs && !spec?.args) return this.say(`/${name} takes no arguments`, "warning");
+		if (!hasArgs && spec?.args === "required") return this.say(`/${name} needs ${spec.argumentHint ?? "an argument"}`, "warning");
+		if (this.commandBusy) return;
+		if (row.pid === null) return this.say(`${row.name} is not running: /${name} works in a running session`, "warning");
+		if (row.state === "working" || row.waitingFor === "dialog") return this.say(`${row.name} is ${row.state === "working" ? "working" : "in a dialog"}: /${name} works when it is idle`, "warning");
+		this.commandBusy = true;
+		try {
+			return await this.piBuiltinRun(row, name, how, text, host);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			return this.say(code === "ENOENT" || code === "ECONNREFUSED" ? `${row.name} has no terminal pi-roost hosts (a foreground pi?): run /${name} there` : (err as Error).message, "error");
+		} finally {
+			this.commandBusy = false;
+		}
+	}
+
+	private async piBuiltinRun(row: JobRow, name: string, how: "screen" | "picker" | "confirm", text: string, host: typeof hostControl): Promise<void> {
+		const st = (await host(row.id, "status")) as { attached?: boolean };
+		if (st.attached) return this.say(`${row.name} is attached elsewhere: its editor is theirs; detach it first`, "warning");
+		if (how === "confirm") {
+			const now = Date.now();
+			const key = `quit:${row.id}`;
+			if (this.armedStop?.id !== key || now - this.armedStop.at >= DOUBLE_PRESS_MS) {
+				this.armedStop = { id: key, at: now };
+				return this.say(`/${name} again within 2 s to end ${row.name}`, "warning");
+			}
+			this.armedStop = undefined;
+		}
+		const r = (await host(row.id, "command", 3000, { text })) as { ok?: boolean; error?: string };
+		if (!r.ok) return this.say(r.error ?? `/${name} was not delivered: ${row.name} is not running`, "error");
+		this.reply.setValue("");
+		this.o.tui.requestRender();
+		if (how === "picker") return this.attachTo(row.id);
+		if (how === "confirm") return this.say(`/${name} · ${row.name}`, "warning");
+		await sleep(800);
+		const shot = async () => ((await host(row.id, "snapshot")) as { text?: string }).text ?? "";
+		this.showScreen(row, text.split(/\s/)[0]!, await shot(), shot);
+	}
+
+	/** M61: a session's screen as an overlay (what a built-in command printed); r reloads, Esc closes. */
+	private showScreen(row: JobRow, title: string, first: string, reload: () => Promise<string>): void {
+		const view = this;
+		const t = this.o.theme;
+		let screen = first;
+		this.overlay = {
+			render(width: number) {
+				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
+				const lines = screen.trimEnd().split("\n").map((l) => truncateToWidth(l.replace(CONTROL, " "), Math.max(1, width - 2)));
+				return [t.bold(truncateToWidth(`${title} · ${oneLine(row.name)}`, width)), "", ...lines.slice(-room), "", t.fg("dim", truncateToWidth("r reload · Esc close", width))];
+			},
+			handleInput(data: string) {
+				const key = parseKey(data);
+				if (key === "escape" || key === "ctrl+c" || data === "q") view.closeOverlay();
+				else if (data === "r")
+					void reload().then(
+						(text) => {
+							screen = text;
+							view.o.tui.requestRender();
+						},
+						(err: unknown) => view.say(String((err as Error).message ?? err), "error"),
+					);
+			},
+		};
+		this.o.tui.requestRender();
 	}
 
 	/** M8: switch a session's model or thinking level from its peek. */

@@ -31,6 +31,8 @@ export interface AgentProfile {
 	 * its reports set the row, and replies reach it as protocol replies, not typed in.
 	 */
 	protocol?: boolean;
+	/** M61: slash commands the agent has, listed in its peek's menu (a reply `/name args` types them in). */
+	commands?: { name: string; description?: string }[];
 }
 
 /** Names the profiles may not take: roost's own job kinds. */
@@ -95,6 +97,18 @@ export function profileFrom(v: unknown): AgentProfile | undefined {
 	if (o.protocol !== undefined) {
 		if (typeof o.protocol !== "boolean") return undefined;
 		if (o.protocol) p.protocol = true;
+	}
+	if (o.commands !== undefined) {
+		if (!Array.isArray(o.commands) || o.commands.length > 100) return undefined;
+		const cmds: { name: string; description?: string }[] = [];
+		for (const c of o.commands) {
+			if (!c || typeof c !== "object" || Array.isArray(c)) return undefined;
+			const { name, description } = c as Record<string, unknown>;
+			if (typeof name !== "string" || !/^[^\s/][^\s]{0,63}$/.test(name)) return undefined;
+			if (description !== undefined && (typeof description !== "string" || description.length > 200)) return undefined;
+			cmds.push({ name, ...(description ? { description } : {}) });
+		}
+		p.commands = cmds;
 	}
 	if (o.env !== undefined) {
 		if (!o.env || typeof o.env !== "object" || Array.isArray(o.env)) return undefined;

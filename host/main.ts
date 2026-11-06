@@ -338,7 +338,7 @@ function terminateWorker(): void {
 /** M30: the most a typed reply carries in one input op. */
 const MAX_INPUT = 64 * 1024;
 
-function control(sock: Socket, req: { op: string; data?: unknown }): void {
+function control(sock: Socket, req: { op: string; data?: unknown; text?: unknown }): void {
 	let reply: unknown;
 	const op = req.op;
 	switch (op) {
@@ -358,6 +358,28 @@ function control(sock: Socket, req: { op: string; data?: unknown }): void {
 				}
 			}
 			break;
+		case "command": {
+			// M61: a slash command typed into pi's editor (a bracketed paste, so its completion menu
+			// stays shut), then Enter; for pi workers only (a profile's agent takes `input`)
+			const t = req.text;
+			// checked here, at the moment it is typed: someone who attached owns the editor; a shell job is no pi
+			if (signals || job?.kind === "shell") reply = { error: "command is for pi sessions" };
+			else if (attached) reply = { error: "attached: the editor is the attached user's" };
+			else if (typeof t !== "string" || !t.startsWith("/") || t.length > 500 || /[\x00-\x1f\x7f]/.test(t)) reply = { error: "bad command" };
+			else if (!workerAlive) reply = { ok: false, alive: false };
+			else {
+				try {
+					// a trailing space: a text ending in "\\" would make Enter a new line (pi trims it)
+					proc.write(`\x1b[200~${t} \x1b[201~`);
+					proc.write("\r");
+					inputs.add(1);
+					reply = { ok: true };
+				} catch (err) {
+					reply = { ok: false, error: String(err) };
+				}
+			}
+			break;
+		}
 		case "snapshot":
 			reply = { text: screenText() };
 			break;

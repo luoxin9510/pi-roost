@@ -2190,3 +2190,172 @@ describe("M48: the peek, deeper", () => {
 		}
 	});
 });
+
+describe("M61: a session's own slash commands in its peek", () => {
+	const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+	const screenWith = async (view: AgentView, text: string): Promise<string> => {
+		let screen = "";
+		for (let i = 0; i < 200; i++) {
+			screen = view.render(120).join("\n");
+			if (screen.includes(text)) return screen;
+			await sleepMs(5);
+		}
+		return screen;
+	};
+	/** A fake host: records the control calls; `status` says whether someone is attached. */
+	function fakeHost(attached = false) {
+		const calls: { id: string; op: string; extra?: unknown }[] = [];
+		const fn = async (id: string, op: string, _timeout?: number, extra?: unknown) => {
+			calls.push({ id, op, ...(extra ? { extra } : {}) });
+			if (op === "status") return { attached };
+			if (op === "snapshot") return { text: "Session Info\n  Messages: 3" };
+			return { ok: true };
+		};
+		return { calls, fn: fn as never };
+	}
+	const commands = [
+		{ name: "deploy", description: "ship it", source: "extension" as const },
+		{ name: "skill:lint", description: "lint things", source: "skill" as const },
+		{ name: "review", description: "review code", source: "prompt" as const },
+		{ name: "tree", description: "clashes with a built-in", source: "extension" as const },
+	];
+	const menu = (view: AgentView) => (view as unknown as { peekCommands(): { name: string; description?: string }[] }).peekCommands();
+	const make = (r: JobRow, host = fakeHost(), extra: Partial<AgentViewOptions> = {}) => {
+		const s = setup([r], { extra: { hostControl: host.fn, sessionCommands: () => commands, profileCommands: (p) => (p === "mine" ? [{ name: "init", description: "set up" }] : []), ...extra } });
+		return { ...s, host };
+	};
+	const send = async (view: AgentView, text: string, says: string) => {
+		view.handleInput("\x03");
+		type(view, text);
+		view.handleInput("\r");
+		return screenWith(view, says);
+	};
+
+	it("the menu has the groups in order with tags, no duplicates, and marks for a row that is not running or is working", async () => {
+		const { view } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }));
+		await view.start();
+		view.handleInput(" ");
+		const m = menu(view);
+		const tag = (c: { description?: string }) => c.description!.split(" · ")[0];
+		const names = m.map((c) => c.name);
+		expect(new Set(names).size).toBe(names.length);
+		const groups = m.map(tag).filter((t, i, a) => a.indexOf(t) === i);
+		expect(groups).toEqual(["hub", "pi", "extension", "skill", "prompt"]);
+		expect(m.find((c) => c.name === "stop")!.description).toBe("hub · stop it");
+		expect(m.find((c) => c.name === "session")!.description).toBe("pi · Show session info and stats");
+		expect(m.find((c) => c.name === "model")!.description).toMatch(/^hub · /);
+		expect(m.find((c) => c.name === "deploy")!.description).toBe("extension · ship it");
+		// pi's /tree wins over an extension command of the same name
+		expect(m.find((c) => c.name === "tree")!.description).toMatch(/^pi · /);
+		view.handleInput("\x1b");
+		// working: pi's built-ins are for when it is idle
+		const w = make(row({ id: "p2", name: "busy" }));
+		await w.view.start();
+		w.view.handleInput(" ");
+		expect(menu(w.view).find((c) => c.name === "session")!.description).toBe("pi · Show session info and stats (when idle)");
+		// not running
+		const g = make(row({ id: "p3", name: "gone", state: "stopped", status: null, pid: null }));
+		await g.view.start();
+		g.view.handleInput(" ");
+		expect(menu(g.view).find((c) => c.name === "session")!.description).toBe("pi · Show session info and stats (not running)");
+		expect(menu(g.view).find((c) => c.name === "stop")!.description).toBe("hub · stop it (not running)");
+	});
+
+	it("/session on an idle row types it, then reads the screen into an overlay; /tree types it, then attaches", async () => {
+		const { view, host } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "question", question: "?" }));
+		await view.start();
+		view.handleInput(" ");
+		const screen = await send(view, "/session", "Session Info");
+		expect(screen).toContain("session · tests");
+		expect(screen).toContain("Messages: 3");
+		expect(host.calls.map((c) => c.op)).toEqual(["status", "command", "snapshot"]);
+		expect(host.calls[1]).toEqual({ id: "p1", op: "command", extra: { text: "/session" } });
+		view.handleInput("\x1b");
+		// a picker: typed in, then attached
+		const attached: string[] = [];
+		(view as unknown as { attachTo: (id: string) => Promise<void> }).attachTo = async (id) => void attached.push(id);
+		host.calls.length = 0;
+		await send(view, "/tree", "");
+		await sleepMs(30);
+		expect(host.calls.map((c) => c.op)).toEqual(["status", "command"]);
+		expect(host.calls[1]!.extra).toEqual({ text: "/tree" });
+		expect(attached).toEqual(["p1"]);
+	});
+
+	it("words after a built-in that takes none are refused (pi would send them to the model); one that needs them says so; an argument goes along", async () => {
+		const { view, host } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }));
+		await view.start();
+		view.handleInput(" ");
+		expect(await send(view, "/tree foo", "/tree takes no arguments")).toContain("/tree takes no arguments");
+		expect(await send(view, "/import", "/import needs")).toContain("/import needs");
+		expect(host.calls).toEqual([]);
+		await send(view, "/Export out.html", "Session Info");
+		expect(host.calls.find((c) => c.op === "command")!.extra).toEqual({ text: "/export out.html" });
+	});
+
+	it("a session without a host pi-roost runs (a foreground pi) is told so, not a socket error", async () => {
+		const gone = Object.assign(new Error("connect ENOENT"), { code: "ENOENT" });
+		const { view } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }), { calls: [], fn: (async () => Promise.reject(gone)) as never });
+		await view.start();
+		view.handleInput(" ");
+		expect(await send(view, "/session", "has no terminal")).toContain("has no terminal pi-roost hosts");
+	});
+
+	it("/quit needs a second /quit within 2 s", async () => {
+		const { view, host } = make(row({ id: "p1", name: "tests", state: "blocked", status: "waiting", waitingFor: "first-prompt" }));
+		await view.start();
+		view.handleInput(" ");
+		expect(await send(view, "/quit", "/quit again within 2 s to end tests")).toContain("/quit again within 2 s");
+		expect(host.calls.some((c) => c.op === "command")).toBe(false);
+		await send(view, "/quit", "/quit · tests");
+		expect(host.calls.filter((c) => c.op === "command").map((c) => c.extra)).toEqual([{ text: "/quit" }]);
+	});
+
+	it("refuses for a working row, a dialog, an attached row, a row not running and a profile row", async () => {
+		const typed = (h: ReturnType<typeof fakeHost>) => h.calls.some((c) => c.op === "command");
+		const working = make(row({ id: "w", name: "busy" }));
+		await working.view.start();
+		working.view.handleInput(" ");
+		expect(await send(working.view, "/session", "works when it is idle")).toContain("busy is working");
+		expect(typed(working.host)).toBe(false);
+		const dialog = make(row({ id: "d", name: "ask", state: "blocked", status: "waiting", waitingFor: "dialog" }));
+		await dialog.view.start();
+		dialog.view.handleInput(" ");
+		expect(await send(dialog.view, "/session", "in a dialog")).toContain("ask is in a dialog");
+		const there = make(row({ id: "a", name: "mine", state: "blocked", status: "waiting", waitingFor: "first-prompt" }), fakeHost(true));
+		await there.view.start();
+		there.view.handleInput(" ");
+		expect(await send(there.view, "/session", "attached elsewhere")).toContain("mine is attached elsewhere");
+		expect(typed(there.host)).toBe(false);
+		const gone = make(row({ id: "g", name: "gone", state: "stopped", status: null, pid: null }));
+		await gone.view.start();
+		gone.view.handleInput(" ");
+		expect(await send(gone.view, "/session", "is not running")).toContain("gone is not running");
+		expect(gone.host.calls).toEqual([]);
+		// a terminal agent's row: the command goes to it as a reply, never typed by the hub
+		const agent = make(row({ id: "t", name: "agent", kind: "shell", profile: "mine" }));
+		await agent.view.start();
+		agent.view.handleInput(" ");
+		await send(agent.view, "/session", "");
+		await sleepMs(20);
+		expect(agent.host.calls).toEqual([]);
+		expect(agent.client.requests.filter((r) => r.op === "reply").map((r) => (r.args as { text: string }).text)).toEqual(["/session"]);
+	});
+
+	it("an extension command goes as a reply and says so; a profile's declared command is listed and sent as a reply", async () => {
+		const { view, client } = make(row({ id: "p1", name: "tests" }));
+		await view.start();
+		view.handleInput(" ");
+		expect(await send(view, "/deploy now", "/deploy · tests")).toContain("/deploy · tests");
+		expect(client.requests.filter((r) => r.op === "reply").at(-1)!.args).toEqual({ id: "p1", text: "/deploy now", mode: "steer" });
+		const a = make(row({ id: "t", name: "agent", kind: "shell", profile: "mine" }));
+		await a.view.start();
+		a.view.handleInput(" ");
+		const m = menu(a.view);
+		expect(m.find((c) => c.name === "init")!.description).toBe("mine · set up");
+		expect(m.some((c) => c.name === "session")).toBe(false);
+		expect(m.some((c) => c.name === "stop")).toBe(true);
+		expect(await send(a.view, "/init x", "/init · agent")).toContain("/init · agent");
+		expect(a.client.requests.filter((r) => r.op === "reply").at(-1)!.args).toEqual({ id: "t", text: "/init x", mode: "steer" });
+	});
+});
