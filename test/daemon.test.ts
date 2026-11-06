@@ -1044,6 +1044,19 @@ describe("M31 the agent protocol", () => {
 			expect(tasks).toHaveLength(1);
 			expect(tasks[0]).toMatchObject({ id: 1, title: "from the agent", detail: "a task it put on", state: "done", result: "done by the agent", owner: { id, name: "scripted" }, by: { who: "scripted", whoId: id } });
 			expect(boarded.summary).toBe("board #1");
+			// M50: it takes agent items: a task the hub hands over reaches it as a message; it claims and finishes it
+			expect(did.capabilities).toEqual(expect.arrayContaining(["agent-items", "peers"]));
+			const { task: handedTask } = await first.client.request("task", { action: "add", title: "handed over" });
+			const assigned = await first.client.request("task", { action: "assign", id: handedTask!.id, to: id });
+			expect(assigned.sent).toBe("delivered");
+			// (it may have claimed it before this answer was written: the feed says it was handed over)
+			const fed = (await first.client.request("events", {})).events.filter((e) => e.kind === "task" && e.why === "assign");
+			expect(fed.map((e) => e.text)).toEqual([`#${handedTask!.id} handed over: to scripted`]);
+			const handed = await until(first.client, (r) => (r.summary ?? "").startsWith("handed #"));
+			expect(handed.summary).toBe(`handed #${handedTask!.id} from user`);
+			expect((await first.client.request("task", { action: "list" })).tasks.find((t) => t.id === handedTask!.id)).toMatchObject({ state: "done", result: "done as handed", owner: { id } });
+			// the item was acked by itself: nothing waits
+			await waitFor(() => (readState(id)?.pendingReplies as unknown[] | undefined)?.length === 0);
 			// the daemon restarts under it: it reconnects, says hello, reports, and takes replies once each
 			const before = Date.now();
 			await first.client.request("shutdown", { keepWorkers: true });

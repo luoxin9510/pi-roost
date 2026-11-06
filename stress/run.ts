@@ -436,23 +436,25 @@ async function main(): Promise<void> {
 			const { task } = await client.request("task", { action: "add", title: `task ${i}`, after: i % 5 === 4 ? [taskIds[i - 1]!] : undefined });
 			taskIds.push(task!.id);
 		}
-		// the hub hands tasks out (the concierge's path is the same op): these agents are
-		// commands that speak the protocol, not sessions that take messages, so every hand-over
-		// is refused, and the task stays as it was
-		let assignRefused = 0;
-		let assignOther = 0;
-		for (const t of (await client.request("task", { action: "list" })).tasks.filter((t) => t.state === "open").slice(0, 20)) {
+		// the hub hands tasks out first (the concierge's path is the same op): M50, the agents
+		// take messages; one told of a task goes to the board
+		let handed = 0;
+		let notHanded = 0;
+		let assignErrors = 0;
+		let takenMeanwhile = 0;
+		for (const t of (await client.request("task", { action: "list" })).tasks.filter((t) => t.state === "open" && t.after.length === 0).slice(0, 20)) {
 			const to = ids[Math.floor(Math.random() * ids.length)]!;
 			try {
-				await client.request("task", { action: "assign", id: t.id, to });
-				assignOther++;
+				const r = await client.request("task", { action: "assign", id: t.id, to });
+				if (r.sent === "delivered" || r.sent === "queued") handed++;
+				else notHanded++;
 			} catch (e) {
-				if ((e as DaemonError).code === "unsupported") assignRefused++;
-				else assignOther++;
+				// an agent told of an earlier one is on the board already: this task may be claimed by now
+				if ((e as DaemonError).code === "bad_request") takenMeanwhile++;
+				else assignErrors++;
 			}
 		}
-		if (assignOther > 0) failures.push(`board: ${assignOther} hand-overs to commands were not refused as unsupported`);
-		if ((await client.request("task", { action: "list" })).tasks.some((t) => t.assigned)) failures.push("board: a refused hand-over left the task marked");
+		if (handed === 0 || assignErrors > 0) failures.push(`board: hand-overs ${handed} reached, ${notHanded} not, ${assignErrors} errors`);
 		await collect();
 		// every agent told to work the board; mid-race the daemon dies hard and comes back
 		let restarted = false;
@@ -507,6 +509,7 @@ async function main(): Promise<void> {
 		let conflicts = 0;
 		let blockedRefusals = 0;
 		let lost = 0;
+		let handedSeen = 0;
 		for (const id of ids) {
 			let lines: string[] = [];
 			try {
@@ -515,6 +518,7 @@ async function main(): Promise<void> {
 			for (const l of lines) {
 				const [verb, n, code] = l.split(" ");
 				if (verb === "done") finishedBy.set(Number(n), [...(finishedBy.get(Number(n)) ?? []), id]);
+				else if (verb === "handed") handedSeen++;
 				else if (verb === "refused" && code === "conflict") conflicts++;
 				else if (verb === "refused" && code === "blocked") blockedRefusals++;
 				else if (verb === "refused" || verb === "list-error" || verb === "done-error") lost++;
@@ -522,6 +526,8 @@ async function main(): Promise<void> {
 		}
 		for (const [n, by] of finishedBy) if (by.length > 1) failures.push(`board: #${n} finished by ${by.length} sessions (${by.join(", ")})`);
 		for (const t of tasks) if (!finishedBy.has(t.id) && t.state === "done") failures.push(`board: #${t.id} is done but no agent says it finished it`);
+		// every hand-over reached its agent once (a resend after the restart is not taken twice)
+		if (handedSeen !== handed) failures.push(`board: ${handed} hand-overs reached the agents, which took ${handedSeen}`);
 		const saved = JSON.parse(readFileSync(join(home, "tasks.json"), "utf8")) as { next: number; tasks: { id: number }[] };
 		const savedIds = saved.tasks.map((t) => t.id);
 		if (new Set(savedIds).size !== savedIds.length) failures.push("board: tasks.json has a duplicate id");
@@ -530,7 +536,9 @@ async function main(): Promise<void> {
 			tasks: TASKS,
 			done: tasks.filter((t) => t.state === "done").length,
 			daemonKilled: killed,
-			assignRefused,
+			handed,
+			handedSeen,
+			takenMeanwhile,
 			conflicts,
 			blockedRefusals,
 			requestsLost: lost,

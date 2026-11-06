@@ -42,8 +42,8 @@ async function workBoard(): Promise<void> {
 			mine ??
 			(() => {
 				const open = tasks.filter((t) => t.state === "open" && t.after.every((d) => !byId.has(d) || byId.get(d)!.state === "done" || byId.get(d)!.state === "dropped"));
-				// some contention: one of the first three
-				return open.length > 0 ? open[Math.floor(Math.random() * Math.min(open.length, 3))] : undefined;
+				// one handed to this session first; else some contention: one of the first three
+				return open.find((t) => t.assigned?.id === id) ?? (open.length > 0 ? open[Math.floor(Math.random() * Math.min(open.length, 3))] : undefined);
 			})();
 		if (!pick) {
 			// others still work, or a dependency is about to open; nothing at all: done
@@ -96,6 +96,13 @@ function board(): Promise<void> {
 const agent = RoostAgent.fromEnv({
 	name: "stress",
 	version: "1",
+	// M50: it takes agent items: a task the hub hands over sends it to the board
+	onMessage: async (m) => {
+		const handed = /Task #(\d+) on the board/.exec(m.text);
+		if (!handed) return;
+		blog(`handed ${handed[1]}`);
+		await board();
+	},
 	onReply: async (r) => {
 		if (log) appendFileSync(join(log, `${id}.log`), `${r.seq}\t${r.text}\n`);
 		handled++;

@@ -19,7 +19,9 @@ started again.
   lost to the restart and retried.
 - The stress agents are commands that speak the agent protocol (M31). Like `send`, the
   board's `assign` is a message to a session: a command has none, so it is refused. A pi
-  job (or a foreground pi) takes it; the evals cover that path with a real model.
+  job (or a foreground pi) takes it; the evals cover that path with a real model. (M50:
+  agents of the protocol take messages now; the hand-overs reach them, and the invariant
+  is that each is taken once.)
 
 What the first runs showed, and what changed in the runner:
 

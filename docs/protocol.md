@@ -44,6 +44,22 @@ terminal, as a terminal agent's; after that its reports set the row.
       agent.report("working", summary="reading the code")
   ```
 
+Messages from other sessions (M50): give `onMessage` (`on_message`) and the agent takes
+them: a peer's message, a task the hub or the concierge hands over, a child's report, a
+watch's notice (`{seq, kind, text, from, relation}`; `text` is the daemon's envelope). The
+client then says `agent-items` and `peers` in its hello and `agentItems: true` in its
+reports; the items come in seq order with the replies, one at a time, each acked by
+itself. `peers()`, `send(to, message)` and `watch(id, when)` reach other sessions; the
+board's helpers are there without it (`tasks`, `claimTask`/`claim_task`, …).
+
+```ts
+const agent = RoostAgent.fromEnv({
+  name: "my-agent",
+  onReply: async (r) => work(r.text),
+  onMessage: async (m) => { if (/Task #(\d+) on the board/.test(m.text)) await takeIt(m) },
+});
+```
+
 Both find the job in the environment, connect on the first report, say hello on every
 connection, resend the latest report after a reconnect, and hand replies over once each,
 in order, one at a time, acking each after its handler returns. The last finished seq is
@@ -159,7 +175,13 @@ seconds. The connection a report goes through becomes the job's: replies come on
   without `steer` treats both as after.
 - `kind` `message`, `report`, `notice` or `digest` (with `from`, `relation`) are peer
   items, sent only to an agent that said `agentItems: true` in a report; it acks each
-  with `exact: true`. A `notice` (M43) is a watch that fired: the session it watched is
+  with `exact: true`. An agent of this protocol is reached by its job (M50; it has no
+  session file): other sessions see it in `peers` and `send` to it, the board's `assign`
+  hands it a task, its watches tell it, as for a pi session. One whose hello leaves out
+  `agent-items` is not listed, and a message, a hand-over or a watch of its own is
+  refused (`unsupported`) rather than kept for it; one not connected yet gets them when
+  it is. It does not `spawn` (`unsupported`): its children would have no panel to show
+  in. A `notice` (M43) is a watch that fired: the session it watched is
   idle or ended. A `digest` (M44) wakes the concierge: what happened and the fleet, in
   `<roost-digest>`; only the concierge's job gets them.
 - A reply of `/stop` is never delivered: the daemon stops the job. A reply starting with

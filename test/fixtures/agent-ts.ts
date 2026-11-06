@@ -35,6 +35,18 @@ const agent = RoostAgent.fromEnv({
 		await new Promise((res) => setTimeout(res, 200));
 		agent!.report({ state: "done", summary: `did ${r.text} (#${handled})`, model: "scripted-1" });
 	},
+	// M50: a task the hub hands over comes as a message: claimed and done
+	onMessage: async (m) => {
+		const handed = /Task #(\d+) on the board/.exec(m.text);
+		if (!handed) {
+			agent!.report({ state: "done", summary: `${m.kind} from ${m.from}` });
+			return;
+		}
+		const id = Number(handed[1]);
+		await agent!.claimTask(id);
+		await agent!.taskDone(id, "done as handed");
+		agent!.report({ state: "done", summary: `handed #${id} from ${m.from}` });
+	},
 });
 if (!agent) {
 	console.error("not in a roost job");

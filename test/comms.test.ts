@@ -1499,3 +1499,83 @@ describe("M49: hardening the socket and the text", () => {
 		expect(text.split("\n").filter((l) => /^Due now/.test(l))).toEqual([]);
 	});
 });
+
+describe("M50: agents of the protocol take messages", () => {
+	const protocolJob = (name: string) => ({
+		cwd: work,
+		sessionFile: "",
+		kind: "shell" as const,
+		profile: "scripted",
+		protocol: true,
+		command: ["/bin/sh", "-c", "sleep 30"],
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		name,
+		origin: "dispatch" as const,
+		term: { submit: "\r", settleMs: 600 },
+	});
+	/** Act as its agent: hello (with or without agent-items), then a report on the same connection. */
+	async function agentOf(id: string, items: boolean): Promise<{ c: DaemonClient; events: Event[]; token: string }> {
+		const { c, events } = await connect();
+		await c.request("hello", { protocol: 1, agent: { name: "scripted" }, capabilities: items ? ["agent-items", "peers"] : [] });
+		const token = readState(id)?.jobToken as string;
+		await c.request("report", { id, token, report: report({ agentItems: items }) });
+		return { c, events, token };
+	}
+
+	it("sends and receives messages by its job, is watched and watches, and is told when a task it holds is taken; one that takes none is refused", async () => {
+		const hub = await startDaemon();
+		writeFileSync(join(home, "roost.json"), JSON.stringify({ agentExternalMessages: true }));
+		const lead = await foreground("lead");
+		const { id: aid } = await hub.request("dispatch", protocolJob("helper"));
+		const { id: mid } = await hub.request("dispatch", protocolJob("mute"));
+		await waitFor(async () => (await hub.request("list", {})).jobs.filter((j) => j.id === aid || j.id === mid).every((j) => j.pid));
+		const a = await agentOf(aid, true);
+		const m = await agentOf(mid, false);
+		// the pi sees the one that takes messages, not the other
+		const peers = (await lead.c.request("peers", {})).peers;
+		expect(peers.map((p) => p.id)).toContain(aid);
+		expect(peers.map((p) => p.id)).not.toContain(mid);
+		// pi → agent: an item on its connection, acked by itself
+		expect(await lead.c.request("send", { to: aid, message: "can you check the build?" })).toMatchObject({ outcome: "delivered", relation: "external" });
+		const got = await waitFor(() => delivered(a.events, "message")[0]);
+		expect(got.text).toContain("can you check the build?");
+		expect(got.from).toBe("lead");
+		await a.c.request("ack", { id: aid, token: a.token, seq: got.seq, exact: true });
+		await waitFor(() => (readState(aid)?.pendingReplies as unknown[]).length === 0);
+		// agent → pi, by the pi's id
+		expect((await a.c.request("peers", {})).peers.map((p) => p.id)).toContain(lead.id);
+		expect(await a.c.request("send", { to: lead.id, message: "the build is green" })).toMatchObject({ outcome: "delivered" });
+		const back = await waitFor(() => delivered(lead.events, "message")[0]);
+		expect(back.text).toContain("the build is green");
+		expect(back.from).toBe("helper");
+		// the agent watches a job; the notice is its item
+		const { id: wid } = await hub.request("dispatch", { ...launch("sleep 30", "short") });
+		expect(await a.c.request("watch", { id: wid, when: "ended" })).toMatchObject({ fired: false });
+		await (await hubc()).request("stop", { id: wid });
+		const notice = await waitFor(() => delivered(a.events, "notice")[0]);
+		expect(notice.text).toContain("short");
+		// a task it holds, dropped by the hub: it is told
+		const { task } = await hub.request("task", { action: "add", title: "check the build" });
+		await a.c.request("task", { action: "claim", id: task!.id });
+		await hub.request("task", { action: "drop", id: task!.id });
+		await waitFor(() => delivered(a.events, "message").find((e) => e.text.includes(`Task #${task!.id}`)));
+		// one that takes none: refused, not queued for ever
+		await expect(lead.c.request("send", { to: mid, message: "hi" })).rejects.toMatchObject({ code: "not_found" });
+		const { task: t2 } = await hub.request("task", { action: "add", title: "for the mute one" });
+		await expect(hub.request("task", { action: "assign", id: t2!.id, to: mid })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(m.c.request("watch", { id: aid, when: "ended" })).rejects.toMatchObject({ code: "unsupported" });
+		expect(readState(mid)?.pendingReplies ?? []).toEqual([]);
+		// queued before it said: dropped when its report says it takes none
+		const { id: lid } = await hub.request("dispatch", protocolJob("late"));
+		expect(await lead.c.request("send", { to: lid, message: "before it connects" })).toMatchObject({ outcome: "queued" });
+		expect((readState(lid)?.pendingReplies as unknown[]).length).toBe(1);
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === lid)?.pid);
+		await agentOf(lid, false);
+		expect(readState(lid)?.pendingReplies ?? []).toEqual([]);
+		// a plain command is still no session
+		const { id: cid } = await hub.request("dispatch", { ...launch("sleep 30", "plain"), kind: "shell", sessionFile: "" });
+		await expect(hub.request("task", { action: "assign", id: t2!.id, to: cid })).rejects.toMatchObject({ code: "unsupported" });
+		// an agent of the protocol does not spawn
+		await expect(a.c.request("spawn", { launch: launch("sleep 1", "kid") })).rejects.toMatchObject({ code: "unsupported" });
+	});
+});

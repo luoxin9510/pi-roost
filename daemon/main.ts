@@ -988,8 +988,9 @@ const FG_CLAIM_GRACE_MS = Number(process.env.PI_ROOST_FG_CLAIM_GRACE_MS) || 5000
 /** The session that holds a task is told when the hub or the concierge takes it from it. */
 function tellOwner(owner: { id: string; name: string }, from: string, body: string): void {
 	const p = fgPeers.get(owner.id)?.peer;
-	const key = recs.get(owner.id)?.sessionFile ?? (p?.kind === "fg" ? p.session : undefined);
-	if (!key) return;
+	const rec = recs.get(owner.id);
+	const key = (rec ? recKey(rec) : undefined) || (p?.kind === "fg" ? p.session : undefined);
+	if (!key || refusesItems(owner.id)) return;
 	const text = envelope({ from, id: from, relation: "external", kind: "message", body });
 	void deliverAgent(key, "message", text, { from, relation: "external" }).catch(() => {});
 }
@@ -1137,7 +1138,9 @@ async function taskOp(
 			const target = rows.find((r) => r.id === to) ?? (named.length === 1 ? named[0] : undefined);
 			if (!target) throw new OpError("not_found", named.length > 1 ? `"${to}" names ${named.length} sessions: use the id` : `no session "${to}"`);
 			const rec = recs.get(target.id);
-			if (!rec || rec.kind === "shell") throw new OpError("unsupported", `${target.name} is a command, not a session that takes tasks`);
+			// M50: an agent of the protocol takes it as a message, when it takes agent items
+			if (!rec || (rec.kind === "shell" && !isProtocolJob(rec))) throw new OpError("unsupported", `${target.name} is a command, not a session that takes tasks`);
+			if (refusesItems(rec.id)) throw new OpError("unsupported", `${target.name} takes no messages (its agent did not say agent-items)`);
 			const waits = blockedOn(t, tasks.values());
 			const body = [
 				`Task #${t.id} on the board: ${t.title}`,
@@ -1153,7 +1156,7 @@ async function taskOp(
 			assigning.add(t.id);
 			let r: Awaited<ReturnType<typeof deliverAgent>>;
 			try {
-				r = await deliverAgent(rec.sessionFile, "message", text, { from: a.who, relation: "external" });
+				r = await deliverAgent(recKey(rec), "message", text, { from: a.who, relation: "external" });
 			} finally {
 				assigning.delete(t.id);
 			}
@@ -1257,7 +1260,8 @@ async function fireWatch(w: Watch, job: JobRow | { id: string; name: string; sta
 		error: removed ? null : (row?.error ?? null),
 	});
 	// what the watched session is to the watcher
-	const key = recs.get(job.id)?.sessionFile || `job:${job.id}`;
+	const watched = recs.get(job.id);
+	const key = (watched ? recKey(watched) : "") || `job:${job.id}`;
 	const relation = relationOf(treeNode(w.watcher), treeNode(key));
 	const text = envelope({ from: job.name, id: job.id, relation, kind: "notice", body });
 	try {
@@ -1273,6 +1277,8 @@ async function fireWatch(w: Watch, job: JobRow | { id: string; name: string; sta
 /** M43: the `watch` op: a peer asks to be told once when a session is next idle, or has ended. */
 async function addWatch(conn: Conn, args: { id?: unknown; when?: unknown } | undefined): Promise<{ id: string; name: string; when: Watch["when"]; fired: boolean }> {
 	const peer = requirePeer(conn);
+	// M50: the notice is an agent item: an agent that takes none would never hear it
+	if (peer.kind === "job" && refusesItems(peer.id)) throw new OpError("unsupported", "a watch is told as a notice: say agent-items in your hello to take one");
 	const to = typeof args?.id === "string" ? args.id.trim() : "";
 	const when = args?.when;
 	if (!to) throw new OpError("bad_request", "id required");
@@ -1390,6 +1396,25 @@ function rowOf(id: string): JobRow | undefined {
 function agentCaps(st: JobState): string[] | undefined {
 	const c = (st.agentInfo as { capabilities?: unknown } | undefined)?.capabilities;
 	return Array.isArray(c) ? c.filter(str) : undefined;
+}
+
+/**
+ * M50: the key a session is reached by (messages, notices, hand-overs, its tree): a pi
+ * job's session file; an agent of the protocol (M31) has none, so its own `job:<id>`; a
+ * plain command, none ("").
+ */
+function recKey(r: JobRecord): string {
+	if (r.kind !== "shell") return r.sessionFile;
+	return isProtocolJob(r) ? `job:${r.id}` : "";
+}
+
+/** M50: a protocol agent that said in its hello it takes no agent items (an agent not connected yet may: they wait for it). */
+function refusesItems(id: string): boolean {
+	const rec = recs.get(id);
+	if (!rec || !isProtocolJob(rec)) return false;
+	const st = readState(id);
+	const caps = st ? agentCaps(st) : undefined;
+	return caps !== undefined && !caps.includes("agent-items");
 }
 
 const MAX_PR_LINKS = 20;
@@ -1557,7 +1582,9 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 		}
 	}
 	const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
-	const file = recs.get(id)?.sessionFile;
+	// M50: an agent of the protocol watches by its job
+	const removedRec = recs.get(id);
+	const file = removedRec ? recKey(removedRec) : undefined;
 	const name = rowOf(id)?.name ?? recs.get(id)?.name ?? id;
 	// M43: before the record goes (a watcher is told, then the record and the row are gone)
 	await fireWatches({ id, name, state: "removed" });
@@ -2978,6 +3005,14 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
 	if (!roster.has(id) || stopping.has(id)) return; // ended or being stopped: the daemon owns the state now
 	const takesAgentItems = (args.report as { agentItems?: unknown } | undefined)?.agentItems === true;
+	// M50: an agent of the protocol that takes no items: what waited for it before it said so is dropped (never acked, it would stay)
+	if (!takesAgentItems && isProtocolJob(recs.get(id))) {
+		const pending = pendingReplies(id);
+		if (pending.some(isAgentItem)) {
+			updateState(id, { pendingReplies: pending.filter((r) => !isAgentItem(r)) });
+			log("info", "agent items dropped: the agent takes none", { id, count: pending.filter(isAgentItem).length });
+		}
+	}
 	const gained = takesAgentItems && !conn.agentItems && workerConns.get(id) === conn;
 	conn.agentItems = takesAgentItems;
 	if (gained) flushPending(id, conn);
@@ -2985,7 +3020,8 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		workerConns.set(id, conn);
 		conn.peer = { kind: "job", id };
 		flushPending(id, conn);
-		const session = recs.get(id)?.sessionFile;
+		const rec = recs.get(id);
+		const session = rec ? recKey(rec) : "";
 		if (session) setImmediate(() => void retryReports(session));
 	}
 	const r = args.report;
@@ -3112,14 +3148,15 @@ const fgKey = (p: { id: string; session?: string }) => p.session ?? `peer:${p.id
 function sessionKeyOf(peer: PeerIdentity): string {
 	if (peer.kind === "fg") return fgKey(peer);
 	const rec = recs.get(peer.id);
-	if (!rec || rec.kind === "shell") throw new OpError("unsupported", "a shell job has no session");
-	return rec.sessionFile;
+	// M50: an agent of the protocol is reached by its job (it has no session file)
+	if (!rec || (rec.kind === "shell" && !isProtocolJob(rec))) throw new OpError("unsupported", "a shell job has no session");
+	return recKey(rec);
 }
 
 /** Spawn links live on the job records of a session (any of them: ←, respawns keep the file). */
 function treeNode(key: string): TreeNode {
 	for (const r of recs.values()) {
-		if (r.sessionFile === key && r.parentSession) return { key, parent: r.parentSession, root: r.rootSession ?? r.parentSession };
+		if (recKey(r) === key && r.parentSession) return { key, parent: r.parentSession, root: r.rootSession ?? r.parentSession };
 	}
 	return { key, parent: null, root: key };
 }
@@ -3128,6 +3165,11 @@ type Holder = { kind: "fg"; id: string; conn: Conn; name: string; cwd: string } 
 
 /** Who answers for a session now: a connected foreground pi, else its live job, else its latest job. */
 function holderOf(key: string): Holder | undefined {
+	// M50: an agent of the protocol, by its job
+	if (key.startsWith("job:")) {
+		const r = recs.get(key.slice(4));
+		return r && isProtocolJob(r) ? { kind: "job", id: r.id } : undefined;
+	}
 	for (const [id, c] of fgPeers) {
 		const p = c.peer;
 		if (p?.kind === "fg" && fgKey(p) === key && !c.sock.destroyed) return { kind: "fg", id, conn: c, name: p.name, cwd: p.cwd };
@@ -3163,6 +3205,8 @@ function peerRows(peer: PeerIdentity): (PeerRow & { key: string })[] {
 	const keys = new Set<string>();
 	for (const c of fgPeers.values()) if (c.peer?.kind === "fg") keys.add(fgKey(c.peer));
 	for (const r of recs.values()) if (r.kind !== "shell" && r.sessionFile) keys.add(r.sessionFile);
+	// M50: agents of the protocol that take messages (or have not said yet)
+	for (const r of recs.values()) if (isProtocolJob(r) && !refusesItems(r.id)) keys.add(recKey(r));
 	const rows: (PeerRow & { key: string })[] = [];
 	const now = Date.now();
 	for (const key of keys) {
@@ -3223,6 +3267,7 @@ async function deliverAgent(
 	const h = holderOf(key);
 	if (!h) return { outcome: "not running", id: "", name: "" };
 	const name = holderName(h);
+	if (h.kind === "job" && refusesItems(h.id)) throw new OpError("unsupported", `${name} takes no messages (its agent did not say agent-items)`);
 	if (h.kind === "fg") {
 		send(h.conn, { event: "deliver", id: h.id, seq: 0, text, kind, from: sanitizeName(meta.from), relation: meta.relation, ...(meta.ref ? { ref: meta.ref } : {}) });
 		return { outcome: "delivered", id: h.id, name };
@@ -3460,6 +3505,8 @@ function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd
 
 async function spawnChild(conn: Conn, args: { launch?: DispatchArgs } | undefined): Promise<{ id: string; name: string }> {
 	const peer = requirePeer(conn);
+	// M50: an agent of the protocol messages and watches; its children would have no panel to show in
+	if (peer.kind === "job" && isProtocolJob(recs.get(peer.id))) throw new OpError("unsupported", "an agent of the protocol does not spawn sessions (send, watch and the board are its)");
 	const launch = args?.launch;
 	if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch required");
 	if (launch.kind === "shell") throw new OpError("unsupported", "roost_spawn starts pi sessions");

@@ -18,6 +18,10 @@ its job in its environment, says hello, reports its state, and takes replies:
 The protocol is in docs/protocol.md. Reports are full snapshots; the client resends the
 latest one after a reconnect (a daemon restart), and the daemon resends unacked replies,
 which reach on_reply once each, in order, one at a time, acked when it returns.
+
+With on_message (M50) it also takes messages, reports and notices from other sessions
+(a task the hub hands over is a message): they come in seq order with the replies, one
+at a time, and send/peers/watch reach other sessions.
 """
 
 import json
@@ -26,7 +30,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 PROTOCOL_VERSION = 1
 
@@ -57,6 +61,17 @@ class Reply:
     mode: Optional[str] = None
 
 
+@dataclass
+class Message:
+    """M50: from another session: kind is message, report or notice; text is the daemon's envelope."""
+
+    seq: int
+    kind: str
+    text: str
+    sender: str
+    relation: str
+
+
 def _env(env, which):
     for name in _ENV[which]:
         v = env.get(name)
@@ -66,16 +81,17 @@ def _env(env, which):
 
 
 class RoostAgent:
-    def __init__(self, job_id, token, sock_path, name, version=None, capabilities=(), on_reply=None, job_dir=None):
+    def __init__(self, job_id, token, sock_path, name, version=None, capabilities=(), on_reply=None, job_dir=None, on_message=None):
         self.job_id = job_id
         self._token = token
         self._sock_path = sock_path
         self._hello = {
             "protocol": PROTOCOL_VERSION,
             "agent": {"name": name, **({"version": version} if version else {})},
-            "capabilities": sorted({"report", "replies", *capabilities}),
+            "capabilities": sorted({"report", "replies", *(("agent-items", "peers") if on_message else ()), *capabilities}),
         }
         self._on_reply: Optional[Callable[[Reply], None]] = on_reply
+        self._on_message: Optional[Callable[[Message], None]] = on_message
         self.daemon: Optional[dict] = None
         self._latest: Optional[dict] = None
         self._sent: Optional[dict] = None
@@ -98,19 +114,19 @@ class RoostAgent:
                 pass
         self._closed = False
         self._wake = threading.Event()
-        self._replies: List[Reply] = []
+        self._replies: list = []  # Reply or Message, in seq order
         self._replies_ready = threading.Condition()
         threading.Thread(target=self._run, name="roost-agent", daemon=True).start()
         threading.Thread(target=self._reply_loop, name="roost-agent-replies", daemon=True).start()
 
     @classmethod
-    def from_env(cls, name, version=None, capabilities=(), on_reply=None, env=None):
+    def from_env(cls, name, version=None, capabilities=(), on_reply=None, env=None, on_message=None):
         """The agent of this roost job, or None outside one."""
         env = os.environ if env is None else env
         job_id, token, sock = _env(env, "id"), _env(env, "token"), _env(env, "socket")
         if not (job_id and token and sock):
             return None
-        return cls(job_id, token, sock, name, version, capabilities, on_reply, _env(env, "dir"))
+        return cls(job_id, token, sock, name, version, capabilities, on_reply, _env(env, "dir"), on_message)
 
     def report(self, state, **fields):
         """Its state now: working, blocked, done or failed; other fields as in docs/protocol.md."""
@@ -129,6 +145,8 @@ class RoostAgent:
             "model": None,
         }
         report.update(fields)
+        if self._on_message:
+            report["agentItems"] = True  # the daemon sends agent items only to a connection that takes them
         json.dumps(report)  # raises here, not in the connection thread, if a field cannot be sent
         with self._lock:
             self._latest = report
@@ -168,6 +186,20 @@ class RoostAgent:
         return msg.get("result") or {}
 
     # ---- the shared task board (M47) ------------------------------------------
+
+    # M50: other sessions (with on_message)
+
+    def peers(self):
+        """The sessions this one can reach."""
+        return self.request("peers", {})["peers"]
+
+    def send(self, to, message):
+        """A message to a session (an id, or a name peers lists): the result says delivered, queued or started."""
+        return self.request("send", {"to": to, "message": message})
+
+    def watch(self, session_id, when):
+        """Be told once (a notice to on_message) when that session is next idle, or has ended."""
+        return self.request("watch", {"id": session_id, "when": when})
 
     def tasks(self):
         """The board: every task (dicts as in docs/protocol.md), oldest first."""
@@ -305,8 +337,14 @@ class RoostAgent:
                 event.set()
                 return
         if msg.get("event") == "deliver" and msg.get("id") == self.job_id:
-            # agent items (peer messages) are pi's; a plain agent takes user replies only
-            if msg.get("kind") in ("message", "report", "notice"):
+            kind = msg.get("kind")
+            item = kind in ("message", "report", "notice")
+            # agent items go only to an agent that takes them (on_message); a digest is the concierge's
+            if kind == "digest":
+                if isinstance(msg.get("seq"), int):
+                    self._ack(msg["seq"], True)  # the concierge's: acked, not kept
+                return
+            if item and not self._on_message:
                 return
             seq = msg.get("seq")
             if not isinstance(seq, int):
@@ -314,11 +352,14 @@ class RoostAgent:
             if seq <= self._handled:
                 # sent again (a reconnect): ack only what is finished; the rest is acked when it is
                 if seq <= self._completed:
-                    self._ack(seq)
+                    self._ack(seq, item)
                 return
             self._handled = seq
             with self._replies_ready:
-                self._replies.append(Reply(seq, str(msg.get("text", "")), msg.get("mode")))
+                if item:
+                    self._replies.append(Message(seq, kind, str(msg.get("text", "")), str(msg.get("from") or "?"), str(msg.get("relation") or "external")))
+                else:
+                    self._replies.append(Reply(seq, str(msg.get("text", "")), msg.get("mode")))
                 self._replies_ready.notify()
         elif "ok" in msg and msg.get("ok") and isinstance(msg.get("result"), dict) and "daemon" in msg["result"]:
             self.daemon = msg["result"]
@@ -326,9 +367,10 @@ class RoostAgent:
             # not this job's agent (a stale token): nothing it says will count
             self._closed = True
 
-    def _ack(self, seq):
+    def _ack(self, seq, exact=False):
+        # a user reply's ack covers every reply up to it; an agent item is acked by itself
         try:
-            self._send("ack", {"id": self.job_id, "token": self._token, "seq": seq})
+            self._send("ack", {"id": self.job_id, "token": self._token, "seq": seq, **({"exact": True} if exact else {})})
         except (OSError, ConnectionError):
             pass  # resent after a reconnect, and dropped by seq then
 
@@ -340,8 +382,12 @@ class RoostAgent:
                 if self._closed and not self._replies:
                     return
                 reply = self._replies.pop(0)
+            is_item = isinstance(reply, Message)
             try:
-                if self._on_reply:
+                if is_item:
+                    if self._on_message:
+                        self._on_message(reply)
+                elif self._on_reply:
                     self._on_reply(reply)
             except Exception:  # an agent's handler failing must not stop the client
                 pass
@@ -354,4 +400,4 @@ class RoostAgent:
                     os.replace(tmp, self._mark)
                 except OSError:
                     pass
-            self._ack(reply.seq)
+            self._ack(reply.seq, is_item)
