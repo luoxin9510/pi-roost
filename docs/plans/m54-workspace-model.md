@@ -23,6 +23,11 @@ does); a board without workspaces behaves exactly as before.
   not counted as open or claimed any more) and `needsYou` (review, conflict, failed);
   the summary line reads `2 in workspaces (1 needs you)`; the hub's status line shows
   the board when only workspaces are live too.
+- Guards (after review): a task with a workspace is not claimed by a session that does
+  not hold it, not handed over (`assign`), not marked `done` by a word (it is done when
+  merged): `unsupported` / `bad_request` naming `/tasks start`. The sessions' tools do
+  not list it as open (`claimable`), and M52's "can be claimed" message skips it. A
+  dropped task whose workspace was not merged is never swept at the 200 cap.
 - Store: `tasks.json` is written with `version: 2`. Loading keeps fields it does not
   know (a newer daemon's), normalises a workspace (`parseWorkspace`: bounded strings,
   shas checked, at most 200 comments), keeps a damaged one (no absolute path, no

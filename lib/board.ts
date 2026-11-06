@@ -103,10 +103,10 @@ export function parseWorkspace(raw: unknown): TaskWorkspace | null {
 	if (Array.isArray(o.comments)) {
 		const cs = o.comments
 			.filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-			.filter((c) => strOf(c.file, 4096) && Number.isInteger(c.line) && strOf(c.text, TASK_TEXT_MAX))
+			.filter((c) => strOf(c.file, 4096) && Number.isInteger(c.line) && (c.line as number) >= 1 && strOf(c.text, TASK_TEXT_MAX))
 			.slice(0, 200)
 			.map((c) => ({
-				file: c.file as string,
+				file: (c.file as string).slice(0, 4096),
 				line: c.line as number,
 				text: (c.text as string).slice(0, TASK_TEXT_MAX),
 				lineText: typeof c.lineText === "string" ? c.lineText.slice(0, 1000) : "",
@@ -215,6 +215,9 @@ export function blockedOn(t: BoardTask, all: Iterable<BoardTask>): number[] {
 		return d !== undefined && !dependencyMet(d, t);
 	});
 }
+
+/** M54: a session can claim it now: open, waiting on nothing, without a workspace (one with a workspace is started: /tasks start). */
+export const claimable = (t: BoardTask, all: Iterable<BoardTask>): boolean => t.state === "open" && !t.workspace && blockedOn(t, all).length === 0;
 
 /** A task in its workspace: one with a workspace that is neither merged (done) nor dropped. */
 const inWorkspace = (t: BoardTask): boolean => !!t.workspace && t.state !== "done" && t.state !== "dropped";

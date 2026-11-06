@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { type ExtensionAPI, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { blockedOn, boardListing } from "../../lib/board.ts";
+import { boardListing, claimable } from "../../lib/board.ts";
 import { AGENT_MESSAGE_TYPE, MESSAGE_MAX } from "../../lib/comms.ts";
 import { envPolicy, loadConfig } from "../../lib/config.ts";
 import { buildLaunch, fallbackName, isolationDefault, prepareIsolation, refusedByDaemon } from "../../lib/dispatch.ts";
@@ -220,7 +220,7 @@ export function registerAgentTools(pi: ExtensionAPI, link: AgentLink): void {
 		}),
 		async execute(_id, params) {
 			const r = await link.call("task", { action: "done", id: params.id, result: params.result });
-			const open = r.tasks.filter((t) => t.state === "open" && blockedOn(t, r.tasks).length === 0);
+			const open = r.tasks.filter((t) => claimable(t, r.tasks));
 			return text(`#${params.id} is done.${open.length > 0 ? ` Open on the board: ${open.map((t) => `#${t.id} ${t.title}`).join("; ")}.` : " Nothing is open on the board."}`);
 		},
 	});

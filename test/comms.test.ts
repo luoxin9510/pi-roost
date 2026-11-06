@@ -1405,9 +1405,15 @@ describe("M47: the board's store, its limits, and who may act", () => {
 		expect(by(2).workspace?.note).toMatch(/damaged/);
 		expect([by(3).state, by(3).workspace?.stage]).toEqual(["open", "failed"]);
 		expect(by(5).workspace).toBeUndefined();
-		// #5 waits on #4, which is in review: blocked, and a session is told so
+		// #5 waits on #4, which is in review: blocked
 		const p = await foreground("lead");
 		await expect(p.c.request("task", { action: "claim", id: 5 })).rejects.toMatchObject({ code: "blocked" });
+		// a task with a workspace is not claimed, handed over or marked done by a word
+		await expect(p.c.request("task", { action: "claim", id: 4 })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(hub.request("task", { action: "assign", id: 4, to: "lead" })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(hub.request("task", { action: "done", id: 4 })).rejects.toMatchObject({ code: "bad_request" });
+		// dropped with its workspace unmerged: never swept (its worktree may hold work)
+		await hub.request("task", { action: "drop", id: 4 });
 		// the next save is version 2 and keeps what it does not know
 		await hub.request("task", { action: "add", title: "save" });
 		const saved = JSON.parse(readFileSync(join(home, "tasks.json"), "utf8")) as { version: number; tasks: Record<string, unknown>[] };

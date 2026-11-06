@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type BoardTask, blockedOn, boardLines, boardSummary, dependencyMet, manyProjects, needsYou, onBoardOf, parseWorkspace, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
+import { type BoardTask, blockedOn, boardLines, boardSummary, claimable, dependencyMet, manyProjects, needsYou, onBoardOf, parseWorkspace, projectLabel, projectOf, summaryLine, taskLine } from "../lib/board.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -135,6 +135,8 @@ describe("M54: workspaces on the board", () => {
 		expect(summaryLine({ open: 0, claimed: 0, blocked: 0, done: 0, workspaces: 1, needsYou: 1 })).toBe("1 in workspace (1 needs you)");
 		expect(summaryLine({ open: 1, claimed: 0, blocked: 0, done: 0 })).toBe("1 open");
 		expect(needsYou(all[2]!)).toBe(true);
+		// a task with a workspace is never claimable (it is started); one without is, when open and waiting on nothing
+		expect(all.filter((t) => claimable(t, all)).map((t) => t.id)).toEqual([1]);
 		expect(needsYou(all[1]!)).toBe(false);
 		expect(taskLine(all[1]!, all)).toBe("#2 working · api-fix · t2");
 		expect(taskLine(all[2]!, all)).toBe("#3 in review · t3 (not verified)");
