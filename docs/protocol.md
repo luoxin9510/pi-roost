@@ -199,7 +199,9 @@ answers with the job the first one made, whatever the resend's other arguments, 
 as that job exists. A job remembers its last 100 reply ids, kept in the same write as the
 reply itself (for a terminal agent the id is kept just after the text is typed: a crash
 between the two types it again). Use a new id for each new request and the same id for
-each resend of it.
+each resend of it. (M51: the hub, the CLI, pi's panel and `/bg` do, through `requestOnce` in
+`lib/client.ts`: a resend on a new connection when the answer was lost, never after a
+refusal.)
 
 ### Others
 

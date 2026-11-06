@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -9,9 +10,50 @@ import { JOB_ENV_NAMES } from "./identity.ts";
 
 export class DaemonError extends Error {
 	code: string | undefined;
+	/** M51: the daemon answered so (a refusal), not this side (no connection, no answer). */
+	fromDaemon = false;
 	constructor(message: string, code?: string) {
 		super(message);
 		this.code = code;
+	}
+}
+
+/** M51: a request id (docs/protocol.md "Request ids"): new for each request, the same for each resend of it. */
+export function newRequestId(tag: string): string {
+	return `${tag}.${process.pid.toString(36)}.${Date.now().toString(36)}.${randomBytes(4).toString("hex")}`.replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 64);
+}
+
+/** M51: thrown by a `via` that will never give a connection (its caller is closing): requestOnce stops at once. */
+export class GiveUp extends Error {}
+
+/**
+ * M51: a reply or a dispatch whose answer may be lost: sent with a request id, and when
+ * no answer comes because the connection went (the daemon restarted), sent again with the
+ * same id on the connection `via(deadline)` gives then, until `timeoutMs`; the daemon
+ * takes it once. A refusal (the daemon answered it) is not sent again. Given up after it
+ * was sent, the error is a DaemonError with code `lost`: it may have been taken (a caller
+ * must not undo what a taken request made, such as a new session's worktree).
+ */
+export async function requestOnce<O extends "reply" | "dispatch">(
+	via: (deadline: number) => Promise<DaemonClient>,
+	op: O,
+	args: ArgsOf<O>,
+	opts: { timeoutMs?: number; tag?: string } = {},
+): Promise<ResultOf<O>> {
+	const a = { ...args, requestId: (args as { requestId?: string }).requestId ?? newRequestId(opts.tag ?? op) } as ArgsOf<O>;
+	const deadline = Date.now() + (opts.timeoutMs ?? 15_000);
+	let sent = false;
+	for (let wait = 200; ; wait = Math.min(wait * 2, 2000)) {
+		try {
+			const c = await via(deadline);
+			sent = true;
+			return await c.request(op, a);
+		} catch (err) {
+			if (err instanceof DaemonError && err.fromDaemon) throw err;
+			const over = err instanceof GiveUp || Date.now() + wait > deadline;
+			if (over) throw sent ? new DaemonError(`no answer from the background service (${(err as Error).message}): it may have been taken`, "lost") : err;
+			await new Promise((r) => setTimeout(r, wait).unref?.());
+		}
 	}
 }
 
@@ -138,6 +180,11 @@ export class DaemonClient {
 		return () => this.listeners.delete(listener);
 	}
 
+	/** M51: the connection is gone (dropped, or closed): a request on it fails at once. */
+	get isClosed(): boolean {
+		return this.closed;
+	}
+
 	/** Called once when the connection drops (not after close()). */
 	onClose(listener: () => void): () => void {
 		this.closeListeners.add(listener);
@@ -178,6 +225,10 @@ export class DaemonClient {
 		this.pending.delete(msg.id);
 		p.at = this.lines;
 		if (msg.ok) p.resolve(msg.result);
-		else p.reject(new DaemonError(msg.error, msg.code));
+		else {
+			const err = new DaemonError(msg.error, msg.code);
+			err.fromDaemon = true;
+			p.reject(err);
+		}
 	}
 }

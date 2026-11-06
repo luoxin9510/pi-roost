@@ -4,7 +4,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, Input, isKeyRelease, Key, matchesKey, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../../lib/attach.ts";
-import { DaemonClient } from "../../lib/client.ts";
+import { DaemonClient, requestOnce } from "../../lib/client.ts";
 import { loadConfig } from "../../lib/config.ts";
 import { hostSocketPath, isScratchSession } from "../../lib/paths.ts";
 import type { Event, JobRow } from "../../lib/protocol.ts";
@@ -617,9 +617,21 @@ export function registerSubagentPanel(pi: ExtensionAPI): void {
 	async function deliver(id: string, text: string): Promise<SendResult & { tone: "info" | "warning" | "error" }> {
 		const name = oneLine(all.get(id)?.name ?? id);
 		try {
-			const c = client ?? (await DaemonClient.connectOrStart());
+			let c = client ?? (await DaemonClient.connectOrStart());
 			try {
-				const r = await c.request("reply", { id, text });
+				// M51: sent again (once taken) when the answer is lost to a restart of the service, on a connection of its own
+				const r = await requestOnce(
+					async () => {
+						if (c.isClosed) {
+							if (c !== client) c.close();
+							c = await DaemonClient.connectOrStart();
+						}
+						return c;
+					},
+					"reply",
+					{ id, text },
+					{ tag: "panel" },
+				);
 				if (r.stopped) return { ok: false, tone: "warning", message: `${name} is stopped: open it (→ twice) to start it, then send again` };
 				if (r.delivered) return { ok: true, tone: "info", message: `sent · ${name}` };
 				if (r.respawned) return { ok: true, tone: "info", message: `sent · starting ${name} again` };

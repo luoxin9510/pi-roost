@@ -2,7 +2,7 @@ import { discoverAgents, findAgent } from "../../lib/agents.ts";
 import { setJobEventBus } from "../../lib/job-events.ts";
 import { resolve as resolvePath } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, SessionManager, VERSION } from "@earendil-works/pi-coding-agent";
-import { DaemonClient } from "../../lib/client.ts";
+import { DaemonClient, requestOnce } from "../../lib/client.ts";
 import { existsSync } from "node:fs";
 import { buildLaunch, fallbackName, type Isolation, isolationDefault, prepareIsolation, refusedByDaemon } from "../../lib/dispatch.ts";
 import { envPolicy, loadConfig } from "../../lib/config.ts";
@@ -160,7 +160,9 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 	let client: DaemonClient | undefined;
 	try {
 		client = await DaemonClient.connectOrStart();
-		const { id, name: finalName } = await client.request(
+		// M51: sent again (once taken) when the answer is lost to a restart of the service
+		const { id, name: finalName } = await requestOnce(
+			async () => (client && !client.isClosed ? client : (client = await DaemonClient.connectOrStart())),
 			"dispatch",
 			buildLaunch({
 				task,
@@ -176,6 +178,7 @@ async function backgroundAndExit(pi: ExtensionAPI, ctx: ExtensionContext, task: 
 				...envPolicy(loadConfig(ctx.cwd)),
 				piVersion: VERSION,
 			}),
+			{ tag: "bg" },
 		);
 		// Printed on exit: anything written while the TUI is up is repainted away (M0 R1).
 		process.once("exit", () => {

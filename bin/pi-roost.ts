@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { attachToHost } from "../lib/attach.ts";
 import { formatList } from "../lib/list-format.ts";
-import { DaemonClient, DaemonError } from "../lib/client.ts";
+import { DaemonClient, DaemonError, requestOnce } from "../lib/client.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { cleanupText } from "../lib/worktree.ts";
@@ -134,7 +134,19 @@ async function cmdReply(query: string | undefined, words: string[]): Promise<voi
 	if (!text) throw new UsageError("reply needs text");
 	await withDaemon(async (c) => {
 		const row = await findRow(c, query);
-		const r = await c.request("reply", { id: row.id, text });
+		// M51: sent again (once taken) when the answer is lost to a restart of the service
+		let cur = c;
+		const r = await requestOnce(
+			async () => {
+				if (cur.isClosed) cur = await DaemonClient.connectOrStart();
+				return cur;
+			},
+			"reply",
+			{ id: row.id, text },
+			{ tag: "cli" },
+		).finally(() => {
+			if (cur !== c) cur.close();
+		});
 		const what = r.stopped
 			? "stopped"
 			: r.delivered
