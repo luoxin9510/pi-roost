@@ -966,15 +966,21 @@ function sweepTasks(): void {
 	while (tasks.size >= TASK_MAX && gone.length > 0) tasks.delete(gone.shift()!.id);
 }
 
-/** M52: a directory's project, kept (a repository does not move under a running session). */
-const projects = new Map<string, string | null>();
+/**
+ * M52: a directory's project, kept once found (a repository does not move under a running
+ * session); one outside a repository is looked up again (it may become one: git init).
+ */
+const projects = new Map<string, string>();
 function projectAt(cwd: string | null | undefined): string | null {
 	if (!cwd) return null;
-	if (!projects.has(cwd)) {
+	const kept = projects.get(cwd);
+	if (kept !== undefined) return kept;
+	const p = projectOf(cwd);
+	if (p !== null) {
 		if (projects.size > 500) projects.clear();
-		projects.set(cwd, projectOf(cwd));
+		projects.set(cwd, p);
 	}
-	return projects.get(cwd) ?? null;
+	return p;
 }
 
 /** M52: the project a session works in (its job's directory, a foreground pi's). */
@@ -1035,7 +1041,7 @@ function releaseTask(t: BoardTask, why: string, a?: ReturnType<typeof boardActor
  * can be claimed. The sessions that were refused one as blocked, the one it was handed
  * to, and the job that put it on are told (once; the feed says it too).
  */
-function tellOpened(d: BoardTask): void {
+function tellOpened(d: BoardTask, by: string | null): void {
 	const all = [...tasks.values()];
 	for (const t of all) {
 		if (t.state !== "open" || !t.after.includes(d.id) || blockedOn(t, all).length > 0) continue;
@@ -1043,6 +1049,7 @@ function tellOpened(d: BoardTask): void {
 		for (const w of t.waiting) told.set(w.id, w.name);
 		if (t.assigned) told.set(t.assigned.id, t.assigned.name);
 		if (t.by.whoId && recs.has(t.by.whoId) && !isConcierge(t.by.whoId)) told.set(t.by.whoId, t.by.who);
+		if (by !== null) told.delete(by); // the session that did it knows
 		t.waiting = [];
 		saveTasks();
 		record({ kind: "task", id: d.owner?.id ?? "", name: "roost", who: "roost", whoId: null, why: "open", text: clipText(`#${t.id} ${t.title}: #${d.id} ${d.state}`) });
@@ -1150,6 +1157,7 @@ async function taskOp(
 				t.owner = { id: a.sessionId, name: a.who };
 				t.claimedAt = Date.now();
 				t.assigned = null;
+				t.waiting = [];
 				saveTasks();
 				taskEvent(a, "claim", t);
 				pushBoard();
@@ -1175,7 +1183,7 @@ async function taskOp(
 			saveTasks();
 			taskEvent(a, "done", t, t.result ?? undefined);
 			pushBoard();
-			tellOpened(t);
+			tellOpened(t, a.sessionId);
 			return { tasks: all(), task: t };
 		case "drop": {
 			if (!lead) throw new OpError("unsupported", "the hub and the concierge drop tasks; a session gives its back (roost_task_release)");
@@ -1189,7 +1197,7 @@ async function taskOp(
 			saveTasks();
 			taskEvent(a, "drop", t);
 			pushBoard();
-			tellOpened(t);
+			tellOpened(t, a.sessionId);
 			if (held) tellOwner(held, a.who, `Task #${t.id} (${t.title}) was dropped by ${a.who}: stop working on it.`);
 			return { tasks: all(), task: t };
 		}

@@ -53,6 +53,26 @@ describe("M52: projects", () => {
 		expect(projectLabel(null)).toBe("any");
 	});
 
+	it("a bare repository's worktree is the bare repository's; a nested checkout is its own", () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "roost-proj-")));
+		dirs.push(root);
+		const src = join(root, "src");
+		mkdirSync(src);
+		git(src, "init", "-q");
+		writeFileSync(join(src, "a"), "a");
+		git(src, "add", ".");
+		git(src, "commit", "-qm", "a");
+		git(root, "clone", "-q", "--bare", src, join(root, "repo.git"));
+		git(join(root, "repo.git"), "worktree", "add", "-q", join(root, "bw"), "-b", "bw");
+		expect(projectOf(join(root, "bw"))).toBe(join(root, "repo.git"));
+		// a .git file without a commondir (a submodule's checkout) is the checkout itself
+		const sub = join(root, "sub");
+		mkdirSync(join(root, "mods", "sub"), { recursive: true });
+		mkdirSync(sub);
+		writeFileSync(join(sub, ".git"), `gitdir: ${join(root, "mods", "sub")}\n`);
+		expect(projectOf(sub)).toBe(sub);
+	});
+
 	it("a session sees its project's tasks and those for any session; lines name the project when there are several", () => {
 		const all = [task(1, "/w/api"), task(2, "/w/web"), task(3, null)];
 		expect(all.filter((t) => onBoardOf(t, "/w/api")).map((t) => t.id)).toEqual([1, 3]);

@@ -3,7 +3,7 @@
 // daemon keeps it (tasks.json); sessions take work from it (roost_task_*), the hub shows
 // and edits it (/tasks), the concierge works it as the lead (hub_task_*).
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { eventAgo } from "./events.ts";
 
 export interface BoardTask {
@@ -51,16 +51,32 @@ export function projectOf(cwd: string | null | undefined): string | null {
 		const git = join(dir, ".git");
 		try {
 			if (statSync(git).isDirectory()) return dir;
-			// a worktree's .git is a file: `gitdir: <repository>/.git/worktrees/<name>`
+			// a worktree's .git is a file: `gitdir: <repository's git dir>/worktrees/<name>`
 			const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(git, "utf8"));
-			const gd = m ? resolve(dir, m[1]!.trim()) : "";
-			const at = gd.lastIndexOf(`${sep}.git${sep}worktrees${sep}`);
-			return at >= 0 ? gd.slice(0, at) : dir;
+			return m ? repositoryOf(resolve(dir, m[1]!.trim()), dir) : dir;
 		} catch {}
 		const up = dirname(dir);
 		if (up === dir) return null;
 		dir = up;
 	}
+}
+
+/**
+ * M52: the project of a checkout whose .git file points at `gd`. A linked worktree's git dir
+ * has a `commondir` naming the repository's: its parent for a `.git` dir, the bare
+ * repository itself otherwise. A submodule's (no commondir) is the checkout itself.
+ */
+function repositoryOf(gd: string, dir: string): string {
+	let common: string;
+	try {
+		common = resolve(gd, readFileSync(join(gd, "commondir"), "utf8").trim());
+	} catch {
+		return dir;
+	}
+	try {
+		common = realpathSync(common);
+	} catch {}
+	return basename(common) === ".git" ? dirname(common) : common;
 }
 
 /** M52: a project's short name (its directory's), or "any" for the tasks for any session. */

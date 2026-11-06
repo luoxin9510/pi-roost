@@ -1682,5 +1682,14 @@ describe("M52: the board by project, and told when a task can be claimed", () =>
 		expect(delivered(eager.events, "message").filter((e) => e.text.includes(`Task #${both.id}`))).toHaveLength(0);
 		await hub.request("task", { action: "drop", id: b.id });
 		await waitFor(() => delivered(eager.events, "message").find((e) => e.text.includes(`Task #${both.id}`) && e.text.includes("dropped")));
+		// the session that finished the task it waited on is not told what it did
+		const x = (await hub.request("task", { action: "add", title: "x" })).task!;
+		const y = (await hub.request("task", { action: "add", title: "y", after: [x.id] })).task!;
+		await expect(eager.c.request("task", { action: "claim", id: y.id })).rejects.toMatchObject({ code: "blocked" });
+		await eager.c.request("task", { action: "claim", id: x.id });
+		await eager.c.request("task", { action: "done", id: x.id });
+		await waitFor(async () => (await hub.request("events", {})).events.find((e) => e.kind === "task" && e.why === "open" && e.text?.startsWith(`#${y.id} `)));
+		await new Promise((r) => setTimeout(r, 300));
+		expect(delivered(eager.events, "message").filter((e) => e.text.includes(`Task #${y.id}`))).toHaveLength(0);
 	});
 });
