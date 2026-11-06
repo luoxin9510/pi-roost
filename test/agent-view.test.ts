@@ -133,6 +133,8 @@ class FakeClient {
 		if (op === "task") {
 			const a = args as { action: string; id?: number; title?: string; detail?: string; after?: number[]; result?: string; to?: string };
 			if (a.action === "list") return { tasks: this.tasks };
+			// M60: the pull request exit
+			if (a.action === "pr") return (a as { dry?: boolean }).dry ? { tasks: this.tasks, note: "push roost/t4 (aaaaaaaa) and open a pull request into main", hash: "t1" } : { tasks: this.tasks, note: "pushed to origin · https://example.com/pull/7" };
 			// M59: cleanup has no id
 			if (a.action === "cleanup") return { tasks: this.tasks, note: (a as { dry?: boolean }).dry ? "#3 dropped: remove /r/wt3 (branch kept)\nremove 2 verify logs" : "#3: worktree removed · branch kept" };
 			if (a.action === "add") {
@@ -2702,5 +2704,32 @@ describe("M59: shelve and cleanup in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		expect(restored).toEqual([["/r", "/nonexistent/wt3", "roost/t3-users-ab12"]]);
+	});
+});
+
+describe("M60: the pull request exit in the hub", () => {
+	it("/tasks pr shows, then does it with the tip shown; in the overlay o, then y", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: (async () => undefined) as never } });
+		client.tasks = [{ id: 4, title: "users", detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], workspace: { path: "/r/wt", branch: "roost/t4-users-ab12", baseRef: "main", baseSha: "a".repeat(40), stage: "review", note: null } }];
+		await view.start();
+		const prs = () => client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action === "pr").map((r) => r.args);
+		type(view, "/tasks pr 4");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("/tasks pr 4 again within 30 s");
+		type(view, "/tasks pr 4");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(prs()).toEqual([{ action: "pr", id: 4, dry: true }, { action: "pr", id: 4, hash: "t1" }]);
+		expect(view.render(120).join("\n")).toContain("pushed to origin · https://example.com/pull/7");
+		view.handleInput("\x0e");
+		await sleep(30);
+		view.handleInput("o");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("y push and open it");
+		view.handleInput("y");
+		await sleep(20);
+		expect(prs()).toHaveLength(4);
+		expect(prs()[3]).toEqual({ action: "pr", id: 4, hash: "t1" });
 	});
 });

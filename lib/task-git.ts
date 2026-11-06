@@ -321,3 +321,24 @@ export async function taskWorktrees(repo: string): Promise<{ path: string; branc
 	}
 	return out;
 }
+
+/**
+ * M60: the optional exit: the task's branch pushed to a remote and a pull request opened
+ * into its base with `gh`. The remote: `origin`, else the only one. Never forced.
+ */
+export async function openTaskPr(o: { path: string; branch: string; baseRef: string; title: string; body: string }): Promise<{ ok: true; url: string; remote: string } | { ok: false; reason: string }> {
+	const remotes = (await run(o.path, ["remote"])).stdout.split("\n").filter(Boolean);
+	const remote = remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0]! : undefined;
+	if (!remote) return { ok: false, reason: remotes.length === 0 ? "the repository has no remote" : `several remotes and none is origin (${remotes.join(", ")})` };
+	const push = await run(o.path, ["push", "--set-upstream", remote, `refs/heads/${o.branch}:refs/heads/${o.branch}`], 120_000);
+	if (push.code !== 0) return { ok: false, reason: `git push: ${lastLines(push, 2)}` };
+	const gh = await new Promise<Run>((done) => {
+		execFile("gh", ["pr", "create", "--head", o.branch, "--base", o.baseRef, "--title", o.title, "--body", o.body], { cwd: o.path, encoding: "utf8", timeout: 60_000, env: GIT_ENV() }, (err, stdout, stderr) => {
+			const code = err ? (typeof (err as { code?: unknown }).code === "number" ? ((err as { code: number }).code as number) : 127) : 0;
+			done({ code, stdout: String(stdout).trim(), stderr: String(stderr).trim() });
+		});
+	});
+	if (gh.code !== 0) return { ok: false, reason: `pushed to ${remote}; gh pr create: ${lastLines(gh, 2)}` };
+	const url = /https?:\/\/\S+/.exec(gh.stdout)?.[0] ?? gh.stdout.split("\n").pop() ?? "";
+	return { ok: true, url, remote };
+}

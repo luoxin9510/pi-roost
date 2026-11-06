@@ -334,7 +334,9 @@ export interface OpArgs {
 		| { action: "uncomment"; id: number; comment: { file: string; line: number; at: number } }
 		// M59: put away (worktree removed, branch kept; start brings it back); leftovers removed (dry: listed)
 		| { action: "shelve"; id: number }
-		| { action: "cleanup"; dry?: boolean };
+		| { action: "cleanup"; dry?: boolean }
+		// M60: push the branch and open a pull request (dry: what it would do; then with the tip shown as hash)
+		| { action: "pr"; id: number; dry?: boolean; hash?: string };
 }
 
 export interface OpResults {

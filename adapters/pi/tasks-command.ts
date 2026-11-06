@@ -9,7 +9,7 @@ import { DaemonClient } from "../../lib/client.ts";
 import { workspaceEntries, wsCounts, wsIcon } from "../../lib/workspace-view.ts";
 import { startTaskInPi } from "./task-start.ts";
 
-export const TASKS_USAGE = "/tasks [start | merge | back <id> [note] | verify | pass | shelve | approve <id> | cleanup [yes]]";
+export const TASKS_USAGE = "/tasks [start | merge | back <id> [note] | verify | pass | shelve | approve | pr <id> | cleanup [yes]]";
 const APPROVE_MS = 30_000;
 
 /** The board of a repository as lines for a notice: the counts, then each task with its icon and stage. */
@@ -25,7 +25,7 @@ export function tasksText(tasks: BoardTask[], scope: string): string {
 }
 
 export function registerTasksCommand(pi: ExtensionAPI, connect: () => Promise<DaemonClient> = () => DaemonClient.connectOrStart()): void {
-	let shown: { id: number; hash: string; at: number } | undefined;
+	let shown: { id: number; hash: string; at: number; verb: string } | undefined;
 	pi.registerCommand("tasks", {
 		description: "The task board of this repository: start, merge, send back, shelve tasks in their worktrees",
 		handler: async (raw: string, ctx: ExtensionContext) => {
@@ -62,18 +62,19 @@ export function registerTasksCommand(pi: ExtensionAPI, connect: () => Promise<Da
 						const r = await call({ action: "back", id, note: rest.slice(1).join(" ") || undefined });
 						return say(`#${id} back to work · ${r.note ?? ""}`);
 					}
-					case "approve": {
-						// shown first; approved by the same command again within 30 s (what was shown)
-						if (!shown || shown.id !== id || Date.now() - shown.at >= APPROVE_MS) {
-							const r = await call({ action: "approve", id, dry: true });
+					case "approve":
+					case "pr": {
+						// shown first; done by the same command again within 30 s (what was shown)
+						if (!shown || shown.id !== id || shown.verb !== verb || Date.now() - shown.at >= APPROVE_MS) {
+							const r = await call({ action: verb, id, dry: true });
 							if (!r.hash) return say(r.note ?? "nothing to approve", "warning");
-							shown = { id, hash: r.hash, at: Date.now() };
-							return say(`${r.note} · they run in your account: /tasks approve ${id} again within 30 s to approve`, "warning");
+							shown = { id, hash: r.hash, at: Date.now(), verb };
+							return say(`${r.note}${verb === "approve" ? " · they run in your account" : "?"}: /tasks ${verb} ${id} again within 30 s to do it`, "warning");
 						}
 						const hash = shown.hash;
 						shown = undefined;
-						const r = await call({ action: "approve", id, hash });
-						return say(r.note ?? "approved");
+						const r = await call({ action: verb, id, hash });
+						return say(r.note ?? "done");
 					}
 					default:
 						return say(TASKS_USAGE, "warning");

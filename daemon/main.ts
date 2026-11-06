@@ -99,7 +99,7 @@ import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.t
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
 import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
-import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
+import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, openTaskPr, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, WORKTREES_DIR, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
@@ -1395,7 +1395,7 @@ async function workspaceOp(
 	}
 }
 
-type WorkspaceAction = "start" | "merge" | "back" | "abort" | "commit" | "approve" | "verify" | "pass" | "comment" | "uncomment" | "shelve";
+type WorkspaceAction = "start" | "merge" | "back" | "abort" | "commit" | "approve" | "verify" | "pass" | "comment" | "uncomment" | "shelve" | "pr";
 
 async function workspaceAction(
 	a: ReturnType<typeof boardActor>,
@@ -1495,6 +1495,26 @@ async function workspaceAction(
 	// a damaged record (no path, no branch) never reaches git: `git -C ""` is the daemon's own directory
 	if (action !== "back" && action !== "comment" && action !== "uncomment" && !(action === "shelve" && w.path && isAbsolute(w.path)) && (!w.path || !isAbsolute(w.path) || !w.branch || !BASE_REF.test(w.baseRef) || !existsSync(w.path))) {
 		throw new OpError("bad_request", `#${t.id}: its worktree ${w.path || "(none recorded)"} is not there: look at it by hand`);
+	}
+	// M60: the optional exit: push the branch and open a pull request; shown first, then confirmed for the tip shown
+	if (action === "pr") {
+		if (!human) throw new OpError("unsupported", "a pull request is a person's (/tasks pr)");
+		if (w.stage !== "review") throw new OpError("bad_request", `#${t.id} is ${stageLabel(w.stage)}: a pull request is opened from review`);
+		if ((await worktreeClean(w.path)) !== true) throw new OpError("bad_request", `#${t.id}: its worktree has uncommitted changes (/tasks commit ${t.id} first)`);
+		const tip = await revParse(t.project, `refs/heads/${w.branch}`);
+		if (!tip) throw new OpError("bad_request", `#${t.id}: its branch ${w.branch} is gone`);
+		const what = `push ${w.branch} (${tip.slice(0, 8)}) and open a pull request into ${w.baseRef}`;
+		if (args.dry === true) return { note: what, hash: tip };
+		if (args.hash !== tip) throw new OpError("conflict", `the branch moved since it was shown: /tasks pr ${t.id} again to see it`);
+		const body = [t.detail ?? "", t.result ? `Done: ${t.result}` : "", w.verify?.ok ? "Verified by the repository's verify command." : "", `Task #${t.id}, opened by pi-roost.`].filter(Boolean).join("\n\n");
+		const r = await openTaskPr({ path: w.path, branch: w.branch, baseRef: w.baseRef, title: t.title, body });
+		if (!r.ok) throw new OpError("failed", r.reason);
+		w.pr = { url: r.url, tip, at: Date.now() };
+		w.note = `pull request: ${r.url}`;
+		saveTasks();
+		taskEvent(a, "pr", t, r.url);
+		pushBoard();
+		return { note: `pushed to ${r.remote} · ${r.url}` };
 	}
 	// M59: put away: the worktree removed (clean only), the branch and the record kept; /tasks start brings it back
 	if (action === "shelve") {
@@ -1854,7 +1874,7 @@ async function taskOp(
 		pushBoard();
 		return { tasks: all(), task: t };
 	}
-	const ACTIONS = ["claim", "release", "done", "drop", "assign", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve"];
+	const ACTIONS = ["claim", "release", "done", "drop", "assign", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"];
 	if (typeof action !== "string" || !ACTIONS.includes(action)) throw new OpError("bad_request", "action must be list, add, claim, release, done, drop, assign, start, merge, back, abort or commit");
 	const id = taskId(args?.id);
 	const t = id !== undefined ? tasks.get(id) : undefined;
@@ -1863,7 +1883,7 @@ async function taskOp(
 	// M52: a session acts on its project's tasks and those for any session (one it holds, whatever moved)
 	if (!lead && !mine && !onBoardOf(t, a.project)) throw new OpError("not_found", `no task #${t.id} on this session's board (it is ${projectLabel(t.project)}'s)`);
 	// M55: a task's workspace: start it, merge it, send it back, give up a sync, commit for it
-	if (action === "start" || action === "merge" || action === "back" || action === "abort" || action === "commit" || action === "approve" || action === "verify" || action === "pass" || action === "comment" || action === "uncomment" || action === "shelve") {
+	if (action === "start" || action === "merge" || action === "back" || action === "abort" || action === "commit" || action === "approve" || action === "verify" || action === "pass" || action === "comment" || action === "uncomment" || action === "shelve" || action === "pr") {
 		const r = await workspaceOp(a, t, action, args ?? {});
 		return { tasks: all(), task: t, ...r };
 	}

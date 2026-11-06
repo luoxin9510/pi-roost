@@ -345,6 +345,11 @@ behind (the result's `note`, a line each). Listing the board marks a branch merg
 hand as merged. The daemon builds the launch of a session the concierge starts from the
 concierge's own job. See `docs/plans/m59-shelve-cleanup.md`.
 
+M60: `{action: "pr", id, dry?, hash?}` (a person's, from review): `dry` returns what it
+will do and the branch tip as `hash`; with that hash it pushes the branch and runs `gh pr
+create`, recording `workspace.pr` (the task stays in review). See
+`docs/plans/m60-exits.md`.
+
 Projects (M52): a task is for a project, the root of a git repository (a worktree counts
 as its repository), or for any session (`project: null`). A session's project is where it
 works (its job's directory, a foreground pi's); outside a repository it has none. A
