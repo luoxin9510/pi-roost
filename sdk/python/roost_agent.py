@@ -340,7 +340,11 @@ class RoostAgent:
             kind = msg.get("kind")
             item = kind in ("message", "report", "notice")
             # agent items go only to an agent that takes them (on_message); a digest is the concierge's
-            if kind == "digest" or (item and not self._on_message):
+            if kind == "digest":
+                if isinstance(msg.get("seq"), int):
+                    self._ack(msg["seq"], True)  # the concierge's: acked, not kept
+                return
+            if item and not self._on_message:
                 return
             seq = msg.get("seq")
             if not isinstance(seq, int):

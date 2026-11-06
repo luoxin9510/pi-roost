@@ -26,6 +26,18 @@ and the clients dropped agent items anyway. The M49 stress run found it.
   from, no user authority), `from` (`sender`), `relation`. And `peers()`, `send(to,
   message)`, `watch(id, when)`.
 
+## Review
+
+- What was queued for an agent before it connected, and then its first report says it
+  takes no items (no `agentItems`), is dropped then: nothing would ever ack it, and a row
+  with something pending is never closed or cleaned up.
+- An agent's own watches go with its record when it is removed (they were kept by the
+  session file it does not have).
+- The clients ack a `digest` they do not take (only the concierge, a pi, gets them).
+- An agent that ran on a client without `onMessage` and is started again on one with it
+  skips items up to the last seq it finished (its `agent.json`), as for replies: one
+  queued before the upgrade is acked, not handed over.
+
 ## Tests
 
 - Conformance (`test/daemon.test.ts`, both clients): the hub adds a task and assigns it

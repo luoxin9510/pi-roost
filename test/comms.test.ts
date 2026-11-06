@@ -1549,7 +1549,7 @@ describe("M50: agents of the protocol take messages", () => {
 		expect(back.text).toContain("the build is green");
 		expect(back.from).toBe("helper");
 		// the agent watches a job; the notice is its item
-		const { id: wid } = await hub.request("dispatch", { ...launch("sleep 0.3", "short") });
+		const { id: wid } = await hub.request("dispatch", { ...launch("sleep 30", "short") });
 		expect(await a.c.request("watch", { id: wid, when: "ended" })).toMatchObject({ fired: false });
 		await (await hubc()).request("stop", { id: wid });
 		const notice = await waitFor(() => delivered(a.events, "notice")[0]);
@@ -1565,6 +1565,13 @@ describe("M50: agents of the protocol take messages", () => {
 		await expect(hub.request("task", { action: "assign", id: t2!.id, to: mid })).rejects.toMatchObject({ code: "unsupported" });
 		await expect(m.c.request("watch", { id: aid, when: "ended" })).rejects.toMatchObject({ code: "unsupported" });
 		expect(readState(mid)?.pendingReplies ?? []).toEqual([]);
+		// queued before it said: dropped when its report says it takes none
+		const { id: lid } = await hub.request("dispatch", protocolJob("late"));
+		expect(await lead.c.request("send", { to: lid, message: "before it connects" })).toMatchObject({ outcome: "queued" });
+		expect((readState(lid)?.pendingReplies as unknown[]).length).toBe(1);
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === lid)?.pid);
+		await agentOf(lid, false);
+		expect(readState(lid)?.pendingReplies ?? []).toEqual([]);
 		// a plain command is still no session
 		const { id: cid } = await hub.request("dispatch", { ...launch("sleep 30", "plain"), kind: "shell", sessionFile: "" });
 		await expect(hub.request("task", { action: "assign", id: t2!.id, to: cid })).rejects.toMatchObject({ code: "unsupported" });

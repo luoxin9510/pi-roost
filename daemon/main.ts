@@ -1582,7 +1582,9 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 		}
 	}
 	const w = workerAlive.delete(id) ? undefined : recs.get(id)?.worktree;
-	const file = recs.get(id)?.sessionFile;
+	// M50: an agent of the protocol watches by its job
+	const removedRec = recs.get(id);
+	const file = removedRec ? recKey(removedRec) : undefined;
 	const name = rowOf(id)?.name ?? recs.get(id)?.name ?? id;
 	// M43: before the record goes (a watcher is told, then the record and the row are gone)
 	await fireWatches({ id, name, state: "removed" });
@@ -3003,6 +3005,14 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	if (!st || !str(args?.token) || st.jobToken !== args.token) throw new OpError("unauthorized", "bad job token");
 	if (!roster.has(id) || stopping.has(id)) return; // ended or being stopped: the daemon owns the state now
 	const takesAgentItems = (args.report as { agentItems?: unknown } | undefined)?.agentItems === true;
+	// M50: an agent of the protocol that takes no items: what waited for it before it said so is dropped (never acked, it would stay)
+	if (!takesAgentItems && isProtocolJob(recs.get(id))) {
+		const pending = pendingReplies(id);
+		if (pending.some(isAgentItem)) {
+			updateState(id, { pendingReplies: pending.filter((r) => !isAgentItem(r)) });
+			log("info", "agent items dropped: the agent takes none", { id, count: pending.filter(isAgentItem).length });
+		}
+	}
 	const gained = takesAgentItems && !conn.agentItems && workerConns.get(id) === conn;
 	conn.agentItems = takesAgentItems;
 	if (gained) flushPending(id, conn);

@@ -386,8 +386,9 @@ export class RoostAgent {
 
 	private deliver(item: DeliverItem): void {
 		const agentItem = item.kind === "message" || item.kind === "report" || item.kind === "notice";
-		// agent items go only to an agent that takes them (onMessage); a digest is the concierge's
-		if (item.kind === "digest" || (agentItem && !this.onMessage)) return;
+		// agent items go only to an agent that takes them (onMessage); a digest is the concierge's (acked, not kept)
+		if (item.kind === "digest") return this.reporter.ack(item.seq, true);
+		if (agentItem && !this.onMessage) return;
 		if (item.seq <= this.handled) {
 			// sent again (a reconnect): ack only what is finished; the rest is acked when it is
 			if (item.seq <= this.completed) this.reporter.ack(item.seq, agentItem);
