@@ -1,8 +1,8 @@
-# pi-roost 移植说明（基于 v0.1.14：main `26c5575` 加发布提交）
+# pi-roost 移植说明（基于 v0.1.15：main `51acab8` 加发布提交）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout v0.1.14`（发布提交；代码与 M47 合入的 main `26c5575` 相同）逐节实现，每节末尾有验收标准。
-> **v0.1.14（本文依据）= v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
+> 用法：对照源码 `git checkout v0.1.15`（发布提交；代码与 M49 合入的 main `51acab8` 相同）逐节实现，每节末尾有验收标准。
+> **v0.1.15（本文依据）= v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
 > v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
 >
 > **v0.1.8–v0.1.12 新增**（详见 Step 20–40，附录 C 有提交号）：
@@ -11,6 +11,7 @@
 > - v0.1.12 = any-agent 路线 + 度量 + 续跑：M28 steer/follow-up；M29 中性内核（`ROOST_*` 名字）、M30 agent 档案（终端 agent 零代码接入）、M31 agent 协议（TS/Python 客户端）、M32 按层分目录（`adapters/pi/`、包导出）、M33 独立 hub（`pi-roost hub`）；M34 telemetry、M35 压测、M36 请求 ID、M37/M41 真模型 evals；M38 中断续跑（`autoResume`）、M39 定时任务（`/schedule`）、M40 全 agent 续跑与定时；M42 一个压测用例的修复（只改测试）。
 > - v0.1.13：只有文档（本文同步到 v0.1.12，`docs/` 进发布包）。
 > - **v0.1.14 = hub 作为控制平面（`docs/plans/hub-control-plane.md`，M43–M47）+ peek 加深（M48）**，详见 Step 41–46：M43 事件流/watch/消息规则；M44 值班 agent（hub 自己的 agent，daemon 用摘要唤醒）；M45 升级与策略（建议答案、常规代答、撤回、act）；M46 常备指令；M48 peek 加深（更多信息、编辑器回复框、`/` 命令、补全）；M47 共享任务板（会话认领的锁、依赖、值班 agent 当组长）。
+> - **v0.1.15 = M49 加固**（`docs/plans/m49-hardening.md`，Step 47）：压测加任务板场景；对抗性审查后修的三件事——hub 专属 op 拒绝已表明是会话的连接、socket 的上限（单行 4 MiB、连接数、在途请求、未读积压）、标题/指令/名字一律单行（防伪造摘要行）。
 > - **Step 20 起（M21 及之后）全部是可选增强**；核心 Step 1–8 不依赖它们。其中真正改变"移植怎么做"的是 M29/M31/M32：现在可以不写适配器代码，直接用档案（级别 0）或协议（级别 1）接入，见 §0 与 §1.3。
 
 ---
@@ -147,7 +148,7 @@
 
 ## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
 
-**现状（v0.1.14；分层自 v0.1.12 的 M32 起未再变，M43–M48 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 在 core，`adapters/pi/concierge.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+**现状（v0.1.15；分层自 v0.1.12 的 M32 起未再变，M43–M48 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 在 core，`adapters/pi/concierge.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
 
 | 层 | 目录 | 允许 import | 守护 |
 |---|---|---|---|
@@ -835,9 +836,9 @@ any-agent 路线的第一步（设计见 `docs/plans/any-agent.md`）：名字�
 
 `npm run stress`（`stress/run.ts`，无模型花费）：隔离 home 里一个真 daemon + 真 host，agent 是假的（`stress/agent.ts`，建在 TS 协议客户端上）。
 
-- 场景：`sessions`（N 个 agent 同时派发、M 个 hub 在看）、`replies`（每个 agent K 条回复，各 job 同时发）、`chaos`（风暴中途 SIGKILL daemon 并重启、SIGKILL 十分之一的 host、一个永不读的 hub，然后给被杀的 job 回复）、`soak`（重复风暴几分钟，观察内存与描述符）。参数：`--jobs 50 --replies 20 --hubs 3 --soak-minutes 10 --work-ms 0`。
+- 场景：`sessions`（N 个 agent 同时派发、M 个 hub 在看）、`replies`（每个 agent K 条回复，各 job 同时发）、`chaos`（风暴中途 SIGKILL daemon 并重启、SIGKILL 十分之一的 host、一个永不读的 hub，然后给被杀的 job 回复）、`board`（v0.1.15/M49：所有 agent 同时抢任务板，中途 SIGKILL daemon 再起，见 Step 47）、`soak`（重复风暴几分钟，观察内存与描述符）。参数：`--jobs 50 --replies 20 --hubs 3 --tasks 120 --soak-minutes 10 --work-ms 0`。
 - 不变量：每条回复恰好处理一次且有序（chaos 里请求失败后重发的允许处理两次，计数不判失败；M36 之后连这个也没有了）；被杀的 job 被看作已结束并被回复重新拉起；结束时每个 job 都停了、没有遗留 host 或 socket。
-- 预算（`stress/run.ts` `BUDGET`）：dispatch p95 3000 ms、全部就绪 `30_000 + JOBS*200` ms、回复 ack p95 3000 ms、hub 事件延迟 p95 1000 ms、daemon RSS 400 MB；超预算整个 run 退出 1。报告与遥测在 `stress/.runs/<时间>/`（`report.json`、`report.txt`、`telemetry.jsonl`、agent 日志）。
+- 预算（`stress/run.ts` `BUDGET`）：dispatch p95 3000 ms、全部就绪 `30_000 + JOBS*200` ms、回复 ack p95 3000 ms、hub 事件延迟 p95 1000 ms（M49 起不计 agent 的 `ready`——它在连上 daemon 之前就打了时间戳，是启动耗时；daemon 宕机期间（被杀到恢复后 5 s）发出的报告单独计数；hub 在 daemon 被杀后会重连重订阅）、`task` op p95 1000 ms（M49）、daemon RSS 400 MB；超预算整个 run 退出 1。报告与遥测在 `stress/.runs/<时间>/`（`report.json`、`report.txt`、`telemetry.jsonl`、agent 日志）。
 
 **它找出并修掉的（50 agent × 20 回复、3 hub、macOS）**：
 
@@ -1043,7 +1044,21 @@ hub 自己的 agent：一个 pi 会话作为 **role** 而不是普通行（`JobR
 - **SDK**：TS `RoostAgent.call(op, args)` + `tasks/claimTask/taskDone/releaseTask/addTask`；Python `request(op, args, timeout)`（按请求 id 路由应答：`_send(..., waiter)` 在锁内登记、`_message` 先匹配 id、`_drop` 让等待者以 `disconnected` 失败、发送失败时撤销登记；要在第一次 `report()` 建立连接之后用）+ `RoostError(code, message)` + `tasks/claim_task/task_done/release_task/add_task`。协议一致性测试里 TS 与 Python 两个脚本化 agent 各自在板上挂一个任务、认领、完成。
 - evals：`evals/tasks.eval.ts`（一个会话按板工作：两个任务、第二个依赖第一个，事件顺序证明 #2 在 #1 完成后才被认领；值班 agent 把任务交给空闲会话、对方认领并完成、它自己一次都没认领）。harness 新增 `tasks`（按位置写依赖），结果带 `board`、`taskEvents`。首轮 2/2、2/2（`docs/plans/m37-evals.md` 的 M47 节）。
 
-移植提示：认领是"活着的会话持有的锁"，关键在 `ownerLive()` 与四处释放（失败/停止、删除、前台断开、启动清扫）；忘了任何一处，任务就会卡死。独立审核在这一步抓出的问题值得记住：没有 peer 的连接默认当 hub（agent 在 report 被接受前就能冒充）、投递 `await` 之后不复查状态、正则嵌套量词回溯。
+移植提示：认领是"活着的会话持有的锁"，关键在 `ownerLive()` 与四处释放（失败/停止、删除、前台断开、启动清扫）；忘了任何一处，任务就会卡死。独立审核在这一步抓出的问题值得记住：没有 peer 的连接默认当 hub（agent 在 report 被接受前就能冒充）、投递 `await` 之后不复查状态、正则嵌套量词回溯。（"另开一条新连接就是 hub"这条路在 Step 47 才堵上一半：hub 专属 op 拒绝已表明身份的连接。）
+
+### Step 47：任务板之后的加固（M49，`docs/plans/m49-hardening.md`）
+
+M47 上线时只跑了通用压测和普通审查。这一步专门压任务板、并让独立审查以攻击者视角打 daemon，再修它找出的问题。
+
+- **压测 `board` 场景**（默认集合，`--tasks 120`，每第五个任务依赖前一个）：所有 agent 同时抢（从前三个 open 里随机挑、做完再挑），1.5 s 时 SIGKILL daemon 再起。不变量：每个任务完成且只完成一次（事件流和 agent 自己的日志一致）、依赖完成前不被认领、没有认领被释放（所有会话都活着）、交办给"命令"类 job 一律 `unsupported` 且任务不被标记、`tasks.json` id 唯一且 `next` 越过最大 id。压测 agent 是讲协议的命令（`kind: "shell"` + `protocol`），和 `send` 一样，消息层（`holderOf`/`sessionKeyOf`）认为它们没有会话，所以 `assign` 拒绝它们；交办给 pi 会话的路径由 evals 用真模型覆盖。
+- **hub 专属 op**：`dispatch stop rm respawn reply pin rename reorder subscribe schedules schedule-* shutdown` 先 `requireHub(conn)`：连接上做过 `hello`/`report`（agent、worker）或 `peer_register`（前台 pi）就回 `unsupported`；`events` `concierge` `concierge-ask` 也拒绝说过 `hello` 的连接。之前前台 pi 的连接能停别的会话、以用户身份回答别人的问题、关掉服务；agent 能改值班 agent 的策略、以用户名义加常备指令。值班 agent 的 `act`（stop/respawn）在策略放行后以 hub 身份执行（内部 `handle()` 传一个去掉 `peer`/`agentSide` 的连接）。**真实客户端本来就各用各的连接**（hub、CLI、pi 的子 agent 面板都另开连接），测试里图省事复用 peer/worker 连接的地方改成各开一条（`comms.test` 的 `hubc()`、`daemon.test` 的 `asWorker()`）。边界：socket 是用户的（0600，所在目录 0700）；新开一条连接且从不表明身份的进程就是 hub——roost 区分 hub 和会话，不把同一用户的进程彼此隔离。
+- **socket 上限**：`LineReader` 只扫描新到的数据找换行（旧实现每个 chunk 都对整段未完成行 `split`，几百 MB 无换行的数据能吃掉几 GB 内存和一个核几分钟），超过上限抛一次 `LineTooLong`、之后不再接收；daemon 上限 4 MiB（`LINE_MAX_REQUEST`，超了断这条连接，服务照常），客户端默认 64 MiB（超了关流而不是在 data 回调里抛）。连接数上限 1024（`CONNS_MAX`）；单连接在途请求 256（`INFLIGHT_MAX`，满了 `pause()` 这条 socket，应答出去再 `resume()`；`pumpLines` 仍按到达顺序启动请求；连接关闭时没开始的行丢弃）；客户端未读超过 16 MiB 就断开（`SEND_BACKLOG_MAX`，不再读的订阅者）。
+- **单行文本**：任务标题、常备指令、job 名、前台 pi 与 agent `hello` 的名字进来时折叠成一行（换行、制表符变空格；任务的 detail 和 result 保留换行）；加载手改过的 `tasks.json`/`orders.json` 时也折叠；摘要的渲染函数（`taskLine` `orderLine` `eventLine`）对拿到的一切再折叠一次——之前一个标题能在值班 agent 的摘要里自起一行"Due now: …""Standing orders: …"。
+- **畸形请求**：非法 JSON、非对象参数、小数/字符串 id、深嵌套、未知 op——带数字 id 的请求一定得到带 code 的应答，其余丢弃；现在有测试。
+
+**验收**：`comms.test` 的 "M49: hardening the socket and the text"（会话连接与 hello 后的连接碰 hub op 被拒；5 MB 无换行断开该连接而服务仍应答；畸形请求都有 code；标题/指令/名字单行、手改的存储被折叠、摘要里没有伪造行）；`framing.test` 的读取上限与长行分块；`npm run stress` 全绿（含 `board`）。
+
+移植提示：给每个 op 想清楚"谁能调"，并在连接上记住身份（`peer`、`agentSide`）——"没表明身份就是 hub"只在**同一条连接**上判断才成立；所有会被拼进给模型看的文本（摘要、信封）的短字段都要在入口和渲染两处折成一行。
 
 ---
 
@@ -1157,6 +1172,8 @@ hub 自己的 agent：一个 pi 会话作为 **role** 而不是普通行（`JobR
 | 任务板上限 / 标题 / 细节与结果（M47） | 200 / 200 / 2000 | `lib/board.ts` `TASK_MAX` `TASK_TITLE_MAX` `TASK_TEXT_MAX` |
 | 前台 pi 断开后认领保留（M47） | 5 s | `daemon/main.ts` `FG_CLAIM_GRACE_MS`（`PI_ROOST_FG_CLAIM_GRACE_MS`） |
 | peek 记录尾读取 / 刷新（M48） | 末尾 256 KB / 2 s | `hub/agent-view.ts`（`readTail`） |
+| 请求单行上限（daemon / 客户端，M49） | 4 MiB / 64 MiB | `daemon/main.ts` `LINE_MAX_REQUEST` / `lib/protocol.ts` `LINE_MAX` |
+| 连接数 / 单连接在途请求 / 未读积压（M49） | 1024 / 256 / 16 MiB | `daemon/main.ts` `CONNS_MAX` `INFLIGHT_MAX` `SEND_BACKLOG_MAX` |
 
 调试用环境变量：`PI_ROOST_HOME` `PI_ROOST_RUNTIME_DIR` `PI_ROOST_CONFIG_DIR` `PI_ROOST_HOST_ENTRY` `PI_ROOST_REAP_MINUTES` `PI_ROOST_REAP_CHECK_MS` `PI_ROOST_SHELL_KEEP_MS` `PI_ROOST_PROGRESS_MS` `PI_ROOST_FIRST_PROGRESS_MS`；v0.1.7 新增：`PI_ROOST_AUTO_CLOSE_MS`（M13）、`PI_ROOST_CLEANUP_DAYS` `PI_ROOST_CLEANUP_CHECK_MS`（M15）、`PI_ROOST_PR_POLL_MS` `PI_ROOST_GH`（M16，`gh` 可执行文件路径）——测试全靠它们把时间缩短、把目录隔离到临时路径、用假的 `gh`。（内部标记变量 `PI_ROOST_RESTORE`、`PI_ROOST_CHILD` 见 §3。）
 
@@ -1222,8 +1239,10 @@ v0.1.14 新增/扩充（M43–M48）：
 | `agent-view`（扩充，M43–M48） | `/log`、`/concierge …`、横幅与 Ctrl+Y/E、`/concierge orders`、`/tasks` 与标题计数（含 `after` 正则边角）、peek 的信息/回复框/命令/补全（行选择要跳过分组标题） | 换成你的适配器 mock |
 | `daemon` 的协议一致性用例（M31 + M47） | TS 与 Python 脚本化 agent 各在板上挂任务、认领、完成（Python 的应答按请求 id 路由） | 改路径/env 前缀即可 |
 
+v0.1.15 新增（M49）：`comms` 的 "M49: hardening the socket and the text"（hub op 闸门、超长行、畸形请求、单行文本）；`framing` 的 `LineReader` 上限与长行分块。`comms`/`daemon` 里原来一条连接既当会话又当 hub 的用例改成各开一条（`hubc()`、`asWorker()`）。测试总数 433。
+
 **单列**：
-- `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos soak`，不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
+- `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos board soak`（默认跑前四个；`board` 是 M49 加的），不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
 - `npm run eval`（M37/M41，`evals/run.ts`）：**真模型，要花钱，需要凭证**，不属于 `npm test`；每个用例一个隔离的 roost（见 Step 36）。`--runs N` 才能谈稳定性，一次通过不说明稳定。
 
 另外每个里程碑的 `docs/plans/m*-acceptance.md` 是**手工验收清单**（真实终端、tmux 里的操作步骤），重建完对着走一遍。
@@ -1241,7 +1260,7 @@ v0.1.14 新增/扩充（M43–M48）：
 7. 会话文件延迟写盘：daemon、respawn、转后台都要处理"文件还不存在"。
 8. 版本升级后旧 daemon 仍跑旧代码：CLI 检测版本差异并提示 `daemon stop --keep-workers && respawn --all`。
 9. worktree 只能在派发时创建：运行中的会话不能搬进 worktree（C7 对话框），只读任务就不要开隔离。
-10. 安全模型是**同用户互信**：token 不是安全边界，同用户进程都能读 `state.json`。如果公司要求多租户隔离，需要重新设计。
+10. 安全模型是**同用户互信**：token 不是安全边界，同用户进程都能读 `state.json`。如果要求多租户隔离，需要重新设计。M49 起 daemon 区分 hub 和会话（会话的连接用不了 hub 专属 op），但一个有 shell 的会话另开一条连接、不表明身份，仍然就是 hub：这是区分，不是沙箱。
 11. （M11）被回收的会话会从 pi-mobile 手机列表消失，手机无法唤醒；`/bg` 对手机来说是新会话。
 12. （M12/M19）记录视图是全屏浮层而不是原地绘制；展开工具完整输出只能 attach 去看；`context_edit` 未应用，压缩前的消息仍显示。
 13. （M13）不按天删除子会话记录，只有 `cleanupDays` 的统一清理；`/tasks` 的"隐藏失败/停止行"没有对应，面板只有一个。
@@ -1264,10 +1283,11 @@ v0.1.14 新增/扩充（M43–M48）：
 30. （M46）常备指令的时钟只认 `lib/schedule.ts` 的词汇；到点唤醒受每小时配额和日预算约束，被压住时随下一次摘要带上（只带一次）；指令"应用过"全靠它自己上报（`hub_note_done`）。
 31. （M47）任务板一个 roost home 一块，没有按项目分；没有"我依赖的任务完成了就通知我"（要自己 `roost_watch` 它的会话，或等值班 agent 转交）；任何会话都能把板挂满 200 条开放任务（只清 done/dropped），失控的会话要用户来停；值班 agent 交办只是发消息，对方不认领就一直 `assigned`，hub 里能看到 "handed to … 2m ago"；`/tasks` 浮层是打开时的快照（标题计数是实时的）。
 32. （M48）peek 的记录尾只读文件末尾 256 KB，长工具输出会被截去头部；`/` 命令只在 peek 的回复框里按会话解释，任务框里仍是 hub 命令；`!` 在 peek 里拒绝（不会把命令当回复发）。
+33. （M49）任务板的 `assign` 和 `send` 一样只能发给 pi 会话（或前台 pi）：讲协议的命令类 job 没有会话，交办回 `unsupported`；名字和标题被折成一行，`/log` 里多行的问题/结果也显示成一行；连接被暂停（在途请求满 256）时察觉不到对端关闭，直到有应答出去；同一用户的进程能占满 1024 个连接。
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.14）
+## 附录 A：daemon op 一览（v0.1.15）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -1315,6 +1335,11 @@ v0.1.14 新增/扩充（M43–M48）：
 - **daemon capabilities**：`replies steer agent-items peers spawn handback events watch tasks`。
 - **文件**（都在 roost home）：`events.jsonl`（M43）、`watches.json`（M43）、`concierge.json`（M44）、`orders.json`（M46）、`tasks.json`（M47）。
 - **错误码**新增用法：`policy`（M45，策略不允许）、`conflict` `blocked`（M47，认领）、`unauthorized`（M47，没有被接受的 report 的 agent 连接碰任务板）。
+
+**v0.1.15 的变化**（M49，没有新 op）：
+- `dispatch stop rm respawn reply pin rename reorder subscribe schedules schedule-add schedule-rm schedule-pause schedule-run shutdown` 在做过 `hello`/`report`/`peer_register` 的连接上回 `unsupported`；`events` `concierge` `concierge-ask` 也拒绝说过 `hello` 的连接。
+- 请求行最长 4 MiB（超了断开连接）；最多 1024 个连接；单连接在途 256 个请求；未读积压 16 MiB 断开。
+- `task add` 的标题、`concierge-order add` 的文本、`dispatch` 的名字、`peer_register`/`hello` 的名字折成一行（`dispatch` 名字最长 200）。
 
 **v0.1.7 没有新增 op**：M11–M20 的新功能都复用现有 op，只在字段上扩展——`list`/`job` 事件里的 `JobRow` 新增 `parentOpen`（M13）、`agent`（M18）、`prs`（M16，`PrInfo[]`），M10 的 `worktree`；`dispatch` 的 `DispatchArgs` 新增 `agent` `workspaceEnv` `envDeny` `envForce`；`report` 的 `WorkerReport` 新增 `attachRepaint`（M21 起只有旧 host 读）`remoteAt` `prLinks`。`reply`（M19 记录视图发消息、M12b 面板 `m`）、`respawn`（M13 唤醒休眠的子会话）、`rm`（M15 `.worktreeinclude` 感知的清理）语义不变。host 帧协议新增：attach 的首个回复帧 `HELLO {repaint}`（M14）/ `{replay:true}`（M21，之后第一帧 DATA 是快照），`attached.json` 的 `replay`（M21），数据流里的私有标记 `OSC 7700;pi-roost-repaint`（M21 起 host 只负责剔除）。
 
@@ -1365,6 +1390,7 @@ v0.1.14 新增/扩充（M43–M48）：
 | 44 | M46 常备指令 | daemon `orderOp`/时钟 + 摘要 + hub `/concierge orders` | 小到中 |
 | 45 | M48 peek 加深 | `hub/agent-view.ts`（peek、`TaskEditor`、补全）+ `lib/transcript.ts` `readTail` | 中（全在视图里） |
 | 46 | M47 任务板 | `lib/board.ts` + daemon `taskOp`/四处释放 + 两套工具 + hub `/tasks` + SDK | 中 |
+| 47 | M49 加固 | daemon `requireHub`/`pumpLines`/`send` 积压、`lib/protocol.ts` `LineReader`、单行折叠 + 压测 `board` 场景 | 小 |
 
 ## 附录 C：版本对应
 
@@ -1430,8 +1456,10 @@ v0.1.14 新增/扩充（M43–M48）：
 | `16809e0` | PR #71：M46 常备指令 |
 | `ec1bb74` | PR #72：M48 peek 加深 |
 | `26c5575` | PR #73：M47 共享任务板（含独立审核的修复） |
-| （发布提交） | PR #74：发布 v0.1.14（本文依据，tag `v0.1.14`；代码与 `26c5575` 相同） |
+| `14a62bf` | PR #74：发布 v0.1.14（tag `v0.1.14`；代码与 `26c5575` 相同） |
+| `51acab8` | PR #75：M49 任务板之后的加固（压测场景、对抗性审查的修复） |
+| （发布提交） | PR #76：发布 v0.1.15（本文依据，tag `v0.1.15`；代码与 `51acab8` 相同） |
 
-> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=PR #74 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=PR #76 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
 
-所需 pi 最低版本（v0.1.14 仍以 **pi 1.5.0** 验证，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
+所需 pi 最低版本（v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
