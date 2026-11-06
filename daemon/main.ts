@@ -2954,7 +2954,7 @@ const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn"
 function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabilities?: unknown } | undefined): import("../lib/protocol.ts").HelloResult {
 	if (typeof args?.protocol !== "number" || !Number.isInteger(args.protocol) || args.protocol < 1) throw new OpError("bad_request", "protocol must be a version number");
 	const a = (args.agent && typeof args.agent === "object" ? args.agent : {}) as { name?: unknown; version?: unknown };
-	const name = str(a.name) ? sanitizeName(a.name).slice(0, 64) : "unknown";
+	const name = (str(a.name) ? oneLineText(a.name, 64) : "") || "unknown";
 	const caps = Array.isArray(args.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
 	conn.hello = { name, version: str(a.version) ? a.version.slice(0, 40) : null, capabilities: caps };
 	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: DAEMON_CAPABILITIES };
@@ -3431,7 +3431,7 @@ async function autoClose(id: string): Promise<void> {
 function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd?: unknown; pid?: unknown } | undefined): { id: string } {
 	if (conn.peer?.kind === "job") throw new OpError("bad_request", "a worker connection is already a peer");
 	// M49: one line of plain characters (it is quoted in digests and events)
-	const name = typeof args?.name === "string" && args.name.trim() ? sanitizeName(args.name) : "pi";
+	const name = (typeof args?.name === "string" ? oneLineText(args.name, 200) : "") || "pi";
 	const cwd = typeof args?.cwd === "string" ? args.cwd : "";
 	const pid = args?.pid;
 	if (typeof pid !== "number" || !isAlive(pid)) throw new OpError("bad_request", "pid must be a live process");
@@ -3780,6 +3780,9 @@ server = createServer((sock) => {
 	sock.on("error", () => {});
 	sock.on("close", () => {
 		conns.delete(conn);
+		// M49: what it sent and was not started yet is not run for a client that is gone
+		conn.backlog = [];
+		conn.head = 0;
 		if (conn.peer?.kind === "fg" && fgPeers.get(conn.peer.id) === conn) {
 			fgPeers.delete(conn.peer.id);
 			pushChildrenOf(conn.peer.session);

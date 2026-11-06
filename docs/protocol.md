@@ -205,8 +205,7 @@ a connection of its own for the user (the hub, the CLI); its job's own connectio
 the ops above. The socket: a request line is at most 4 MiB (a longer one ends the
 connection), at most 1024 connections, at most 256 requests in flight on one connection
 (it is not read meanwhile), and a client that leaves 16 MiB of answers and events unread
-is dropped. Names (a peer's, an agent's `hello`) are cleaned to one line of plain
-characters.
+is dropped. Names (a peer's, an agent's `hello`) are folded to one line.
 
 `events {after?, limit?, id?}` → `{events, cursor}` (M43) is for the hub and the CLI,
 not for agents (a peer connection is refused, the concierge's excepted: the feed

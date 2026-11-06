@@ -158,6 +158,12 @@ async function hub(): Promise<{ close(): void }> {
 	let c: DaemonClient | undefined;
 	const attach = async (): Promise<void> => {
 		const fresh = await DaemonClient.connect();
+		try {
+			await fresh.request("subscribe", {});
+		} catch (e) {
+			fresh.close();
+			throw e;
+		}
 		fresh.onEvent((e: Event) => {
 			if (e.event !== "job") return;
 			// "ready" is stamped before the agent connected: its start, measured as allReadyMs
@@ -181,7 +187,6 @@ async function hub(): Promise<{ close(): void }> {
 				}
 			}, 30_000, "a hub back").catch(() => {});
 		});
-		await fresh.request("subscribe", {});
 		c = fresh;
 	};
 	await attach();

@@ -66,8 +66,8 @@ digest, flood, race, tamper with the files) against an isolated daemon. Its find
 3. **Newlines in titles, rules and names.** Task titles, standing orders and a
    foreground pi's name kept newlines and tabs, so a title could open a line of its own
    in the concierge's digest ("Due now: …", "Standing orders: …"). Now a title, an order
-   and a job's name are one line when they come in (a task's detail and result keep
-   their lines), a peer's and an agent's name go through `sanitizeName`, a store edited
+   and a job's, a peer's and an agent's name are one line when they come in (a
+   task's detail and result keep their lines), a store edited
    by hand is folded at load, and the digest's renderers (`taskLine`, `orderLine`,
    `eventLine`) fold whatever they are given.
 4. **Odd requests.** Bad JSON, non-object args, fractional or string ids, deep nesting,
