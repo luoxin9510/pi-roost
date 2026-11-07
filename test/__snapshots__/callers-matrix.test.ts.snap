@@ -274,7 +274,7 @@ exports[`M63: who may do what > each op, for each kind of caller 1`] = `
 exports[`M63: who may do what with a task > each task action, for each kind of caller, on a fresh open task 1`] = `
 {
   "task.abort": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: /tasks abort is a person's (the hub's)",
     "foreground": "unsupported: /tasks abort is the hub's",
     "job": "unsupported: /tasks abort is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
@@ -323,14 +323,14 @@ exports[`M63: who may do what with a task > each task action, for each kind of c
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.comment": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: review comments are a person's (the hub's review, the CLI)",
     "foreground": "unsupported: /tasks comment is the hub's",
     "job": "unsupported: /tasks comment is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.commit": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: /tasks commit is a person's (the hub's)",
     "foreground": "unsupported: /tasks commit is the hub's",
     "job": "unsupported: /tasks commit is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
@@ -358,21 +358,21 @@ exports[`M63: who may do what with a task > each task action, for each kind of c
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.merge": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: /tasks merge is a person's (the hub's)",
     "foreground": "unsupported: /tasks merge is the hub's",
     "job": "unsupported: /tasks merge is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.pass": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: /tasks pass is a person's (the hub's)",
     "foreground": "unsupported: /tasks pass is the hub's",
     "job": "unsupported: /tasks pass is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.pr": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: a pull request is a person's (/tasks pr)",
     "foreground": "unsupported: /tasks pr is the hub's",
     "job": "unsupported: /tasks pr is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
@@ -386,7 +386,7 @@ exports[`M63: who may do what with a task > each task action, for each kind of c
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.shelve": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: shelving is a person's (/tasks shelve)",
     "foreground": "unsupported: /tasks shelve is the hub's",
     "job": "unsupported: /tasks shelve is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
@@ -400,14 +400,14 @@ exports[`M63: who may do what with a task > each task action, for each kind of c
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.uncomment": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: review comments are a person's (the hub's review, the CLI)",
     "foreground": "unsupported: /tasks uncomment is the hub's",
     "job": "unsupported: /tasks uncomment is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
   "task.verify": {
-    "concierge": "bad_request: #<t> has no workspace: /tasks start it first",
+    "concierge": "unsupported: /tasks verify is a person's (the hub's)",
     "foreground": "unsupported: /tasks verify is the hub's",
     "job": "unsupported: /tasks verify is the hub's",
     "person": "bad_request: #<t> has no workspace: /tasks start it first",

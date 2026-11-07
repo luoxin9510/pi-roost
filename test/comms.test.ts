@@ -1209,7 +1209,9 @@ describe("M47: the shared task board", () => {
 		await hub.request("task", { action: "add", title: "later", after: [2] });
 		expect((await hub.request("task", { action: "drop", id: 2 })).task?.state).toBe("dropped");
 		expect((await w.c.request("task", { action: "claim", id: 3 })).task?.state).toBe("claimed");
-		await expect(hub.request("task", { action: "claim", id: 99 })).rejects.toMatchObject({ code: "not_found" });
+		await expect(w.c.request("task", { action: "claim", id: 99 })).rejects.toMatchObject({ code: "not_found" });
+		// M63: who may comes first: the hub never claims, a task there or not
+		await expect(hub.request("task", { action: "claim", id: 99 })).rejects.toMatchObject({ code: "unsupported" });
 		await expect(hub.request("task", { action: "nope" as "list" })).rejects.toMatchObject({ code: "bad_request" });
 		// the feed: who did what
 		const feed = (await hub.request("events", { limit: 100 })).events.filter((e) => e.kind === "task");

@@ -100,6 +100,7 @@ import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.t
 import { ROOST_VERSION } from "../lib/version.ts";
 import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "../lib/project-config.ts";
 import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, openTaskPr, prTarget, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "../lib/task-git.ts";
+import { allow, callerOf } from "../lib/callers.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, WORKTREES_DIR, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
@@ -895,7 +896,6 @@ function ordersDue(now: number): StandingOrder[] {
 /** `concierge-order`: keep, drop, list, mark applied. */
 function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: unknown; id?: unknown } | undefined): { orders: StandingOrder[]; order?: StandingOrder } {
 	const peer = conn.peer;
-	if ((peer && !isConciergePeer(peer)) || (!peer && conn.agentSide)) throw new OpError("unsupported", "standing orders are the hub's and the concierge's");
 	const by: StandingOrder["by"] = peer ? "concierge" : "user";
 	const action = args?.action;
 	const all = () => [...orders.values()].sort((a, b) => a.id - b.id);
@@ -1384,7 +1384,6 @@ async function workspaceOp(
 	action: WorkspaceAction,
 	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown },
 ): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
-	if (a.sessionId !== null) throw new OpError("unsupported", `/tasks ${action} is the hub's`);
 	// one action on a task's workspace at a time (two starts, a drop during a merge)
 	if (workspaceBusy.has(t.id)) throw new OpError("conflict", `#${t.id}: another action on its workspace is under way`);
 	workspaceBusy.add(t.id);
@@ -1403,10 +1402,8 @@ async function workspaceAction(
 	action: WorkspaceAction,
 	args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown },
 ): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
-	const human = a.sessionId === null && !a.concierge; // the hub, the CLI
 	// M56: trust is a person's: the repository's commands, shown, then approved
 	if (action === "approve") {
-		if (!human) throw new OpError("unsupported", "a person approves a repository's commands (/tasks approve)");
 		if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: no repository`);
 		const baseRef = t.workspace?.baseRef || (await currentBranch(t.project));
 		if (!baseRef) throw new OpError("bad_request", `${projectLabel(t.project)}: no branch checked out to read .roost/project.json from`);
@@ -1425,7 +1422,8 @@ async function workspaceAction(
 	if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.workspace?.stage === "merged" ? "merged" : t.state}`);
 	if (action === "start") {
 		// M57: the concierge too, when its policy lets it start sessions
-		if (!human && !(a.concierge && conciergePolicy().act)) throw new OpError(a.concierge ? "policy" : "unsupported", a.concierge ? "the concierge may not start sessions (act: off): ask the user to /tasks start it" : "the hub starts a task in its workspace (/tasks start)");
+		// the Concierge, when its policy lets it start sessions (the table: a Person or the Concierge)
+		if (a.concierge && !conciergePolicy().act) throw new OpError("policy", "the concierge may not start sessions (act: off): ask the user to /tasks start it");
 		if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: a workspace is a repository's (add it in a repository)`);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);
 		// M56: its setup runs: the session follows by itself
@@ -1498,7 +1496,6 @@ async function workspaceAction(
 	}
 	// M60: the optional exit: push the branch and open a pull request; shown first, then confirmed for the tip shown
 	if (action === "pr") {
-		if (!human) throw new OpError("unsupported", "a pull request is a person's (/tasks pr)");
 		if (w.stage !== "review") throw new OpError("bad_request", `#${t.id} is ${stageLabel(w.stage)}: a pull request is opened from review`);
 		if ((await worktreeClean(w.path)) !== true) throw new OpError("bad_request", `#${t.id}: its worktree has uncommitted changes (/tasks commit ${t.id} first)`);
 		const tip = await revParse(t.project, `refs/heads/${w.branch}`);
@@ -1524,7 +1521,6 @@ async function workspaceAction(
 	}
 	// M59: put away: the worktree removed (clean only), the branch and the record kept; /tasks start brings it back
 	if (action === "shelve") {
-		if (!human) throw new OpError("unsupported", "shelving is a person's (/tasks shelve)");
 		if (!["review", "failed", "working"].includes(w.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(w.stage)}: shelve one in review, failed, or working without a session`);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id}: ${t.owner.name} works in it: stop it first`);
 		if (verifyRuns.has(t.id) || setupRuns.has(t.id) || verifyQueue.includes(t.id)) throw new OpError("conflict", `#${t.id}: a command runs in its worktree`);
@@ -1538,7 +1534,6 @@ async function workspaceAction(
 	}
 	// M58: a person's comments on lines of the task's diff, sent with `back`
 	if (action === "comment" || action === "uncomment") {
-		if (!human) throw new OpError("unsupported", "review comments are a person's (the hub's review, the CLI)");
 		if (w.stage === "merged") throw new OpError("bad_request", `#${t.id} is merged`);
 		const list = (w.comments ??= []);
 		if (action === "uncomment") {
@@ -1582,7 +1577,6 @@ async function workspaceAction(
 		}
 		return { note: "no session holds it: /tasks start it to start one (it gets the comments)" };
 	}
-	if (!human) throw new OpError("unsupported", `/tasks ${action} is a person's (the hub's)`);
 	if (action === "verify") {
 		if (w.stage !== "review" && w.stage !== "failed") throw new OpError("bad_request", `#${t.id} is ${stageLabel(w.stage)}: verify runs from review or failed`);
 		if (w.verify) w.verify.rounds = 0;
@@ -1839,7 +1833,6 @@ async function taskOp(
 	}
 	// M59: worktrees and logs left behind (dropped tasks, merged ones kept for a session, worktrees of tasks gone); dry: what would go
 	if (action === "cleanup") {
-		if (!(a.sessionId === null && !a.concierge)) throw new OpError("unsupported", "cleanup is a person's (/tasks cleanup)");
 		const r = await cleanupLeftovers(args?.dry === true);
 		return { tasks: all(), note: r.join("\n") };
 	}
@@ -1897,8 +1890,7 @@ async function taskOp(
 		default:
 			throw new OpError("bad_request", `no action ${action}`);
 		case "claim": {
-			if (a.concierge) throw new OpError("unsupported", "the concierge hands tasks over (hub_task_assign); it does not take them");
-			if (a.sessionId === null) throw new OpError("unsupported", "a session claims a task (roost_task_claim); the hub hands one over (/tasks assign)");
+			if (a.sessionId === null) throw new Error("unreachable: the table lets a session claim, no one else");
 			if (t.state === "done" || t.state === "dropped") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
 			// M54: a task with a workspace is worked in its worktree: a session already running elsewhere cannot move there
 			if (t.workspace && !mine) throw new OpError("unsupported", `#${t.id} has its own workspace (${t.workspace.branch}): start it with /tasks start`);
@@ -1973,7 +1965,6 @@ async function taskOp(
 			tellOpened(t, a.sessionId);
 			return { tasks: all(), task: t };
 		case "drop": {
-			if (!lead) throw new OpError("unsupported", "the hub and the concierge drop tasks; a session gives its back (roost_task_release)");
 			// M55: not while its workspace is being started or merged
 			if (workspaceBusy.has(t.id) || t.workspace?.stage === "merging") throw new OpError("conflict", `#${t.id}: its workspace is being ${t.workspace?.stage === "merging" ? "merged" : "worked on"}: try again after`);
 			if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
@@ -2012,7 +2003,6 @@ async function taskOp(
 			return { tasks: all(), task: t, ...(note ? { note } : {}) };
 		}
 		case "assign": {
-			if (!lead) throw new OpError("unsupported", "the hub and the concierge hand tasks over; a session claims one (roost_task_claim)");
 			if (t.state !== "open") throw new OpError("bad_request", `#${t.id} is ${t.state}`);
 			// M54: a task with a workspace gets a session in its worktree (/tasks start), not a message to one elsewhere
 			if (t.workspace) throw new OpError("unsupported", `#${t.id} has its own workspace (${t.workspace.branch}): start it with /tasks start`);
@@ -4033,10 +4023,6 @@ function list(args: { cwd?: string } | undefined): JobRow[] {
  * task and the concierge's own. The socket is the user's: a process of theirs that never
  * identifies is the hub (the user's own tools are), not a session's doing.
  */
-function requireHub(conn: Conn): void {
-	if (conn.peer || conn.agentSide) throw new OpError("unsupported", "this is the hub's and the CLI's: a session has its own ops (send, spawn, watch, task)");
-}
-
 function requirePeer(conn: Conn): PeerIdentity {
 	if (!conn.peer) throw new OpError("unauthorized", "this connection is not a peer (report as a worker, or peer_register)");
 	if (conn.peer.kind === "job" && !recs.has(conn.peer.id)) throw new OpError("not_found", "this job was removed");
@@ -4301,7 +4287,6 @@ async function retryReports(parentKey: string): Promise<void> {
 /** A foreground pi has a report: forget the copy kept on the child. */
 function peerAck(conn: Conn, args: { ref?: unknown } | undefined): {} {
 	const peer = requirePeer(conn);
-	if (peer.kind !== "fg") throw new OpError("unsupported", "only foreground peers acknowledge reports");
 	const ref = typeof args?.ref === "string" ? args.ref : "";
 	const childId = ref.split(":")[0] ?? "";
 	if (recs.has(childId)) setHeld(childId, heldReports(childId).filter((x) => x.ref !== ref));
@@ -4310,7 +4295,6 @@ function peerAck(conn: Conn, args: { ref?: unknown } | undefined): {} {
 
 async function handback(conn: Conn, args: Partial<HandbackArgs> | undefined): Promise<{ routed: boolean }> {
 	const peer = requirePeer(conn);
-	if (peer.kind !== "job") throw new OpError("unsupported", "only a background session reports back");
 	if (!recs.get(peer.id)?.parentSession || stopping.has(peer.id)) return { routed: false };
 	const state = args?.state;
 	if (state !== "done" && state !== "blocked" && state !== "failed") throw new OpError("bad_request", "invalid state");
@@ -4475,6 +4459,9 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 }
 
 async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
+	// M63: who may do it, by the caller's kind (lib/callers.ts); the op checks what needs state
+	const refused = allow(callerOf(conn, isConcierge), op, args?.action);
+	if (refused) throw new OpError(refused.code, refused.message);
 	switch (op) {
 		case "ping":
 			return { pid: process.pid, version: ROOST_VERSION };
@@ -4482,10 +4469,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "schedule-add":
 		case "schedule-rm":
 		case "schedule-pause":
-			requireHub(conn);
 			return scheduleOp(op, args);
 		case "schedule-run": {
-			requireHub(conn);
 			const s = scheduleOf(args?.name);
 			return { name: s.name, id: await runSchedule(s, Date.now(), "now") };
 		}
@@ -4495,7 +4480,6 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "list":
 			return { jobs: list(args) };
 		case "dispatch":
-			requireHub(conn);
 			return dispatch(args);
 		case "resolve":
 			return { id: resolve(args?.query) };
@@ -4512,11 +4496,9 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return s;
 		}
 		case "subscribe":
-			requireHub(conn);
 			conn.subscribed = true;
 			return {};
 		case "stop": {
-			requireHub(conn);
 			const id = requireJob(args);
 			if (roster.has(id)) {
 				log("info", "stop", { id });
@@ -4529,10 +4511,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { id };
 		}
 		case "rm":
-			requireHub(conn);
 			return removeRecord(requireJob(args));
 		case "respawn": {
-			requireHub(conn);
 			if (args?.all === true) {
 				const results: { id: string; started: boolean; error?: string }[] = [];
 				for (const id of [...recs.keys()]) {
@@ -4551,7 +4531,6 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { results: [await respawn(id, { restart: args?.restart === true, prompt })] };
 		}
 		case "pin": {
-			requireHub(conn);
 			const id = requireJob(args);
 			const pinned = args?.pinned === true;
 			updateState(id, { pinned });
@@ -4559,10 +4538,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return { id, pinned };
 		}
 		case "rename":
-			requireHub(conn);
 			return rename(args);
 		case "reorder": {
-			requireHub(conn);
 			const ids: unknown = args?.ids;
 			const key: unknown = args?.key;
 			if (!Array.isArray(ids) || !ids.every((v) => str(v) && recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
@@ -4576,13 +4553,11 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			acceptReport(conn, args);
 			return {};
 		case "reply":
-			requireHub(conn);
 			return reply(args);
 		case "ack":
 			acknowledge(args);
 			return {};
 		case "shutdown":
-			requireHub(conn);
 			setTimeout(() => void shutdown(!!args?.keepWorkers), 20);
 			return {};
 		case "peer_register":
@@ -4598,8 +4573,6 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "peer_ack":
 			return peerAck(conn, args);
 		case "events": {
-			// the feed is the hub's and the CLI's: a session reads other trees' messages otherwise
-			if ((conn.peer && !isConciergePeer(conn.peer)) || (!conn.peer && conn.agentSide)) throw new OpError("unsupported", "the event feed is read by the hub and the CLI, not by sessions");
 			const after = args?.after;
 			const limit = args?.limit;
 			const id = args?.id;
@@ -4611,11 +4584,8 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "watch":
 			return addWatch(conn, args);
 		case "concierge":
-			// the hub's (a session cannot start, stop or question the concierge)
-			if (conn.peer || conn.agentSide) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
 			return conciergeOp(args);
 		case "concierge-ask":
-			if (conn.peer || conn.agentSide) throw new OpError("unsupported", "the concierge is the hub's: a session cannot start, stop or ask it");
 			return conciergeAsk(args);
 		case "concierge-say":
 			return conciergeSay(conn, args);
