@@ -284,6 +284,10 @@ describe("M63: who may do what with a task", () => {
 				table[`task.${action}`][w] = await answer(by[w], { action, id: t.id, ...extra });
 			}
 		}
+		// the Concierge starts a task when its policy lets it act: past the policy, to the task's own checks
+		await by.person.request("concierge", { action: "act", act: true } as never);
+		const t = (await by.person.request("task", { action: "add", title: "start by the concierge, act on" })).task!;
+		table["task.start (act on)"] = { concierge: await answer(by.concierge, { action: "start", id: t.id }) } as Record<Who, string>;
 		expect(table).toMatchSnapshot();
 	}, 60_000);
 });

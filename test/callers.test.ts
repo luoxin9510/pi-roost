@@ -28,6 +28,10 @@ describe("M63: callers", () => {
 		// a name from the prototype is not a row
 		expect(policyKey("toString")).toBeUndefined();
 		expect(policyKey("task", "constructor")).toBe("task");
+		// an action's row is not an op; an action is a string
+		expect(policyKey("task.merge")).toBeUndefined();
+		expect(policyKey("concierge-order.rm")).toBeUndefined();
+		expect(policyKey("task", ["merge"])).toBe("task");
 	});
 
 	it("the Person's ops: refused to everyone else with the same words", () => {

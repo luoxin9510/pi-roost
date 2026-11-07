@@ -399,6 +399,9 @@ exports[`M63: who may do what with a task > each task action, for each kind of c
     "person": "bad_request: #<t> is for any session: a workspace is a repository's (add it in a repository)",
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
+  "task.start (act on)": {
+    "concierge": "bad_request: #<t> is for any session: a workspace is a repository's (add it in a repository)",
+  },
   "task.uncomment": {
     "concierge": "unsupported: review comments are a person's (the hub's review, the CLI)",
     "foreground": "unsupported: /tasks uncomment is the hub's",

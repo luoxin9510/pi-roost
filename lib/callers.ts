@@ -163,10 +163,11 @@ export const POLICY: Record<PolicyKey, Policy> = {
 /** The row an op takes: task and concierge-order by their action (an action not in the table: the op's own row). */
 export function policyKey(op: string, action?: unknown): PolicyKey | undefined {
 	if (op === "task" || op === "concierge-order") {
-		const k = `${op}.${String(action)}`;
+		const k = typeof action === "string" ? `${op}.${action}` : "";
 		return (Object.hasOwn(POLICY, k) ? k : op) as PolicyKey;
 	}
-	return Object.hasOwn(POLICY, op) ? (op as PolicyKey) : undefined;
+	// an action's row is not an op's name ("task.merge" sent as an op is an unknown op)
+	return !op.includes(".") && Object.hasOwn(POLICY, op) ? (op as PolicyKey) : undefined;
 }
 
 /** Whether the caller may do it: null, or the refusal. An op not in the table is the daemon's to refuse (unknown op). */

@@ -1421,8 +1421,7 @@ async function workspaceAction(
 	}
 	if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.workspace?.stage === "merged" ? "merged" : t.state}`);
 	if (action === "start") {
-		// M57: the concierge too, when its policy lets it start sessions
-		// the Concierge, when its policy lets it start sessions (the table: a Person or the Concierge)
+		// M57: the Concierge, when its policy lets it start sessions (the table: a Person or the Concierge)
 		if (a.concierge && !conciergePolicy().act) throw new OpError("policy", "the concierge may not start sessions (act: off): ask the user to /tasks start it");
 		if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: a workspace is a repository's (add it in a repository)`);
 		if (t.state === "claimed" && t.owner && ownerLive(t.owner.id)) throw new OpError("conflict", `#${t.id} is claimed by ${t.owner.name}`);

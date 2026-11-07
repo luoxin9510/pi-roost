@@ -35,11 +35,13 @@ on a spawned session's first message (`firstMessage`), a guard of another kind.
 ## What changed for a caller
 
 Who may comes first: a caller refused by its kind is refused before the op reads its
-arguments or the task. Before, a few task actions looked at the task first, so the
-Concierge asking to merge a task with no workspace heard "no workspace" (and would have
-been refused after); now it hears that merging is a person's. The hub claiming a task that
-does not exist is refused as the hub (it never claims), not "no such task". Nothing that
-was allowed is refused, nothing refused is allowed.
+arguments, the task or the job. Before, many looked first: the Concierge asking to merge a
+task with no workspace heard "no workspace" (and would have been refused after), now that
+merging is a person's; the hub claiming, or a session dropping, assigning or starting, a
+task that does not exist or is not on its board heard "no such task", now that it may not;
+a job that was removed, asking a concierge op or acknowledging, heard `not_found`, now
+that the op is not its. The codes and words of each refusal are the old ones; only which
+one comes first changed. Nothing that was allowed is refused, nothing refused is allowed.
 
 ## Tests
 
