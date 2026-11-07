@@ -60,6 +60,7 @@
     "sdk",
     "dist",
     "docs",
+    "!docs/agents",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
