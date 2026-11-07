@@ -6,6 +6,10 @@ A roost of coding-agent sessions on one machine: a daemon runs and keeps them, a
 
 Who is on the other end of a connection to the daemon. Every op is allowed or refused by the caller's kind.
 
+**Caller**:
+Who is on the other end of one connection to the daemon, as the daemon judges it: a Person, a Session, the Concierge, or an Unregistered agent.
+_Avoid_: actor, peer (a peer is what `peer_register` makes: one way a Session becomes known)
+
 **Person**:
 The user, through the hub or the CLI: a connection that never identified itself as an agent. The daemon's socket is the user's own, so such a connection is trusted as the user.
 _Avoid_: user connection, hub (the hub is one program a Person uses)
