@@ -53,3 +53,11 @@ one comes first changed. Nothing that was allowed is refused, nothing refused is
   the object prototype), the Person's ops, a peer's, the forms of a session, the workspace
   and the board, every refusal well formed.
 - `test/comms.test.ts`: the hub claiming a task that does not exist (above).
+
+## After review
+
+- An op named like an action's row (`task.merge` sent as an op) is an unknown op, not
+  that row; an action that is not a string is no action.
+- The matrix pins the Concierge starting a task with `act` on (past the table and its
+  policy, to the task's own checks), not only with it off.
+- The note says which refusals now come first in general (above), not two examples.
