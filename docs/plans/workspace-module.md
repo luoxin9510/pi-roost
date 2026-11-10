@@ -21,10 +21,14 @@ daemon re-checks what they made (M57).
    pass, back, comment, uncomment, approve, shelve, pr, commit, abort, merge); the Verify
    queue and its slots; one merge per repository; settling at start; hand merges found;
    leftovers cleaned. The board's own actions (add, claim, done, drop, assign) stay out.
-2. **Its interface**: `createWorkspaces(deps)` returns `act(caller, task, action, args)`,
-   `done(task, caller)` (a Session said the Task is done: Verify starts),
-   `commandEnded(jobId, code)` (a Verify or setup command ended) and `settle()` (at
-   start). The seven maps and sets are its own.
+2. **Its interface**: `createWorkspaces(deps)` returns `act(who, task, action, args)`,
+   `done(who, task, result)` (a Session said the Task is done: Verify starts),
+   `commandEnded(jobId, of, code)` (a Verify or setup command ended) and `settle()` (at
+   start). The seven maps and sets are its own. Moving the code showed three more
+   entries the board's own actions needed (the grilling had four): `drop(task, mark)`
+   (not while the Workspace is busy or merging; `mark` drops it on the board; then a
+   running command stops and a clean worktree goes), `handMerges()` (the board's list
+   looks for branches merged by hand) and `cleanup(dry)` (`/tasks cleanup`).
 3. **Seams**: **Jobs** (dispatch a session or a command, stop one, whether a session
    lives) and **Board** (read and save tasks, record an event, push the board, tell a
    Task's holder) are ports with two adapters each: the daemon's, and in-memory ones for
@@ -56,3 +60,22 @@ daemon re-checks what they made (M57).
 - **M66**: the rules tested in process through the interface (the promises, the review
   bugs of M55–M60); of the socket tests of M55–M60, one end-to-end test per action stays,
   the rest go. The callers' matrix (M63) stays.
+
+## M64, as done
+
+`lib/workspace.ts` (about 830 lines) holds what was `daemon/main.ts`'s, moved as it was:
+the same functions inside `createWorkspaces`, their module state per instance, the
+daemon's calls replaced by the ports (`saveTasks()` → `board.save()`, `dispatch(` →
+`jobs.dispatch(`, `ownerLive(` → `jobs.live(`, `Date.now()` → `clock.now()`, Verify's
+timeout timer → `clock.timer`). The daemon builds the module once, its adapters being
+its own functions, and calls it from `task` (the workspace actions, the workspace half of
+`done` and `drop`, `list`, `cleanup`), from a job's end, and at start. `OpError`, `str`,
+`realPath` and `taskText` moved to `lib/op.ts` (both use them); the board's record of who
+acted is `BoardWho`. `daemon/main.ts`: 4783 → 4054 lines.
+
+Pinned by what was there: the socket tests of M55–M60 in `test/comms.test.ts` (66, the
+workspace scenarios among them), `test/daemon.test.ts`, the callers' matrix of M63, and
+`test/task-git.test.ts`, `test/workspace-env.test.ts`, all unchanged and passing. New:
+`test/workspace.test.ts`, the module through its own interface with the board and jobs in
+memory and git real (a Task from start to merge; one action at a time); M66 moves the
+lifecycle's rules there.

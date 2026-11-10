@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- The Workspace module (M64, [docs/plans/workspace-module.md](docs/plans/workspace-module.md)): a Task's Workspace from its start to its merge (the Stage machine, every workspace action, the Verify queue, one merge per repository, what a restart cut short) moves from the daemon into `lib/workspace.ts`, behind one interface, with the board and the jobs as ports; the daemon is its adapter. Behaviour unchanged. [GLOSSARY.md](GLOSSARY.md) names Task, Workspace, Stage, Base, Verify and Review.
 - Who may do what, in one table (M63, [docs/plans/m63-caller-policy.md](docs/plans/m63-caller-policy.md)): the daemon judges each connection a caller (a Person, a Session, the Concierge, an Unregistered agent; [GLOSSARY.md](GLOSSARY.md)) and asks one table (`lib/callers.ts`) before an op runs; an op added without a row does not type-check. The same refusals, asked first: a caller refused by its kind no longer hears about the task's state first.
 - Evals of the agent development environment loop with a real model (M62, [docs/plans/m62-workspace-evals.md](docs/plans/m62-workspace-evals.md)): a task started in its own worktree, the session commits and says done, verify runs (a failure goes back with its output), the user merges into base; the harness builds the start as `/tasks start` does. Haiku 5.5: 6/6 over 3 runs, $0.0071.
 
