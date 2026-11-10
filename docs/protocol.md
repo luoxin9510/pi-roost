@@ -1423,8 +1423,8 @@ Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
 | `action` | `"add"` | yes |  |  |
-| `title` | `string` | yes | <= 200 chars |  |
-| `detail` | `string` | no | <= 2000 chars |  |
+| `title` | `string` | yes | 1-200 chars (trimmed), longer is cut |  |
+| `detail` | `string` | no | <= 2000 chars, longer is cut |  |
 | `after` | `integer[]` | no |  | Tasks on the board it waits on. |
 | `project` | `string \| null` | no |  |  |
 

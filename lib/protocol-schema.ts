@@ -1,9 +1,9 @@
 // M75 (docs/plans/protocol-schema.md): the protocol's ops, once. A schema (lib/schema.ts) per op's
 // arguments and result is the source of the TypeScript types (lib/protocol.ts re-exports
 // them), of the op reference in docs/protocol.md (npm run docs:protocol), and, from M76,
-// of the daemon's entry check (M76: the ops in ENTRY_CHECKED; a field marked loose is not
-// checked, a `message` is the words the daemon said before).
-import { type Infer, type Schema, arr as arrS, bool as boolS, check, literal, loose, nullable as nullableS, num as numS, obj as objS, oneOf as oneOfS, opaque, optional, rec, str as strS, union, empty } from "./schema.ts";
+// of the daemon's entry check (M76, M77: every op; a field marked loose is not checked, a
+// `message` is the words the daemon said before).
+import { type Infer, type Schema, arr as arrS, bool as boolS, check, literal, loose, relax, shallow, nullable as nullableS, num as numS, obj as objS, oneOf as oneOfS, opaque, optional, rec, str as strS, union, empty } from "./schema.ts";
 import type { BoardTask } from "./board.ts";
 import { TASK_NOTE_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX } from "./board.ts";
 import { MESSAGE_MAX } from "./comms.ts";
@@ -190,7 +190,7 @@ export const DispatchArgsSchema = obj({
 	taskInArgv: opt(bool("M30: the first task is in its argv (it has been given something to do).")),
 	resumable: opt(bool("M40: a profile with `resume`: a run of it cut short can carry on (autoResume).")),
 	protocol: opt(bool("M31: a profile's agent that speaks the roost agent protocol.")),
-	requestId: opt(str("M36: a resend with the same id returns the job the first one made (one not of this form is refused).", { pattern: "^[A-Za-z0-9_.:-]{1,64}$" })),
+	requestId: opt(strS({ description: "M36: a resend with the same id returns the job the first one made (one not of this form is refused).", pattern: "^[A-Za-z0-9_.:-]{1,64}$", message: "requestId: 1-64 of A-Z a-z 0-9 _ . : -" })),
 }, { description: "A session to start (dispatch, spawn, a schedule's launch, a task's start)." });
 export type DispatchArgs = Infer<typeof DispatchArgsSchema>;
 
@@ -243,35 +243,41 @@ const Id = int("a task's id (a positive integer)", { min: 1 });
 const TaskComment = obj({ file: str(), line: int(), text: str(undefined, { maxLength: TASK_TEXT_MAX }), lineText: opt(str()), tip: opt(str()) });
 
 /** M47: the shared task board. The hub and the concierge name a project by a directory in its repository (a session's is where it works). */
+// M77: checked at the entry: the action, and a new task's title and list of tasks it waits on; the
+// rest after the task is looked up (not_found first), in the op and the workspace module
+const ADD_CHECKED = {
+	title: filled("a task needs a title", undefined, { max: TASK_TITLE_MAX, maxBy: "cut" }),
+	after: arrS(loose(Id), { description: "Tasks on the board it waits on.", message: "after must be a list of task ids" }),
+};
 export const TaskArgsSchema = union([
-	obj({ action: lit("list"), project: opt(str("M52: a directory in the project's repository (absolute).")) }, { description: "The lot (done and dropped ones too)." }),
-	obj({ action: lit("add"), title: str(undefined, { maxLength: TASK_TITLE_MAX }), detail: opt(str(undefined, { maxLength: TASK_TEXT_MAX })), after: opt(arr(Id, "Tasks on the board it waits on.")), project: opt(nullable(str())) }, { description: "A new task, open." }),
-	obj({ action: lit("cleanup"), dry: opt(bool("List only.")) }, { description: "M59: removes (dry: lists) worktrees and verify logs left behind. No id." }),
-	obj({ action: lit("claim"), id: Id }, { description: "A session takes it." }),
-	obj({ action: lit("release"), id: Id }, { description: "The owner gives it back." }),
-	obj({ action: lit("done"), id: Id, result: opt(str(undefined, { maxLength: TASK_TEXT_MAX })) }, { description: "The owner marks it done." }),
-	obj({ action: lit("drop"), id: Id }, { description: "Takes an open or claimed task off the board." }),
-	obj({ action: lit("assign"), id: Id, to: str("A session's id or unique name.") }, { description: "Hands an open task to a session (a message there)." }),
+	relax(obj({ action: lit("list"), project: opt(str("M52: a directory in the project's repository (absolute).")) }, { description: "The lot (done and dropped ones too)." })),
+	relax(obj({ action: lit("add"), title: str(undefined, { maxLength: TASK_TITLE_MAX }), detail: opt(strS({ max: TASK_TEXT_MAX, maxBy: "cut" })), after: opt(arr(Id, "Tasks on the board it waits on.")), project: opt(nullable(str())) }, { description: "A new task, open." }), ADD_CHECKED),
+	relax(obj({ action: lit("cleanup"), dry: opt(bool("List only.")) }, { description: "M59: removes (dry: lists) worktrees and verify logs left behind. No id." })),
+	relax(obj({ action: lit("claim"), id: Id }, { description: "A session takes it." })),
+	relax(obj({ action: lit("release"), id: Id }, { description: "The owner gives it back." })),
+	relax(obj({ action: lit("done"), id: Id, result: opt(str(undefined, { maxLength: TASK_TEXT_MAX })) }, { description: "The owner marks it done." })),
+	relax(obj({ action: lit("drop"), id: Id }, { description: "Takes an open or claimed task off the board." })),
+	relax(obj({ action: lit("assign"), id: Id, to: str("A session's id or unique name.") }, { description: "Hands an open task to a session (a message there)." })),
 	// M55: a task's own worktree and a session in it; review, merge into base locally
 	// M65: the daemon makes the task's worktree (prepare: where), the client builds its launch there (start)
-	obj({ action: lit("prepare"), id: Id }, { description: "M65: the daemon makes the task's worktree and says where." }),
-	obj({ action: lit("start"), id: Id, launch: DispatchArgsSchema }, { description: "M55: starts a session in the prepared worktree." }),
-	obj({ action: lit("merge"), id: Id, mode: opt(oneOf(["ff", "no-ff"])) }, { description: "M55: merges the task's branch into base, locally." }),
-	obj({ action: lit("back"), id: Id, note: opt(str(undefined, { maxLength: TASK_NOTE_MAX })) }, { description: "M55: returns it to working and tells its holder." }),
-	obj({ action: lit("abort"), id: Id }, { description: "M55: gives up a conflicted sync." }),
-	obj({ action: lit("commit"), id: Id, message: opt(str()) }, { description: "M55: commits what its worktree holds." }),
+	relax(obj({ action: lit("prepare"), id: Id }, { description: "M65: the daemon makes the task's worktree and says where." })),
+	relax(obj({ action: lit("start"), id: Id, launch: DispatchArgsSchema }, { description: "M55: starts a session in the prepared worktree." })),
+	relax(obj({ action: lit("merge"), id: Id, mode: opt(oneOf(["ff", "no-ff"])) }, { description: "M55: merges the task's branch into base, locally." })),
+	relax(obj({ action: lit("back"), id: Id, note: opt(str(undefined, { maxLength: TASK_NOTE_MAX })) }, { description: "M55: returns it to working and tells its holder." })),
+	relax(obj({ action: lit("abort"), id: Id }, { description: "M55: gives up a conflicted sync." })),
+	relax(obj({ action: lit("commit"), id: Id, message: opt(str()) }, { description: "M55: commits what its worktree holds." })),
 	// M56: the repository's commands approved (dry: shown); verify again; a failure accepted
-	obj({ action: lit("approve"), id: Id, dry: opt(bool("Show the commands only.")), hash: opt(str()) }, { description: "M56: approves the repository's commands." }),
-	obj({ action: lit("verify"), id: Id }, { description: "M56: runs the verify command again." }),
-	obj({ action: lit("pass"), id: Id }, { description: "M56: accepts a failure." }),
+	relax(obj({ action: lit("approve"), id: Id, dry: opt(bool("Show the commands only.")), hash: opt(str()) }, { description: "M56: approves the repository's commands." })),
+	relax(obj({ action: lit("verify"), id: Id }, { description: "M56: runs the verify command again." })),
+	relax(obj({ action: lit("pass"), id: Id }, { description: "M56: accepts a failure." })),
 	// M58: a person's comments on lines of the task's diff (sent with back)
-	obj({ action: lit("comment"), id: Id, comment: TaskComment }, { description: "M58: a review comment on a line of the task's diff." }),
-	obj({ action: lit("uncomment"), id: Id, comment: obj({ file: str(), line: int(), at: num() }) }, { description: "M58: withdraws a review comment." }),
+	relax(obj({ action: lit("comment"), id: Id, comment: TaskComment }, { description: "M58: a review comment on a line of the task's diff." })),
+	relax(obj({ action: lit("uncomment"), id: Id, comment: obj({ file: str(), line: int(), at: num() }) }, { description: "M58: withdraws a review comment." })),
 	// M59: put away (worktree removed, branch kept; start brings it back); leftovers removed (dry: listed)
-	obj({ action: lit("shelve"), id: Id }, { description: "M59: removes a clean worktree, keeps the branch." }),
+	relax(obj({ action: lit("shelve"), id: Id }, { description: "M59: removes a clean worktree, keeps the branch." })),
 	// M60: push the branch and open a pull request (dry: what it would do; then with the tip shown as hash)
-	obj({ action: lit("pr"), id: Id, dry: opt(bool("Say what it would do and the tip as `hash`.")), hash: opt(str("The tip shown by the dry run.")) }, { description: "M60: pushes the branch and opens a pull request." }),
-]);
+	relax(obj({ action: lit("pr"), id: Id, dry: opt(bool("Say what it would do and the tip as `hash`.")), hash: opt(str("The tip shown by the dry run.")) }, { description: "M60: pushes the branch and opens a pull request." })),
+], { discriminant: "action" });
 export type TaskArgs = Infer<typeof TaskArgsSchema>;
 
 export const ConciergeArgsSchema = union([
@@ -309,6 +315,8 @@ export function discriminants<const T extends string>(union: Schema, key: string
 }
 export const TASK_ACTIONS: readonly TaskArgs["action"][] = discriminants(TaskArgsSchema, "action");
 export const ORDER_ACTIONS: readonly ConciergeOrderArgs["action"][] = discriminants(ConciergeOrderArgsSchema, "action");
+// M77: the daemon's words for an action not in the list (the list is the union's, so it comes after)
+(TaskArgsSchema as { message?: string }).message = `action must be one of ${TASK_ACTIONS.join(", ")}`;
 
 // -- the ops ------------------------------------------------------------------------------
 
@@ -331,7 +339,9 @@ export const ArgSchemas = {
 	"schedule-run": obj({ name: loose(str()) }),
 	hello: HelloArgsSchema,
 	list: obj({ all: opt(loose(bool())), cwd: opt(loose(str())) }),
-	dispatch: DispatchArgsSchema,
+	// M77: a resend with the same requestId returns the first job before anything else is read, so
+	// only the id's form (and that there are arguments) is checked here; the rest in dispatch()
+	dispatch: relax(DispatchArgsSchema, { requestId: DispatchArgsSchema.properties!.requestId! }, { message: "missing args" }),
 	stop: obj({ id: need("id required") }),
 	rm: obj({ id: need("id required") }),
 	resolve: obj({ query: need("query required") }),
@@ -355,7 +365,8 @@ export const ArgSchemas = {
 	peer_register: obj({ session: opt(loose(str())), name: loose(str()), cwd: loose(str()), pid: numS({ description: "The pid that owns the session's writer lock.", int: true, message: "pid must be a live process" }) }, { description: "M9: a foreground pi joins as a peer on this connection." }),
 	peers: obj({}, { description: "M9, on a peer connection: the sessions this peer may message." }),
 	send: obj({ to: filled("to required", "A session's id or name (`peers` lists them)."), message: filled("empty message", undefined, { max: MESSAGE_MAX, maxBy: "op" }) }),
-	spawn: obj({ launch: DispatchArgsSchema }),
+	// M77: the launch's fields are the op's (a pi session only, a new session file) and dispatch()'s
+	spawn: obj({ launch: shallow(DispatchArgsSchema, { message: "launch required" }) }),
 	handback: HandbackArgsSchema,
 	peer_ack: obj({ ref: loose(str()) }, { description: "M9, on a foreground peer connection: the report with this ref reached pi." }),
 	events: obj({ after: opt(numS({ message: "after must be a number" })), limit: opt(numS({ message: "limit must be a number" })), id: opt(need("id must be a job id")) }, { description: "M43: the event feed (what happened), with a cursor: `after` the seq last seen." }),
@@ -440,22 +451,19 @@ export type OpResults = { [O in keyof typeof ResultSchemas]: Infer<(typeof Resul
 /** The names of the ops, in the order of the schemas. */
 export const OPS = Object.keys(ArgSchemas) as (keyof typeof ArgSchemas)[];
 
-/**
- * M76: the ops whose arguments the daemon checks at its entry against their schema (M77: dispatch,
- * spawn and task too). Each field is loose or carries the words its hand check said.
- */
-export const ENTRY_CHECKED: ReadonlySet<string> = new Set<keyof typeof ArgSchemas>([
-	"ping", "status", "subscribe", "list", "resolve", "stop", "rm", "respawn", "pin", "rename", "reorder", "shutdown",
-	"report", "reply", "ack", "hello",
-	"peer_register", "peers", "send", "handback", "peer_ack", "events", "watch",
-	"schedules", "schedule-add", "schedule-rm", "schedule-pause", "schedule-run",
-	"concierge", "concierge-ask", "concierge-say", "concierge-policy", "concierge-suggest", "concierge-reply", "concierge-act", "concierge-order",
-]);
+/** M76, M77: the ops whose arguments the daemon checks at its entry: all of them. Each field is loose or carries the words its hand check said. */
+export const ENTRY_CHECKED: ReadonlySet<string> = new Set<string>(OPS);
 
 /** M76: what is wrong with an op's arguments (the daemon's words), or undefined. Arguments that are not an object count as none. */
 export function argsProblem(op: string, args: unknown): string | undefined {
 	if (!ENTRY_CHECKED.has(op)) return undefined;
-	const value = typeof args === "object" && args !== null && !Array.isArray(args) ? args : {};
-	const r = check(ArgSchemas[op as keyof typeof ArgSchemas], value);
+	const schema = ArgSchemas[op as keyof typeof ArgSchemas] as Schema;
+	// no arguments at all: the op's words for that, if it has any (dispatch: "missing args"); an array was read as one with no fields
+	if (typeof args !== "object" || args === null) {
+		if (schema.message && !schema["x-loose"]) return schema.message;
+		args = {};
+	}
+	const value = Array.isArray(args) ? {} : args;
+	const r = check(schema, value);
 	return r.ok ? undefined : r.message;
 }

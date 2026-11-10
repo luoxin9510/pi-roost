@@ -6,10 +6,18 @@ import { MESSAGE_MAX } from "../lib/comms.ts";
 import { ORDER_TEXT_MAX } from "../lib/concierge.ts";
 import { ArgSchemas, argsProblem, ENTRY_CHECKED } from "../lib/protocol-schema.ts";
 import type { Schema } from "../lib/schema.ts";
+import { TASK_ACTIONS } from "../lib/protocol-schema.ts";
+
+const TASK_WORDS = `action must be one of ${TASK_ACTIONS.join(", ")}`;
 
 /** Places a check could fail with words of its own ("must be a string"), not the daemon's. */
 function unworded(s: Schema, path: string, out: string[], root = false, discriminant?: string): void {
 	if (s["x-loose"]) return;
+	// an object whose fields are the op's (M77: spawn's launch): its own words only
+	if (s["x-shallow"]) {
+		if (!s.message) out.push(path);
+		return;
+	}
 	if (s.anyOf) {
 		// a discriminated union: its words for a wrong discriminant, then the member picked
 		if (!root && !s.message) out.push(path);
@@ -23,15 +31,18 @@ function unworded(s: Schema, path: string, out: string[], root = false, discrimi
 }
 
 describe("the entry check", () => {
-	it("covers the ops of M76 only (dispatch, spawn and task are M77's)", () => {
-		expect([...ENTRY_CHECKED].sort()).toEqual(
-			Object.keys(ArgSchemas)
-				.filter((op) => !["dispatch", "spawn", "task"].includes(op))
-				.sort(),
-		);
-		expect(argsProblem("dispatch", {})).toBeUndefined();
-		expect(argsProblem("task", { action: "bogus" })).toBeUndefined();
+	it("covers every op (M77: dispatch, spawn and task too)", () => {
+		expect([...ENTRY_CHECKED].sort()).toEqual(Object.keys(ArgSchemas).sort());
 		expect(argsProblem("nope", {})).toBeUndefined();
+	});
+
+	it("says `missing args` for a dispatch with none, as dispatch() did; an array was read as no fields", () => {
+		expect(argsProblem("dispatch", undefined)).toBe("missing args");
+		expect(argsProblem("dispatch", null)).toBe("missing args");
+		expect(argsProblem("dispatch", "x")).toBe("missing args");
+		expect(argsProblem("dispatch", [])).toBeUndefined();
+		// a loose op's words are its module's: no arguments is not refused here
+		expect(argsProblem("concierge-order", null)).toBeUndefined();
 	});
 
 	it("says only the daemon's words: each field it checks carries them, the rest is loose", () => {
@@ -105,6 +116,20 @@ describe("the entry check", () => {
 		["concierge-say", { text: "x", kind: "shout" }, "kind must be info, need or answer"],
 		["concierge-suggest", { text: "x" }, "id required"],
 		["concierge-suggest", { id: "a", text: "" }, "empty suggestion"],
+		// M77
+		["dispatch", { requestId: "a b" }, "requestId: 1-64 of A-Z a-z 0-9 _ . : -"],
+		["dispatch", { requestId: null, cwd: "/" }, "requestId: 1-64 of A-Z a-z 0-9 _ . : -"],
+		["spawn", {}, "launch required"],
+		["spawn", { launch: "x" }, "launch required"],
+		["spawn", { launch: null }, "launch required"],
+		["task", {}, TASK_WORDS],
+		["task", { action: "bogus", mode: "ff" }, TASK_WORDS],
+		["task", { action: 3 }, TASK_WORDS],
+		["task", { action: "add" }, "a task needs a title"],
+		["task", { action: "add", title: " \n " }, "a task needs a title"],
+		["task", { action: "add", title: 7 }, "a task needs a title"],
+		["task", { action: "add", title: "t", after: 3 }, "after must be a list of task ids"],
+		["task", { action: "add", title: "t", after: null }, "after must be a list of task ids"],
 	];
 	it.each(refused)("%s %j: %s", (op, args, words) => {
 		expect(argsProblem(op, args)).toBe(words);
@@ -145,6 +170,21 @@ describe("the entry check", () => {
 		["concierge-order", { action: "applied" }],
 		["concierge-order", { action: "list", text: 3 }],
 		["concierge-policy", { x: 1 }],
+		// M77: a resend returns its job before anything else is read; the rest is dispatch()'s, the op's, the module's
+		["dispatch", { cwd: 5, command: "x", requestId: "r-1" }],
+		["dispatch", {}],
+		["spawn", { launch: [] }],
+		["spawn", { launch: { kind: "shell", command: 3 } }],
+		["task", { action: "claim", id: "3" }],
+		["task", { action: "claim" }],
+		["task", { action: "list", project: 5 }],
+		["task", { action: "add", title: "t".repeat(500), detail: 4, after: ["x", -1], project: 9 }],
+		// control characters only: refused by the op (its words), not here
+		["task", { action: "add", title: "\u0001" }],
+		["task", { action: "start", id: 1, launch: 5 }],
+		["task", { action: "merge", id: 1, mode: "squash" }],
+		["task", { action: "comment", id: 1, comment: "x" }],
+		["task", { action: "cleanup", dry: "yes" }],
 		// for a job that ended, any report is taken; an order's action is looked up by its id first
 		["report", { report: "x" }],
 		["report", { report: { state: "nope" } }],

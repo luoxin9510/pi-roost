@@ -1,6 +1,6 @@
 // M75: lib/schema.ts, the protocol's own schema builder (no dependencies).
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { arr, bool, check, discriminantValues, type Infer, literal, loose, looseOf, nul, nullable, num, obj, oneOf, opaque, optional, rec, str, union, unknown } from "../lib/schema.ts";
+import { arr, bool, check, discriminantValues, type Infer, jsonSchemaOf, literal, loose, looseOf, nul, nullable, num, obj, oneOf, opaque, optional, rec, relax, shallow, str, union, unknown } from "../lib/schema.ts";
 
 const fails = (r: ReturnType<typeof check>) => (r.ok ? "ok" : `${r.path}: ${r.message}`);
 
@@ -161,5 +161,35 @@ describe("check, for the entry check", () => {
 		expect(fails(check(U, { action: "a", n: 2 }))).toBe("ok");
 		expect(fails(check(U, { action: "merge", mode: "x" }))).toBe("mode: must be one of ff, no-ff");
 		expect(fails(check(union([obj({ k: literal("x") })], { discriminant: "k" }), { k: "y" }))).toBe("k: must be one of x");
+	});
+});
+
+// M77
+describe("shallow, relax and jsonSchemaOf", () => {
+	it("shallow asks only for an object (an array passes), in its own words", () => {
+		const D = obj({ a: str() });
+		const S = shallow(D, { message: "launch required" });
+		expect(fails(check(S, {}))).toBe("ok");
+		expect(fails(check(S, []))).toBe("ok");
+		expect(fails(check(S, "x"))).toBe(": launch required");
+		expect(fails(check(S, null))).toBe(": launch required");
+		expect(looseOf.get(S)).toBe(D);
+		expectTypeOf<Infer<typeof S>>().toEqualTypeOf<{ a: string }>();
+	});
+
+	it("relax makes the fields loose but a literal one and those kept, and may give the object words", () => {
+		const D = obj({ k: literal("x"), a: str(), b: num(), c: optional(bool()) });
+		const R = relax(D, { b: num({ message: "b please" }) }, { message: "none" });
+		expect(fails(check(R, { k: "x", b: 1 }))).toBe("ok");
+		expect(fails(check(R, { k: "y", b: 1 }))).toBe('k: must be "x"');
+		expect(fails(check(R, { k: "x", b: "1" }))).toBe("b: b please");
+		expect(fails(check(R, "x"))).toBe(": none");
+		expect(R.required).toEqual(["k", "a", "b"]);
+		expect(looseOf.get(R)).toBe(D);
+	});
+
+	it("jsonSchemaOf leaves out the words, the marks and a maximum that is cut", () => {
+		const S = obj({ a: str({ min: 1, max: 9, trim: true, maxBy: "cut", message: "m" }), b: loose(arr(str({ max: 3, maxBy: "op" }))) }, { message: "o" });
+		expect(jsonSchemaOf(S)).toEqual({ type: "object", properties: { a: { type: "string", minLength: 1 }, b: { type: "array", items: { type: "string", maxLength: 3 } } }, required: ["a", "b"] });
 	});
 });

@@ -125,3 +125,46 @@ not the daemon's (10).
 - The refusal table's words were the schemas', not checked against the old code in two cases
   (the two above); each row was compared again with the handler on main.
 
+## M77, as done
+
+- Every op is checked at the entry (`ENTRY_CHECKED` is `OPS`). An op given arguments that are
+  not an object (or none) is answered in its schema's words when it has some and is not loose
+  (`dispatch`: `missing args`); an array is read as no fields, as before.
+- `dispatch`: `relax(DispatchArgsSchema, { requestId })` with the words `missing args`: only the
+  id's form is checked, since a resend with the same id returns the first job before anything
+  else is read (a field checked here would turn that answer into a refusal); `cwd`'s words name
+  the value, and the rest is `dispatch()`'s, which schedules, the concierge, `task start` and
+  `spawn` call without the socket. Its checks stay.
+- `spawn`: `shallow(DispatchArgsSchema, { message: "launch required" })` (an object; an array
+  passed `typeof`, so it passes); its other checks need the session (a pi launch, a new session
+  file). The op's own check is gone.
+- `task`: a discriminated union (`action must be one of …`, `TASK_ACTIONS` in the union's order);
+  each member `relax`ed (its fields loose, its literal kept); `add` keeps its title (`a task
+  needs a title`, trimmed, cut at the maximum) and `after` (`after must be a list of task ids`;
+  its ids are looked up in the op). Loose and why: ids (`"3"` is taken; `not_found` first), a
+  lead's `project` (a session's is ignored; checked in the op), what the workspace module reads
+  (`start`'s launch, `merge`'s mode, comments: its tests call it directly). The op's own action,
+  title and list checks are gone.
+- pi tools (decision 6): `roost_send` `to`/`message`, `roost_watch` `to`, `roost_task_add`
+  `title`/`detail` are `Type.Unsafe(jsonSchemaOf(field))` with the tool's description.
+  `jsonSchemaOf` drops `message` and the `x-` marks, and a maximum the daemon cuts. So a message
+  past `MESSAGE_MAX` (untrimmed) is refused by pi's validator before it is sent (it was the
+  daemon's `too_long`), and an empty `to`, `message` or `title` too; a long title is still cut.
+- Tests: `test/entry-check.test.ts` (M77's refusals and what is still taken, each compared with
+  the handler on main), `test/schema.test.ts` (`shallow`, `relax`, `jsonSchemaOf`),
+  `test/daemon.test.ts` (dispatch, spawn and task words over the socket; mutation: the
+  daemon's call removed fails it), `test/tool-fields.test.ts` (the tools against pi's own
+  validator). The callers matrix (M63) is unchanged.
+
+### After review (M77)
+
+- A title of control characters only (`"\x01"`) was refused by the op (its `taskTitle` blanks
+  them), and the entry's trim does not: the op's check is back, after the entry's (a socket test
+  pins it). The rule from M76 holds: an entry check may be weaker than the op's, never stronger.
+- `spawn` with no launch on a connection that is not a peer is answered `launch required` (was
+  the peer refusal): two faults.
+- `relax` keeps a `const` discriminant only; a union discriminated by an `enum` (as
+  `concierge-act`'s `what`) must keep it by `keep` if it is ever relaxed (today it is loose).
+- The tools' `maxLength` counts code points where the daemon counts UTF-16 units, on the
+  untrimmed text: part of the deliberate change.
+
