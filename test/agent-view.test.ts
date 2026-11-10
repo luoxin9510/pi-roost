@@ -2482,6 +2482,24 @@ describe("M57: the workspace overlay", () => {
 		expect(view.render(120).join("\n")).toContain("▶ ◆ #4 users migration");
 	});
 
+	it("a board event from the daemon reloads the open overlay (Overlay.onEvent); a job event does not", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint", state: "working" })], { extra: { taskChanges: changes } });
+		client.tasks = board();
+		await view.start();
+		view.handleInput("\x0e");
+		await sleep(30);
+		const lists = () => client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action === "list").length;
+		const before = lists();
+		client.emit({ event: "job", job: row({ id: "w1", name: "lint", state: "done" }) } as never);
+		await sleep(30);
+		expect(lists()).toBe(before);
+		client.tasks = [...board(), task(10, "billing export", { workspace: ws("review") })];
+		client.emit({ event: "board", board: { open: 1, claimed: 2, blocked: 1, done: 0 } });
+		await sleep(30);
+		expect(lists()).toBe(before + 1);
+		expect(view.render(120).join("\n")).toContain("#10 billing export");
+	});
+
 	it("the keys reach the daemon through /tasks: m merges (in the configured mode), b sends back with a note, s starts an open one in its worktree; a key a stage has not does nothing", async () => {
 		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes, taskMerge: "ff" } });
 		client.tasks = board();

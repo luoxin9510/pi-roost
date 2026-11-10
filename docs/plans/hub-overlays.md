@@ -80,3 +80,13 @@ fake client that answers each op by its name.
 - Own tests: `test/workspaces-overlay.test.ts` (60) and `test/review-overlay.test.ts` (61), on `fakePort`, a fake host (`test/support/overlay-host.ts`) and a fake diff; mutation-checked (below).
 - `test/agent-view.test.ts` 84 → 84: five tests gone (the approve-on-y one, the width one, the under-100 one, and the two "after review" ones), whose rules are asserted in the overlay tests; the rest trimmed to the wiring (`/workspaces`, `Ctrl+N`, Enter to review and Esc back, `/tasks review`, a comment and a merge reaching the daemon) or kept (`/tasks shelve|cleanup|pr`, which are the view's).
 - Mutation check of the two files (each guard taken out or inverted in turn, the overlay's test file run): `workspaces.ts` 126 of 130 caught, `review.ts` 133 of 143. Not caught, all equivalent: the `|| busy` in the workspaces confirm key (the busy flag is always clear when a confirm exists), `x.owner` beside `s?.running` (a session implies an owner), the `sel` fallback after `nextNeedsYou` (undefined at that point), `sel === undefined` in the next-note condition; in review: the file-index clamp in `load` and the one in `render` (each makes the other redundant), the file check in `placed` (`commentOn` checks it), the `[\x80-\x9f]` replace (`CONTROL` has it), `!f?.path` and the line-row check on sending a comment (unreachable with a box open), `n`/`p`'s default hunk and last-row cases (`moveLine` clamps), and the `ri`/`top` resets on a file change (the next render sets both).
+
+### After review (M72)
+
+- No drift found (each key and each lifecycle check compared with the old closures).
+- Nothing tested the view passing a pushed `board` event to the open overlay (the wiring
+  that replaced `wsReload`); an agent-view test now does (a board event reloads the open
+  workspaces overlay, a job event does not), and fails with the call taken out.
+- Left as it was: the confirm's `|| busy` guard cannot be reached (a confirm is only set
+  once the action is done), as before the move; the opening guards (`wsOpening`,
+  `reviewOpening`) are not tested, on main either.
