@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 async function startDaemon(): Promise<{ proc: ChildProcess; client: DaemonClient }> {
-	const proc = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: process.env });
+	const proc = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) } });
 	daemons.push(proc);
 	const client = await waitFor(async () => {
 		try {
@@ -318,7 +318,7 @@ describe("daemon", () => {
 
 	it("a second daemon exits 0 and leaves the first alone", async () => {
 		const first = await startDaemon();
-		const second = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: process.env });
+		const second = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) } });
 		daemons.push(second);
 		await waitFor(() => exited(second));
 		expect(second.exitCode).toBe(0);

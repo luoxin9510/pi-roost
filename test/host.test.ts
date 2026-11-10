@@ -67,7 +67,7 @@ async function startHost(script: string, state: Record<string, unknown> = {}, ov
 		...over,
 	};
 	createJob(record, { state: "working", startedAt: now, updatedAt: now, ...state });
-	const child = spawn(process.execPath, ["host/main.ts", id], { stdio: "ignore", env: process.env });
+	const child = spawn(process.execPath, ["host/main.ts", id], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) } });
 	hosts.push(child);
 	await waitFor(() => existsSync(hostSocketPath(id)));
 	return { id, child };

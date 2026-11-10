@@ -17,6 +17,7 @@ import { TermSignalCollector } from "../lib/term-signals.ts";
 import { telemetryFromEnv } from "../lib/telemetry.ts";
 import { envKept, killProbes, workspaceEnv } from "../lib/workspace-env.ts";
 import { jobEnv } from "../lib/identity.ts";
+import { followedParent, pidAlive } from "../lib/orphans.ts";
 
 const { Terminal } = xterm;
 
@@ -526,4 +527,20 @@ function onSignal(): void {
 	setTimeout(() => process.exit(0), 6000).unref();
 }
 process.on("SIGTERM", onSignal);
+// M78: test mode only (the daemon passes PI_ROOST_PARENT_PID on): parent gone, the worker's
+// group goes and so does the host
+const followed = followedParent();
+if (followed !== undefined) {
+	setInterval(() => {
+		if (pidAlive(followed)) return;
+		log("parent gone");
+		for (const target of workerAlive ? [-proc.pid, proc.pid] : []) {
+			try {
+				process.kill(target, "SIGKILL");
+				break;
+			} catch {}
+		}
+		process.exit(0);
+	}, 2000).unref();
+}
 process.on("SIGHUP", onSignal);
