@@ -79,8 +79,7 @@ help, rename); and `AgentViewOptions` is 45 flat fields that the two adapters
   conciergeLaunch, worktreeDefault, presets, savePreset, userPreset); `HubModels` (models,
   defaultModel, scopedModels); `HubResume` (resumable, sessionSelector, currentSession);
   `HubCommands` (commands, sessionCommands, profileCommands); `HubTasks` (taskMerge and the
-  local reads: taskChanges, taskDiff, worktreeChange, hostControl). Three comments that
-  described no field (left by earlier moves) are gone.
+  local reads: taskChanges, taskDiff, worktreeChange, hostControl). Three comments stacked on a field with another (one repeating it, two out of date) are gone.
 - `PiHubOptions` (`adapters/pi/hub-options.ts`) is now the groups pi provides (all but the
   terminal, the colours and the exits) instead of an `Omit` of the whole.
 - Tests: `tsc` is the test (types only); the hub's tests pass unchanged.

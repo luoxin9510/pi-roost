@@ -28,7 +28,7 @@ export interface PiHost {
 	sessionDir: () => string | undefined;
 }
 
-/** M80: what pi gives the hub: everything but its terminal, colours and exits (the view's display options mostly the caller's). */
+/** M80: what pi gives the hub: everything but its terminal, colours and exits (display options are mostly the caller's). */
 export type PiHubOptions = Omit<HubCore, "tui" | "theme" | "setTitle" | "done"> & Partial<HubDisplay> & HubLaunching & HubModels & HubResume & HubCommands & HubTasks;
 
 export function piHubOptions(h: PiHost): PiHubOptions {
