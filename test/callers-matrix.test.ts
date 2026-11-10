@@ -109,6 +109,7 @@ const TASK_ACTIONS: [string, Record<string, unknown>][] = [
 	["done", {}],
 	["drop", {}],
 	["assign", { to: "nope" }],
+	["prepare", {}],
 	["start", {}],
 	["merge", {}],
 	["back", {}],

@@ -97,9 +97,9 @@ import { termFrom } from "../lib/profiles.ts";
 import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.ts";
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
-import { allow, callerOf } from "../lib/callers.ts";
+import { allow, callerOf, TASK_ACTIONS } from "../lib/callers.ts";
 import { OpError, realPath, str, taskText } from "../lib/op.ts";
-import { type BoardWho, createWorkspaces } from "../lib/workspace.ts";
+import { type BoardWho, createWorkspaces, WORKSPACE_ACTIONS, type WorkspaceAction } from "../lib/workspace.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
 
 const WAIT_MS = 6000;
@@ -1228,8 +1228,8 @@ async function taskOp(
 		pushBoard();
 		return { tasks: all(), task: t };
 	}
-	const ACTIONS = ["claim", "release", "done", "drop", "assign", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"];
-	if (typeof action !== "string" || !ACTIONS.includes(action)) throw new OpError("bad_request", "action must be list, add, claim, release, done, drop, assign, start, merge, back, abort or commit");
+	// the actions are the table's (lib/callers.ts): one list
+	if (typeof action !== "string" || !(TASK_ACTIONS as readonly string[]).includes(action)) throw new OpError("bad_request", `action must be one of ${TASK_ACTIONS.join(", ")}`);
 	const id = taskId(args?.id);
 	const t = id !== undefined ? tasks.get(id) : undefined;
 	if (!t) throw new OpError("not_found", `no task #${String(args?.id)}`);
@@ -1237,8 +1237,8 @@ async function taskOp(
 	// M52: a session acts on its project's tasks and those for any session (one it holds, whatever moved)
 	if (!lead && !mine && !onBoardOf(t, a.project)) throw new OpError("not_found", `no task #${t.id} on this session's board (it is ${projectLabel(t.project)}'s)`);
 	// M55: a task's workspace: start it, merge it, send it back, give up a sync, commit for it
-	if (action === "start" || action === "merge" || action === "back" || action === "abort" || action === "commit" || action === "approve" || action === "verify" || action === "pass" || action === "comment" || action === "uncomment" || action === "shelve" || action === "pr") {
-		const r = await ws.act(a, t, action, (args ?? {}) as Record<string, unknown>);
+	if ((WORKSPACE_ACTIONS as readonly unknown[]).includes(action)) {
+		const r = await ws.act(a, t, action as WorkspaceAction, (args ?? {}) as Record<string, unknown>);
 		return { tasks: all(), task: t, ...r };
 	}
 	switch (action) {

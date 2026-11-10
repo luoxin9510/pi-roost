@@ -47,7 +47,7 @@ export interface Policy {
 	unregistered: Rule;
 }
 
-export const TASK_ACTIONS = ["list", "add", "cleanup", "claim", "release", "done", "drop", "assign", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"] as const;
+export const TASK_ACTIONS = ["list", "add", "cleanup", "claim", "release", "done", "drop", "assign", "prepare", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"] as const;
 export const ORDER_ACTIONS = ["list", "add", "rm", "applied"] as const;
 type Expanded = "task" | "concierge-order";
 export type PolicyKey =
@@ -146,6 +146,7 @@ export const POLICY: Record<PolicyKey, Policy> = {
 	"task.drop": lead(unsupported("the hub and the concierge drop tasks; a session gives its back (roost_task_release)")),
 	"task.assign": lead(unsupported("the hub and the concierge hand tasks over; a session claims one (roost_task_claim)")),
 	// a task's workspace: the Person's; the Concierge starts one when its policy lets it act (the op checks), and sends one back
+	"task.prepare": workspace("prepare", "allow"), // M65: the worktree a start goes into (the op checks the Concierge's act)
 	"task.start": workspace("start", "allow"),
 	"task.back": workspace("back", "allow"),
 	"task.approve": workspace("approve", unsupported("a person approves a repository's commands (/tasks approve)")),

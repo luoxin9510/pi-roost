@@ -378,6 +378,13 @@ exports[`M63: who may do what with a task > each task action, for each kind of c
     "person": "bad_request: #<t> has no workspace: /tasks start it first",
     "unregistered": "unauthorized: a session acts on the board after its report is accepted",
   },
+  "task.prepare": {
+    "concierge": "policy: the concierge may not start sessions (act: off): ask the user to /tasks start it",
+    "foreground": "unsupported: /tasks prepare is the hub's",
+    "job": "unsupported: /tasks prepare is the hub's",
+    "person": "bad_request: #<t> is for any session: a workspace is a repository's (add it in a repository)",
+    "unregistered": "unauthorized: a session acts on the board after its report is accepted",
+  },
   "task.release": {
     "concierge": "bad_request: #<t> is open, not claimed",
     "foreground": "bad_request: #<t> is open, not claimed",

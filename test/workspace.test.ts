@@ -8,8 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BoardTask } from "../lib/board.ts";
 import type { RoostEvent } from "../lib/events.ts";
 import type { DispatchArgs } from "../lib/protocol.ts";
-import { createTaskWorktree } from "../lib/task-git.ts";
-import { type BoardWho, createWorkspaces } from "../lib/workspace.ts";
+import { type BoardWho, type Clock, createWorkspaces, PREPARED_MS } from "../lib/workspace.ts";
 
 const dirs: string[] = [];
 let home: string;
@@ -40,7 +39,29 @@ function repo(): string {
 const person: BoardWho = { who: "user", whoId: null, sessionId: null, concierge: false, project: null };
 
 /** The module with its board and jobs in memory: what it recorded, what it dispatched. */
-function world() {
+/** A clock the test moves: its timers fire when it passes them. */
+function manualClock() {
+	let t = 0;
+	const timers: { at: number; fn: () => void; done: boolean }[] = [];
+	const clock: Clock = {
+		now: () => t,
+		timer: (fn, ms) => {
+			const x = { at: t + ms, fn, done: false };
+			timers.push(x);
+			return { clear: () => void (x.done = true) };
+		},
+	};
+	const advance = (ms: number) => {
+		t += ms;
+		for (const x of timers) if (!x.done && x.at <= t) {
+			x.done = true;
+			x.fn();
+		}
+	};
+	return { clock, advance };
+}
+
+function world(clock?: Clock) {
 	const tasks = new Map<number, BoardTask>();
 	const events: Omit<RoostEvent, "seq" | "at">[] = [];
 	const dispatched: DispatchArgs[] = [];
@@ -76,6 +97,7 @@ function world() {
 		},
 		conciergeMayAct: () => false,
 		conciergeLaunch: (l) => l,
+		...(clock ? { clock } : {}),
 	});
 	const stages = () => events.filter((e) => e.why === "stage").map((e) => e.text);
 	return { ws, tasks, events, dispatched, live, commands, stopped, removed, stages, saves: () => saves };
@@ -89,9 +111,12 @@ describe("M64: the Workspace module, in process", () => {
 		const { ws, tasks, dispatched, live, stages } = world();
 		const t = newTask(1, r);
 		tasks.set(1, t);
-		const w = createTaskWorktree(r, 1, t.title);
+		// M65: the module makes the worktree (prepare), the start goes into it
+		const w = (await ws.act(person, t, "prepare", {})).workspace!;
+		expect(w).toMatchObject({ baseRef: "main", branch: expect.stringMatching(/^roost\/t1-write-b-/) });
+		expect(existsSync(w.path)).toBe(true);
 		const launch: DispatchArgs = { cwd: w.path, sessionFile: join(w.path, "s.jsonl"), command: ["pi"], env: {}, name: "writer", origin: "dispatch" };
-		const started = await ws.act(person, t, "start", { workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch });
+		const started = await ws.act(person, t, "start", { launch });
 		expect(started.job).toEqual({ id: "j1", name: "writer" });
 		expect(dispatched).toHaveLength(1);
 		expect(t).toMatchObject({ state: "claimed", owner: { id: "j1" }, workspace: { stage: "working", branch: w.branch } });
@@ -120,9 +145,9 @@ describe("M64: the Workspace module, in process", () => {
 		const { ws, tasks } = world();
 		const t = newTask(1, r);
 		tasks.set(1, t);
-		const w = createTaskWorktree(r, 1, t.title);
+		const w = (await ws.act(person, t, "prepare", {})).workspace!;
 		const launch: DispatchArgs = { cwd: w.path, sessionFile: join(w.path, "s.jsonl"), command: ["pi"], env: {}, name: "writer", origin: "dispatch" };
-		const args = { workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch };
+		const args = { launch };
 		const first = ws.act(person, t, "start", args);
 		await expect(ws.act(person, t, "start", args)).rejects.toMatchObject({ code: "conflict" });
 		await first;
@@ -150,5 +175,34 @@ describe("M64: the Workspace module, in process", () => {
 		await new Promise((r) => setTimeout(r, 20));
 		expect(stopped).toEqual(["v1"]);
 		expect(removed.sort()).toEqual(["s2", "v1"]);
+	});
+
+	it("M65: a start not prepared for is refused; a refused start removes the worktree prepared for it; prepare again holds the same one", async () => {
+		const r = repo();
+		const { ws, tasks } = world();
+		const t = newTask(1, r);
+		tasks.set(1, t);
+		const launch = (cwd: string): DispatchArgs => ({ cwd, sessionFile: join(cwd, "s.jsonl"), command: ["pi"], env: {}, name: "writer", origin: "dispatch" });
+		await expect(ws.act(person, t, "start", { launch: launch(r) })).rejects.toThrow(/not prepared/);
+		const w = (await ws.act(person, t, "prepare", {})).workspace!;
+		expect((await ws.act(person, t, "prepare", {})).workspace?.path).toBe(w.path);
+		// a launch outside its worktree: refused, the worktree and its branch gone
+		await expect(ws.act(person, t, "start", { launch: launch(r) })).rejects.toMatchObject({ code: "bad_request" });
+		expect(existsSync(w.path)).toBe(false);
+		expect(git(r, "branch", "--list", w.branch)).toBe("");
+		expect(t.workspace).toBeUndefined();
+	});
+
+	it("M65: a worktree prepared and never started is removed after PREPARED_MS", async () => {
+		const r = repo();
+		const { clock, advance } = manualClock();
+		const { ws, tasks } = world(clock);
+		const t = newTask(1, r);
+		tasks.set(1, t);
+		const w = (await ws.act(person, t, "prepare", {})).workspace!;
+		advance(PREPARED_MS - 1);
+		expect(existsSync(w.path)).toBe(true);
+		advance(1);
+		expect(existsSync(w.path)).toBe(false);
 	});
 });

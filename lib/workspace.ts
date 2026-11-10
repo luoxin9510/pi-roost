@@ -22,8 +22,8 @@ import { OpError, realPath, str, taskText } from "./op.ts";
 import { roostHome } from "./paths.ts";
 import { approve, commandHash, isApproved, readLogTail, readProjectConfig, verifyCommand, verifyLogPath } from "./project-config.ts";
 import type { DispatchArgs } from "./protocol.ts";
-import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, openTaskPr, prTarget, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "./task-git.ts";
-import { isInside, validWorktree, WORKTREES_DIR } from "./worktree.ts";
+import { abortSync, cleanupMergedTask, commitAll, currentBranch, hasIdentity, isAncestor, mergeIntoBase, makeTaskWorktree, openTaskPr, prTarget, remakeTaskWorktree, removeTaskWorktree, revParse, syncWithBase, taskWorktrees, withMergeLock, worktreeClean } from "./task-git.ts";
+import { discardWorktree, isInside, WORKTREES_DIR } from "./worktree.ts";
 
 /** Who did it, as the board records it: the hub (`user`), the concierge, or a session. */
 export interface BoardWho {
@@ -34,8 +34,17 @@ export interface BoardWho {
 	project: string | null;
 }
 
-export type WorkspaceAction = "start" | "merge" | "back" | "abort" | "commit" | "approve" | "verify" | "pass" | "comment" | "uncomment" | "shelve" | "pr";
-export const WORKSPACE_ACTIONS: readonly WorkspaceAction[] = ["start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"];
+/** M65: where a Task's worktree is, for the launch its start takes (sourceDirty: the main checkout had changes it does not carry). */
+export interface PreparedWorkspace {
+	path: string;
+	branch: string;
+	baseRef: string;
+	baseSha: string;
+	sourceDirty?: boolean;
+}
+
+export type WorkspaceAction = "prepare" | "start" | "merge" | "back" | "abort" | "commit" | "approve" | "verify" | "pass" | "comment" | "uncomment" | "shelve" | "pr";
+export const WORKSPACE_ACTIONS: readonly WorkspaceAction[] = ["prepare", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"];
 
 /** The board: the tasks (the module writes a Task's workspace, and marks it done when merged). */
 export interface BoardPort {
@@ -91,7 +100,7 @@ export interface WorkspaceDeps {
 
 export interface Workspaces {
 	/** An action on a Task's Workspace (who may has been asked: lib/callers.ts). */
-	act(a: BoardWho, t: BoardTask, action: WorkspaceAction, args: Record<string, unknown>): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }>;
+	act(a: BoardWho, t: BoardTask, action: WorkspaceAction, args: Record<string, unknown>): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string; workspace?: PreparedWorkspace }>;
 	/** Its Session said the Task is done: its work committed, Verify starts. */
 	done(a: BoardWho, t: BoardTask, result: unknown): Promise<void>;
 	/** The Task is dropped: refused while its Workspace is busy or merging; then `mark` drops it on the board (it may refuse); its command stops, its clean worktree goes. */
@@ -105,6 +114,9 @@ export interface Workspaces {
 	/** What /tasks cleanup removes (dry: what it would). */
 	cleanup(dry: boolean): Promise<string[]>;
 }
+
+/** M65: how long a worktree prepared for a start is held for it. */
+export const PREPARED_MS = Number(process.env.PI_ROOST_PREPARED_MS) || 5 * 60_000;
 
 export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 	const { board, jobs } = deps;
@@ -137,6 +149,8 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 
 	/** M55: repositories a merge is under way in (one at a time; the lock file guards against another daemon). */
 	const mergingRepos = new Set<string>();
+	/** M65: worktrees made for a start that has not come (yet): removed after PREPARED_MS. */
+	const prepared = new Map<number, { path: string; branch: string; baseRef: string; baseSha: string; repo: string; made: "new" | "restored"; timer: Timer }>();
 	/** M55: tasks an action on the workspace is under way for (start, merge, …): another waits its turn. */
 	const workspaceBusy = new Set<number>();
 	const BASE_REF = /^(?!-)(?!.*\.\.)[A-Za-z0-9._\/-]{1,200}$/;
@@ -334,7 +348,7 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 		t: BoardTask,
 		action: WorkspaceAction,
 		args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown },
-	): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
+	): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string; workspace?: PreparedWorkspace }> {
 		// one action on a task's workspace at a time (two starts, a drop during a merge)
 		if (workspaceBusy.has(t.id)) throw new OpError("conflict", `#${t.id}: another action on its workspace is under way`);
 		workspaceBusy.add(t.id);
@@ -350,7 +364,7 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 		t: BoardTask,
 		action: WorkspaceAction,
 		args: { workspace?: unknown; launch?: unknown; mode?: unknown; note?: unknown; message?: unknown; dry?: unknown; hash?: unknown; comment?: unknown },
-	): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }> {
+	): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string; workspace?: PreparedWorkspace }> {
 		// M56: trust is a person's: the repository's commands, shown, then approved
 		if (action === "approve") {
 			if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: no repository`);
@@ -369,7 +383,7 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 			return { note: `approved for ${projectLabel(t.project)}: ${list}` };
 		}
 		if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.workspace?.stage === "merged" ? "merged" : t.state}`);
-		if (action === "start") {
+		if (action === "prepare" || action === "start") {
 			// M57: the Concierge, when its policy lets it start sessions (the table: a Person or the Concierge)
 			if (a.concierge && !deps.conciergeMayAct()) throw new OpError("policy", "the concierge may not start sessions (act: off): ask the user to /tasks start it");
 			if (!t.project) throw new OpError("bad_request", `#${t.id} is for any session: a workspace is a repository's (add it in a repository)`);
@@ -378,60 +392,18 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 			if (setupRuns.has(t.id)) throw new OpError("conflict", `#${t.id} is being set up: its session starts after`);
 			const waits = blockedOn(t, board.tasks.values());
 			if (waits.length > 0) throw new OpError("blocked", `#${t.id} waits on ${waits.map((i) => `#${i}`).join(", ")}`);
-			const w = args.workspace as { path?: unknown; branch?: unknown; baseRef?: unknown; baseSha?: unknown } | undefined;
-			if (!w || !str(w.path) || !str(w.branch) || !str(w.baseRef) || !str(w.baseSha)) throw new OpError("bad_request", "workspace: {path, branch, baseRef, baseSha}");
-			if (!w.branch.startsWith(`roost/t${t.id}-`)) throw new OpError("bad_request", `workspace: the branch of #${t.id} is roost/t${t.id}-…`);
-			if (!BASE_REF.test(w.baseRef) || !SHA_RE.test(w.baseSha)) throw new OpError("bad_request", "workspace: baseRef a branch name, baseSha a commit id");
-			if (t.workspace && (t.workspace.path !== w.path || t.workspace.branch !== w.branch)) throw new OpError("bad_request", `#${t.id} has its workspace already: ${t.workspace.branch}`);
 			if (t.workspace && !["working", "review", "failed", "conflict", "shelved"].includes(t.workspace.stage)) throw new OpError("bad_request", `#${t.id} is ${stageLabel(t.workspace.stage)}: it cannot be started now`);
-			// checked again when it is started again: the worktree may be gone or moved off its branch
-			if (!(await validWorktree({ path: w.path, branch: w.branch, repo: t.project, base: t.workspace?.baseSha || w.baseSha }))) throw new OpError("bad_request", "workspace is not a worktree pi-roost made for this repository (or it is gone)");
-			// M57: base is what the caller says only if it is: the commit on that branch, the worktree's history from it
-			if (!t.workspace && (!(await isAncestor(t.project, w.baseSha, `refs/heads/${w.baseRef}`)) || !(await isAncestor(w.path, w.baseSha, "HEAD"))))
-				throw new OpError("bad_request", `workspace: ${w.baseSha.slice(0, 8)} is not on ${w.baseRef} and under the worktree's branch`);
-			let launch = args.launch as DispatchArgs | undefined;
-			if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
-			if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
-			if (!str(launch.cwd) || !isInside(realPath(launch.cwd), realPath(w.path))) throw new OpError("bad_request", "launch: cwd must be inside the task's worktree");
-			// M57/M59: a session the concierge starts runs what the concierge runs (the daemon builds it)
-			if (a.concierge) launch = deps.conciergeLaunch(launch);
-			// M56: a new worktree gets the repository's setup first (approved), then the session
-			if (!t.workspace) {
-				const { config } = await readProjectConfig(t.project, w.baseRef);
-				if (config.setup && isApproved(t.project, config.setup)) {
-					t.state = "open";
-					t.owner = null;
-					t.assigned = null;
-					t.waiting = [];
-					t.workspace = { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, stage: "working", note: `setting up: ${config.setup}` };
-					let job: { id: string };
-					try {
-						job = await runCommandJob(t, "setup", config.setup, 0);
-					} catch (err) {
-						setStage(t, "failed", `setup did not start: ${String((err as Error).message ?? err).slice(0, 200)}`, a);
-						throw err;
-					}
-					setupRuns.set(t.id, { jobId: job.id, launch, actor: a });
-					setStage(t, "working", `setting up: ${config.setup}`, a);
-					return { note: `setting up (${config.setup}); the session starts when it is done` };
-				}
-				if (config.setup) setupNote.set(t.id, "setup not run: not approved (/tasks approve)");
+			if (action === "prepare") return { workspace: await prepare(t, t.project) };
+			// M65: the worktree is the one prepare made (or the Workspace's own, there again)
+			const w = preparedFor(t);
+			if (!w) throw new OpError("bad_request", `#${t.id}: its worktree is not prepared (task prepare first)`);
+			try {
+				return await startIn(a, t, t.project, w, args);
+			} catch (err) {
+				// a refused start leaves nothing behind: a worktree prepared for it goes
+				discardPrepared(t.id);
+				throw err;
 			}
-			const job = await jobs.dispatch(launch, { task: { id: t.id, title: t.title, path: w.path, branch: w.branch, baseRef: w.baseRef } });
-			t.state = "claimed";
-			t.owner = { id: job.id, name: job.name };
-			t.claimedAt = clock.now();
-			t.assigned = null;
-			t.waiting = [];
-			const again = !!t.workspace;
-			// M58: the prompt carried the review's comments (as many as reviewText took: the same list, the same cut)
-			if (t.workspace?.comments) dropSent(t.workspace, t.workspace.comments.slice(0, reviewText(t.workspace.comments).count));
-			t.workspace ??= { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, stage: "working", note: null };
-			const pending = setupNote.get(t.id) ?? null;
-			setupNote.delete(t.id);
-			setStage(t, "working", again ? "started again" : pending, a, `${job.name} in ${w.branch}`);
-			if (a.concierge) board.record({ kind: "concierge", id: job.id, name: job.name, who: CONCIERGE_NAME, whoId: a.whoId, why: "act", text: `started #${t.id} (${clipText(t.title)}) in ${w.branch}` });
-			return { job };
 		}
 		const w = t.workspace;
 		if (!w) throw new OpError("bad_request", `#${t.id} has no workspace: /tasks start it first`);
@@ -570,6 +542,116 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 		}
 	}
 
+	/**
+	 * M65: a Task's worktree, made by the daemon: a new one from Base; one shelved, made
+	 * again from its branch; one there, as it is. One made or made again is held for
+	 * PREPARED_MS for its start, then removed.
+	 */
+	async function prepare(t: BoardTask, repo: string): Promise<PreparedWorkspace> {
+		const held = prepared.get(t.id);
+		if (held) {
+			held.timer.clear();
+			held.timer = clock.timer(() => discardPrepared(t.id), PREPARED_MS);
+			return { path: held.path, branch: held.branch, baseRef: held.baseRef, baseSha: held.baseSha };
+		}
+		const w = t.workspace;
+		if (w) {
+			if (existsSync(w.path)) return { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha };
+			// M59: shelved (or a shelve cut short): made again from its branch
+			try {
+				await remakeTaskWorktree(repo, w.path, w.branch);
+			} catch (err) {
+				throw new OpError("bad_request", `#${t.id}: ${(err as Error).message}`);
+			}
+			prepared.set(t.id, { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, repo, made: "restored", timer: clock.timer(() => discardPrepared(t.id), PREPARED_MS) });
+			return { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha };
+		}
+		let made: Awaited<ReturnType<typeof makeTaskWorktree>>;
+		try {
+			made = await makeTaskWorktree(repo, t.id, t.title);
+		} catch (err) {
+			throw new OpError("bad_request", `#${t.id}: ${(err as Error).message}`);
+		}
+		const out = { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base };
+		prepared.set(t.id, { ...out, repo: made.repo, made: "new", timer: clock.timer(() => discardPrepared(t.id), PREPARED_MS) });
+		// what is uncommitted in the main checkout is not in it (said to the caller)
+		return made.sourceDirty ? { ...out, sourceDirty: true } : out;
+	}
+
+	/** The worktree a start goes into: the one prepared, or the Workspace's own when it is there. */
+	function preparedFor(t: BoardTask): { path: string; branch: string; baseRef: string; baseSha: string } | undefined {
+		const held = prepared.get(t.id);
+		if (held) return { path: held.path, branch: held.branch, baseRef: held.baseRef, baseSha: held.baseSha };
+		const w = t.workspace;
+		return w && w.path && existsSync(w.path) ? { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha } : undefined;
+	}
+
+	/** A worktree prepared and not started goes (a new one with its branch; one made again, its branch kept). */
+	function discardPrepared(id: number): void {
+		const held = prepared.get(id);
+		if (!held) return;
+		prepared.delete(id);
+		held.timer.clear();
+		if (held.made === "new") discardWorktree({ path: held.path, branch: held.branch, repo: held.repo, base: held.baseSha });
+		else void removeTaskWorktree(held.repo, held.path).catch(() => {});
+	}
+
+	async function startIn(a: BoardWho, t: BoardTask, repo: string, w: { path: string; branch: string; baseRef: string; baseSha: string }, args: Record<string, unknown>): Promise<{ job?: { id: string; name: string }; note?: string }> {
+		let launch = args.launch as DispatchArgs | undefined;
+		if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch: the session to start");
+		if (launch.kind === "shell" || launch.worktree !== undefined) throw new OpError("bad_request", "launch: a pi session, without a worktree of its own");
+		if (!str(launch.cwd) || !isInside(realPath(launch.cwd), realPath(w.path))) throw new OpError("bad_request", "launch: cwd must be inside the task's worktree");
+		// M57/M59: a session the concierge starts runs what the concierge runs (the daemon builds it)
+		if (a.concierge) launch = deps.conciergeLaunch(launch);
+		// the worktree is the start's now: no longer held for it
+		const held = prepared.get(t.id);
+		const take = () => {
+			if (held) {
+				held.timer.clear();
+				prepared.delete(t.id);
+			}
+		};
+		// M56: a new worktree gets the repository's setup first (approved), then the session
+		if (!t.workspace) {
+			const { config } = await readProjectConfig(repo, w.baseRef);
+			if (config.setup && isApproved(repo, config.setup)) {
+				take();
+				t.state = "open";
+				t.owner = null;
+				t.assigned = null;
+				t.waiting = [];
+				t.workspace = { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, stage: "working", note: `setting up: ${config.setup}` };
+				let job: { id: string };
+				try {
+					job = await runCommandJob(t, "setup", config.setup, 0);
+				} catch (err) {
+					setStage(t, "failed", `setup did not start: ${String((err as Error).message ?? err).slice(0, 200)}`, a);
+					throw err;
+				}
+				setupRuns.set(t.id, { jobId: job.id, launch, actor: a });
+				setStage(t, "working", `setting up: ${config.setup}`, a);
+				return { note: `setting up (${config.setup}); the session starts when it is done` };
+			}
+			if (config.setup) setupNote.set(t.id, "setup not run: not approved (/tasks approve)");
+		}
+		const job = await jobs.dispatch(launch, { task: { id: t.id, title: t.title, path: w.path, branch: w.branch, baseRef: w.baseRef } });
+		take();
+		t.state = "claimed";
+		t.owner = { id: job.id, name: job.name };
+		t.claimedAt = clock.now();
+		t.assigned = null;
+		t.waiting = [];
+		const again = !!t.workspace;
+		// M58: the prompt carried the review's comments (as many as reviewText took: the same list, the same cut)
+		if (t.workspace?.comments) dropSent(t.workspace, t.workspace.comments.slice(0, reviewText(t.workspace.comments).count));
+		t.workspace ??= { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, stage: "working", note: null };
+		const pending = setupNote.get(t.id) ?? null;
+		setupNote.delete(t.id);
+		setStage(t, "working", again ? "started again" : pending, a, `${job.name} in ${w.branch}`);
+		if (a.concierge) board.record({ kind: "concierge", id: job.id, name: job.name, who: CONCIERGE_NAME, whoId: a.whoId, why: "act", text: `started #${t.id} (${clipText(t.title)}) in ${w.branch}` });
+		return { job };
+	}
+
 	/** M55: sync the task's branch with base, then into base; the stage says how it went. */
 	async function mergeTask(a: BoardWho, t: BoardTask, w: TaskWorkspace, repo: string, mode: "ff" | "no-ff"): Promise<string> {
 		if (mode === "no-ff" && !(await hasIdentity(repo))) throw new OpError("bad_request", "git user.name and user.email are not set: a merge commit needs them");
@@ -703,7 +785,7 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 				const t = board.tasks.get(x.id);
 				if (t?.workspace && t.workspace.branch === x.branch) continue;
 				// only pi-roost's (under .pi/worktrees), not one being started (made by a client moments ago, or under way)
-				if (workspaceBusy.has(x.id) || !isInside(realPath(x.path), realPath(join(repo, WORKTREES_DIR)))) continue;
+				if (workspaceBusy.has(x.id) || prepared.has(x.id) || !isInside(realPath(x.path), realPath(join(repo, WORKTREES_DIR)))) continue;
 				try {
 					if (clock.now() - statSync(x.path).mtimeMs < 10 * 60_000) continue;
 				} catch {
@@ -794,6 +876,8 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 		}
 		const qi = verifyQueue.indexOf(t.id);
 		if (qi >= 0) verifyQueue.splice(qi, 1);
+		// M65: a worktree prepared for a start that will not come
+		discardPrepared(t.id);
 		if (!cmdJob && t.workspace && t.project && t.workspace.path) {
 			const w = t.workspace;
 			const clean = await worktreeClean(w.path);
