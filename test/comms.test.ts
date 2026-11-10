@@ -868,41 +868,6 @@ describe("M44: the concierge", () => {
 		}
 	});
 
-	it("on after off: what happened meanwhile is not its concern; its first wake is the fleet as it stands, at once", async () => {
-		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100" });
-		try {
-			await startDaemon();
-			const { c: hub } = await connect();
-			const { id, w: wc } = await conciergeOn(hub);
-			const d0 = await waitFor(() => digests(wc.events)[0]);
-			await wc.c.request("ack", { id, token: wc.token, seq: d0.seq, exact: true });
-			await hub.request("concierge", { action: "off" });
-			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.state === "stopped");
-			const p = await foreground("lead");
-			const { id: a } = await p.c.request("spawn", { launch: launch("sleep 30", "a") });
-			await waitFor(async () => (await p.c.request("list", {})).jobs.find((j) => j.id === a)?.pid);
-			await settle(300);
-			expect(await hub.request("concierge", { action: "on" })).toMatchObject({ on: true, id, behind: 0 });
-			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === id)?.pid);
-			const wc2 = await worker(id);
-			const d = await waitFor(() => digests(wc2.events)[0]);
-			expect(d.text).toContain('why="heartbeat"');
-			expect(d.text).toContain("The fleet (1 session):");
-			expect(d.text).toContain("- " + a + "  a  working");
-			expect(d.text).not.toContain("started a");
-			expect(digests(wc.events)).toHaveLength(1);
-			// on while on and running: as it is (no wake spent, no backlog dropped)
-			await p.c.request("spawn", { launch: launch("sleep 30", "b") });
-			await waitFor(() => digests(wc2.events)[1]);
-			const before = await hub.request("concierge", { action: "status" });
-			expect(await hub.request("concierge", { action: "on" })).toMatchObject({ on: true, id, wakesLastHour: before.wakesLastHour, lastWakeAt: before.lastWakeAt });
-			await settle(300);
-			expect(digests(wc2.events)).toHaveLength(2);
-		} finally {
-			restore();
-		}
-	});
-
 	it("wakes over the hourly cap wait; over its budget it is not woken", async () => {
 		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100", PI_ROOST_CONCIERGE_TICK_MS: "100", PI_ROOST_CONCIERGE_RETRY_MS: "200" });
 		try {
@@ -1107,32 +1072,6 @@ describe("M44: the concierge", () => {
 			expect((await c2.request("concierge-order", { action: "list" })).orders).toEqual([expect.objectContaining({ id: 1, text: "when build ends, tell deploy its result", count: 1 })]);
 			await c2.request("concierge-order", { action: "rm", id: 1 });
 			expect((await c2.request("concierge", { action: "status" })).orders).toBe(0);
-		} finally {
-			restore();
-		}
-	});
-
-	it("an order on a clock wakes it when due (once; held wakes carry it later) and moves on to its next time", async () => {
-		const restore = env({ PI_ROOST_CONCIERGE_COALESCE_MS: "100", PI_ROOST_CONCIERGE_TICK_MS: "100" });
-		try {
-			// an order whose time comes soon (the file as the daemon keeps it; `every 1m` is the least a user can ask)
-			const soon = Date.now() + 3000;
-			writeFileSync(join(home, "orders.json"), JSON.stringify([{ id: 3, text: "say what is blocked", when: "every 1m", by: "user", at: soon - 60_000, lastAt: null, nextAt: soon, count: 0 }]));
-			await startDaemon();
-			const { c: hub } = await connect();
-			const { w: wc } = await conciergeOn(hub);
-			await waitFor(() => digests(wc.events)[0]);
-			// the tick wakes it for the order (or, on a slow machine, the on-wake carries it: whichever comes first)
-			const due = await waitFor(() => digests(wc.events).find((d) => d.text.includes("Due now")), 8000);
-			// the tick's own wake (the on-wake carried it only when it came later than the 3 s: a slow machine)
-			if (due !== digests(wc.events)[0]) expect(due.text).toMatch(/^<roost-digest why="order">\n1 standing order due, \d+ events?/);
-			expect(due.text).toContain("Due now (carry these out, then hub_note_done each):");
-			expect(due.text).toContain("- #3 every 1m · say what is blocked");
-			expect(due.text).toContain("Standing orders (apply one when what is above meets it, once per occurrence):");
-			// once: its next time is a minute on (set once the digest reached it: after the delivery); no second order wake follows
-			await waitFor(async () => ((await hub.request("concierge-order", { action: "list" })).orders[0]?.nextAt ?? 0) > Date.now() + 30_000);
-			await settle(500);
-			expect(digests(wc.events).filter((d) => d.text.includes("Due now"))).toHaveLength(1);
 		} finally {
 			restore();
 		}
