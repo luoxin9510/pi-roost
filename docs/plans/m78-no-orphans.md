@@ -50,4 +50,3 @@ Tests: `test/orphans.test.ts`.
   kills such a helper too: an orphan (parent pid 1) whose worker directory is a test's
   (`<tmp>/roost-*`); one with a parent, or another directory, is never touched. A test covers
   the three (mutation-checked). The next run's sweep clears what a run leaves.
-

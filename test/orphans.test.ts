@@ -249,6 +249,7 @@ describe("sweepOrphans", () => {
 		expect(killed).toContain(left);
 		await waitFor(() => gone(left));
 		expect(killed).not.toContain(withParent);
+		expect(pidAlive(withParent)).toBe(true);
 		expect(killed).not.toContain(elsewhere);
 		expect(pidAlive(elsewhere)).toBe(true);
 	});
