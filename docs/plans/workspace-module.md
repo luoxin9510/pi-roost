@@ -79,3 +79,12 @@ workspace scenarios among them), `test/daemon.test.ts`, the callers' matrix of M
 `test/workspace.test.ts`, the module through its own interface with the board and jobs in
 memory and git real (a Task from start to merge; one action at a time); M66 moves the
 lifecycle's rules there.
+
+### After review (M64)
+
+- `drop` refuses as it did: a Workspace busy or merging first (`conflict`), then a Task
+  already done or dropped (`bad_request`, now the first thing `mark` does), then the board
+  is touched. The move had swapped the two.
+- `test/workspace.test.ts` also pins that order, and `settle()`: an interrupted Verify to
+  review, an interrupted setup to failed, command jobs no run reports to stopped (running
+  ones) and removed.

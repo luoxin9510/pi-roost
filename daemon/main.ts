@@ -1303,10 +1303,10 @@ async function taskOp(
 			tellOpened(t, a.sessionId);
 			return { tasks: all(), task: t };
 		case "drop": {
-			if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
 			const held = t.state === "claimed" ? t.owner : null;
-			// M55/M56: its workspace says when it may go, and what goes with it
+			// M55/M56: its workspace says when it may go (first: not while busy or merging), and what goes with it
 			const note = await ws.drop(t, () => {
+				if (t.state === "dropped" || t.state === "done") throw new OpError("bad_request", `#${t.id} is ${t.state} already`);
 				t.state = "dropped";
 				t.owner = null;
 				t.claimedAt = null;

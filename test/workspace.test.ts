@@ -45,6 +45,9 @@ function world() {
 	const events: Omit<RoostEvent, "seq" | "at">[] = [];
 	const dispatched: DispatchArgs[] = [];
 	const live = new Set<string>();
+	const commands: { id: string; verifyOf?: number; setupOf?: number; running: boolean }[] = [];
+	const stopped: string[] = [];
+	const removed: string[] = [];
 	let saves = 0;
 	const ws = createWorkspaces({
 		board: {
@@ -63,16 +66,19 @@ function world() {
 				live.add(id);
 				return { id, name: launch.name ?? id };
 			},
-			stop: async (id) => void live.delete(id),
-			remove: async () => {},
+			stop: async (id) => {
+				stopped.push(id);
+				live.delete(id);
+			},
+			remove: async (id) => void removed.push(id),
 			live: (id) => live.has(id),
-			commandJobs: () => [],
+			commandJobs: () => commands,
 		},
 		conciergeMayAct: () => false,
 		conciergeLaunch: (l) => l,
 	});
 	const stages = () => events.filter((e) => e.why === "stage").map((e) => e.text);
-	return { ws, tasks, events, dispatched, live, stages, saves: () => saves };
+	return { ws, tasks, events, dispatched, live, commands, stopped, removed, stages, saves: () => saves };
 }
 
 const newTask = (id: number, project: string): BoardTask => ({ id, title: "write b", detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 0, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project, waiting: [] });
@@ -120,5 +126,29 @@ describe("M64: the Workspace module, in process", () => {
 		const first = ws.act(person, t, "start", args);
 		await expect(ws.act(person, t, "start", args)).rejects.toMatchObject({ code: "conflict" });
 		await first;
+	});
+
+	it("drop: refused while its Workspace merges (before anything else is looked at), and the board is not touched", async () => {
+		const { ws } = world();
+		const t: BoardTask = { ...newTask(1, "/nowhere"), state: "done", workspace: { path: "/nowhere/w", branch: "roost/t1-x-0000", baseRef: "main", baseSha: "a".repeat(40), stage: "merging", note: null } };
+		let marked = false;
+		await expect(ws.drop(t, () => void (marked = true))).rejects.toMatchObject({ code: "conflict" });
+		expect(marked).toBe(false);
+	});
+
+	it("settle: a Verify a restart cut short goes to review, a setup to failed; command jobs no run reports to are stopped and removed", async () => {
+		const { ws, tasks, commands, stopped, removed } = world();
+		const ws1 = { path: "/r/w1", branch: "roost/t1-a-0000", baseRef: "main", baseSha: "a".repeat(40) };
+		tasks.set(1, { ...newTask(1, "/r"), workspace: { ...ws1, stage: "verifying", note: "running sh check.sh" } });
+		tasks.set(2, { ...newTask(2, "/r"), workspace: { ...ws1, branch: "roost/t2-b-0000", stage: "working", note: "setting up: npm ci" } });
+		tasks.set(3, { ...newTask(3, "/r"), workspace: { ...ws1, branch: "roost/t3-c-0000", stage: "working", note: null } });
+		commands.push({ id: "v1", verifyOf: 1, running: true }, { id: "s2", setupOf: 2, running: false });
+		ws.settle();
+		expect(tasks.get(1)!.workspace).toMatchObject({ stage: "review", note: "not verified (interrupted)" });
+		expect(tasks.get(2)!.workspace).toMatchObject({ stage: "failed", note: "setup interrupted: /tasks start again" });
+		expect(tasks.get(3)!.workspace).toMatchObject({ stage: "working", note: null });
+		await new Promise((r) => setTimeout(r, 20));
+		expect(stopped).toEqual(["v1"]);
+		expect(removed.sort()).toEqual(["s2", "v1"]);
 	});
 });

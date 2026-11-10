@@ -94,7 +94,7 @@ export interface Workspaces {
 	act(a: BoardWho, t: BoardTask, action: WorkspaceAction, args: Record<string, unknown>): Promise<{ job?: { id: string; name: string }; note?: string; hash?: string }>;
 	/** Its Session said the Task is done: its work committed, Verify starts. */
 	done(a: BoardWho, t: BoardTask, result: unknown): Promise<void>;
-	/** The Task is dropped: `mark` drops it on the board; its command stops, its clean worktree goes. */
+	/** The Task is dropped: refused while its Workspace is busy or merging; then `mark` drops it on the board (it may refuse); its command stops, its clean worktree goes. */
 	drop(t: BoardTask, mark: () => void): Promise<string | undefined>;
 	/** A Verify or setup command ended. */
 	commandEnded(jobId: string, of: { verifyOf?: number; setupOf?: number }, code: number | null): void;
