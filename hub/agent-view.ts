@@ -19,7 +19,9 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
-import { DaemonClient, type DaemonError, GiveUp, requestOnce } from "../lib/client.ts";
+import { DaemonClient, type DaemonError, GiveUp } from "../lib/client.ts";
+import type { OverlayHost } from "./overlay-host.ts";
+import { type RoostPort, roostPort, sends } from "./roost-port.ts";
 import { hostSocketPath } from "../lib/paths.ts";
 import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
 import { type Filter, parseFilter } from "../lib/filter.ts";
@@ -264,6 +266,8 @@ export interface Overlay {
 	handleInput?(data: string): void;
 	focused?: boolean;
 	dispose?(): void;
+	/** M71: a pushed event, after the view took it in (the view keeps the one subscription). */
+	onEvent?(e: Event): void;
 }
 
 interface Columns {
@@ -418,6 +422,22 @@ export class AgentView implements Component {
 		this.o.setTitle("pi");
 	}
 
+	/** M71: the daemon port of a connection (one per client, so a closure holding it keeps its connection). */
+	private ports = new WeakMap<DaemonClient, RoostPort>();
+	/** M51: reply and dispatch hold no connection: each try takes the live one, waiting through a reconnect. */
+	private readonly sends = sends((d) => this.live(d));
+
+	private portFor(client: DaemonClient): RoostPort {
+		let port = this.ports.get(client);
+		if (!port) this.ports.set(client, (port = roostPort(client, (d) => this.live(d))));
+		return port;
+	}
+
+	/** M71: the port of the connection now (undefined while there is none). */
+	private get port(): RoostPort | undefined {
+		return this.client && this.portFor(this.client);
+	}
+
 	/** M51: the connection now, waiting a moment while it is being made again (the daemon restarted). */
 	private async live(deadline = Date.now() + 10_000): Promise<DaemonClient> {
 		const until = Math.min(deadline, Date.now() + 10_000);
@@ -436,8 +456,7 @@ export class AgentView implements Component {
 		try {
 			client = await (this.o.connect ?? (() => DaemonClient.connectOrStart()))();
 			if (this.closed) return client.close();
-			client.onEvent((e) => this.onEvent(e));
-			await client.request("subscribe", {});
+			await this.portFor(client).subscribe((e) => this.onEvent(e));
 			const { jobs, after } = await this.listFrom(client);
 			if (this.closed) return client.close();
 			this.rows = new Map(jobs.map((j) => [j.id, j]));
@@ -445,10 +464,10 @@ export class AgentView implements Component {
 			for (const j of jobs) observeJob(j); // what is already there is not news
 			for (const j of jobs) this.checkSwitch(j); // a switch shown while we were away
 			// M44: a daemon from before the concierge has no such op: then there is none
-			this.concierge = await client.request("concierge", { action: "status" }).catch(() => undefined);
+			this.concierge = await this.portFor(client).concierge.status().catch(() => undefined);
 			// M47: the board's counts (a daemon from before the board has no such op: then there is none)
-			this.board = await client
-				.request("task", { action: "list" })
+			this.board = await this.portFor(client)
+				.tasks.list()
 				.then((r) => boardSummary(r.tasks))
 				.catch(() => undefined);
 			this.client = client;
@@ -483,9 +502,10 @@ export class AgentView implements Component {
 	 */
 	private async listFrom(client: DaemonClient): Promise<{ jobs: JobRow[]; after: Event[] }> {
 		const heard: { e: Event; at: number }[] = [];
-		const off = client.onEvent((e) => heard.push({ e, at: client.position() }));
+		const port = this.portFor(client);
+		const off = port.listen((e) => heard.push({ e, at: port.position() }));
 		try {
-			const { result, at } = await client.requestAt("list", this.o.cwdFilter ? { cwd: this.o.cwdFilter } : {});
+			const { result, at } = await port.jobs.listAt(this.o.cwdFilter ? { cwd: this.o.cwdFilter } : {});
 			const after = heard.filter((h) => h.at > at).map((h) => h.e);
 			return { jobs: result.jobs, after: after.filter((e) => e.event !== "job" || !this.o.cwdFilter || within(e.job.cwd, this.o.cwdFilter)) };
 		} finally {
@@ -568,7 +588,27 @@ export class AgentView implements Component {
 			// M57: the workspace overlay follows the board
 			this.wsReload?.();
 		}
+		try {
+			this.overlay?.onEvent?.(e);
+		} catch {}
 		this.render0();
+	}
+
+	/** M71: the host of an overlay opened on `port` (the connection it was opened on, as the closures hold theirs). */
+	overlayHost(port: RoostPort): OverlayHost {
+		return {
+			port,
+			theme: this.o.theme,
+			say: (text, tone) => this.say(text, tone),
+			close: () => this.closeOverlay(),
+			requestRender: () => this.o.tui.requestRender(),
+			attachTo: (id) => this.attachTo(id),
+			rows: () => this.rows,
+			taskDiff: this.o.taskDiff,
+			taskChanges: this.o.taskChanges,
+			worktreeChange: this.o.worktreeChange,
+			hostControl: this.o.hostControl,
+		};
 	}
 
 	private render0(): void {
@@ -1192,23 +1232,23 @@ export class AgentView implements Component {
 	 * thinking and directory); `list` (or bare), `run`, `pause`, `resume`, `rm <name>`.
 	 */
 	private async scheduleCommand(arg: string): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		const words = arg.trim().split(/\s+/).filter(Boolean);
 		try {
 			if (words.length === 0 || (words.length === 1 && words[0] === "list")) return await this.showSchedules();
 			const [verb, name] = words as [string, string | undefined];
 			if (words.length === 2 && name && ["rm", "pause", "resume", "run"].includes(verb)) {
 				if (verb === "rm") {
-					await client.request("schedule-rm", { name });
+					await port.schedules.rm(name);
 					return this.say(`schedule ${name} removed`);
 				}
 				if (verb === "run") {
-					const r = await client.request("schedule-run", { name });
+					const r = await port.schedules.run(name);
 					this.cursor = { kind: "row", id: r.id };
 					return this.say(`schedule ${name} started a run`, "success");
 				}
-				const r = await client.request("schedule-pause", { name, paused: verb === "pause" });
+				const r = await port.schedules.pause(name, verb === "pause");
 				return this.say(r.paused || r.nextAt === null ? `schedule ${name} paused` : `schedule ${name}: next run ${untilText(r.nextAt)}`, "success");
 			}
 			const p = parseScheduleInput(arg);
@@ -1232,7 +1272,7 @@ export class AgentView implements Component {
 				const { discard: _d, note: _n, ...rest } = this.o.scheduleLaunch(p.task, { cwd, model: this.model, thinking: this.thinking });
 				launch = rest;
 			}
-			const r = await client.request("schedule-add", { name: p.name, when: p.when, launch, task: p.task });
+			const r = await port.schedules.add({ name: p.name, when: p.when, launch, task: p.task });
 			this.say(`schedule ${r.name}: ${r.when} · first run ${r.nextAt === null ? "never" : untilText(r.nextAt)}`, "success");
 		} catch (err) {
 			this.say((err as Error).message, "error");
@@ -1241,7 +1281,7 @@ export class AgentView implements Component {
 
 	/** M39 /schedule list: each schedule, when it runs next, its last run; Esc closes. */
 	private async showSchedules(): Promise<void> {
-		const list = (await this.client!.request("schedules", {})).schedules;
+		const list = (await this.port!.schedules.list()).schedules;
 		if (list.length === 0) return this.say('no schedules: /schedule <name> <every 1h | daily 09:00 | weekdays 09:00 | cron "…"> <task>');
 		let top = 0;
 		const view = this;
@@ -1302,10 +1342,10 @@ export class AgentView implements Component {
 
 	/** M43 /log: what happened lately across the sessions (newest first); r reloads, Esc closes. */
 	private async showLog(only?: (e: RoostEvent) => boolean, title = "Log · what happened lately (newest first)"): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		let events: RoostEvent[];
-		const fetch = async () => (await client.request("events", { limit: 500 })).events.filter((e) => !only || only(e)).slice(-200);
+		const fetch = async () => (await port.events.list({ limit: 500 })).events.filter((e) => !only || only(e)).slice(-200);
 		try {
 			events = await fetch();
 		} catch (err) {
@@ -1362,28 +1402,28 @@ export class AgentView implements Component {
 
 	/** M44 /concierge on|off|status|log|attach|ask …: the hub's resident agent. */
 	private async conciergeCommand(arg: string): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		const [verb = "status", ...rest] = arg.trim().split(/\s+/).filter(Boolean);
 		try {
 			if (verb === "on") {
 				if (this.concierge?.on) return this.say(this.conciergeLine(), "muted");
 				// the job it had is started again; a first start needs a launch
-				if (this.concierge?.id) this.concierge = await client.request("concierge", { action: "on" });
+				if (this.concierge?.id) this.concierge = await port.concierge.on();
 				else {
 					if (!this.o.conciergeLaunch) return this.say("the concierge is not available here", "warning");
 					const { discard: _d, note: _n, ...launch } = this.o.conciergeLaunch();
-					this.concierge = await client.request("concierge", { action: "on", launch });
+					this.concierge = await port.concierge.on(launch);
 				}
 				return this.say(`concierge on (${this.concierge.model ?? "its model"}) · ? asks it · /concierge off stops it`, "success");
 			}
 			if (verb === "off") {
-				this.concierge = await client.request("concierge", { action: "off" });
+				this.concierge = await port.concierge.off();
 				this.asked(false);
 				return this.say("concierge off", "muted");
 			}
 			if (verb === "status") {
-				this.concierge = await client.request("concierge", { action: "status" });
+				this.concierge = await port.concierge.status();
 				return this.say(this.concierge.on ? this.conciergeLine() : "concierge off · /concierge on starts it", "muted");
 			}
 			if (verb === "log") return await this.showLog((e) => e.kind === "concierge" || (!!this.concierge?.id && (e.whoId === this.concierge.id || e.id === this.concierge.id)), "Concierge · what it did and said (newest first)");
@@ -1397,7 +1437,7 @@ export class AgentView implements Component {
 				const answer = rest[0];
 				if (!answer) return this.say(`concierge answers: ${this.concierge?.policy.answer ?? "never"} · /concierge answer never|routine|always`, "muted");
 				if (answer !== "never" && answer !== "routine" && answer !== "always") return this.say("/concierge answer never | routine | always", "warning");
-				this.concierge = await client.request("concierge", { action: "answer", answer });
+				this.concierge = await port.concierge.answer(answer);
 				return this.say(
 					answer === "never"
 						? "concierge answers: never (it suggests; you answer)"
@@ -1410,11 +1450,11 @@ export class AgentView implements Component {
 			if (verb === "act") {
 				const v = rest[0];
 				if (v !== "on" && v !== "off") return this.say(`concierge act: ${this.concierge?.policy.act ? "on" : "off"} · /concierge act on|off (may it start, stop and restart sessions)`, "muted");
-				this.concierge = await client.request("concierge", { action: "act", act: v === "on" });
+				this.concierge = await port.concierge.act(v === "on");
 				return this.say(v === "on" ? "concierge may start, stop and restart sessions (when you ask it to)" : "concierge may not start, stop or restart sessions", "success");
 			}
 			if (verb === "undo") {
-				this.concierge = await client.request("concierge", { action: "undo" });
+				this.concierge = await port.concierge.undo();
 				const a = this.concierge.answered;
 				return this.say(a ? `withdrawn: the answer to ${a.name} («${oneLine(a.text).slice(0, 60)}»); it is told to disregard it and ask you` : "nothing to undo", "success");
 			}
@@ -1432,17 +1472,17 @@ export class AgentView implements Component {
 						return this.say('that starts like a clock but is not one in roost\'s words: every 30m | daily 18:00 | weekdays 09:00 | cron "m h dom mon dow" (one minute at least), then the rule; or word the rule differently', "warning");
 					}
 					const when = m?.[1];
-					const { order } = await client.request("concierge-order", { action: "add", text: m ? m[2]! : words, ...(when ? { when } : {}) });
+					const { order } = await port.concierge.orders.add(m ? m[2]! : words, when);
 					return this.say(`kept standing order #${order?.id}${when ? ` (${when})` : ""}; the concierge sees it on its next wake`, "success");
 				}
 				if (sub === "rm") {
 					const id = Number(more[0]);
 					if (!Number.isInteger(id)) return this.say("/concierge orders rm <id>", "warning");
-					await client.request("concierge-order", { action: "rm", id });
+					await port.concierge.orders.rm(id);
 					return this.say(`dropped standing order #${id}`, "success");
 				}
 				if (sub) return this.say("/concierge orders | orders add <rule> | orders rm <id>", "warning");
-				const { orders } = await client.request("concierge-order", { action: "list" });
+				const { orders } = await port.concierge.orders.list();
 				if (orders.length === 0) return this.say("no standing orders · /concierge orders add <rule> (or tell the concierge: ? remember …)", "muted");
 				return this.showOrders(orders);
 			}
@@ -1495,14 +1535,14 @@ export class AgentView implements Component {
 	/** Ctrl+Y: the suggestion goes as the user's reply. */
 	private async acceptSuggestion(): Promise<void> {
 		const row = this.escalation();
-		if (!row?.suggested || !this.client) return;
+		if (!row?.suggested || !this.port) return;
 		const text = row.suggested.text;
 		// once: a second press before the row moves would answer its next question (the
 		// banner is back if the send did not go)
 		const key = `${row.id}:${row.suggested.at}`;
 		this.dismissed.add(key);
 		try {
-			const r = await requestOnce((d) => this.live(d), "reply", { id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
+			const r = await this.sends.reply({ id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
 			if (r.delivered || r.saved) this.say(`sent to ${row.name}: ${oneLine(text).slice(0, 80)}`, "success");
 			else {
 				this.dismissed.delete(key);
@@ -1565,10 +1605,10 @@ export class AgentView implements Component {
 	private async ask(question: string): Promise<void> {
 		const q = question.trim();
 		if (!q) return this.say("? needs a question, e.g. ? what is blocked and why", "warning");
-		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.port) return this.say("background service unavailable", "error");
 		if (!this.concierge?.on) return this.say("the concierge is off: /concierge on starts it", "warning");
 		try {
-			await this.client.request("concierge-ask", { text: q });
+			await this.port.concierge.ask(q);
 			this.asked(true);
 			this.input.setValue("");
 			this.say("asked the concierge; its answer opens here", "muted");
@@ -1675,11 +1715,11 @@ export class AgentView implements Component {
 			this.restartAsk = { id: row.id, at: Date.now() };
 			return this.attachTo(row.id);
 		}
-		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.port) return this.say("background service unavailable", "error");
 		const args = this.o.launch("", { cwd: s.cwd || this.dispatchCwd(), sessionFile: s.path, name: s.name, origin: "adopt" });
 		let r: { id: string; name: string };
 		try {
-			r = await requestOnce((d) => this.live(d), "dispatch", args, { tag: "hub" });
+			r = await this.sends.dispatch(args, { tag: "hub" });
 		} catch (err) {
 			// M51: lost (sent, no answer) may have been taken: what it made stays
 			if ((err as DaemonError).code !== "lost") args.discard?.();
@@ -1807,13 +1847,13 @@ export class AgentView implements Component {
 	private async togglePin(): Promise<void> {
 		// a peek acts on its own row, never on the marks
 		const marked = this.peek ? [] : this.markedRows();
-		if (marked.length > 0 && this.client) {
+		if (marked.length > 0 && this.port) {
 			// M25: pin them all, unless all are pinned already
 			const pinned = marked.some((r) => !r.pinned);
 			let failed = 0;
 			for (const r of marked) {
 				try {
-					await this.client.request("pin", { id: r.id, pinned });
+					await this.port.jobs.pin(r.id, pinned);
 				} catch {
 					failed++;
 				}
@@ -1821,9 +1861,9 @@ export class AgentView implements Component {
 			return this.say(`${pinned ? "pinned" : "unpinned"} ${marked.length - failed} sessions${failed ? ` · ${failed} failed` : ""}`, failed ? "warning" : "muted");
 		}
 		const row = this.selectedRow();
-		if (!row || !this.client) return;
+		if (!row || !this.port) return;
 		try {
-			const { pinned } = await this.client.request("pin", { id: row.id, pinned: !row.pinned });
+			const { pinned } = await this.port.jobs.pin(row.id, !row.pinned);
 			this.cursor = { kind: "row", id: row.id };
 			this.say(pinned ? `pinned · ${row.name} (kept running)` : `unpinned · ${row.name}`);
 		} catch (err) {
@@ -1854,9 +1894,9 @@ export class AgentView implements Component {
 			const id = this.renaming!;
 			const name = this.renameInput.getValue().trim();
 			this.endRename();
-			if (!name || !this.client) return;
-			void this.client
-				.request("rename", { id, name })
+			if (!name || !this.port) return;
+			void this.port
+				.jobs.rename(id, name)
 				.then(() => this.say(`renamed · ${name}`, "success"))
 				.catch((err: unknown) => this.say((err as Error).message, "error"));
 			return;
@@ -1880,7 +1920,7 @@ export class AgentView implements Component {
 
 	private async reorder(dir: 1 | -1): Promise<void> {
 		const it = this.selected();
-		if (it?.kind !== "row" || !this.client) return;
+		if (it?.kind !== "row" || !this.port) return;
 		if (this.filter()) return this.say("clear the filter to reorder", "warning");
 		// the whole section, including rows folded into "… N more"
 		const full = layout(this.listedRows(), { groupBy: this.groupBy }).find((s) => s.key === it.section.key);
@@ -1898,7 +1938,7 @@ export class AgentView implements Component {
 		});
 		this.o.tui.requestRender();
 		try {
-			await this.client.request("reorder", { ids, key });
+			await this.port.jobs.reorder(ids, key);
 		} catch (err) {
 			this.say((err as Error).message, "error");
 		}
@@ -1986,11 +2026,11 @@ export class AgentView implements Component {
 			}
 		}
 		const { discard, note, ...request } = args;
-		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.port) return this.say("background service unavailable", "error");
 		this.dispatching = true;
 		this.input.setValue("");
 		try {
-			const { id, name } = await requestOnce((d) => this.live(d), "dispatch", request, { tag: "hub" });
+			const { id, name } = await this.sends.dispatch(request, { tag: "hub" });
 			this.cursor = { kind: "row", id };
 			const where = request.worktree ? ` · ⎇ ${request.worktree.branch}` : "";
 			this.say(`started · ${name}${where}${note ? ` · ${note}` : ""}`, note ? "warning" : "success");
@@ -2016,7 +2056,7 @@ export class AgentView implements Component {
 			this.closePeek();
 			return this.say("that session no longer exists", "warning");
 		}
-		if (!text || !this.client || this.sendingReply) return;
+		if (!text || !this.port || this.sendingReply) return;
 		// M48: a /command the peek knows is for that session (M8: /model and /thinking among them);
 		// any other /… goes to the session as a reply (pi's prompt templates and skills, say)
 		const cmd = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
@@ -2044,7 +2084,7 @@ export class AgentView implements Component {
 		try {
 			// M51: one at a time (a second Enter while it is sent again would send it twice)
 			this.sendingReply = true;
-			const r = await requestOnce((d) => this.live(d), "reply", { id: row.id, text, mode }, { tag: "hub" }).finally(() => {
+			const r = await this.sends.reply({ id: row.id, text, mode }, { tag: "hub" }).finally(() => {
 				this.sendingReply = false;
 			});
 			this.reply.setValue("");
@@ -2068,8 +2108,8 @@ export class AgentView implements Component {
 	 * `assign <id> <session>`, `done <id> [result]`, `rm <id>`, `release <id>`.
 	 */
 	private async tasksCommand(arg: string): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		const [verb = "", ...rest] = arg.trim().split(/\s+/).filter(Boolean);
 		const idOf = (s: string | undefined): number | undefined => {
 			const n = Number((s ?? "").replace(/^#/, ""));
@@ -2080,7 +2120,7 @@ export class AgentView implements Component {
 			const here = projectOf(this.dispatchCwd());
 			if (!verb || verb === "list" || verb === "all") {
 				const every = verb === "all" || here === null;
-				const { tasks } = await client.request("task", { action: "list", ...(every ? {} : { project: here! }) });
+				const { tasks } = await port.tasks.list(every ? {} : { project: here! });
 				if (every) this.board = boardSummary(tasks);
 				return this.showTasks(tasks, every ? "all projects" : projectLabel(here));
 			}
@@ -2101,30 +2141,30 @@ export class AgentView implements Component {
 					title = title.slice(0, m.index).trim();
 				}
 				if (!title) return this.say("/tasks add <title> [after #n] [-- detail]", "warning");
-				const r = await client.request("task", { action: "add", title, detail: detail || undefined, after: after.length > 0 ? after : undefined, project: here });
+				const r = await port.tasks.add({ title, detail: detail || undefined, after: after.length > 0 ? after : undefined, project: here });
 				return this.say(`task #${r.task?.id} added${here ? ` to ${projectLabel(here)}` : ""}: ${title}${after.length > 0 ? ` (after ${after.map((n) => `#${n}`).join(", ")})` : ""}`, "success");
 			}
 			const id = idOf(rest[0]);
 			if (verb === "assign" || verb === "give") {
 				const to = rest.slice(1).join(" ");
 				if (id === undefined || !to) return this.say("/tasks assign <id> <session id or name>", "warning");
-				const r = await client.request("task", { action: "assign", id, to });
+				const r = await port.tasks.assign(id, to);
 				const who = r.task?.assigned?.name ?? to;
 				return this.say(r.sent === "delivered" || r.sent === "queued" || r.sent === "started" ? `task #${id} handed to ${who}` : `task #${id} not handed over: ${who} is not running`, r.sent === "delivered" || r.sent === "queued" || r.sent === "started" ? "success" : "warning");
 			}
 			if (verb === "done") {
 				if (id === undefined) return this.say("/tasks done <id> [result]", "warning");
-				await client.request("task", { action: "done", id, result: rest.slice(1).join(" ") || undefined });
+				await port.tasks.done(id, rest.slice(1).join(" ") || undefined);
 				return this.say(`task #${id} done`, "success");
 			}
 			if (verb === "rm" || verb === "drop") {
 				if (id === undefined) return this.say("/tasks rm <id>", "warning");
-				await client.request("task", { action: "drop", id });
+				await port.tasks.drop(id);
 				return this.say(`task #${id} dropped`, "muted");
 			}
 			if (verb === "release") {
 				if (id === undefined) return this.say("/tasks release <id>", "warning");
-				await client.request("task", { action: "release", id });
+				await port.tasks.release(id);
 				return this.say(`task #${id} is open again`, "muted");
 			}
 			// M55: a task's own workspace
@@ -2135,12 +2175,12 @@ export class AgentView implements Component {
 			// M59: shelve a task (worktree removed, branch kept); remove what was left behind
 			if (verb === "shelve") {
 				if (id === undefined) return this.say("/tasks shelve <id>", "warning");
-				const r = await client.request("task", { action: "shelve", id });
+				const r = await port.tasks.shelve(id);
 				return this.say(`#${id} ${r.note ?? "shelved"}`, "success");
 			}
 			if (verb === "cleanup") {
 				const go = rest[0] === "yes";
-				const r = await client.request("task", { action: "cleanup", dry: !go });
+				const r = await port.tasks.cleanup(!go);
 				const lines = (r.note ?? "").split("\n").filter(Boolean);
 				const nothing = lines.length === 1 && lines[0] === "nothing left behind";
 				if (nothing) return this.say("nothing left behind", "muted");
@@ -2153,23 +2193,23 @@ export class AgentView implements Component {
 			if (verb === "merge") {
 				if (id === undefined) return this.say("/tasks merge <id>", "warning");
 				this.say(`merging #${id}…`, "muted");
-				const r = await client.request("task", { action: "merge", id, mode: this.o.taskMerge ?? "ff" });
+				const r = await port.tasks.merge(id, this.o.taskMerge ?? "ff");
 				const stage = r.task?.workspace?.stage;
 				return this.say(`#${id}: ${r.note ?? stage ?? "?"}`, stage === "merged" ? "success" : "warning");
 			}
 			if (verb === "back") {
 				if (id === undefined) return this.say("/tasks back <id> [what to change]", "warning");
-				const r = await client.request("task", { action: "back", id, note: rest.slice(1).join(" ") || undefined });
+				const r = await port.tasks.back(id, rest.slice(1).join(" ") || undefined);
 				return this.say(`#${id} back to work · ${r.note ?? ""}`, "success");
 			}
 			if (verb === "abort") {
 				if (id === undefined) return this.say("/tasks abort <id>", "warning");
-				await client.request("task", { action: "abort", id });
+				await port.tasks.abort(id);
 				return this.say(`#${id}: sync aborted, in review again`, "muted");
 			}
 			if (verb === "commit") {
 				if (id === undefined) return this.say("/tasks commit <id> [message]", "warning");
-				const r = await client.request("task", { action: "commit", id, message: rest.slice(1).join(" ") || undefined });
+				const r = await port.tasks.commit(id, rest.slice(1).join(" ") || undefined);
 				return this.say(`#${id}: ${r.note ?? "committed"}`, "success");
 			}
 			// M56: the repository's commands: shown, then approved by the same command again
@@ -2177,14 +2217,14 @@ export class AgentView implements Component {
 				if (id === undefined) return this.say("/tasks approve <id>", "warning");
 				const shown = this.approveShown;
 				if (!shown || shown.id !== id || Date.now() - shown.at >= APPROVE_MS) {
-					const r = await client.request("task", { action: "approve", id, dry: true });
+					const r = await port.tasks.approve({ id, dry: true });
 					if (!r.hash) return this.say(r.note ?? "nothing to approve", "warning");
 					this.approveShown = { id, at: Date.now(), hash: r.hash };
 					return this.say(`${r.note} · they run in your account: /tasks approve ${id} again within 30 s to approve`, "warning");
 				}
 				this.approveShown = undefined;
 				// what is approved is what was shown (the daemon refuses if the commands changed)
-				const r = await client.request("task", { action: "approve", id, hash: shown.hash });
+				const r = await port.tasks.approve({ id, hash: shown.hash });
 				return this.say(r.note ?? "approved", "success");
 			}
 			// M60: the optional exit: shown, then the same command again within 30 s (for the tip shown)
@@ -2192,23 +2232,23 @@ export class AgentView implements Component {
 				if (id === undefined) return this.say("/tasks pr <id>", "warning");
 				const shown = this.prShown;
 				if (!shown || shown.id !== id || Date.now() - shown.at >= APPROVE_MS) {
-					const r = await client.request("task", { action: "pr", id, dry: true });
+					const r = await port.tasks.pr({ id, dry: true });
 					this.prShown = { id, at: Date.now(), hash: r.hash ?? "" };
 					return this.say(`#${id}: ${r.note} · /tasks pr ${id} again within 30 s to do it`, "warning");
 				}
 				this.prShown = undefined;
 				this.say(`#${id}: pushing…`, "muted");
-				const r = await client.request("task", { action: "pr", id, hash: shown.hash });
+				const r = await port.tasks.pr({ id, hash: shown.hash });
 				return this.say(`#${id}: ${r.note ?? "opened"}`, "success");
 			}
 			if (verb === "verify") {
 				if (id === undefined) return this.say("/tasks verify <id>", "warning");
-				const r = await client.request("task", { action: "verify", id });
+				const r = await port.tasks.verify(id);
 				return this.say(`#${id}: ${r.note ?? "verifying"}`, "success");
 			}
 			if (verb === "pass") {
 				if (id === undefined) return this.say("/tasks pass <id>", "warning");
-				await client.request("task", { action: "pass", id });
+				await port.tasks.pass(id);
 				return this.say(`#${id}: in review (passed by hand)`, "muted");
 			}
 			return this.say("/tasks [all | add <title> [after #n] [-- detail] | start <id> | review <id> | merge <id> | pr <id> | shelve <id> | cleanup [yes] | approve <id> | verify <id> | pass <id> | back <id> [note] | abort <id> | commit <id> [msg] | assign <id> <session> | done <id> [result] | rm <id> | release <id>]", "warning");
@@ -2224,17 +2264,17 @@ export class AgentView implements Component {
 	 * remove (a refused start's at once, one never asked for after a while).
 	 */
 	private async startTask(id: number): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
-		const { tasks } = await client.request("task", { action: "list" });
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
+		const { tasks } = await port.tasks.list();
 		const t = tasks.find((x) => x.id === id);
 		if (!t) return this.say(`no task #${id}`, "warning");
 		if (!t.project) return this.say(`#${id} is for any session: add it in a repository to give it a workspace`, "warning");
 		try {
-			const w = (await client.request("task", { action: "prepare", id })).workspace;
+			const w = (await port.tasks.prepare(id)).workspace;
 			if (!w) return this.say(`#${id}: no worktree came back`, "error");
 			const { discard: _d, note: _n, ...rest } = this.o.launch(taskPrompt(t), { cwd: w.path, model: this.model, thinking: this.thinking, worktree: false });
-			const r = await client.request("task", { action: "start", id, launch: rest as DispatchArgs });
+			const r = await port.tasks.start(id, rest as DispatchArgs);
 			if (r.job) this.cursor = { kind: "row", id: r.job.id };
 			this.say(`#${id} started · ${r.job?.name ?? "?"} · ⎇ ${w.branch}${w.sourceDirty ? " · uncommitted changes in the main checkout are not in it" : ""}`, w.sourceDirty ? "warning" : "success");
 		} catch (err) {
@@ -2315,19 +2355,19 @@ export class AgentView implements Component {
 	 */
 	private wsOpening = false;
 	private async showWorkspaces(next: boolean, focus?: number): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		// a second Ctrl+N while the first loads opens nothing more
 		if (this.wsOpening) return;
 		this.wsOpening = true;
 		try {
-			await this.openWorkspaces(client, next, focus);
+			await this.openWorkspaces(port, next, focus);
 		} finally {
 			this.wsOpening = false;
 		}
 	}
 
-	private async openWorkspaces(client: DaemonClient, next: boolean, focus?: number): Promise<void> {
+	private async openWorkspaces(port: RoostPort, next: boolean, focus?: number): Promise<void> {
 		const view = this;
 		const t = this.o.theme;
 		const here = projectOf(this.dispatchCwd());
@@ -2367,7 +2407,7 @@ export class AgentView implements Component {
 			}
 		};
 		const load = async (pickNext: boolean): Promise<void> => {
-			const r = await client.request("task", { action: "list", ...(here ? { project: here } : {}) });
+			const r = await port.tasks.list(here ? { project: here } : {});
 			if (closed) return;
 			tasks = r.tasks;
 			entries = workspaceEntries(tasks);
@@ -2515,8 +2555,7 @@ export class AgentView implements Component {
 					if (data !== "y" || busy) return view.say(c.kind === "approve" ? "not approved" : "no pull request", "muted");
 					busy = true;
 					if (c.kind === "pr") view.say(`#${c.id}: pushing…`, "muted");
-					void client
-						.request("task", { action: c.kind, id: c.id, hash: c.hash })
+					void (c.kind === "pr" ? port.tasks.pr({ id: c.id, hash: c.hash }) : port.tasks.approve({ id: c.id, hash: c.hash }))
 						.then((r) => view.say(r.note ?? "approved", "success"))
 						.catch((err: unknown) => view.say((err as Error).message, "error"))
 						.finally(() => {
@@ -2576,8 +2615,8 @@ export class AgentView implements Component {
 				if (data === "o") {
 					if (busy) return;
 					busy = true;
-					void client
-						.request("task", { action: "pr", id: x.id, dry: true })
+					void port.tasks
+						.pr({ id: x.id, dry: true })
 						.then((r) => {
 							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash, kind: "pr" };
 						})
@@ -2591,8 +2630,8 @@ export class AgentView implements Component {
 				if (data === "a") {
 					if (busy) return;
 					busy = true;
-					void client
-						.request("task", { action: "approve", id: x.id, dry: true })
+					void port.tasks
+						.approve({ id: x.id, dry: true })
 						.then((r) => {
 							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash, kind: "approve" };
 							else view.say(r.note ?? "nothing to approve", "muted");
@@ -2622,19 +2661,19 @@ export class AgentView implements Component {
 	 */
 	private reviewOpening = false;
 	private async openReview(id: number, onClose?: () => void): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		// a second Enter while it loads opens nothing more
 		if (this.reviewOpening) return;
 		this.reviewOpening = true;
 		try {
-			await this.reviewOverlay(client, id, onClose);
+			await this.reviewOverlay(port, id, onClose);
 		} finally {
 			this.reviewOpening = false;
 		}
 	}
 
-	private async reviewOverlay(client: DaemonClient, id: number, onClose?: () => void): Promise<void> {
+	private async reviewOverlay(port: RoostPort, id: number, onClose?: () => void): Promise<void> {
 		const view = this;
 		const t = this.o.theme;
 		const diffOf = this.o.taskDiff ?? taskDiff;
@@ -2648,7 +2687,7 @@ export class AgentView implements Component {
 		let closed = false;
 		let self: Overlay | undefined;
 		const load = async (): Promise<void> => {
-			const { tasks } = await client.request("task", { action: "list" });
+			const { tasks } = await port.tasks.list();
 			task = tasks.find((x) => x.id === id);
 			const w = task?.workspace;
 			if (!task || !w || !w.path) throw new Error(`#${id} has no workspace to review`);
@@ -2797,8 +2836,8 @@ export class AgentView implements Component {
 						const r = rows[ri];
 						if (!text || !f?.path || r?.kind !== "line") return;
 						busy = true;
-						void client
-							.request("task", { action: "comment", id, comment: { file: f.path, ...anchor(r.line), text, tip: diff?.tip } })
+						void port.tasks
+							.comment(id, { file: f.path, ...anchor(r.line), text, tip: diff?.tip })
 							.then((res) => {
 								if (task?.workspace && res.task?.workspace) task.workspace.comments = res.task.workspace.comments;
 							})
@@ -2850,8 +2889,8 @@ export class AgentView implements Component {
 					if (!mine || mine.length === 0) return view.say("no comment here", "muted");
 					const c = mine[mine.length - 1]!;
 					busy = true;
-					void client
-						.request("task", { action: "uncomment", id, comment: { file: c.file, line: c.line, at: c.at } })
+					void port.tasks
+						.uncomment(id, { file: c.file, line: c.line, at: c.at })
 						.then((res) => {
 							if (task?.workspace) task.workspace.comments = res.task?.workspace?.comments;
 						})
@@ -2878,8 +2917,8 @@ export class AgentView implements Component {
 
 	/** M48: a `/command` typed in a peek acts on that session (the keys' code, by name). */
 	private async peekCommand(row: JobRow, name: string, arg: string): Promise<void> {
-		const client = this.client;
-		if (!client) return this.say("background service unavailable", "error");
+		const port = this.port;
+		if (!port) return this.say("background service unavailable", "error");
 		const done = () => {
 			this.reply.setValue("");
 			this.o.tui.requestRender();
@@ -2892,11 +2931,11 @@ export class AgentView implements Component {
 			case "stop":
 				done();
 				if (row.pid === null) return this.say(`${row.name} is not running`, "warning");
-				await client.request("stop", { id: row.id });
+				await port.jobs.stop(row.id);
 				return this.say(`stopping · ${row.name}`, "warning");
 			case "respawn": {
 				done();
-				const r = await client.request("respawn", { id: row.id });
+				const r = await port.jobs.respawn(row.id);
 				const first = r.results[0];
 				return first?.started ? this.say(`starting ${row.name} again`, "success") : this.say(first?.error ?? `${row.name} was not started`, "warning");
 			}
@@ -2906,7 +2945,7 @@ export class AgentView implements Component {
 				const now = Date.now();
 				if (this.armedStop?.id === row.id && now - this.armedStop.at < DOUBLE_PRESS_MS) {
 					this.armedStop = undefined;
-					const res = await client.request("rm", { id: row.id });
+					const res = await port.jobs.rm(row.id);
 					this.closePeek();
 					return this.say(`deleted · ${row.name}${res.worktree ? ` · ${cleanupText(res.worktree)}` : ""}`);
 				}
@@ -2919,7 +2958,7 @@ export class AgentView implements Component {
 			case "rename": {
 				done();
 				if (!arg) return this.startRename();
-				await client.request("rename", { id: row.id, name: arg });
+				await port.jobs.rename(row.id, arg);
 				return this.say(`renamed · ${arg}`, "success");
 			}
 			case "attach":
@@ -2944,7 +2983,7 @@ export class AgentView implements Component {
 				if (name === "name" && !arg) return this.say("/name <the session's own name>", "warning");
 				if (row.kind === "shell") return this.say(`/${name} is for a pi session`, "warning");
 				if (row.pid === null) return this.say(`${row.name} is not running: /${name} works in a running session`, "warning");
-				const r = await requestOnce((d) => this.live(d), "reply", { id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` }, { tag: "hub" });
+				const r = await this.sends.reply({ id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` }, { tag: "hub" });
 				done();
 				if (r.delivered) return this.say(`/${name} · ${row.name}`, "success");
 				return this.say(r.respawned ? `starting ${row.name} again; /${name} runs then` : r.saved ? `saved; it runs when ${row.name} starts again` : `not delivered: ${row.name} is not running`, "warning");
@@ -3208,7 +3247,7 @@ export class AgentView implements Component {
 		const say = (text: string, tone?: Tone) => {
 			if (!quiet) this.say(text, tone);
 		};
-		if (!this.client) {
+		if (!this.port) {
 			say("background service unavailable", "error");
 			return false;
 		}
@@ -3222,7 +3261,7 @@ export class AgentView implements Component {
 		// a second switch before the first shows: compare with what the session had before both
 		const before = pending ? pending.before : ((which === "model" ? row.model : row.thinking) ?? null);
 		try {
-			const r = await requestOnce((d) => this.live(d), "reply", { id: row.id, text: `/${which} ${value}` }, { tag: "hub" });
+			const r = await this.sends.reply({ id: row.id, text: `/${which} ${value}` }, { tag: "hub" });
 			if (!quiet) this.reply.setValue("");
 			if (r.delivered) {
 				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
@@ -3444,7 +3483,7 @@ export class AgentView implements Component {
 	private async dispatchFanout(task: string, cwd: string, agent: AgentDef | undefined, typed: string, attach = false): Promise<void> {
 		const models = this.fanout ?? [];
 		if (models.length < 2) return this.say("a fan-out needs two models at least (/fanout)", "warning");
-		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.port) return this.say("background service unavailable", "error");
 		const fanout = `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 		const base = fallbackName(task);
 		const started: string[] = [];
@@ -3463,7 +3502,7 @@ export class AgentView implements Component {
 				}
 				const { discard, note, ...request } = args;
 				try {
-					const { id } = await requestOnce((d) => this.live(d), "dispatch", { ...request, fanout }, { tag: "hub" });
+					const { id } = await this.sends.dispatch({ ...request, fanout }, { tag: "hub" });
 					started.push(id);
 					if (note) notes.add(note);
 				} catch (err) {
@@ -3636,7 +3675,7 @@ export class AgentView implements Component {
 
 	/** M26: keep one of a comparison: the others are deleted (worktrees with work are kept). */
 	private async keepOne(keep: JobRow, others: JobRow[]): Promise<void> {
-		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.port) return this.say("background service unavailable", "error");
 		const kept: string[] = [];
 		let deleted = 0;
 		const failed: string[] = [];
@@ -3644,8 +3683,8 @@ export class AgentView implements Component {
 		for (const r of others) {
 			if (r.pinned) continue; // pinned on purpose: never deleted by a batch
 			try {
-				if (r.pid !== null) await this.client.request("stop", { id: r.id });
-				const res = await this.client.request("rm", { id: r.id });
+				if (r.pid !== null) await this.port.jobs.stop(r.id);
+				const res = await this.port.jobs.rm(r.id);
 				deleted++;
 				this.marked.delete(r.id);
 				if (res.worktree && (!res.worktree.removed || res.worktree.branchKept)) kept.push(cleanupText(res.worktree));
@@ -3694,7 +3733,7 @@ export class AgentView implements Component {
 		const rows = this.markedRows();
 		const typed = this.input.getValue();
 		const text = typed.trim();
-		if (!this.client) return this.say("background service unavailable", "error");
+		if (!this.port) return this.say("background service unavailable", "error");
 		// a new task or a shell job is never sent as a reply by mistake: the input stays
 		if (/^[!@]/.test(text)) return this.say("rows are marked: a typed text goes to them as a reply (Esc unmarks to start a task)", "warning");
 		const setting = /^\/(model|thinking)(?:\s+(.*))?$/.exec(text);
@@ -3718,7 +3757,7 @@ export class AgentView implements Component {
 		try {
 			for (const r of pi) {
 				try {
-					const res = await requestOnce((d) => this.live(d), "reply", { id: r.id, text, mode }, { tag: "hub" });
+					const res = await this.sends.reply({ id: r.id, text, mode }, { tag: "hub" });
 					if (res.delivered || res.respawned || res.duplicate) sent++;
 					else if (res.saved) later++;
 					else failed.push(r.name);
@@ -3772,7 +3811,7 @@ export class AgentView implements Component {
 
 	/** AV-K12: stop; again within 2 s delete; on a header, the whole group. */
 	private async stopSelected(): Promise<void> {
-		if (!this.client) return;
+		if (!this.port) return;
 		const it = this.selected();
 		const marked = this.peek ? [] : this.markedRows();
 		if (!it && marked.length === 0) return;
@@ -3794,7 +3833,7 @@ export class AgentView implements Component {
 				const kept: string[] = [];
 				let only = "";
 				for (const r of targets) {
-					const res = await this.client.request("rm", { id: r.id });
+					const res = await this.port.jobs.rm(r.id);
 					if (res.worktree) {
 						only = cleanupText(res.worktree);
 						if (!res.worktree.removed || res.worktree.branchKept) kept.push(only);
@@ -3805,7 +3844,7 @@ export class AgentView implements Component {
 				if (targets.length === 1) this.say(`deleted · ${targets[0]!.name}${only ? ` · ${only}` : ""}`, kept.length > 0 ? "warning" : "muted");
 				else this.say(`deleted ${targets.length} sessions${kept.length > 0 ? ` · ${kept.length} worktrees or branches kept` : ""}`, kept.length > 0 ? "warning" : "muted");
 			} else {
-				for (const r of targets) if (r.pid !== null) await this.client.request("stop", { id: r.id });
+				for (const r of targets) if (r.pid !== null) await this.port.jobs.stop(r.id);
 				this.say(`stopping${targets.length > 1 ? ` ${targets.length} sessions` : ""} · Ctrl+X again to delete`, "warning");
 			}
 		} catch (err) {
@@ -3831,7 +3870,7 @@ export class AgentView implements Component {
 		const row = this.rows.get(id);
 		if (!row) return;
 		if (row.pid === null) {
-			if (!this.client) return this.say("background service unavailable", "error");
+			if (!this.port) return this.say("background service unavailable", "error");
 			// a reaped session just wakes up (AT-1); one that ended asks first (DM-7)
 			const now = Date.now();
 			if (!row.reaped && (this.restartAsk?.id !== id || now - this.restartAsk.at > RESTART_ASK_MS)) {

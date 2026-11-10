@@ -1313,6 +1313,31 @@ describe("M24: usage in the hub", () => {
 
 describe("AgentView batch (M25)", () => {
 	const ctrlO = "\x0f";
+	it("M51: the connection lost between two marked replies: the next waits for it and goes", async () => {
+		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" })];
+		const { view, client } = setup(rows);
+		await view.start();
+		view.handleInput(ctrlO);
+		view.handleInput(ctrlO);
+		// the daemon restarts as the first reply is answered: the view has no connection for 500 ms
+		const request = client.request.bind(client);
+		let lost = false;
+		client.request = async (op: string, args: unknown) => {
+			const r = await request(op, args);
+			if (op === "reply" && !lost) {
+				lost = true;
+				for (const l of client.closes) l();
+			}
+			return r;
+		};
+		type(view, "rebase on main");
+		view.handleInput("\r");
+		await sleep(900);
+		expect(client.requests.filter((r) => r.op === "reply").map((r) => (r.args as { id: string }).id)).toEqual(["a", "b"]);
+		expect(view.render(100).join("\n")).toContain("sent to 2 of 2 sessions");
+		view.dispose();
+	});
+
 	it("Ctrl+O marks rows and moves on; the typed text goes to each marked session", async () => {
 		const rows = [row({ id: "a", name: "one" }), row({ id: "b", name: "two" }), row({ id: "c", name: "three" }), row({ id: "s", name: "! make", kind: "shell" })];
 		const { view, client } = setup(rows);

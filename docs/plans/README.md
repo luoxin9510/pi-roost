@@ -73,6 +73,7 @@ Claude Code's documented behaviour.
 | M63 | [who may do what, in one table: the daemon's callers and a policy per op](m63-caller-policy.md) | — |
 | M64–M66 | [the Workspace module: a Task's workspace behind one interface; the daemon makes worktrees](workspace-module.md) | — |
 | M67–M70 | [the daemon's timed parts as modules: schedules, watches, the concierge and its standing orders, by an injected clock](daemon-modules.md) | — |
+| M71–M74 | [the hub's overlays as modules and one typed daemon port](hub-overlays.md) | — |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
 
