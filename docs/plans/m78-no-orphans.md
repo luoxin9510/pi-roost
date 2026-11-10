@@ -33,3 +33,14 @@ Without `PI_ROOST_PARENT_PID` no timer is armed and nothing is swept: daemon and
 outlive their parent as before, and the user's daemon (`dist/daemon/main.js`) is never matched.
 
 Tests: `test/orphans.test.ts`.
+
+## After review
+
+- The sweep kills a host's worker by its process group first: what the worker started (a
+  shell's `sleep`) would otherwise be adopted by init.
+- A `PI_ROOST_PARENT_PID` that names no process (not an integer above 1) counts as none: the
+  home marker's rule applies (orphans only).
+- A test kills the daemon and the followed parent together: the host follows on its own
+  (mutation-checked). The fakes' directories are removed.
+- Known limit: a followed pid reused by an unrelated process keeps the orphan alive (and spared
+  by the sweep). Rare, and on the safe side.

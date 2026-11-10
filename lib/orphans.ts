@@ -98,16 +98,24 @@ export function sweepOrphans(log: (line: string) => void = () => {}): number[] {
 		if (mine.has(p.pid) || !ROOT_RE.test(p.command)) continue;
 		const env = envOf(p.pid);
 		if (!env) continue;
-		const parent = env.PI_ROOST_PARENT_PID ? Number(env.PI_ROOST_PARENT_PID) : undefined;
+		const raw = env.PI_ROOST_PARENT_PID ? Number(env.PI_ROOST_PARENT_PID) : undefined;
+		// a value that names no process to follow counts as no value (the home marker's rule)
+		const parent = raw !== undefined && Number.isInteger(raw) && raw > 1 ? raw : undefined;
 		const marked = parent !== undefined || isTestHome(env.PI_ROOST_HOME);
 		if (!marked) continue;
-		if (parent !== undefined && Number.isInteger(parent) && parent > 1 && pidAlive(parent)) continue;
+		if (parent !== undefined && pidAlive(parent)) continue;
 		// marked by its home only (a run from before M78, maybe in another checkout): only once it
 		// is an orphan; one with a live parent is a run in progress
 		if (parent === undefined && p.ppid !== 1) continue;
 		// a host's worker goes with it: it would only be adopted by init
 		const kids = /host\/main\.ts/.test(p.command) ? procs.filter((c) => c.ppid === p.pid).map((c) => c.pid) : [];
 		for (const pid of [p.pid, ...kids]) {
+			// a worker leads its own process group (what it started is in it)
+			if (pid !== p.pid) {
+				try {
+					process.kill(-pid, "SIGKILL");
+				} catch {}
+			}
 			try {
 				process.kill(pid, "SIGKILL");
 				killed.push(pid);

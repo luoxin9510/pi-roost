@@ -19,6 +19,8 @@ let work: string;
 let procs: ChildProcess[] = [];
 /** Processes started as orphans (their parent gone at once): not ChildProcesses of ours. */
 let orphanPids: number[] = [];
+/** The fakes' directories. */
+let fakeDirs: string[] = [];
 let client: DaemonClient | undefined;
 let saved: Record<string, string | undefined> = {};
 
@@ -90,7 +92,8 @@ afterEach(() => {
 			process.kill(pid, "SIGKILL");
 		} catch {}
 	}
-	for (const d of [home, rt, work]) rmSync(d, { recursive: true, force: true });
+	for (const d of [home, rt, work, ...fakeDirs]) rmSync(d, { recursive: true, force: true });
+	fakeDirs = [];
 	for (const [k, v] of Object.entries(saved)) {
 		if (v === undefined) delete process.env[k];
 		else process.env[k] = v;
@@ -120,6 +123,28 @@ describe("a test-mode daemon follows its parent", () => {
 		await waitFor(() => sleepers.every(gone), 8000);
 	});
 
+	it("a host follows the parent on its own (its daemon killed at the same time)", async () => {
+		const h = helper();
+		const d = await startDaemon(h.pid);
+		const { id } = await client!.request("dispatch", {
+			cwd: work,
+			sessionFile: join(work, "s.jsonl"),
+			command: ["/bin/sh", "-c", "sleep 6173"],
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+			name: "job",
+			origin: "dispatch",
+		});
+		const hostPid = await waitFor(() => readState(id)?.hostPid);
+		const sleepers = await waitFor(() => {
+			const s = sleepersOf("6173");
+			return s.length > 0 ? s : undefined;
+		});
+		process.kill(d.pid!, "SIGKILL");
+		process.kill(h.pid!, "SIGKILL");
+		await waitFor(() => gone(hostPid), 8000);
+		await waitFor(() => sleepers.every(gone), 8000);
+	});
+
 	it("exits when its home is deleted", async () => {
 		const h = helper();
 		const d = await startDaemon(h.pid);
@@ -142,6 +167,7 @@ describe("sweepOrphans", () => {
 	/** A process whose command looks like the daemon's, with the given environment. */
 	function fake(env: Record<string, string>): ChildProcess {
 		const dir = mkdtempSync(join(tmpdir(), "roost-fake-"));
+		fakeDirs.push(dir);
 		mkdirSync(join(dir, "daemon"));
 		const script = join(dir, "daemon", "main.ts");
 		writeFileSync(script, "setInterval(() => {}, 1000);\n");
@@ -155,6 +181,7 @@ describe("sweepOrphans", () => {
 	/** The same fake started by a shell that exits at once: its parent becomes 1, as a leftover's. */
 	function orphanFake(env: Record<string, string>): number {
 		const dir = mkdtempSync(join(tmpdir(), "roost-fake-"));
+		fakeDirs.push(dir);
 		mkdirSync(join(dir, "daemon"));
 		const script = join(dir, "daemon", "main.ts");
 		writeFileSync(script, "setInterval(() => {}, 1000);\n");
