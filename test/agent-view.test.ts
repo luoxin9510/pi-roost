@@ -1238,11 +1238,8 @@ describe("M43: /log in the hub", () => {
 		type(view, "/log");
 		view.handleInput("\r");
 		await sleep(20);
-		const panel = view.render(120).join("\n");
-		expect(panel).toContain("Log · what happened lately");
-		expect(panel).toContain("1m  fix tests asks: Which branch?");
-		expect(panel).toContain("lead → fix tests: use main");
-		expect(panel.indexOf("use main")).toBeLessThan(panel.indexOf("started fix tests"));
+		// the lines, tones, scrolling and the filters are the overlay's (test/log-overlay.test.ts)
+		expect(view.render(120).join("\n")).toContain("Log · what happened lately");
 		expect(client.requests.filter((r) => r.op === "events")).toHaveLength(2);
 		view.handleInput("r");
 		await sleep(20);
@@ -1281,14 +1278,10 @@ describe("M24: usage in the hub", () => {
 		expect(screen).toContain("$2.30 today · $12.80 all");
 		type(view, "/usage");
 		view.handleInput("\r");
+		// the totals, order and tags are the overlay's (test/usage-overlay.test.ts)
 		const panel = view.render(140).join("\n");
 		expect(panel).toContain("Usage · sessions in this view");
-		expect(panel).toContain("By model");
-		expect(panel).toContain("claude-opus-5-5");
 		expect(panel).toContain("2 sessions");
-		expect(panel.indexOf("big job")).toBeLessThan(panel.indexOf("small job"));
-		expect(panel).toContain("(sub)");
-		expect(panel).toContain("on a subscription");
 		view.handleInput("\x1b");
 		expect(view.render(140).join("\n")).not.toContain("By model");
 		view.dispose();
@@ -1601,17 +1594,12 @@ describe("AgentView fan-out (M26)", () => {
 		type(view, "/compare");
 		view.handleInput("\r");
 		await sleep(10);
+		// the columns, the narrow layout and the change texts are the overlay's (test/compare-overlay.test.ts)
 		const out = view.render(120).join("\n");
 		expect(out).toContain("Compare · fix it · 2 sessions");
 		expect(out).toContain("1 file +3 −1");
-		expect(out).toContain("2 new");
-		expect(out).toContain("$0.42");
-		expect(out).toContain("Fixed by retrying.");
-		expect(out).toContain("Rewrote the test.");
 		expect(out).not.toContain("unrelated");
 		expect(asked.sort()).toEqual(["/wt/a", "/wt/b"]);
-		// a narrow terminal: the chosen one in full, the other on one line
-		expect(view.render(40).join("\n")).toContain("two · done");
 		view.handleInput("\x1b[C"); // → two
 		view.handleInput("k");
 		expect(view.render(120).join("\n")).toContain("k again");
@@ -1625,7 +1613,7 @@ describe("AgentView fan-out (M26)", () => {
 		view.dispose();
 	});
 
-	it("M26 review: k in kitty encoding; pinned ones stay; marked rows cannot be kept; no escapes from replies", async () => {
+	it("M26 review: k in kitty encoding keeps one through the daemon, pinned ones stay; marked rows cannot be kept", async () => {
 		// one start time for the three: the list and the columns order by it (rows made either
 		// side of a millisecond put another row under the cursor)
 		const startedAt = Date.now() - 60_000;
@@ -1642,8 +1630,6 @@ describe("AgentView fan-out (M26)", () => {
 		view.handleInput("\r");
 		const out = view.render(120).join("\n");
 		expect(out).toContain("Compare · t · 3 sessions");
-		expect(out).not.toMatch(/\x1b\]|\x07|\x1b\[2J|\t/);
-		expect(out).toContain("ok  done");
 		// columns by name: one, three, two; keep "three": "two" is pinned and stays, "one" goes
 		view.handleInput("\x1b[C");
 		view.handleInput("\x1b[107u");
@@ -2931,5 +2917,160 @@ describe("M73: overlay renders, pinned", () => {
 		client.schedules = [];
 		await run(view, "/schedule list");
 		expect(shot(view)).toMatchSnapshot();
+	});
+});
+
+// M74: the screens of /usage, /log and /compare, pinned before they moved to hub/overlays/
+// (docs/plans/hub-overlays.md). Rows carry their own start times: the list and the compare
+// columns order by them.
+describe("M74: overlay renders, pinned", () => {
+	const NOW = 1_800_000_000_000;
+	const MIN = 60_000;
+	afterEach(() => vi.useRealTimers());
+	const shot = (view: AgentView, w = 100) => view.render(w).join("\n");
+	const run = async (view: AgentView, line: string) => {
+		type(view, line);
+		view.handleInput("\r");
+		await sleep(30);
+	};
+	const start = async (rows: JobRow[], extra: Partial<AgentViewOptions> = {}) => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(NOW);
+		const s = setup(rows, { extra });
+		await s.view.start();
+		return s;
+	};
+	const at = (n: number, over: Partial<JobRow> = {}) => row({ startedAt: NOW - (10 - n) * MIN, stateSince: NOW - (10 - n) * MIN, ...over });
+	const spent = (cost: number, today: number, models: Record<string, { cost: number; tokens: number }>, sub = false) => {
+		const d = new Date(NOW);
+		d.setHours(0, 0, 0, 0);
+		return { input: 12_000, output: 3_000, cacheRead: 40_000, cacheWrite: 1_000, cost, today, day: d.getTime(), sub, models };
+	};
+
+	it("usage: several sessions and models, a subscription, at two widths; nothing spent", async () => {
+		const opus = "anthropic/claude-opus-5-5";
+		const haiku = "anthropic/claude-haiku-5-5";
+		const rows = [
+			at(1, { id: "u1", name: "big job", model: opus, usage: spent(12.5, 2, { [opus]: { cost: 12.5, tokens: 56_000 } }) }),
+			at(2, { id: "u2", name: "small job with a rather long name that gets cut", model: haiku, usage: spent(0.3, 0.3, { [haiku]: { cost: 0.3, tokens: 56_000 } }, true) }),
+			at(3, { id: "u3", name: "mixed\nlines", model: haiku, usage: spent(1.1, 0, { [opus]: { cost: 1, tokens: 20_000 }, [haiku]: { cost: 0.1, tokens: 36_000 } }) }),
+			at(4, { id: "u4", name: "idle" }),
+		];
+		const { view } = await start(rows);
+		await run(view, "/usage");
+		expect(shot(view)).toMatchSnapshot();
+		expect(shot(view, 50)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		const none = await start([at(1, { name: "fresh" })]);
+		await run(none.view, "/usage");
+		expect(shot(none.view)).toMatchSnapshot();
+	});
+
+	const ev = (seq: number, ago: number, over: Partial<RoostEvent>): RoostEvent => ({ seq, at: NOW - ago, kind: "dispatch", id: "j1", name: "fix tests", who: "user", ...over });
+
+	it("log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty", async () => {
+		const { view, client } = await start([at(1, { id: "j1", name: "fix tests" })]);
+		await run(view, "/log");
+		expect(shot(view)).toMatchSnapshot();
+		client.log = [
+			ev(1, 7200_000, {}),
+			ev(2, 3600_000, { kind: "state", state: "blocked", from: "working", waitingFor: "question", text: "Which branch?" }),
+			ev(3, 1800_000, { kind: "state", state: "failed", from: "working", text: "exit 1" }),
+			ev(4, 600_000, { kind: "state", state: "done", from: "working", text: "all green" }),
+			ev(5, 300_000, { kind: "state", state: "working", from: "blocked", text: null }),
+			ev(6, 120_000, { kind: "message", who: "lead", text: "use main" }),
+			ev(7, 60_000, { kind: "report", who: "lead", text: "tests pass" }),
+			ev(8, 30_000, { kind: "notice", who: "lead", text: "went idle" }),
+			ev(9, 10_000, { kind: "reply", who: "user", text: "main please" }),
+			ev(10, 5_000, { kind: "removed", who: null }),
+		];
+		await run(view, "/log");
+		expect(shot(view)).toMatchSnapshot();
+		expect(shot(view, 40)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.log = Array.from({ length: 230 }, (_, i) => ev(i + 1, (230 - i) * 1000, { kind: "message", who: "lead", text: `note ${i}` }));
+		await run(view, "/log");
+		expect(shot(view)).toMatchSnapshot();
+		for (let i = 0; i < 5; i++) view.handleInput("\x1b[B");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b[6~");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b[5~");
+		expect(shot(view)).toMatchSnapshot();
+		for (let i = 0; i < 30; i++) view.handleInput("\x1b[6~"); // the end: the 200th newest is the last
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	it("log: filtered to one session with its title; filtered to the concierge; nothing from either", async () => {
+		const { view, client } = await start([at(1, { id: "j1", name: "fix tests" }), at(2, { id: "j2", name: "other" })]);
+		client.log = [ev(1, 90_000, { id: "j1" }), ev(2, 60_000, { id: "j2", name: "other", kind: "state", state: "done", from: "working", text: "fine" }), ev(3, 30_000, { id: "j1", kind: "message", who: "j2", whoId: "j2", text: "hello" })];
+		view.handleInput(" ");
+		await run(view, "/log");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.log = [ev(1, 60_000, { id: "c1", name: "concierge", kind: "concierge", who: "concierge", why: "info", text: "all quiet" }), ev(2, 30_000, { id: "j1", kind: "concierge", why: "need", text: "a branch name" })];
+		await run(view, "/concierge on");
+		view.handleInput("\x1b");
+		await run(view, "/concierge log");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.log = [];
+		await run(view, "/concierge log");
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	const wt = (b: string, path = `/wt/${b}`) => ({ path, branch: b, base: "abc" });
+	const fan = () => [
+		at(1, { id: "a", name: "fix it · one", model: "a/one", fanout: "f1", state: "done", summary: "Fixed by retrying.", worktree: wt("a"), usage: spent(0.42, 0.42, {}) }),
+		at(1, { id: "b", name: "fix it · two", model: "b/two", fanout: "f1", state: "done", summary: "Rewrote the test, and a long line of text that has to wrap in its column", worktree: wt("b") }),
+		at(1, { id: "c", name: "fix it · three", model: "c/three", fanout: "f1", state: "working", summary: "still at it" }),
+	];
+	const changed = async (path: string) => (path.endsWith("a") ? { files: 1, insertions: 3, deletions: 1, untracked: 0 } : { files: 0, insertions: 0, deletions: 0, untracked: 2 });
+	const open = async (view: AgentView) => {
+		view.handleInput("\x1b[1;3B");
+		view.handleInput("\x1b[B");
+		await run(view, "/compare");
+	};
+
+	it("compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt", async () => {
+		const { view } = await start(fan(), { worktreeChange: changed });
+		await open(view);
+		expect(shot(view, 140)).toMatchSnapshot();
+		expect(shot(view, 100)).toMatchSnapshot();
+		expect(shot(view, 40)).toMatchSnapshot();
+		view.handleInput("\x1b[C");
+		expect(shot(view, 140)).toMatchSnapshot();
+		expect(shot(view, 40)).toMatchSnapshot();
+		view.handleInput("k");
+		expect(shot(view, 140)).toMatchSnapshot();
+		expect(shot(view, 40)).toMatchSnapshot();
+		vi.setSystemTime(NOW + 3000);
+		expect(shot(view, 140)).toMatchSnapshot();
+	});
+
+	it("compare: the change text states: no worktree, no diff, gone, an error, a change; marked rows", async () => {
+		const here = tmpdir();
+		const rows = [
+			at(1, { id: "a", name: "t · one", model: "a/one", fanout: "f1", state: "done", worktree: wt("a") }),
+			at(1, { id: "b", name: "t · two", model: "b/two", fanout: "f1", state: "done" }),
+			at(1, { id: "c", name: "t · three", model: "c/three", fanout: "f1", state: "done", worktree: wt("c", here) }),
+			at(1, { id: "d", name: "t · four", model: "d/four", fanout: "f1", state: "done", worktree: wt("d", "/nowhere/d") }),
+			at(1, { id: "e", name: "t · five", model: "e/five", fanout: "f1", state: "done", worktree: wt("e", "/nowhere/e") }),
+		];
+		const { view } = await start(rows, {
+			worktreeChange: async (path) => {
+				if (path.endsWith("/e")) throw new Error("git failed");
+				return path.endsWith("a") ? { files: 2, insertions: 10, deletions: 4, untracked: 1 } : undefined;
+			},
+		});
+		await open(view);
+		expect(shot(view, 200)).toMatchSnapshot();
+		expect(shot(view, 60)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		const marked = await start([at(1, { id: "x", name: "x", state: "done" }), at(2, { id: "y", name: "y", state: "done", error: "boom" })]);
+		marked.view.handleInput("\x0f");
+		marked.view.handleInput("\x0f");
+		await run(marked.view, "/compare");
+		expect(shot(marked.view, 120)).toMatchSnapshot();
 	});
 });

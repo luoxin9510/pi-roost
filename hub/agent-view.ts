@@ -12,19 +12,20 @@ import {
 	isKeyRelease,
 	parseKey,
 	type SlashCommand,
-	stripTerminalSequences,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
-	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError, GiveUp } from "../lib/client.ts";
-import type { Overlay, OverlayHost } from "./overlay-host.ts";
+import { DOUBLE_PRESS_MS, type Overlay, type OverlayHost } from "./overlay-host.ts";
 import { createAnswerOverlay, createOrdersOverlay } from "./overlays/concierge.ts";
+import { createCompareOverlay } from "./overlays/compare.ts";
+import { createLogOverlay } from "./overlays/log.ts";
 import { createSchedulesOverlay } from "./overlays/schedules.ts";
 import { createLinesOverlay, createTasksOverlay } from "./overlays/tasks.ts";
 import { createReviewOverlay } from "./overlays/review.ts";
+import { createUsageOverlay } from "./overlays/usage.ts";
 import { createWorkspacesOverlay } from "./overlays/workspaces.ts";
 import { CONTROL, oneLine, wrap } from "./text.ts";
 
@@ -35,15 +36,15 @@ import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/disp
 import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
-import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
-import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
+import { cleanupText, type WorktreeChange } from "../lib/worktree.ts";
+import { formatCost, totalUsage } from "../lib/usage.ts";
 import { parseScheduleInput, untilText } from "../lib/schedule.ts";
 import { TaskEditor } from "./task-editor.ts";
 import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
 import { fallbackName, refusedByDaemon } from "../lib/dispatch.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
-import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
+import { eventAgo, type RoostEvent } from "../lib/events.ts";
 import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
@@ -62,7 +63,6 @@ import {
 	modelFacts,
 	fitTail,
 	rowDetailsOf,
-	formatTokens,
 	shortModel,
 	type Item,
 	items,
@@ -79,7 +79,6 @@ import {
 } from "../lib/view-model.ts";
 
 const MIN_TASK = 4; // DI-1
-const DOUBLE_PRESS_MS = 2000; // Ctrl+X delete, Ctrl+C exit
 
 /** M48: one line of a peek's tail, raw (cut to the width when rendered). */
 type TailItem = { kind: "you" | "said" | "tool" | "note" | "screen"; text: string; error?: boolean };
@@ -1290,85 +1289,17 @@ export class AgentView implements Component {
 
 	/** M24 /usage: what the sessions spent, by model and by session; Esc closes, ↑↓ scroll. */
 	private showUsage(): void {
-		let top = 0;
-		const view = this;
-		this.overlay = {
-			render(width: number) {
-				const lines = view.usageLines(width);
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				top = Math.max(0, Math.min(top, lines.length - room));
-				const keys = view.o.theme.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width));
-				return [...lines.slice(top, top + room), "", keys];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-				else if (key === "pageUp") top = Math.max(0, top - 10);
-				else if (key === "pageDown") top += 10;
-			},
-		};
+		this.overlay = createUsageOverlay(this.hostBase());
 		this.o.tui.requestRender();
 	}
 
 	/** M43 /log: what happened lately across the sessions (newest first); r reloads, Esc closes. */
-	private async showLog(only?: (e: RoostEvent) => boolean, title = "Log · what happened lately (newest first)"): Promise<void> {
+	private async showLog(only?: (e: RoostEvent) => boolean, title?: string): Promise<void> {
 		const port = this.port;
 		if (!port) return this.say("background service unavailable", "error");
-		let events: RoostEvent[];
-		const fetch = async () => (await port.events.list({ limit: 500 })).events.filter((e) => !only || only(e)).slice(-200);
-		try {
-			events = await fetch();
-		} catch (err) {
-			return this.say((err as Error).message, "error");
-		}
-		if (events.length === 0) return this.say(only ? "nothing from the concierge yet" : "nothing happened yet (the log starts with the next task, reply or message)");
-		let top = 0;
-		const view = this;
-		const lines = (width: number): string[] => {
-			const t = view.o.theme;
-			const now = Date.now();
-			const out = [t.bold(truncateToWidth(title, width)), ""];
-			for (const e of [...events].reverse()) {
-				const tone =
-					e.kind === "state" && e.state === "failed"
-						? "error"
-						: e.kind === "state" && e.state === "blocked"
-							? "warning"
-							: e.kind === "state" && e.state === "done"
-								? "success"
-								: e.kind === "message" || e.kind === "report" || e.kind === "notice"
-									? "accent"
-									: "muted";
-				out.push(truncateToWidth(`  ${t.fg("dim", eventAgo(e.at, now).padStart(4))}  ${t.fg(tone, oneLine(eventLine(e)))}`, width));
-			}
-			return out;
-		};
-		this.overlay = {
-			render(width: number) {
-				const all = lines(width);
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				top = Math.max(0, Math.min(top, all.length - room));
-				const keys = view.o.theme.fg("dim", truncateToWidth("r reload · ↑↓ scroll · Esc close", width));
-				return [...all.slice(top, top + room), "", keys];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (data === "r") {
-					void fetch()
-						.then((r) => {
-							events = r;
-							view.o.tui.requestRender();
-						})
-						.catch(() => {});
-				} else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-				else if (key === "pageUp") top = Math.max(0, top - 10);
-				else if (key === "pageDown") top += 10;
-			},
-		};
+		const o = await createLogOverlay(this.overlayHost(port), { only, title });
+		if (!o) return;
+		this.overlay = o;
 		this.o.tui.requestRender();
 	}
 
@@ -1581,38 +1512,6 @@ export class AgentView implements Component {
 	private showAnswer(answer: string): void {
 		this.overlay = createAnswerOverlay(this.hostBase(), { answer });
 		this.o.tui.requestRender();
-	}
-
-	private usageLines(width: number): string[] {
-		const t = this.o.theme;
-		const now = Date.now();
-		const rows = [...this.rows.values()].filter((r) => r.usage && (r.usage.cost > 0 || r.usage.input + r.usage.output > 0));
-		const tot = totalUsage(rows, now);
-		const fit = (s: string) => truncateToWidth(s, width);
-		const out = [t.bold(fit("Usage · sessions in this view")), ""];
-		if (rows.length === 0) return [...out, t.fg("dim", fit("  nothing spent yet (sessions report what they spend as they work)"))];
-		const sub = tot.subCost > 0 ? ` · ${formatCost(tot.subCost)} of it on a subscription (as if billed per token)` : "";
-		out.push(fit(`  today ${formatCost(tot.today)} · all ${formatCost(tot.cost)} · ${formatTokens(tot.tokens)} tokens${sub}`), "");
-		const col = (s: string, n: number) => (visibleWidth(s) >= n ? truncateToWidth(s, n) : s + " ".repeat(n - visibleWidth(s)));
-		const nameW = Math.max(12, Math.min(40, Math.floor(width / 2.5)));
-		out.push(t.bold(fit("  By model")));
-		const models = Object.entries(tot.models).sort((a, b) => b[1].cost - a[1].cost || b[1].tokens - a[1].tokens);
-		for (const [m, v] of models) {
-			out.push(fit(`  ${col(shortModel(m), nameW)}  ${formatCost(v.cost).padStart(8)}  ${formatTokens(v.tokens).padStart(6)} tok  ${v.sessions} session${v.sessions === 1 ? "" : "s"}`));
-		}
-		out.push("", t.bold(fit("  By session")));
-		const sorted = rows.sort((a, b) => b.usage!.cost - a.usage!.cost);
-		for (const r of sorted) {
-			const u = r.usage!;
-			const tokens = u.input + u.output + u.cacheRead + u.cacheWrite;
-			const today = todayOf(u, now);
-			out.push(
-				fit(
-					`  ${col(oneLine(r.name), nameW)}  ${formatCost(u.cost).padStart(8)}  ${formatTokens(tokens).padStart(6)} tok${today > 0 ? `  ${formatCost(today)} today` : ""}${u.sub ? t.fg("dim", "  (sub)") : ""}  ${t.fg("dim", r.model ? shortModel(r.model) : "")}`,
-				),
-			);
-		}
-		return out;
 	}
 
 	private closeOverlay(): void {
@@ -2906,137 +2805,14 @@ export class AgentView implements Component {
 	private compare(): void {
 		const first = this.compareRows();
 		if (first.length < 2) return this.say("/compare works on a row of a fan-out (/fanout), or on two or more marked rows", "warning");
-		const ids = first.map((r) => r.id);
-		const fanoutId = first[0]!.fanout && first.every((r) => r.fanout === first[0]!.fanout) ? first[0]!.fanout : undefined;
-		const changes = new Map<string, string>();
-		const view = this;
-		let index = Math.max(0, ids.indexOf(this.selectedRow()?.id ?? ""));
-		let keepArmed = 0;
-		let closed = false;
-		const change = this.o.worktreeChange ?? worktreeChange;
-		const load = () => {
-			for (const id of ids) {
-				const wt = this.rows.get(id)?.worktree;
-				if (!wt?.base) {
-					changes.set(id, "no worktree");
-					continue;
-				}
-				void change(wt.path, wt.base)
-					.then((c) => changes.set(id, c ? changeText(c) : existsSync(wt.path) ? "no diff (its base is gone?)" : "worktree gone"))
-					.catch(() => changes.set(id, "?"))
-					.finally(() => {
-						if (!closed) this.o.tui.requestRender();
-					});
-			}
-		};
-		load();
-		this.overlay = {
-			render(width: number) {
-				const rows = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined);
-				if (rows.length === 0) {
-					queueMicrotask(() => view.closeOverlay());
-					return [];
-				}
-				index = Math.min(index, rows.length - 1);
-				const room = Math.max(6, (view.o.tui.terminal.rows || 30) - 7);
-				const armed = keepArmed > 0 && Date.now() - keepArmed < DOUBLE_PRESS_MS;
-				const keys = armed
-					? "k again: keep this one, delete the others (pinned ones stay)"
-					: `← → choose · Enter open${fanoutId ? " · k keep this one (deletes the others)" : ""} · r refresh · Esc close`;
-				return [...view.compareLines(rows, index, changes, width, room), "", view.o.theme.fg(armed ? "warning" : "dim", truncateToWidth(keys, width))];
-			},
-			handleInput(data: string) {
-				if (isKeyRelease(data)) return;
-				const key = parseKey(data);
-				// a letter as typed, also when the terminal encodes it (kitty CSI u)
-				const ch = decodeKittyPrintable(data) ?? data;
-				const count = ids.filter((id) => view.rows.has(id)).length;
-				if (ch !== "k") keepArmed = 0;
-				if (key === "escape" || key === "ctrl+c" || ch === "q") view.closeOverlay();
-				else if (key === "left") index = Math.max(0, index - 1);
-				else if (key === "right" || key === "tab") index = Math.min(count - 1, index + 1);
-				else if (ch === "r") load();
-				else if (key === "enter") {
-					const row = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined)[index];
-					view.closeOverlay();
-					if (row) {
-						view.cursor = { kind: "row", id: row.id };
-						void view.attachTo(row.id).catch((err: unknown) => view.say(String(err), "error"));
-					}
-				} else if (ch === "k") {
-					// keeping one deletes the others: only among the sessions of one fan-out
-					if (!fanoutId) return view.say("k keeps one of a fan-out; for marked rows use Ctrl+X", "warning");
-					const now = Date.now();
-					if (!keepArmed || now - keepArmed > DOUBLE_PRESS_MS) {
-						keepArmed = now;
-						// the prompt goes back when the double press runs out
-						setTimeout(() => {
-							if (!closed) view.o.tui.requestRender();
-						}, DOUBLE_PRESS_MS + 50).unref?.();
-						return;
-					}
-					keepArmed = 0;
-					const rows = ids.map((id) => view.rows.get(id)).filter((r): r is JobRow => r !== undefined);
-					const keep = rows[index];
-					view.closeOverlay();
-					if (keep) void view.keepOne(keep, rows.filter((r) => r.id !== keep.id));
-				}
-			},
-			dispose() {
-				closed = true;
-			},
-		};
-		this.o.tui.requestRender();
-	}
-
-	private compareLines(rows: JobRow[], index: number, changes: Map<string, string>, width: number, room: number): string[] {
-		const t = this.o.theme;
-		const now = Date.now();
-		// pi may have named the sessions since (each its own way): the first one's name, less its model
-		const first = rows[0]!;
-		const tag = first.model ? ` · ${shortModel(first.model)}` : "";
-		const title = tag && first.name.endsWith(tag) ? first.name.slice(0, -tag.length) : first.name;
-		const out = [t.bold(truncateToWidth(`Compare · ${oneLine(title)} · ${rows.length} sessions`, width)), ""];
-		const block = (r: JobRow, w: number, sel: boolean): string[] => {
-			const u = r.usage;
-			const tokens = u ? u.input + u.output + u.cacheRead + u.cacheWrite : 0;
-			const head = `${sel ? "›" : " "} ${r.model ? shortModel(r.model) : oneLine(r.name)}`;
-			const lines = [
-				sel ? t.fg("accent", t.bold(head)) : t.bold(head),
-				t.fg("dim", `  ${r.state} · ${ageOf(r, now)}`),
-				t.fg("muted", `  ${u ? `${formatCost(u.cost)} · ${formatTokens(tokens)} tok${u.sub ? " (sub)" : ""}` : "no usage yet"}`),
-				t.fg("muted", `  ${changes.get(r.id) ?? "…"}`),
-				"",
-			];
-			const text = r.question ?? r.summary ?? r.error ?? "";
-			// a model's text: no escape sequences or tabs reach the terminal (lines stay)
-			const clean = stripTerminalSequences(text).replace(/\t/g, "  ").replace(CONTROL, "");
-			const body = wrapTextWithAnsi(clean, Math.max(4, w - 2)).map((l) => `  ${l}`);
-			return [...lines, ...body].map((l) => truncateToWidth(l, w));
-		};
-		const gap = 2;
-		const colW = Math.floor((width - gap * (rows.length - 1)) / rows.length);
-		if (colW >= 24) {
-			const blocks = rows.map((r, i) => block(r, colW, i === index));
-			const height = Math.min(room - 2, Math.max(...blocks.map((b) => b.length)));
-			for (let y = 0; y < height; y++) {
-				out.push(
-					blocks
-						.map((b) => {
-							const l = b[y] ?? "";
-							return l + " ".repeat(Math.max(0, colW - visibleWidth(l)));
-						})
-						.join(" ".repeat(gap)),
-				);
-			}
-			return out;
-		}
-		// narrow: the chosen one in full, the others as one line each
-		rows.forEach((r, i) => {
-			if (i === index) out.push(...block(r, width, true).slice(0, Math.max(5, room - rows.length - 2)));
-			else out.push(truncateToWidth(`  ${r.model ? shortModel(r.model) : oneLine(r.name)} · ${r.state} · ${r.usage ? formatCost(r.usage.cost) : "-"} · ${changes.get(r.id) ?? "…"}`, width));
+		this.overlay = createCompareOverlay(this.hostBase(), {
+			ids: first.map((r) => r.id),
+			fanoutId: first[0]!.fanout && first.every((r) => r.fanout === first[0]!.fanout) ? first[0]!.fanout : undefined,
+			selectedId: this.selectedRow()?.id,
+			keepOne: (keep, others) => this.keepOne(keep, others),
+			select: (id) => void (this.cursor = { kind: "row", id }),
 		});
-		return out;
+		this.o.tui.requestRender();
 	}
 
 	/** M26: keep one of a comparison: the others are deleted (worktrees with work are kept). */
