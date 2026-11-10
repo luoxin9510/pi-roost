@@ -51,3 +51,7 @@ _Avoid_: CI, tests (what the command runs is the repository's business)
 **Review**:
 The Stage where a verified Workspace waits for the Person: to merge it, send it back, or leave it.
 _Avoid_: approval (approving is of the repository's commands)
+
+**Schedule**:
+A named dispatch template with a rhythm (`every 2h`, `daily 09:00`, a cron expression): the daemon starts a Session from it each time a slot comes due, never two runs at once.
+_Avoid_: cron job, timer

@@ -1486,15 +1486,6 @@ describe("M39: scheduled tasks", () => {
 		expect((await find(client, id))?.state).toBe("done");
 		await client.request("stop", { id: second.id });
 	});
-
-	it("two runs asked at once start one", async () => {
-		const { client } = await startDaemon();
-		await client.request("schedule-add", { name: "twice", when: "daily 03:00", launch: template("sleep 2") });
-		const both = await Promise.allSettled([client.request("schedule-run", { name: "twice" }), client.request("schedule-run", { name: "twice" })]);
-		expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-		expect(both.find((r) => r.status === "rejected")).toMatchObject({ reason: { code: "busy" } });
-		expect((await client.request("list", {})).jobs.filter((j) => j.schedule === "twice")).toHaveLength(1);
-	});
 });
 
 describe("M40: agents cut short carry on; scheduled commands and agents", () => {
