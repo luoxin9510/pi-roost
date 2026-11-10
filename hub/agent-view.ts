@@ -127,73 +127,22 @@ export function pickerShown(p: { items: { label: string; value: string }[]; quer
 	});
 }
 
-export interface AgentViewOptions {
+/** M80: The hub's terminal, its colours, where it starts sessions, the daemon, and its exits. */
+export interface HubCore {
 	tui: TUI;
 	theme: HubTheme;
 	/** Directory new jobs start in. */
 	cwd: string;
-	/** AV-7: show only jobs started under this directory. */
-	cwdFilter?: string;
-	/** Builds the dispatch request for a task typed into the view. */
-	/** A new pi job; the view adds its /model and /thinking defaults and @dir target. */
-	launch: (task: string, opts?: LaunchOptions) => LaunchRequest;
-	/** M18: agents a task's first word or `@name` can pick, and the default one (`dispatchAgent`). */
-	agents?: () => ReadonlyMap<string, AgentDef>;
-	defaultAgent?: string;
-	/**
-	 * M39: the template of a scheduled pi session: as `launch`, with `{{run}}` where each
-	 * run's own session file goes (no worktree).
-	 */
-	scheduleLaunch?: (task: string, opts: { cwd: string; model?: string; thinking?: string }) => LaunchRequest;
-	/** DI-6: a shell job (no model). */
-	launchShell?: (command: string, cwd: string) => DispatchArgs;
-	/** M30: the user's agent profiles (terminal agents besides pi), by name. */
-	profiles?: () => string[];
-	/** M30: a new session of a profile's agent. */
-	launchProfile?: (profile: string, task: string, opts: { cwd: string; model?: string; thinking?: string; worktree?: boolean }) => LaunchRequest;
-	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
-	commands?: () => { name: string; source: string }[];
-	/** M61: a pi session's own slash commands (its worker's commands.json); tests pass a fake. */
-	sessionCommands?: (id: string) => SessionCommand[];
-	/** M61: the slash commands an agent profile declares. */
-	profileCommands?: (profile: string) => { name: string; description?: string }[];
-	/** M61: the host's control socket (type a command into pi, read its screen); tests pass a fake. */
-	hostControl?: typeof hostControl;
-	/** M10: new sessions get a worktree unless /worktree off (config worktreeIsolation "all"). */
-	worktreeDefault?: boolean;
-	/** M55: how /tasks merge goes into base (config taskMerge). */
-	taskMerge?: "ff" | "no-ff";
-	/** M55: a task's worktree (tests pass a fake). */
-	/** M57: what a task's worktree holds against base (tests pass a fake). */
-	taskChanges?: typeof taskChanges;
-	/** M58: a task's diff against base (tests pass a fake). */
-	taskDiff?: typeof taskDiff;
-	/** M59: a shelved task's worktree made again (tests pass a fake). */
-	/** DI-4: models for the /model picker, as "provider/id". */
-	models?: () => string[];
-	/** DI-4: past sessions of a directory for /resume. */
-	resumable?: (cwd: string) => Promise<Resumable[]>;
-	/**
-	 * M23: pi's own session selector for /resume (search, this directory or all, sort);
-	 * without it, or when it cannot be built, the view's own list.
-	 */
-	sessionSelector?: (o: {
-		cwd: string;
-		onSelect: (session: Resumable) => void;
-		onCancel: () => void;
-		requestRender: () => void;
-		/** A session a live job runs (not to be deleted from the list). */
-		busy: (path: string) => boolean;
-	}) => Overlay;
-	/** M23: what new sessions run when no model is chosen ("provider/id"). */
-	defaultModel?: () => string | undefined;
-	/** M23: this pi's own session file (it cannot be resumed in the background). */
-	currentSession?: () => string | undefined;
-	/** M23: the models pi cycles through (`enabledModels`); none: all of them. */
-	scopedModels?: () => string[];
-	setTitle: (title: string) => void;
 	/** Daemon connection; tests pass a fake. */
 	connect?: () => Promise<DaemonClient>;
+	setTitle: (title: string) => void;
+	done: () => void;
+}
+
+/** M80: What the list shows and how (where it came from, grouping, motion, the screen's height). */
+export interface HubDisplay {
+	/** AV-7: show only jobs started under this directory. */
+	cwdFilter?: string;
 	/** AV-K6: initial grouping and where a change is persisted. */
 	groupBy?: "state" | "directory";
 	onGroupBy?: (groupBy: "state" | "directory") => void;
@@ -215,17 +164,93 @@ export interface AgentViewOptions {
 	subagents?: "hide" | "inline";
 	/** M8: how long a /model or /thinking switch may take to show (tests shorten it). */
 	switchCheckMs?: number;
+}
+
+/** M80: What a new session runs: the launches (pi, a shell, a profile, a schedule's, the concierge's), agents, presets, worktrees. */
+export interface HubLaunching {
+	/** A new pi job; the view adds its /model and /thinking defaults and @dir target. */
+	launch: (task: string, opts?: LaunchOptions) => LaunchRequest;
+	/** DI-6: a shell job (no model). */
+	launchShell?: (command: string, cwd: string) => DispatchArgs;
+	/**
+	 * M39: the template of a scheduled pi session: as `launch`, with `{{run}}` where each
+	 * run's own session file goes (no worktree).
+	 */
+	scheduleLaunch?: (task: string, opts: { cwd: string; model?: string; thinking?: string }) => LaunchRequest;
+	/** M30: a new session of a profile's agent. */
+	launchProfile?: (profile: string, task: string, opts: { cwd: string; model?: string; thinking?: string; worktree?: boolean }) => LaunchRequest;
+	/** M30: the user's agent profiles (terminal agents besides pi), by name. */
+	profiles?: () => string[];
+	/** M18: agents a task's first word or `@name` can pick, and the default one (`dispatchAgent`). */
+	agents?: () => ReadonlyMap<string, AgentDef>;
+	defaultAgent?: string;
+	/** M44: the launch of the concierge's pi session (its model and thinking level from roost.json). */
+	conciergeLaunch?: () => LaunchRequest;
+	/** M10: new sessions get a worktree unless /worktree off (config worktreeIsolation "all"). */
+	worktreeDefault?: boolean;
 	/** M27: the presets (user's and project's) and saving one to the user's file (null removes). */
 	presets?: () => Record<string, Preset>;
 	savePreset?: (name: string, preset: Preset | null) => void;
 	/** M27: whether the user's own file has this preset (a project's cannot be removed here). */
 	userPreset?: (name: string) => boolean;
+}
+
+/** M80: The models to pick from and the default. */
+export interface HubModels {
+	/** DI-4: models for the /model picker, as "provider/id". */
+	models?: () => string[];
+	/** M23: what new sessions run when no model is chosen ("provider/id"). */
+	defaultModel?: () => string | undefined;
+	/** M23: the models pi cycles through (`enabledModels`); none: all of them. */
+	scopedModels?: () => string[];
+}
+
+/** M80: Past sessions (/resume) and the one this pi is in. */
+export interface HubResume {
+	/** DI-4: past sessions of a directory for /resume. */
+	resumable?: (cwd: string) => Promise<Resumable[]>;
+	/**
+	 * M23: pi's own session selector for /resume (search, this directory or all, sort);
+	 * without it, or when it cannot be built, the view's own list.
+	 */
+	sessionSelector?: (o: {
+		cwd: string;
+		onSelect: (session: Resumable) => void;
+		onCancel: () => void;
+		requestRender: () => void;
+		/** A session a live job runs (not to be deleted from the list). */
+		busy: (path: string) => boolean;
+	}) => Overlay;
+	/** M23: this pi's own session file (it cannot be resumed in the background). */
+	currentSession?: () => string | undefined;
+}
+
+/** M80: Slash commands: this pi's, a session's own, a profile's. */
+export interface HubCommands {
+	/** Slash commands of this pi (DI-4, DI-5: skills and prompt templates become first prompts). */
+	commands?: () => { name: string; source: string }[];
+	/** M61: a pi session's own slash commands (its worker's commands.json); tests pass a fake. */
+	sessionCommands?: (id: string) => SessionCommand[];
+	/** M61: the slash commands an agent profile declares. */
+	profileCommands?: (profile: string) => { name: string; description?: string }[];
+}
+
+/** M80: Tasks and this machine (decision 10 of docs/plans/hub-overlays.md: git and local reads, not the daemon; tests pass fakes). */
+export interface HubTasks {
+	/** M55: how /tasks merge goes into base (config taskMerge). */
+	taskMerge?: "ff" | "no-ff";
+	/** M57: what a task's worktree holds against base (tests pass a fake). */
+	taskChanges?: typeof taskChanges;
+	/** M58: a task's diff against base (tests pass a fake). */
+	taskDiff?: typeof taskDiff;
 	/** M26: what a session changed in its worktree (tests may replace git). */
 	worktreeChange?: (path: string, base: string) => Promise<WorktreeChange | undefined>;
-	/** M44: the launch of the concierge's pi session (its model and thinking level from roost.json). */
-	conciergeLaunch?: () => LaunchRequest;
-	done: () => void;
+	/** M61: the host's control socket (type a command into pi, read its screen); tests pass a fake. */
+	hostControl?: typeof hostControl;
 }
+
+/** M80: the hub's options, in groups by purpose (each group a type; callers pass one flat object). */
+export type AgentViewOptions = HubCore & HubDisplay & HubLaunching & HubModels & HubResume & HubCommands & HubTasks;
 
 /** A dispatch request, plus (M10) how to undo its worktree and what to tell the user. */
 export type LaunchRequest = DispatchArgs & { discard?: () => void; note?: string };
