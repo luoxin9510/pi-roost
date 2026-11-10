@@ -1,9 +1,9 @@
 // M75 (docs/plans/protocol-schema.md): the protocol's ops, once. A schema (lib/schema.ts) per op's
 // arguments and result is the source of the TypeScript types (lib/protocol.ts re-exports
 // them), of the op reference in docs/protocol.md (npm run docs:protocol), and, from M76,
-// of the daemon's entry check. Nothing here is checked at run time yet: the limits are
-// documentation until then.
-import { type Infer, type Schema, arr as arrS, bool as boolS, literal, nullable as nullableS, num as numS, obj as objS, oneOf as oneOfS, opaque, optional, rec, str as strS, union, empty } from "./schema.ts";
+// of the daemon's entry check (M76: the ops in ENTRY_CHECKED; a field marked loose is not
+// checked, a `message` is the words the daemon said before).
+import { type Infer, type Schema, arr as arrS, bool as boolS, check, literal, loose, nullable as nullableS, num as numS, obj as objS, oneOf as oneOfS, opaque, optional, rec, str as strS, union, empty } from "./schema.ts";
 import type { BoardTask } from "./board.ts";
 import { TASK_NOTE_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX } from "./board.ts";
 import { MESSAGE_MAX } from "./comms.ts";
@@ -11,6 +11,7 @@ import type { ConciergeStatus, StandingOrder } from "./concierge.ts";
 import { ORDER_TEXT_MAX } from "./concierge.ts";
 import type { RoostEvent } from "./events.ts";
 import type { PrInfo } from "./pr.ts";
+import { SCHEDULE_NAME } from "./schedule.ts";
 import type { UsageInfo } from "./usage.ts";
 
 // -- helpers ------------------------------------------------------------------------------
@@ -28,6 +29,10 @@ const lit = literal;
 const arr = <T extends Schema>(t: T, description?: string) => arrS(t, d(description));
 const obj = <P extends Parameters<typeof objS>[0]>(properties: P, o: Opts = {}) => objS(properties, o);
 const opt = optional;
+/** M76: a non-empty string; refused with these words. */
+const need = (message: string, description?: string) => strS({ ...d(description), min: 1, message });
+/** M76: a string with something in it once trimmed; refused with these words. */
+const filled = (message: string, description?: string, o: { max?: number; maxBy?: "cut" | "op" } = {}) => strS({ ...d(description), min: 1, trim: true, message, ...o });
 /** A type another module owns (its interface stays there); the doc names it. */
 const domain = <T>(title: string, description: string) => opaque<T>(title, description);
 
@@ -123,34 +128,37 @@ export const SendResultSchema = obj({
 });
 export type SendResult = Infer<typeof SendResultSchema>;
 
+// M76: loose: a handback from a session that is not a child is answered `routed: false` before its state is read
 export const HandbackArgsSchema = obj({
-	state: oneOf(["done", "blocked", "failed"]),
-	result: nullable(str()),
-	question: nullable(str()),
-	error: nullable(str()),
+	state: loose(oneOf(["done", "blocked", "failed"])),
+	result: loose(nullable(str())),
+	question: loose(nullable(str())),
+	error: loose(nullable(str())),
 }, { description: "M9, on a worker connection: the run it was spawned for (or a user turn) ended." });
 export type HandbackArgs = Infer<typeof HandbackArgsSchema>;
 
-export const WorkerReportSchema = obj({
-	state: oneOf(["working", "blocked", "done", "failed"]),
-	status: oneOf(["busy", "waiting", "idle"]),
-	waitingFor: WaitingForS,
-	summary: nullable(str()),
-	question: nullable(str()),
-	choices: arr(str()),
-	tool: nullable(str()),
-	error: nullable(str()),
-	name: nullable(str()),
-	model: nullable(str()),
-	thinking: opt(nullable(str(), "M8; absent from workers before 0.1.5.")),
-	context: opt(nullable(ContextInfoS)),
-	usage: opt(nullable(UsageInfoS, "M24: absent from workers before 0.1.11.")),
-	attachSignal: opt(bool("The worker reacts to the host's SIGUSR2 attach signal (AT-5).")),
-	attachRepaint: opt(bool("M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21).")),
-	agentItems: opt(bool("M9: the worker takes agent messages and reports (custom messages, per-item acks).")),
-	remoteAt: opt(num("M11: when a phone (pi-mobile) last acted on this session (ms epoch): it is in use.")),
-	prLinks: opt(arr(str(), "M16: pull request URLs the session linked (gh output, branch lookups).")),
-}, { description: "What a worker reports about itself (full snapshot every time)." });
+const INVALID_REPORT = "invalid report";
+// M76: the daemon refuses a report whose state or status is not one of these; the rest is read loosely
+export const WorkerReportSchema = objS({
+	state: oneOfS(["working", "blocked", "done", "failed"], { message: INVALID_REPORT }),
+	status: oneOfS(["busy", "waiting", "idle"], { message: INVALID_REPORT }),
+	waitingFor: loose(WaitingForS),
+	summary: loose(nullable(str())),
+	question: loose(nullable(str())),
+	choices: loose(arr(str())),
+	tool: loose(nullable(str())),
+	error: loose(nullable(str())),
+	name: loose(nullable(str())),
+	model: loose(nullable(str())),
+	thinking: opt(loose(nullable(str(), "M8; absent from workers before 0.1.5."))),
+	context: opt(loose(nullable(ContextInfoS))),
+	usage: opt(loose(nullable(UsageInfoS, "M24: absent from workers before 0.1.11."))),
+	attachSignal: opt(loose(bool("The worker reacts to the host's SIGUSR2 attach signal (AT-5)."))),
+	attachRepaint: opt(loose(bool("M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21)."))),
+	agentItems: opt(loose(bool("M9: the worker takes agent messages and reports (custom messages, per-item acks)."))),
+	remoteAt: opt(loose(num("M11: when a phone (pi-mobile) last acted on this session (ms epoch): it is in use."))),
+	prLinks: opt(loose(arr(str(), "M16: pull request URLs the session linked (gh output, branch lookups)."))),
+}, { description: "What a worker reports about itself (full snapshot every time).", message: INVALID_REPORT });
 export type WorkerReport = Infer<typeof WorkerReportSchema>;
 
 const ProfileTermS = obj({
@@ -184,7 +192,7 @@ export const DispatchArgsSchema = obj({
 	taskInArgv: opt(bool("M30: the first task is in its argv (it has been given something to do).")),
 	resumable: opt(bool("M40: a profile with `resume`: a run of it cut short can carry on (autoResume).")),
 	protocol: opt(bool("M31: a profile's agent that speaks the roost agent protocol.")),
-	requestId: opt(str("M36: a resend with the same id returns the job the first one made (one not of this form is ignored).", { pattern: "^[A-Za-z0-9_.:-]{1,64}$" })),
+	requestId: opt(str("M36: a resend with the same id returns the job the first one made (one not of this form is refused).", { pattern: "^[A-Za-z0-9_.:-]{1,64}$" })),
 }, { description: "A session to start (dispatch, spawn, a schedule's launch, a task's start)." });
 export type DispatchArgs = Infer<typeof DispatchArgsSchema>;
 
@@ -200,9 +208,9 @@ export const DaemonStatusSchema = obj({
 export type DaemonStatus = Infer<typeof DaemonStatusSchema>;
 
 export const HelloArgsSchema = obj({
-	protocol: int("The highest protocol version the agent speaks.", { min: 1 }),
-	agent: opt(obj({ name: str(), version: opt(str()) })),
-	capabilities: opt(arr(str(), "What the agent can do (AGENT_CAPABILITIES); unknown ones are ignored.")),
+	protocol: numS({ description: "The highest protocol version the agent speaks.", int: true, min: 1, message: "protocol must be a version number" }),
+	agent: opt(loose(obj({ name: str(), version: opt(str()) }))),
+	capabilities: opt(loose(arr(str(), "What the agent can do (AGENT_CAPABILITIES); unknown ones are ignored (and what is not a string)."))),
 }, { description: "M31: an agent says which protocol and capabilities it has, before it reports." });
 export type HelloArgs = Infer<typeof HelloArgsSchema>;
 
@@ -269,28 +277,28 @@ export const TaskArgsSchema = union([
 export type TaskArgs = Infer<typeof TaskArgsSchema>;
 
 export const ConciergeArgsSchema = union([
-	obj({ action: lit("on"), launch: opt(DispatchArgsSchema) }, { description: "Start it (a pi launch the hub built), or the job it had." }),
+	obj({ action: lit("on"), launch: opt(loose(DispatchArgsSchema)) }, { description: "Start it (a pi launch the hub built), or the job it had." }),
 	obj({ action: lit("off") }, { description: "Stop it." }),
 	obj({ action: lit("status") }, { description: "How it stands." }),
-	obj({ action: lit("answer"), answer: ConciergeAnswerS }, { description: "M45: set the policy's answer." }),
-	obj({ action: lit("act"), act: bool() }, { description: "M45: set the policy's act." }),
+	obj({ action: lit("answer"), answer: oneOfS(["never", "routine", "always"], { message: "answer must be never, routine or always" }) }, { description: "M45: set the policy's answer." }),
+	obj({ action: lit("act"), act: boolS({ message: "act must be true or false" }) }, { description: "M45: set the policy's act." }),
 	obj({ action: lit("undo") }, { description: "M45: withdraw the last answer it gave a session." }),
-]);
+], { discriminant: "action", message: "action must be on, off, status, answer, act or undo" });
 export type ConciergeArgs = Infer<typeof ConciergeArgsSchema>;
 
 export const ConciergeActArgsSchema = union([
-	obj({ what: oneOf(["stop", "respawn"]), id: str(), why: opt(str()) }),
-	obj({ what: lit("dispatch"), launch: DispatchArgsSchema, why: opt(str()) }),
-]);
+	obj({ what: oneOf(["stop", "respawn"]), id: filled("id required"), why: opt(loose(str())) }),
+	obj({ what: lit("dispatch"), launch: loose(DispatchArgsSchema), why: opt(loose(str())) }),
+], { discriminant: "what", message: "what must be stop, respawn or dispatch" });
 export type ConciergeActArgs = Infer<typeof ConciergeActArgsSchema>;
 
 /** M46: the standing orders. */
 export const ConciergeOrderArgsSchema = union([
 	obj({ action: lit("list") }, { description: "List them." }),
-	obj({ action: lit("add"), text: str(undefined, { maxLength: ORDER_TEXT_MAX }), when: opt(str("M39's vocabulary (`every 30m`, `daily 18:00`, `weekdays 09:00`, `cron \"...\"`).")) }, { description: "Keep one (the hub's or the concierge's connection)." }),
-	obj({ action: lit("rm"), id: int() }, { description: "Drop one (the hub's; the concierge's own only)." }),
-	obj({ action: lit("applied"), id: int(), text: opt(str()) }, { description: "Mark one applied (the concierge's)." }),
-]);
+	obj({ action: lit("add"), text: filled("empty order", undefined, { max: ORDER_TEXT_MAX, maxBy: "cut" }), when: opt(loose(str("M39's vocabulary (`every 30m`, `daily 18:00`, `weekdays 09:00`, `cron \"...\"`)."))) }, { description: "Keep one (the hub's or the concierge's connection)." }),
+	obj({ action: lit("rm"), id: loose(int()) }, { description: "Drop one (the hub's; the concierge's own only)." }),
+	obj({ action: lit("applied"), id: loose(int()), text: opt(loose(str())) }, { description: "Mark one applied (the concierge's)." }),
+], { discriminant: "action", message: "action must be add, rm, list or applied" });
 export type ConciergeOrderArgs = Infer<typeof ConciergeOrderArgsSchema>;
 
 /** The literal values a union of objects discriminates on (the doc and the callers table read them). */
@@ -312,46 +320,56 @@ const Empty = obj({});
 export const ArgSchemas = {
 	ping: Empty,
 	schedules: obj({}, { description: "M39: scheduled tasks." }),
-	"schedule-add": obj({ name: str(), when: str(), launch: DispatchArgsSchema, task: opt(str()), catchUp: opt(bool()) }),
-	"schedule-rm": obj({ name: str() }),
-	"schedule-pause": obj({ name: str(), paused: bool() }),
-	"schedule-run": obj({ name: str() }),
+	// M76: a schedule's when and launch are checked where they are parsed (their own words); a name not a string is not_found
+	"schedule-add": obj({
+		name: strS({ pattern: SCHEDULE_NAME.source, message: "name: 1-40 of A-Z a-z 0-9 _ . -, starting with a letter or digit" }),
+		when: loose(str()),
+		launch: loose(DispatchArgsSchema),
+		task: opt(loose(str())),
+		catchUp: opt(loose(bool())),
+	}),
+	"schedule-rm": obj({ name: loose(str()) }),
+	"schedule-pause": obj({ name: loose(str()), paused: loose(bool()) }),
+	"schedule-run": obj({ name: loose(str()) }),
 	hello: HelloArgsSchema,
-	list: obj({ all: opt(bool()), cwd: opt(str()) }),
+	list: obj({ all: opt(loose(bool())), cwd: opt(loose(str())) }),
 	dispatch: DispatchArgsSchema,
-	stop: obj({ id: str() }),
-	rm: obj({ id: str() }),
-	resolve: obj({ query: str() }),
+	stop: obj({ id: need("id required") }),
+	rm: obj({ id: need("id required") }),
+	resolve: obj({ query: need("query required") }),
 	status: Empty,
-	shutdown: obj({ keepWorkers: opt(bool()) }),
+	shutdown: obj({ keepWorkers: opt(loose(bool())) }),
 	subscribe: Empty,
-	report: obj({ id: str(), token: str(), report: WorkerReportSchema }),
+	// M76: id and token are checked against the job (not_found, unauthorized), seq after them
+	report: obj({ id: loose(str()), token: loose(str()), report: WorkerReportSchema }),
 	reply: obj({
-		id: str(),
-		text: str(),
-		mode: opt(ReplyModeS),
-		requestId: opt(str("M36: makes a resend safe: the same id is taken once (the first answer is given again; one not of this form is ignored).", { pattern: "^[A-Za-z0-9_.:-]{1,64}$" })),
+		id: need("id required"),
+		text: filled("empty reply"),
+		mode: opt(loose(ReplyModeS)),
+		requestId: opt(strS({ description: "M36: makes a resend safe: the same id is taken once (the first answer is given again).", pattern: "^[A-Za-z0-9_.:-]{1,64}$", message: "requestId: 1-64 of A-Z a-z 0-9 _ . : -" })),
 	}, { description: "M28: a reply to a working session steers into its current work (pi's Enter) or waits for it to finish (Alt+Enter); absent: waits." }),
-	ack: obj({ id: str(), token: str(), seq: int(), exact: opt(bool()) }, { description: "Worker to daemon: the reply with this seq was handed to pi (exact: only that agent item)." }),
-	respawn: obj({ id: opt(str()), all: opt(bool()), restart: opt(bool()), prompt: opt(str()) }, { description: "Start an ended job again from its session file; `restart` also restarts a live one." }),
-	pin: obj({ id: str(), pinned: bool() }),
-	rename: obj({ id: str(), name: str() }),
-	reorder: obj({ ids: arr(str()), key: str() }, { description: "AV-K13: these jobs, in this order (the rest of their group keeps its place)." }),
-	peer_register: obj({ session: opt(str()), name: str(), cwd: str(), pid: int("The pid that owns the session's writer lock.") }, { description: "M9: a foreground pi joins as a peer on this connection." }),
+	ack: obj({ id: loose(str()), token: loose(str()), seq: loose(int()), exact: opt(loose(bool())) }, { description: "Worker to daemon: the reply with this seq was handed to pi (exact: only that agent item)." }),
+	respawn: obj({ id: opt(loose(str("Required unless `all`."))), all: opt(loose(bool())), restart: opt(loose(bool())), prompt: opt(loose(str())) }, { description: "Start an ended job again from its session file; `restart` also restarts a live one." }),
+	pin: obj({ id: need("id required"), pinned: loose(bool()) }),
+	rename: obj({ id: need("id required"), name: filled("empty name", "Spaces folded; cut at 200 characters.") }),
+	reorder: obj({ ids: arrS(need("ids must be job ids"), { message: "ids must be job ids" }), key: need("key required") }, { description: "AV-K13: these jobs, in this order (the rest of their group keeps its place)." }),
+	peer_register: obj({ session: opt(loose(str())), name: loose(str()), cwd: loose(str()), pid: numS({ description: "The pid that owns the session's writer lock.", int: true, message: "pid must be a live process" }) }, { description: "M9: a foreground pi joins as a peer on this connection." }),
 	peers: obj({}, { description: "M9, on a peer connection: the sessions this peer may message." }),
-	send: obj({ to: str("A session's id or name (`peers` lists them)."), message: str(undefined, { maxLength: MESSAGE_MAX }) }),
+	send: obj({ to: filled("to required", "A session's id or name (`peers` lists them)."), message: filled("empty message", undefined, { max: MESSAGE_MAX, maxBy: "op" }) }),
 	spawn: obj({ launch: DispatchArgsSchema }),
 	handback: HandbackArgsSchema,
-	peer_ack: obj({ ref: str() }, { description: "M9, on a foreground peer connection: the report with this ref reached pi." }),
-	events: obj({ after: opt(int()), limit: opt(int()), id: opt(str()) }, { description: "M43: the event feed (what happened), with a cursor: `after` the seq last seen." }),
-	watch: obj({ id: str(), when: oneOf(["idle", "ended"]) }, { description: "M43, on a peer connection: tell me once when that session is next idle (done, or waiting for an answer) or has ended." }),
+	peer_ack: obj({ ref: loose(str()) }, { description: "M9, on a foreground peer connection: the report with this ref reached pi." }),
+	events: obj({ after: opt(numS({ message: "after must be a number" })), limit: opt(numS({ message: "limit must be a number" })), id: opt(need("id must be a job id")) }, { description: "M43: the event feed (what happened), with a cursor: `after` the seq last seen." }),
+	watch: obj({ id: filled("id required"), when: oneOfS(["idle", "ended"], { message: "when must be idle or ended" }) }, { description: "M43, on a peer connection: tell me once when that session is next idle (done, or waiting for an answer) or has ended." }),
 	concierge: ConciergeArgsSchema,
-	"concierge-ask": obj({ text: str() }, { description: "M44, from the hub: a question for the concierge (`? ...`); its answer comes as a `concierge` event." }),
-	"concierge-say": obj({ kind: oneOf(["info", "need", "answer"]), text: str() }, { description: "M44, on the concierge's own connection: what it tells the user (hub_notify), or its answer to a question." }),
+	"concierge-ask": obj({ text: filled("empty question") }, { description: "M44, from the hub: a question for the concierge (`? ...`); its answer comes as a `concierge` event." }),
+	"concierge-say": obj({ text: filled("empty text"), kind: oneOfS(["info", "need", "answer"], { message: "kind must be info, need or answer" }) }, { description: "M44, on the concierge's own connection: what it tells the user (hub_notify), or its answer to a question." }),
 	"concierge-policy": empty({ description: "M45, on the concierge's connection: the policy in force (which of its tools it may use)." }),
-	"concierge-suggest": obj({ id: str(), text: str(), why: opt(str()) }, { description: "M45, on the concierge's connection: the answer it would give a session that waits for one, and why." }),
-	"concierge-reply": obj({ id: str(), text: str(), why: opt(str()) }, { description: "M45, on the concierge's connection: an answer in the user's place; refused (`policy`) unless the policy allows." }),
-	"concierge-act": ConciergeActArgsSchema,
+	"concierge-suggest": obj({ id: filled("id required"), text: filled("empty suggestion"), why: opt(loose(str())) }, { description: "M45, on the concierge's connection: the answer it would give a session that waits for one, and why." }),
+	// M76: loose: the policy is checked first (the module's checks, in their order)
+	"concierge-reply": obj({ id: loose(filled("id required")), text: loose(filled("empty answer")), why: opt(loose(str())) }, { description: "M45, on the concierge's connection: an answer in the user's place; refused (`policy`) unless the policy allows." }),
+	// M76: loose: the policy is checked first (the module's checks, in their order)
+	"concierge-act": loose(ConciergeActArgsSchema),
 	"concierge-order": ConciergeOrderArgsSchema,
 	task: TaskArgsSchema,
 };
@@ -421,3 +439,23 @@ export type OpArgs = { [O in keyof typeof ArgSchemas]: Infer<(typeof ArgSchemas)
 export type OpResults = { [O in keyof typeof ResultSchemas]: Infer<(typeof ResultSchemas)[O]> };
 /** The names of the ops, in the order of the schemas. */
 export const OPS = Object.keys(ArgSchemas) as (keyof typeof ArgSchemas)[];
+
+/**
+ * M76: the ops whose arguments the daemon checks at its entry against their schema (M77: dispatch,
+ * spawn and task too). Each field is loose or carries the words its hand check said.
+ */
+export const ENTRY_CHECKED: ReadonlySet<string> = new Set<keyof typeof ArgSchemas>([
+	"ping", "status", "subscribe", "list", "resolve", "stop", "rm", "respawn", "pin", "rename", "reorder", "shutdown",
+	"report", "reply", "ack", "hello",
+	"peer_register", "peers", "send", "handback", "peer_ack", "events", "watch",
+	"schedules", "schedule-add", "schedule-rm", "schedule-pause", "schedule-run",
+	"concierge", "concierge-ask", "concierge-say", "concierge-policy", "concierge-suggest", "concierge-reply", "concierge-act", "concierge-order",
+]);
+
+/** M76: what is wrong with an op's arguments (the daemon's words), or undefined. Arguments that are not an object count as none. */
+export function argsProblem(op: string, args: unknown): string | undefined {
+	if (!ENTRY_CHECKED.has(op)) return undefined;
+	const value = typeof args === "object" && args !== null && !Array.isArray(args) ? args : {};
+	const r = check(ArgSchemas[op as keyof typeof ArgSchemas], value);
+	return r.ok ? undefined : r.message;
+}

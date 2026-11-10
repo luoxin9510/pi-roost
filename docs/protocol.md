@@ -475,7 +475,7 @@ A session to start (dispatch, spawn, a schedule's launch, a task's start).
 | `taskInArgv` | `boolean` | no |  | M30: the first task is in its argv (it has been given something to do). |
 | `resumable` | `boolean` | no |  | M40: a profile with `resume`: a run of it cut short can carry on (autoResume). |
 | `protocol` | `boolean` | no |  | M31: a profile's agent that speaks the roost agent protocol. |
-| `requestId` | `string` | no |  | M36: a resend with the same id returns the job the first one made (one not of this form is ignored). |
+| `requestId` | `string` | no |  | M36: a resend with the same id returns the job the first one made (one not of this form is refused). |
 
 #### `HelloArgs`
 
@@ -485,7 +485,7 @@ M31: an agent says which protocol and capabilities it has, before it reports.
 |---|---|---|---|---|
 | `protocol` | `integer` | yes |  | The highest protocol version the agent speaks. |
 | `agent` | `{ name: string, version?: string }` | no |  |  |
-| `capabilities` | `string[]` | no |  | What the agent can do (AGENT_CAPABILITIES); unknown ones are ignored. |
+| `capabilities` | `string[]` | no |  | What the agent can do (AGENT_CAPABILITIES); unknown ones are ignored (and what is not a string). |
 
 #### `HelloResult`
 
@@ -797,7 +797,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars |  |
 
 Result:
 
@@ -813,7 +813,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars |  |
 
 Result:
 
@@ -830,7 +830,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `query` | `string` | yes |  |  |
+| `query` | `string` | yes | >= 1 chars |  |
 
 Result:
 
@@ -902,10 +902,10 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
-| `text` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars |  |
+| `text` | `string` | yes | >= 1 chars (trimmed) |  |
 | `mode` | `"steer" \| "followUp"` | no |  | "steer" joins the work under way, after its current tool calls; "followUp" waits until it is done |
-| `requestId` | `string` | no |  | M36: makes a resend safe: the same id is taken once (the first answer is given again; one not of this form is ignored). |
+| `requestId` | `string` | no |  | M36: makes a resend safe: the same id is taken once (the first answer is given again). |
 
 Result:
 
@@ -947,7 +947,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | no |  |  |
+| `id` | `string` | no |  | Required unless `all`. |
 | `all` | `boolean` | no |  |  |
 | `restart` | `boolean` | no |  |  |
 | `prompt` | `string` | no |  |  |
@@ -966,7 +966,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars |  |
 | `pinned` | `boolean` | yes |  |  |
 
 Result:
@@ -984,8 +984,8 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
-| `name` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars |  |
+| `name` | `string` | yes | >= 1 chars (trimmed) | Spaces folded; cut at 200 characters. |
 
 Result:
 
@@ -1005,7 +1005,7 @@ Args:
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
 | `ids` | `string[]` | yes |  |  |
-| `key` | `string` | yes |  |  |
+| `key` | `string` | yes | >= 1 chars |  |
 
 Result:
 
@@ -1056,8 +1056,8 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `to` | `string` | yes |  | A session's id or name (`peers` lists them). |
-| `message` | `string` | yes | <= 8000 chars |  |
+| `to` | `string` | yes | >= 1 chars (trimmed) | A session's id or name (`peers` lists them). |
+| `message` | `string` | yes | 1-8000 chars (trimmed), longer is refused (`too_long`) |  |
 
 Result:
 
@@ -1122,9 +1122,9 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `after` | `integer` | no |  |  |
-| `limit` | `integer` | no |  |  |
-| `id` | `string` | no |  |  |
+| `after` | `number` | no |  |  |
+| `limit` | `number` | no |  |  |
+| `id` | `string` | no | >= 1 chars |  |
 
 Result:
 
@@ -1143,7 +1143,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars (trimmed) |  |
 | `when` | `"idle" \| "ended"` | yes |  |  |
 
 Result:
@@ -1226,7 +1226,7 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `text` | `string` | yes |  |  |
+| `text` | `string` | yes | >= 1 chars (trimmed) |  |
 
 Result:
 
@@ -1244,8 +1244,8 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
+| `text` | `string` | yes | >= 1 chars (trimmed) |  |
 | `kind` | `"info" \| "need" \| "answer"` | yes |  |  |
-| `text` | `string` | yes |  |  |
 
 Result:
 
@@ -1278,8 +1278,8 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
-| `text` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars (trimmed) |  |
+| `text` | `string` | yes | >= 1 chars (trimmed) |  |
 | `why` | `string` | no |  |  |
 
 Result:
@@ -1299,8 +1299,8 @@ Args:
 
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
-| `id` | `string` | yes |  |  |
-| `text` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars (trimmed) |  |
+| `text` | `string` | yes | >= 1 chars (trimmed) |  |
 | `why` | `string` | no |  |  |
 
 Result:
@@ -1321,7 +1321,7 @@ Args: one of these, by `what`.
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
 | `what` | `"stop" \| "respawn"` | yes |  |  |
-| `id` | `string` | yes |  |  |
+| `id` | `string` | yes | >= 1 chars (trimmed) |  |
 | `why` | `string` | no |  |  |
 
 #### `concierge-act` what "dispatch"
@@ -1364,7 +1364,7 @@ Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent
 | Field | Type | Required | Limit | |
 |---|---|---|---|---|
 | `action` | `"add"` | yes |  |  |
-| `text` | `string` | yes | <= 500 chars |  |
+| `text` | `string` | yes | 1-500 chars (trimmed), longer is cut |  |
 | `when` | `string` | no |  | M39's vocabulary (`every 30m`, `daily 18:00`, `weekdays 09:00`, `cron "..."`). |
 
 #### `concierge-order` action "rm"

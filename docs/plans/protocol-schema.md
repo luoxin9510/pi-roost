@@ -71,3 +71,43 @@ not the daemon's (10).
   - looser in the daemon than in the schemas: `events.after`/`limit` (any finite number,
     the schema says integer), `hello.capabilities` (non-strings filtered out, the schema says
     strings): the schemas follow the daemon.
+
+## M76, as done
+
+- `lib/schema.ts`: `loose(s)` (same type and doc; `check` passes anything, a missing required
+  field too; `looseOf` keeps the shape's name for the doc), `str({ trim })` (limits on the
+  trimmed value), `str({ maxBy: "cut" | "op" })` (a maximum the daemon cuts, or refuses with its
+  own code: not refused by `check`, said in the doc), `union(…, { discriminant })` (picked by
+  that field alone; another value fails with the union's message, `discriminantValues`).
+- `lib/protocol-schema.ts`: `ENTRY_CHECKED` (every op but `dispatch`, `spawn`, `task`) and
+  `argsProblem(op, args)`; arguments that are not an object count as `{}`. Each field is loose
+  or carries its hand check's words (`need`: a non-empty string; `filled`: something once
+  trimmed). The daemon calls it after the callers table and before the op, so a refused caller
+  is answered as before. `hello` and `report` mark the connection as an agent's before the
+  check (they did before their own checks).
+- Loose, and why: what the daemon drops or reads loosely (`list`, `pin.pinned`, `respawn`,
+  `shutdown`, `peer_ack`, `hello.agent`/`capabilities`, `peer_register` but `pid`, the report's
+  fields but `state`/`status`); what is checked against state first, in other codes
+  (`report`/`ack` `id` and `token`, `ack.seq` after them, `schedule-*` names: `not_found`;
+  `concierge-order` ids, which take `"3"`); what is parsed with its own words (a schedule's
+  `when` and `launch`, an order's `when`); `handback` (a session that is not a child is answered
+  `routed: false` before its state is read); `concierge-act` and `concierge-reply` (the policy
+  is checked first: `policy`); `DispatchArgs` wherever it is used (M77).
+- The daemon's own checks removed: `reorder.key`, `events` (`after`, `limit`, `id`), `hello`'s
+  protocol, the report's state and status, `rename`'s empty name, `send`'s `to` and empty
+  message, `peer_register`'s pid type. Kept: what needs state (`reorder` ids it knows, a live
+  pid, `too_long` on the trimmed message), helpers other paths call (`requireJob`, `reply()`
+  for the concierge's answers), and the modules' checks (watches, schedules, the concierge:
+  their in-process tests call them directly; the entry check says the same words first).
+- Not quite as before: a request with two faults may be answered for the other one (a report
+  with an unknown id and a bad state: `invalid report`, was `not_found`); `concierge answer`
+  with `["never"]` (a one-item array) is refused (`String()` took it).
+- The M75 notes: the discriminant rule is in `check`; trimmed text is `filled`; `requestId` is
+  refused (`reply` and `dispatch` refuse a malformed one; the M75 note that it is dropped was
+  wrong, the doc is corrected); `events.after`/`limit` and `hello.capabilities` follow the daemon.
+- Tests: `test/entry-check.test.ts` (every checked field is worded or loose; 57 refusals in the
+  daemon's words; 33 arguments the daemon took, still taken), `test/schema.test.ts` (the new
+  builders), `test/daemon.test.ts` (each removed check's words over the socket). The callers
+  matrix (M63) is unchanged. Mutation: the daemon's call removed fails the socket test; each
+  schema's words changed fails a unit test (the loose ones' words are the doc's only).
+
