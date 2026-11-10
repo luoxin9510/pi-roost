@@ -87,11 +87,21 @@ export interface RoostPort {
 	};
 }
 
+/** The sends that wait through a reconnect: they hold no connection, `via` gives one at each try (M51). */
+export type Sends = Pick<RoostPort["jobs"], "reply" | "dispatch">;
+export function sends(via: (deadline: number) => Promise<DaemonClient>): Sends {
+	return {
+		reply: (args, opts) => requestOnce(via, "reply", args, opts),
+		dispatch: (args, opts) => requestOnce(via, "dispatch", args, opts),
+	};
+}
+
 /**
  * The adapter. `via(deadline)` gives the connection for `reply` and `dispatch` (M51: the hub's
  * hands the one made again after a restart); by default, this client.
  */
 export function roostPort(client: DaemonClient, via: (deadline: number) => Promise<DaemonClient> = async () => client): RoostPort {
+	const once = sends(via);
 	const task = <A extends TaskArgs["action"]>(action: A, body?: Body<A>) => client.request("task", { action, ...body } as TaskArgs);
 	const order = (a: ArgsOf<"concierge-order">) => client.request("concierge-order", a);
 	const concierge = (a: ArgsOf<"concierge">) => client.request("concierge", a);
@@ -112,8 +122,8 @@ export function roostPort(client: DaemonClient, via: (deadline: number) => Promi
 			rename: (id, name) => client.request("rename", { id, name }),
 			reorder: (ids, key) => client.request("reorder", { ids, key }),
 			respawn: (id) => client.request("respawn", { id }),
-			reply: (args, opts) => requestOnce(via, "reply", args, opts),
-			dispatch: (args, opts) => requestOnce(via, "dispatch", args, opts),
+			reply: once.reply,
+			dispatch: once.dispatch,
 		},
 
 		tasks: {

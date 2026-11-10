@@ -21,7 +21,7 @@ import {
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError, GiveUp } from "../lib/client.ts";
 import type { OverlayHost } from "./overlay-host.ts";
-import { type RoostPort, roostPort } from "./roost-port.ts";
+import { type RoostPort, roostPort, sends } from "./roost-port.ts";
 import { hostSocketPath } from "../lib/paths.ts";
 import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
 import { type Filter, parseFilter } from "../lib/filter.ts";
@@ -424,6 +424,9 @@ export class AgentView implements Component {
 
 	/** M71: the daemon port of a connection (one per client, so a closure holding it keeps its connection). */
 	private ports = new WeakMap<DaemonClient, RoostPort>();
+	/** M51: reply and dispatch hold no connection: each try takes the live one, waiting through a reconnect. */
+	private readonly sends = sends((d) => this.live(d));
+
 	private portFor(client: DaemonClient): RoostPort {
 		let port = this.ports.get(client);
 		if (!port) this.ports.set(client, (port = roostPort(client, (d) => this.live(d))));
@@ -591,8 +594,7 @@ export class AgentView implements Component {
 		this.render0();
 	}
 
-	/** M71: what an overlay gets from the view (no overlay uses it yet: they move in M72–M74). */
-	/** The host of an overlay opened on `port` (the connection it was opened on, as the closures hold theirs). */
+	/** M71: the host of an overlay opened on `port` (the connection it was opened on, as the closures hold theirs). */
 	overlayHost(port: RoostPort): OverlayHost {
 		return {
 			port,
@@ -1540,7 +1542,7 @@ export class AgentView implements Component {
 		const key = `${row.id}:${row.suggested.at}`;
 		this.dismissed.add(key);
 		try {
-			const r = await this.port.jobs.reply({ id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
+			const r = await this.sends.reply({ id: row.id, text, requestId: `hub-accept-${row.id}-${row.suggested.at}`.slice(0, 64) });
 			if (r.delivered || r.saved) this.say(`sent to ${row.name}: ${oneLine(text).slice(0, 80)}`, "success");
 			else {
 				this.dismissed.delete(key);
@@ -1717,7 +1719,7 @@ export class AgentView implements Component {
 		const args = this.o.launch("", { cwd: s.cwd || this.dispatchCwd(), sessionFile: s.path, name: s.name, origin: "adopt" });
 		let r: { id: string; name: string };
 		try {
-			r = await this.port.jobs.dispatch(args, { tag: "hub" });
+			r = await this.sends.dispatch(args, { tag: "hub" });
 		} catch (err) {
 			// M51: lost (sent, no answer) may have been taken: what it made stays
 			if ((err as DaemonError).code !== "lost") args.discard?.();
@@ -2028,7 +2030,7 @@ export class AgentView implements Component {
 		this.dispatching = true;
 		this.input.setValue("");
 		try {
-			const { id, name } = await this.port.jobs.dispatch(request, { tag: "hub" });
+			const { id, name } = await this.sends.dispatch(request, { tag: "hub" });
 			this.cursor = { kind: "row", id };
 			const where = request.worktree ? ` · ⎇ ${request.worktree.branch}` : "";
 			this.say(`started · ${name}${where}${note ? ` · ${note}` : ""}`, note ? "warning" : "success");
@@ -2082,7 +2084,7 @@ export class AgentView implements Component {
 		try {
 			// M51: one at a time (a second Enter while it is sent again would send it twice)
 			this.sendingReply = true;
-			const r = await this.port.jobs.reply({ id: row.id, text, mode }, { tag: "hub" }).finally(() => {
+			const r = await this.sends.reply({ id: row.id, text, mode }, { tag: "hub" }).finally(() => {
 				this.sendingReply = false;
 			});
 			this.reply.setValue("");
@@ -2981,7 +2983,7 @@ export class AgentView implements Component {
 				if (name === "name" && !arg) return this.say("/name <the session's own name>", "warning");
 				if (row.kind === "shell") return this.say(`/${name} is for a pi session`, "warning");
 				if (row.pid === null) return this.say(`${row.name} is not running: /${name} works in a running session`, "warning");
-				const r = await this.port.jobs.reply({ id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` }, { tag: "hub" });
+				const r = await this.sends.reply({ id: row.id, text: `/${name}${arg ? ` ${arg}` : ""}` }, { tag: "hub" });
 				done();
 				if (r.delivered) return this.say(`/${name} · ${row.name}`, "success");
 				return this.say(r.respawned ? `starting ${row.name} again; /${name} runs then` : r.saved ? `saved; it runs when ${row.name} starts again` : `not delivered: ${row.name} is not running`, "warning");
@@ -3259,7 +3261,7 @@ export class AgentView implements Component {
 		// a second switch before the first shows: compare with what the session had before both
 		const before = pending ? pending.before : ((which === "model" ? row.model : row.thinking) ?? null);
 		try {
-			const r = await this.port.jobs.reply({ id: row.id, text: `/${which} ${value}` }, { tag: "hub" });
+			const r = await this.sends.reply({ id: row.id, text: `/${which} ${value}` }, { tag: "hub" });
 			if (!quiet) this.reply.setValue("");
 			if (r.delivered) {
 				// asked, not done: the worker may lack credentials, or pi may lower a thinking level
@@ -3500,7 +3502,7 @@ export class AgentView implements Component {
 				}
 				const { discard, note, ...request } = args;
 				try {
-					const { id } = await this.port.jobs.dispatch({ ...request, fanout }, { tag: "hub" });
+					const { id } = await this.sends.dispatch({ ...request, fanout }, { tag: "hub" });
 					started.push(id);
 					if (note) notes.add(note);
 				} catch (err) {
@@ -3755,7 +3757,7 @@ export class AgentView implements Component {
 		try {
 			for (const r of pi) {
 				try {
-					const res = await this.port.jobs.reply({ id: r.id, text, mode }, { tag: "hub" });
+					const res = await this.sends.reply({ id: r.id, text, mode }, { tag: "hub" });
 					if (res.delivered || res.respawned || res.duplicate) sent++;
 					else if (res.saved) later++;
 					else failed.push(r.name);

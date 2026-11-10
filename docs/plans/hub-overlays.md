@@ -57,5 +57,14 @@ fake client that answers each op by its name.
 - Request ids: `jobs.reply` and `jobs.dispatch` are `requestOnce(via, op, args, opts)`; the view builds its port with `via = (d) => this.live(d)`, so a resend after a restart goes on the connection the view has by then, with the same id, as before. Other ports (tests, a bare `roostPort(client)`) use `via` = that client.
 - `hub/agent-view.ts`: all 69 inline `request(`/`requestOnce(`/`requestAt(` calls go through the port (`grep "\.request(\|requestOnce(" hub/agent-view.ts` finds none). `private get port()` is the port of `this.client` (one per client, kept in a WeakMap so a closure that holds it keeps its connection, as the captured `client` did); `openWorkspaces` and `reviewOverlay` take the port. Not moved, because they are the connection and not calls: `DaemonClient.connectOrStart`, `onClose`, `close`, `isClosed`, and `ensureLive(this.client, …)` (`lib/resume.ts`, takes a client). Ops, arguments, order and error handling are unchanged.
 - `hub/overlay-host.ts`: `OverlayHost { port, theme, say, close, requestRender, attachTo, rows, taskDiff?, taskChanges?, worktreeChange?, hostControl? }`, in its own file: the port is the daemon's, the host is the view's. `AgentView.overlayHost(port)` builds one; no overlay uses it yet. `port` is the whole `RoostPort` (a slice per overlay comes with its move); `rows()` is the view's `ReadonlyMap<string, JobRow>`; `port` is the connection the overlay is opened on (passed in; no overlay opens without one), as the closures held theirs.
-- `Overlay.onEvent?(e)`: called from `AgentView.onEvent` for every pushed event after the view took it in (a throw is swallowed). `wsReload` stays; M72 moves it onto `onEvent`.
+- `Overlay.onEvent?(e)`: called from `AgentView.onEvent` for each pushed event the view takes in, after it did (a job event the view's `cwdFilter` drops is not passed on; a throw is swallowed). `wsReload` stays; M72 moves it onto `onEvent`.
 - Tests: `test/agent-view.test.ts` (83) and the other hub tests pass unchanged: `FakeClient` fakes `DaemonClient`, which the adapter wraps. New: `test/roost-port.test.ts` (54: every method's op, args and result, subscribe order, request ids, a lost reply resent with the same id on `via`'s client, a refusal not resent) and `test/support/roost-port.ts` (`fakePort(answers)`: an in-memory `RoostPort` recording calls by path), for the overlay tests of M72–M74.
+
+### After review (M71)
+
+- `reply` and `dispatch` were sent through `this.port`, which is `undefined` while the view
+  makes its connection again: a send after an await (the marked rows' replies, a fan-out's
+  dispatches) threw instead of waiting (M51). They now go through `sends(via)` (in
+  `hub/roost-port.ts`), which holds no connection: each try takes the live one, as
+  `requestOnce` did before. A test loses the connection between two marked replies; the
+  second waits and goes (it fails with the port's call).
