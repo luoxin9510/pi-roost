@@ -49,3 +49,17 @@ help, rename); and `AgentViewOptions` is 45 flat fields that the two adapters
   its digit; the list's keys in a peek and in the list), taken before the change and unchanged
   after; one test of the answer waiting behind a picker. Mutation: `listKey` called in a peek,
   or never; the help not closed; the answer waiting for an overlay only: each fails a test.
+
+### After review (M79)
+
+- The concierge's answer was lost when a picker's pick opened the picker again (bare
+  `/fanout`): closing the picker opened the waiting answer, and the pick's new picker replaced
+  it at once. An answer replaced by a layer opened after it now waits again (`answerShown`), and
+  opens when that one closes (a test, mutation-checked).
+- A rename replaced by a layer opened after it (an overlay loaded after a key) left the task
+  box without focus: `openLayer` gives it back, as Esc would.
+- `selectRow` is wired in the view; compare's Enter then attaches, which selects the row too,
+  so the view's test pins where the list ends, not which of the two moved it (the overlay's
+  test pins the order: close, select, attach).
+- GLOSSARY: the Layer entry had taken Overlay's `_Avoid_` line.
+

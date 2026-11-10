@@ -3143,6 +3143,44 @@ describe("M79: views and layers, pinned", () => {
 		view.dispose();
 	});
 
+	it("a picker's pick that opens the picker again keeps the concierge's answer waiting (it opens after)", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: {}, name: "concierge", origin: "dispatch" as const };
+		const { view, client } = setup(rowsFor(), { extra: { conciergeLaunch: () => launch } });
+		await view.start();
+		for (const line of ["/concierge on", "/ask what is blocked", "/fanout"]) {
+			type(view, line);
+			view.handleInput("\r");
+			await sleep(20);
+		}
+		expect(view.render(100).join("\n")).toContain("Fan out the next task (0 chosen)");
+		client.emit({ event: "concierge", status: { ...client.concierge, answer: { text: "nothing is blocked.", at: Date.now() } } });
+		view.handleInput("\r"); // picks a model: the list opens again
+		await sleep(20);
+		let screen = view.render(100).join("\n");
+		expect(screen).toContain("Fan out the next task (1 chosen)");
+		expect(screen).not.toContain("  nothing is blocked.");
+		view.handleInput("\x1b");
+		screen = view.render(100).join("\n");
+		expect(screen).toContain("  nothing is blocked.");
+		view.dispose();
+	});
+
+	// selectRow then attachTo, which selects the row too: this pins where the list ends, not which of the two moved it
+	it("compare's Enter leaves the list on its row (OverlayHost.selectRow, then the attach)", async () => {
+		const rows = [row({ id: "a", name: "fix it · one", model: "a/one", fanout: "f1", state: "done" }), row({ id: "b", name: "fix it · two", model: "b/two", fanout: "f1", state: "done" })];
+		const { view } = setup(rows);
+		await view.start();
+		type(view, "/compare");
+		view.handleInput("\r");
+		await sleep(10);
+		view.handleInput("\x1b[C");
+		view.handleInput("\r");
+		await sleep(20);
+		const selected = view.render(100).find((l) => l.startsWith("›"));
+		expect(selected).toContain("fix it · two");
+		view.dispose();
+	});
+
 	it("the list's own keys do nothing in a peek (Ctrl+O mark, Ctrl+F), and do in the list", async () => {
 		const { view } = setup(rowsFor());
 		await view.start();

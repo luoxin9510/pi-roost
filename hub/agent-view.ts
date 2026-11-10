@@ -344,6 +344,8 @@ export class AgentView implements Component {
 	private askTimer: NodeJS.Timeout | undefined;
 	/** An answer that came while another overlay was open: shown once it closes. */
 	private pendingAnswer: string | undefined;
+	/** M79: the concierge's answer on screen: replaced by a layer opened after it, it waits again. */
+	private answerShown: { overlay: Overlay; text: string } | undefined;
 	/** M45: suggestions the user dismissed (Esc), by row and time: the banner skips them. */
 	private dismissed = new Set<string>();
 	/** M47: the task board's counts, as the daemon last said (the header line; /tasks fetches the tasks). */
@@ -386,12 +388,22 @@ export class AgentView implements Component {
 	}
 	/** M79: opens a layer over the view, in place of the one open (if any). */
 	private openLayer(layer: Layer): void {
+		const was = this.layer;
+		// the concierge's answer, replaced (a picker's pick opened another): it opens when that closes
+		if (was?.kind === "overlay" && this.answerShown?.overlay === was.overlay) this.pendingAnswer ??= this.answerShown.text;
+		this.answerShown = undefined;
+		// a rename replaced: its input gives the focus back, as Esc would
+		if (was?.kind === "renaming") {
+			this.renameInput.focused = false;
+			this.input.focused = true;
+		}
 		this.layer = layer;
 	}
 	/** M79: closes the open layer, if it is of this kind (one of another kind opened since stays). */
 	private closeLayer(kind: Layer["kind"]): void {
 		if (this.layer?.kind !== kind) return;
 		this.layer = undefined;
+		this.answerShown = undefined;
 		// M44: the concierge's answer that waited for what was open to close (M79: whatever it was)
 		if (this.pendingAnswer !== undefined) {
 			const answer = this.pendingAnswer;
@@ -1560,7 +1572,9 @@ export class AgentView implements Component {
 	}
 
 	private showAnswer(answer: string): void {
-		this.openLayer({ kind: "overlay", overlay: createAnswerOverlay(this.hostBase(), { answer }) });
+		const overlay = createAnswerOverlay(this.hostBase(), { answer });
+		this.openLayer({ kind: "overlay", overlay });
+		this.answerShown = { overlay, text: answer };
 		this.o.tui.requestRender();
 	}
 
