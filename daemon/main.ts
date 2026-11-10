@@ -53,6 +53,7 @@ import {
 	type WorkerReport,
 	contextFrom,
 	encodeLine,
+	DAEMON_CAPABILITIES,
 	PROTOCOL_VERSION,
 	type ScheduleRow,
 } from "../lib/protocol.ts";
@@ -2280,9 +2281,6 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
 	}
 }
 
-/** M31: what the daemon offers agents beyond report, ack and hello. */
-const DAEMON_CAPABILITIES = ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks", "workspaces"];
-
 /**
  * M31: an agent's hello. Informational (a report is what proves a job): the daemon keeps
  * what the agent can do and answers with its own protocol and capabilities. A newer
@@ -2294,7 +2292,7 @@ function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabili
 	const name = (str(a.name) ? oneLineText(a.name, 64) : "") || "unknown";
 	const caps = Array.isArray(args.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
 	conn.hello = { name, version: str(a.version) ? a.version.slice(0, 40) : null, capabilities: caps };
-	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: DAEMON_CAPABILITIES };
+	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: [...DAEMON_CAPABILITIES] };
 }
 
 /** M36: request ids a job's replies came with, the last 100 (a resend comes soon after). */

@@ -11,6 +11,7 @@
 // a second guard of its own: it keeps a command out of a session's input, not a caller out
 // of an op.
 import type { Op } from "./protocol.ts";
+import { ORDER_ACTIONS, TASK_ACTIONS } from "./protocol-schema.ts";
 
 export type Caller =
 	| { kind: "person" }
@@ -47,8 +48,8 @@ export interface Policy {
 	unregistered: Rule;
 }
 
-export const TASK_ACTIONS = ["list", "add", "cleanup", "claim", "release", "done", "drop", "assign", "prepare", "start", "merge", "back", "abort", "commit", "approve", "verify", "pass", "comment", "uncomment", "shelve", "pr"] as const;
-export const ORDER_ACTIONS = ["list", "add", "rm", "applied"] as const;
+// The actions are the schemas' (lib/protocol-schema.ts): a new action there needs a row below.
+export { ORDER_ACTIONS, TASK_ACTIONS };
 type Expanded = "task" | "concierge-order";
 export type PolicyKey =
 	| Exclude<Op, Expanded>

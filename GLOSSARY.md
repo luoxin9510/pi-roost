@@ -73,3 +73,13 @@ _Avoid_: dashboard, agent view (the name of the class that is the hub's core)
 **Overlay**:
 A screen the Hub shows in place of its list (workspaces, review, the task board, the concierge, schedules, the log, usage, compare), with its own keys. It is built from a host (the port, the theme, a few verbs) and sees pushed events through `onEvent`; it does not hold the Hub.
 _Avoid_: modal, popup, panel (the subagent panel is another thing)
+
+## The protocol
+
+**Op**:
+One request the daemon answers over its socket (`ping`, `dispatch`, `task`, ...). Each has a schema for its arguments and one for its result (`lib/protocol-schema.ts`), which are the source of its TypeScript types and of its row in the op reference of `docs/protocol.md`. `task`, `concierge`, `concierge-order` and `concierge-act` are one Op with a variant per `action` (or `what`).
+_Avoid_: command (a slash command is the Hub's), endpoint, message (a message is what one Session sends another)
+
+**Capability**:
+A word in a `hello` that says what the sender can do. The daemon's (`DAEMON_CAPABILITIES`) say which ops and deliveries an agent may expect; an agent's (`AGENT_CAPABILITIES`) say what roost may expect of it. Unknown ones are ignored; the lists only grow with a protocol version.
+_Avoid_: feature, flag

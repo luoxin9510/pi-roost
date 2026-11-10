@@ -109,12 +109,12 @@ other clients (`locked`, `limit`, `rate_limited`, ...) are not for agents.
 
 ```json
 {"op": "hello", "args": {"protocol": 1, "agent": {"name": "my-agent", "version": "1.0"}, "capabilities": ["report", "replies"]}}
-→ {"protocol": 1, "daemon": {"name": "roost", "version": "0.1.11"}, "capabilities": ["replies", "steer", "agent-items", "peers", "spawn", "handback"]}
+→ {"protocol": 1, "daemon": {"name": "roost", "version": "0.1.11"}, "capabilities": ["replies", "steer", "agent-items", "peers", "spawn", "handback", "events", "watch", "tasks", "workspaces"]}
 ```
 
 On every new connection, before the first report. `protocol` is the highest version
 the agent speaks; the daemon answers with its own (it may be lower: the agent decides
-whether to go on). A daemon from before M31 answers `bad_request` (unknown op): go on
+whether to go on; the [op reference](#op-reference) lists the daemon's capabilities). A daemon from before M31 answers `bad_request` (unknown op): go on
 with version 1 behaviour. The capabilities the agent names are kept with the job (rows
 show them) and say what roost may expect:
 
@@ -405,6 +405,1263 @@ after?})`; the Python one `request(op, args, timeout)` (after the first `report(
 which makes the connection; a refusal is a `RoostError` with `code`, `disconnected`
 when the connection was lost meanwhile; `TimeoutError` after `timeout`) and `tasks()
 / claim_task / task_done / release_task / add_task`. See `docs/plans/m47-tasks.md`.
+
+## Op reference
+
+<!-- op-reference:start -->
+
+Generated from `lib/protocol-schema.ts`, `lib/callers.ts` and `lib/protocol.ts` by `npm run docs:protocol`; do not edit between the markers.
+
+Protocol version 1. Types: `string`, `number`, `integer`, `boolean`, `null`, `T[]`, `Record<string, T>`, `{ field?: T }` (`?`: optional), a quoted value. A type named after another module's interface (`BoardTask`, `RoostEvent`, `ConciergeStatus`, `StandingOrder`, `UsageInfo`, `PrInfo`) is described there. A limit is what the daemon does with the value today: some are refused (`bad_request`, `too_long`), some cut.
+
+### Capabilities
+
+Daemon (`hello` answers with these, in this order):
+
+| Capability | |
+|---|---|
+| `replies` | takes the user's replies for the agent (`deliver`, `ack`) |
+| `steer` | honours `mode: "steer"` on a reply |
+| `agent-items` | delivers peer messages, reports, notices and digests |
+| `peers` | `peers`, `send` |
+| `spawn` | `spawn` |
+| `handback` | `handback` |
+| `events` | `events` |
+| `watch` | `watch` |
+| `tasks` | `task` (the shared board) |
+| `workspaces` | a task's own worktree and its stages (`task` prepare, start, merge, ...) |
+
+Agent (named in the agent's `hello`):
+
+| Capability | The agent ... |
+|---|---|
+| `report` | sends reports (every agent of this protocol) |
+| `replies` | takes replies and acks them |
+| `steer` | honours `mode: "steer"` on a reply |
+| `usage` | fills `usage` in its reports |
+| `context` | fills `context` in its reports |
+| `model-switch` | takes `/model` and `/thinking` replies |
+| `transcript` | has a transcript roost can show |
+| `peers` | uses the agent-to-agent ops |
+| `agent-items` | takes peer messages, reports, notices and digests as deliveries |
+
+### Shared shapes
+
+#### `DispatchArgs`
+
+A session to start (dispatch, spawn, a schedule's launch, a task's start).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `kind` | `"pi" \| "shell"` | no |  | DI-6: "shell" runs `command` without pi (no session file). |
+| `cwd` | `string` | yes |  |  |
+| `sessionFile` | `string` | yes |  |  |
+| `command` | `string[]` | yes |  |  |
+| `env` | `Record<string, string>` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `model` | `string` | no |  |  |
+| `thinking` | `string` | no |  |  |
+| `agent` | `string` | no |  | M18: the agent (pi-subagents definition) the session runs as. |
+| `workspaceEnv` | `"shell" \| "direnv" \| "off"` | no |  | M20: how the worker's environment follows its workspace (absent: as carried). |
+| `envDeny` | `string[]` | no |  | M20: names (or `PREFIX*`) a workspace's environment may not set. |
+| `envForce` | `string[]` | no |  | M20: names that pass envDeny (envAllowList). |
+| `origin` | `"bg" \| "dispatch" \| "adopt" \| "fork"` | yes |  |  |
+| `piVersion` | `string` | no |  |  |
+| `worktree` | `{ path: string, branch: string, repo: string, base: string }` | no |  | M10: the worktree the dispatching side made for this session (cwd is inside it). |
+| `fanout` | `string` | no |  | M26: one task, several models: the id the sessions share. |
+| `profile` | `string` | no |  | M30: a level 0 agent from this profile (kind "shell"). |
+| `term` | `{ submit: string, settleMs: number, waiting?: string, working?: string, typeTask?: string }` | no |  |  |
+| `resumeCommand` | `string[]` | no |  | M30: the argv that reopens it, when the profile has one. |
+| `taskInArgv` | `boolean` | no |  | M30: the first task is in its argv (it has been given something to do). |
+| `resumable` | `boolean` | no |  | M40: a profile with `resume`: a run of it cut short can carry on (autoResume). |
+| `protocol` | `boolean` | no |  | M31: a profile's agent that speaks the roost agent protocol. |
+| `requestId` | `string` | no |  | M36: a resend with the same id returns the job the first one made. |
+
+#### `HelloArgs`
+
+M31: an agent says which protocol and capabilities it has, before it reports.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `protocol` | `integer` | yes |  | The highest protocol version the agent speaks. |
+| `agent` | `{ name: string, version?: string }` | no |  |  |
+| `capabilities` | `string[]` | no |  | What the agent can do (AGENT_CAPABILITIES); unknown ones are ignored. |
+
+#### `HelloResult`
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `protocol` | `integer` | yes |  |  |
+| `daemon` | `{ name: "roost", version: string }` | yes |  |  |
+| `capabilities` | `string[]` | yes |  | What the daemon offers agents (the ops beyond report, ack and hello): DAEMON_CAPABILITIES. |
+
+#### `HandbackArgs`
+
+M9, on a worker connection: the run it was spawned for (or a user turn) ended.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `state` | `"done" \| "blocked" \| "failed"` | yes |  |  |
+| `result` | `string \| null` | yes |  |  |
+| `question` | `string \| null` | yes |  |  |
+| `error` | `string \| null` | yes |  |  |
+
+#### `WorkerReport`
+
+What a worker reports about itself (full snapshot every time).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `state` | `"working" \| "blocked" \| "done" \| "failed"` | yes |  |  |
+| `status` | `"busy" \| "waiting" \| "idle"` | yes |  |  |
+| `waitingFor` | `"dialog" \| "question" \| "first-prompt" \| null` | yes |  |  |
+| `summary` | `string \| null` | yes |  |  |
+| `question` | `string \| null` | yes |  |  |
+| `choices` | `string[]` | yes |  |  |
+| `tool` | `string \| null` | yes |  |  |
+| `error` | `string \| null` | yes |  |  |
+| `name` | `string \| null` | yes |  |  |
+| `model` | `string \| null` | yes |  |  |
+| `thinking` | `string \| null` | no |  | M8; absent from workers before 0.1.5. |
+| `context` | `ContextInfo \| null` | no |  | M8: how full the session's context window is (pi's ctx.getContextUsage()). |
+| `usage` | `UsageInfo \| null` | no |  | M24: absent from workers before 0.1.11. |
+| `attachSignal` | `boolean` | no |  | The worker reacts to the host's SIGUSR2 attach signal (AT-5). |
+| `attachRepaint` | `boolean` | no |  | M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21). |
+| `agentItems` | `boolean` | no |  | M9: the worker takes agent messages and reports (custom messages, per-item acks). |
+| `remoteAt` | `number` | no |  | M11: when a phone (pi-mobile) last acted on this session (ms epoch): it is in use. |
+| `prLinks` | `string[]` | no |  | M16: pull request URLs the session linked (gh output, branch lookups). |
+
+#### `JobRow`
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `cwd` | `string` | yes |  |  |
+| `kind` | `"pi" \| "shell"` | yes |  |  |
+| `startedAt` | `number` | yes |  |  |
+| `state` | `"working" \| "blocked" \| "done" \| "failed" \| "stopped"` | yes |  |  |
+| `pid` | `number \| null` | yes |  |  |
+| `status` | `"busy" \| "waiting" \| "idle" \| null` | yes |  |  |
+| `waitingFor` | `"dialog" \| "question" \| "first-prompt" \| null` | yes |  |  |
+| `sessionFile` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `endedAt` | `number \| null` | yes |  |  |
+| `summary` | `string \| null` | yes |  | Row text: a status sentence while working, the result or question after. |
+| `question` | `string \| null` | yes |  |  |
+| `choices` | `string[]` | yes |  |  |
+| `model` | `string \| null` | yes |  |  |
+| `thinking` | `string \| null` | yes |  | M8: the worker's thinking level (or the one it was started with). |
+| `context` | `ContextInfo \| null` | yes |  | M8: context window use as last reported; null for shell jobs and before the first report. |
+| `usage` | `UsageInfo \| null` | no |  | M24: what the session spent, as last reported (absent before it reports, or from older workers). |
+| `error` | `string \| null` | yes |  |  |
+| `stateSince` | `number` | yes |  | When the job entered its current state (for "waiting 3m"). |
+| `reaped` | `boolean` | yes |  | DM-4: stopped for idleness; attaching or replying starts it again. |
+| `pinned` | `boolean` | yes |  | AV-K7: listed first and never reaped. |
+| `order` | `number \| null` | yes |  | AV-K13: the user's position within its group, or null when never moved. |
+| `orderKey` | `string \| null` | yes |  | The section the order belongs to (a state group or `dir:<cwd>`); stale elsewhere. |
+| `parentSession` | `string \| null` | no |  | M9: the session that spawned this one (roost_spawn). |
+| `rootSession` | `string \| null` | no |  | M9: its spawn tree's root. |
+| `parentOpen` | `boolean` | no |  | M13: someone holds the parent session now (a foreground pi, or a job recorded for it). |
+| `agent` | `string \| null` | no |  | M18: the agent it runs as. |
+| `prs` | `PrInfo[]` | no |  | M16: the session's pull requests as gh last reported them. |
+| `worktree` | `{ path: string, branch: string, base?: string } \| null` | no |  | M10: the session's own git worktree (M26: and the commit it started from). |
+| `fanout` | `string \| null` | no |  | M26: the sessions started together for one task with several models share this id. |
+| `profile` | `string` | no |  | M29: the agent that runs it: "pi", "shell", or (M30) the name of the user's agent profile. |
+| `schedule` | `string \| null` | no |  | M39: the schedule that started it. |
+| `capabilities` | `string[]` | no |  | M31: what its agent said it can do in its hello (absent: it never said). |
+| `role` | `"concierge" \| null` | no |  | M44: the hub's own agent (not listed as a session; the hub shows its status line). |
+| `suggested` | `{ text: string, why: string \| null, at: number } \| null` | no |  | M45: the concierge's suggested answer for a row that waits for one (the hub sends it with one key). |
+| `task` | `string \| null` | no |  | M48: the task it was started on (one line, at most 200 characters). |
+| `queued` | `number` | no |  | M48: user replies waiting for it. |
+
+#### `PeerRow`
+
+M9: a session an agent may message (roost_agents).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `relation` | `"parent" \| "child" \| "sibling" \| "tree" \| "external"` | yes |  |  |
+| `role` | `"job" \| "foreground"` | yes |  |  |
+| `state` | `"working" \| "blocked" \| "done" \| "failed" \| "stopped" \| "live"` | yes |  |  |
+| `status` | `"busy" \| "waiting" \| "idle" \| null` | yes |  |  |
+| `waitingFor` | `"dialog" \| "question" \| "first-prompt" \| null` | yes |  |  |
+| `summary` | `string \| null` | yes |  |  |
+| `question` | `string \| null` | yes |  |  |
+| `cwd` | `string` | yes |  |  |
+
+#### `SendResult`
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `outcome` | `"delivered" \| "queued" \| "started" \| "stopped" \| "not running" \| "duplicate"` | yes |  | delivered: handed to the running session; queued: it is busy starting; started: it was ended and starts again; duplicate (M43): the same text went to it a moment ago, not sent again |
+| `id` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+| `relation` | `"parent" \| "child" \| "sibling" \| "tree" \| "external"` | yes |  |  |
+| `dialog` | `boolean` | no |  | The target is waiting on a dialog; the message waits until it is answered. |
+
+#### `ScheduleRow`
+
+M39: a schedule as the hub and the CLI show it.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `name` | `string` | yes |  |  |
+| `when` | `string` | yes |  |  |
+| `task` | `string \| null` | yes |  |  |
+| `agent` | `string` | yes |  | M40: what each run is: "pi", "shell" (a command) or a profile's name. |
+| `cwd` | `string` | yes |  |  |
+| `model` | `string \| null` | yes |  |  |
+| `paused` | `boolean` | yes |  |  |
+| `catchUp` | `boolean` | yes |  |  |
+| `nextAt` | `number \| null` | yes |  |  |
+| `lastRunAt` | `number \| null` | yes |  |  |
+| `lastJob` | `string \| null` | yes |  |  |
+| `lastSkip` | `{ at: number, why: string } \| null` | yes |  |  |
+
+#### `DaemonStatus`
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `pid` | `number` | yes |  |  |
+| `version` | `string` | yes |  |  |
+| `socketDir` | `string` | yes |  |  |
+| `liveJobs` | `number` | yes |  |  |
+| `totalJobs` | `number` | yes |  |  |
+| `ptyError` | `string \| null` | yes |  |  |
+| `startedAt` | `number` | yes |  |  |
+
+#### `ContextInfo`
+
+M8: how full the session's context window is (pi's ctx.getContextUsage()).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `tokens` | `number \| null` | yes |  | Estimated tokens in context; null right after a compaction, until the next reply. |
+| `window` | `number` | yes |  |  |
+| `percent` | `number \| null` | yes |  | 0-100; null when tokens is unknown. |
+
+### Ops
+
+### `ping`
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+No fields.
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `pid` | `number` | yes |  |
+| `version` | `string` | yes |  |
+
+### `schedules`
+
+M39: scheduled tasks.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+No fields.
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `schedules` | `ScheduleRow[]` | yes |  |
+
+### `schedule-add`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `name` | `string` | yes |  |  |
+| `when` | `string` | yes |  |  |
+| `launch` | `DispatchArgs` | yes |  | A session to start (dispatch, spawn, a schedule's launch, a task's start). |
+| `task` | `string` | no |  |  |
+| `catchUp` | `boolean` | no |  |  |
+
+Result:
+
+`ScheduleRow` (see shared shapes).
+
+### `schedule-rm`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `name` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `name` | `string` | yes |  |
+
+### `schedule-pause`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `name` | `string` | yes |  |  |
+| `paused` | `boolean` | yes |  |  |
+
+Result:
+
+`ScheduleRow` (see shared shapes).
+
+### `schedule-run`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `name` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `name` | `string` | yes |  |
+| `id` | `string` | yes |  |
+
+### `hello`
+
+M31: an agent says which protocol and capabilities it has, before it reports.
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+`HelloArgs` (see shared shapes).
+
+Result:
+
+`HelloResult` (see shared shapes).
+
+### `list`
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `all` | `boolean` | no |  |  |
+| `cwd` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `jobs` | `JobRow[]` | yes |  |
+
+### `dispatch`
+
+A session to start (dispatch, spawn, a schedule's launch, a task's start).
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+`DispatchArgs` (see shared shapes).
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+
+### `stop`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+
+### `rm`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `worktree` | `{ path: string, branch: string, removed: boolean, branchKept: boolean, reason?: string }` | no | M10: what happened to the session's worktree. |
+
+### `resolve`
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `query` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+
+### `status`
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+No fields.
+
+Result:
+
+`DaemonStatus` (see shared shapes).
+
+### `shutdown`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `keepWorkers` | `boolean` | no |  |  |
+
+Result:
+
+No fields.
+
+### `subscribe`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+No fields.
+
+Result:
+
+No fields.
+
+### `report`
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `token` | `string` | yes |  |  |
+| `report` | `WorkerReport` | yes |  | What a worker reports about itself (full snapshot every time). |
+
+Result:
+
+No fields.
+
+### `reply`
+
+M28: a reply to a working session steers into its current work (pi's Enter) or waits for it to finish (Alt+Enter); absent: waits.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `text` | `string` | yes |  |  |
+| `mode` | `"steer" \| "followUp"` | no |  | "steer" joins the work under way, after its current tool calls; "followUp" waits until it is done |
+| `requestId` | `string` | no | 1-64 chars | M36: makes a resend safe: the same id is taken once (the first answer is given again). |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `delivered` | `boolean` | yes | handed to the live worker |
+| `saved` | `boolean` | yes | kept for its next start (PK-5) |
+| `stopped` | `boolean` | no |  |
+| `respawned` | `boolean` | no |  |
+| `error` | `string` | no |  |
+| `duplicate` | `boolean` | no |  |
+
+### `ack`
+
+Worker to daemon: the reply with this seq was handed to pi (exact: only that agent item).
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `token` | `string` | yes |  |  |
+| `seq` | `integer` | yes |  |  |
+| `exact` | `boolean` | no |  |  |
+
+Result:
+
+No fields.
+
+### `respawn`
+
+Start an ended job again from its session file; `restart` also restarts a live one.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | no |  |  |
+| `all` | `boolean` | no |  |  |
+| `restart` | `boolean` | no |  |  |
+| `prompt` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `results` | `{ id: string, started: boolean, error?: string }[]` | yes |  |
+
+### `pin`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `pinned` | `boolean` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `pinned` | `boolean` | yes |  |
+
+### `rename`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `name` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+
+### `reorder`
+
+AV-K13: these jobs, in this order (the rest of their group keeps its place).
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `ids` | `string[]` | yes |  |  |
+| `key` | `string` | yes |  |  |
+
+Result:
+
+No fields.
+
+### `peer_register`
+
+M9: a foreground pi joins as a peer on this connection.
+
+Callers: Person, Concierge, Session, Unregistered agent. Refused: none.
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `session` | `string` | no |  |  |
+| `name` | `string` | yes |  |  |
+| `cwd` | `string` | yes |  |  |
+| `pid` | `integer` | yes |  | The pid that owns the session's writer lock. |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+
+### `peers`
+
+M9, on a peer connection: the sessions this peer may message.
+
+Callers: Concierge, Session. Refused: Person (`unauthorized`), Unregistered agent (`unauthorized`).
+
+Args:
+
+No fields.
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `peers` | `PeerRow[]` | yes |  |
+
+### `send`
+
+Callers: Concierge, Session. Refused: Person (`unauthorized`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `to` | `string` | yes |  | A session's id or name (`peers` lists them). |
+| `message` | `string` | yes | <= 8000 chars |  |
+
+Result:
+
+`SendResult` (see shared shapes).
+
+### `spawn`
+
+Callers: Concierge, Session. Refused: Person (`unauthorized`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `launch` | `DispatchArgs` | yes |  | A session to start (dispatch, spawn, a schedule's launch, a task's start). |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+
+### `handback`
+
+M9, on a worker connection: the run it was spawned for (or a user turn) ended.
+
+Callers: Concierge, Session (background only). Refused: Person (`unauthorized`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args:
+
+`HandbackArgs` (see shared shapes).
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `routed` | `boolean` | yes |  |
+
+### `peer_ack`
+
+M9, on a foreground peer connection: the report with this ref reached pi.
+
+Callers: Session (foreground only). Refused: Person (`unauthorized`), Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `ref` | `string` | yes |  |  |
+
+Result:
+
+No fields.
+
+### `events`
+
+M43: the event feed (what happened), with a cursor: `after` the seq last seen.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `after` | `integer` | no |  |  |
+| `limit` | `integer` | no |  |  |
+| `id` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `events` | `RoostEvent[]` | yes |  |
+| `cursor` | `number` | yes |  |
+
+### `watch`
+
+M43, on a peer connection: tell me once when that session is next idle (done, or waiting for an answer) or has ended.
+
+Callers: Concierge, Session. Refused: Person (`unauthorized`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `when` | `"idle" \| "ended"` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+| `when` | `"idle" \| "ended"` | yes |  |
+| `fired` | `boolean` | yes | It was already so; the notice went out at once. |
+
+### `concierge`
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args: one of these, by `action`.
+
+#### `concierge` action "on"
+
+Start it (a pi launch the hub built), or the job it had.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"on"` | yes |  |  |
+| `launch` | `DispatchArgs` | no |  | A session to start (dispatch, spawn, a schedule's launch, a task's start). |
+
+#### `concierge` action "off"
+
+Stop it.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"off"` | yes |  |  |
+
+#### `concierge` action "status"
+
+How it stands.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"status"` | yes |  |  |
+
+#### `concierge` action "answer"
+
+M45: set the policy's answer.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"answer"` | yes |  |  |
+| `answer` | `"never" \| "routine" \| "always"` | yes |  |  |
+
+#### `concierge` action "act"
+
+M45: set the policy's act.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"act"` | yes |  |  |
+| `act` | `boolean` | yes |  |  |
+
+#### `concierge` action "undo"
+
+M45: withdraw the last answer it gave a session.
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"undo"` | yes |  |  |
+
+Result:
+
+No fields.
+
+### `concierge-ask`
+
+M44, from the hub: a question for the concierge (`? ...`); its answer comes as a `concierge` event.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `text` | `string` | yes |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+
+### `concierge-say`
+
+M44, on the concierge's own connection: what it tells the user (hub_notify), or its answer to a question.
+
+Callers: Concierge. Refused: Person (`unauthorized`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `kind` | `"info" \| "need" \| "answer"` | yes |  |  |
+| `text` | `string` | yes |  |  |
+
+Result:
+
+No fields.
+
+### `concierge-policy`
+
+M45, on the concierge's connection: the policy in force (which of its tools it may use).
+
+Callers: Concierge. Refused: Person (`unauthorized`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args:
+
+No fields.
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `answer` | `"never" \| "routine" \| "always"` | yes |  |
+| `act` | `boolean` | yes |  |
+
+### `concierge-suggest`
+
+M45, on the concierge's connection: the answer it would give a session that waits for one, and why.
+
+Callers: Concierge. Refused: Person (`unauthorized`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `text` | `string` | yes |  |  |
+| `why` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+
+### `concierge-reply`
+
+M45, on the concierge's connection: an answer in the user's place; refused (`policy`) unless the policy allows.
+
+Callers: Concierge. Refused: Person (`unauthorized`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args:
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `id` | `string` | yes |  |  |
+| `text` | `string` | yes |  |  |
+| `why` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+
+### `concierge-act`
+
+Callers: Concierge. Refused: Person (`unauthorized`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+Args: one of these, by `what`.
+
+#### `concierge-act` what "stop" or "respawn"
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `what` | `"stop" \| "respawn"` | yes |  |  |
+| `id` | `string` | yes |  |  |
+| `why` | `string` | no |  |  |
+
+#### `concierge-act` what "dispatch"
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `what` | `"dispatch"` | yes |  |  |
+| `launch` | `DispatchArgs` | yes |  | A session to start (dispatch, spawn, a schedule's launch, a task's start). |
+| `why` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `name` | `string` | yes |  |
+
+### `concierge-order`
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+Args: one of these, by `action`.
+
+#### `concierge-order` action "add"
+
+Keep one (the hub's or the concierge's connection).
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"add"` | yes |  |  |
+| `text` | `string` | yes | <= 500 chars |  |
+| `when` | `string` | no |  | M39's vocabulary (`every 30m`, `daily 18:00`, `weekdays 09:00`, `cron "..."`). |
+
+#### `concierge-order` action "rm"
+
+Drop one (the hub's; the concierge's own only).
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"rm"` | yes |  |  |
+| `id` | `integer` | yes |  |  |
+
+#### `concierge-order` action "list"
+
+List them.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"list"` | yes |  |  |
+
+#### `concierge-order` action "applied"
+
+Mark one applied (the concierge's).
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"applied"` | yes |  |  |
+| `id` | `integer` | yes |  |  |
+| `text` | `string` | no |  |  |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `orders` | `StandingOrder[]` | yes |  |
+| `order` | `StandingOrder` | no | The order acted on. |
+
+### `task`
+
+Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`).
+
+Args: one of these, by `action`.
+
+#### `task` action "list"
+
+The lot (done and dropped ones too).
+
+Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"list"` | yes |  |  |
+| `project` | `string` | no |  | M52: a directory in the project's repository (absolute). |
+
+#### `task` action "add"
+
+A new task, open.
+
+Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"add"` | yes |  |  |
+| `title` | `string` | yes | <= 200 chars |  |
+| `detail` | `string` | no | <= 2000 chars |  |
+| `after` | `integer[]` | no |  | Tasks on the board it waits on. |
+| `project` | `string \| null` | no |  |  |
+
+#### `task` action "claim"
+
+A session takes it.
+
+Callers: Session. Refused: Person (`unsupported`), Concierge (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"claim"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "release"
+
+The owner gives it back.
+
+Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"release"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "done"
+
+The owner marks it done.
+
+Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"done"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `result` | `string` | no | <= 2000 chars |  |
+
+#### `task` action "drop"
+
+Takes an open or claimed task off the board.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"drop"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "assign"
+
+Hands an open task to a session (a message there).
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"assign"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `to` | `string` | yes |  | A session's id or unique name. |
+
+#### `task` action "prepare"
+
+M65: the daemon makes the task's worktree and says where.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"prepare"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "start"
+
+M55: starts a session in the prepared worktree.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"start"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `launch` | `DispatchArgs` | yes |  | A session to start (dispatch, spawn, a schedule's launch, a task's start). |
+
+#### `task` action "merge"
+
+M55: merges the task's branch into base, locally.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"merge"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `mode` | `"ff" \| "no-ff"` | no |  |  |
+
+#### `task` action "back"
+
+M55: returns it to working and tells its holder.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"back"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `note` | `string` | no | <= 500 chars |  |
+
+#### `task` action "abort"
+
+M55: gives up a conflicted sync.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"abort"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "commit"
+
+M55: commits what its worktree holds.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"commit"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `message` | `string` | no |  |  |
+
+#### `task` action "approve"
+
+M56: approves the repository's commands.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"approve"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `dry` | `boolean` | no |  | Show the commands only. |
+| `hash` | `string` | no |  |  |
+
+#### `task` action "verify"
+
+M56: runs the verify command again.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"verify"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "pass"
+
+M56: accepts a failure.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"pass"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "comment"
+
+M58: a review comment on a line of the task's diff.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"comment"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `comment` | `{ file: string, line: integer, text: string, lineText?: string, tip?: string }` | yes |  |  |
+
+#### `task` action "uncomment"
+
+M58: withdraws a review comment.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"uncomment"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `comment` | `{ file: string, line: integer, at: number }` | yes |  |  |
+
+#### `task` action "shelve"
+
+M59: removes a clean worktree, keeps the branch.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"shelve"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+
+#### `task` action "cleanup"
+
+M59: removes (dry: lists) worktrees and verify logs left behind. No id.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"cleanup"` | yes |  |  |
+| `dry` | `boolean` | no |  | List only. |
+
+#### `task` action "pr"
+
+M60: pushes the branch and opens a pull request.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"pr"` | yes |  |  |
+| `id` | `integer` | yes |  | a task's id (a positive integer) |
+| `dry` | `boolean` | no |  | Say what it would do and the tip as `hash`. |
+| `hash` | `string` | no |  | The tip shown by the dry run. |
+
+Result:
+
+| Field | Type | Required | |
+|---|---|---|---|
+| `tasks` | `BoardTask[]` | yes | M47: the board as it stands. |
+| `task` | `BoardTask` | no | The task acted on. |
+| `sent` | `"delivered" \| "queued" \| "started" \| "stopped" \| "not running" \| "duplicate"` | no | How the hand-over message went. |
+| `job` | `{ id: string, name: string }` | no |  |
+| `note` | `string` | no |  |
+| `hash` | `string` | no |  |
+| `workspace` | `{ path: string, branch: string, baseRef: string, baseSha: string, sourceDirty?: boolean }` | no |  |
+
+<!-- op-reference:end -->
 
 ## Conformance
 

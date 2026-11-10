@@ -12,7 +12,7 @@ not the daemon's (10).
 
 1. **Scope**: one schema per op is the source of its runtime check, its TS type and its row
    in the doc's op reference. No SDK code generation.
-2. **typebox**, made a pinned dependency (the daemon and the standalone hub run without pi).
+2. **Our own schema module** (`lib/schema.ts`, no dependencies). (changed 2026-11-10: typebox was first chosen as a pinned dependency; pi's docs forbid host-provided packages in `dependencies` and the installed package has no typebox, so the daemon, a separate node process importing `lib/protocol.ts`, would crash. typebox stays a peer and dev dependency for `adapters/pi` only.)
 3. **One source**: `lib/protocol-schema.ts`; `OpArgs`, `OpResults`, `ArgsOf`, `ResultOf`
    derived from it (`Static`), the hand-written types removed.
 4. **Behaviour unchanged**: the schemas check shape (types, required, lengths) at `handle()`'s
@@ -39,3 +39,11 @@ not the daemon's (10).
 11. **Results**: schemas for types and the doc; not checked at run time.
 12. **GLOSSARY**: Op, Capability (M75).
 13. Started at once; each milestone branch → pull request → independent review → merge.
+
+## M75, as done
+
+- `lib/schema.ts` (166 lines, no dependencies): `obj`, `optional`, `str({min,max,pattern})`, `num({int,min,max})`, `bool`, `nul`, `nullable`, `literal`, `oneOf` (string enum), `union` (plain or discriminated), `arr({min,max})`, `rec`, `opaque<T>(title, description)`, `unknown`, `Infer<S>` and `check(schema, value)` (first failure's path and message; a schema's `message` is the hand check's exact text, for M76). A schema is a plain JSON-Schema-shaped object, so the doc generator reads it and pi's tools can pass it to typebox's `Type.Unsafe` in the adapters. `check` is tested (`test/schema.test.ts`, mutation-checked: 48 of 48 caught) but not used by the daemon yet.
+- `lib/protocol-schema.ts` (about 420 lines): a schema per op's arguments (`ArgSchemas`) and result (`ResultSchemas`), 39 ops (the text above says 38). `task` (21 actions), `concierge` (6), `concierge-order` (4) are unions on `action`; `concierge-act` on `what`; `DispatchArgs` is one schema used by `dispatch`, `spawn`, `schedule-add`, `concierge on`, `concierge-act dispatch` and `task start`. Types come from `Infer<>`: `OpArgs`, `OpResults`, `JobRow`, `PeerRow`, `SendResult`, `HandbackArgs`, `WorkerReport`, `DispatchArgs`, `DaemonStatus`, `Hello*`, `ScheduleRow`, `ContextInfo` and the small enums; `lib/protocol.ts` re-exports them and no hand-written copy is left. `tsc` was clean with no change outside imports.
+- Types owned by other modules (`BoardTask`, `RoostEvent`, `ConciergeStatus`, `StandingOrder`, `UsageInfo`, `PrInfo`) are `opaque<T>` schemas named in the doc, not field by field. Not exact: `concierge-policy`'s args are `{}` (were `Record<string, never>`). Limits (`MESSAGE_MAX`, `TASK_TITLE_MAX`, `TASK_TEXT_MAX`, `TASK_NOTE_MAX`, `ORDER_TEXT_MAX`, `requestId` 1-64) are imported constants, documentation only until M76; some are cut by the daemon, not refused.
+- `TASK_ACTIONS`, `ORDER_ACTIONS` derive from the unions (the schema's order); `lib/callers.ts` re-exports them. `DAEMON_CAPABILITIES` is in `lib/protocol.ts` (`as const`, same values and order).
+- `scripts/protocol-doc.ts` (`npm run docs:protocol`) writes the "Op reference" between markers in `docs/protocol.md`: capabilities, shared shapes, each op with its callers (from `POLICY`), args and result. `test/protocol-doc.test.ts` fails when stale, checks the Python SDK, and asserts no file under `lib/`, `daemon/`, `hub/`, `host/` imports typebox.
