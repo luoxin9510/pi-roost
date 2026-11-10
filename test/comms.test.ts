@@ -1906,6 +1906,44 @@ describe("M56: verify before review, setup before the session", () => {
 		await waitFor(async () => !(await hub.request("list", {})).jobs.some((j) => j.name === `verify #${t.id}`));
 	});
 
+	it("end to end, a real Verify that fails: its exit code and the end of its output go back to the session (the rules: test/workspace.test.ts)", async () => {
+		const hub = await startDaemon();
+		const r = repo("v2", { verify: "echo boom; exit 3", maxRounds: 2 });
+		const { t, w, res } = await start(hub, r, "flaky");
+		await approveShown(hub, t.id);
+		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === res.job!.id)?.pid);
+		const s = await worker(res.job!.id);
+		writeFileSync(join(w.path, "b.txt"), "b\n");
+		git(w.path, "add", ".");
+		git(w.path, "commit", "-qm", "b");
+		await s.c.request("task", { action: "done", id: t.id });
+		const back = await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes("failed (exit 3)")));
+		expect(back.text).toContain("The end of its output:\n\nboom\n");
+		expect(await stageOf(hub, t.id)).toMatchObject({ stage: "working", verify: { ok: false, rounds: 1 } });
+	});
+
+	it("end to end, a real setup job: it runs in the new worktree before the session starts; a failing one stops the task", async () => {
+		const hub = await startDaemon();
+		const r = repo("v3", { setup: "echo set > setup-ran.txt" });
+		const t0 = (await hub.request("task", { action: "add", title: "approve first", project: r })).task!;
+		await approveShown(hub, t0.id);
+		const { t, w, res } = await start(hub, r, "with setup");
+		expect(res.job).toBeUndefined();
+		expect(res.note).toContain("setting up");
+		const owner = await waitFor(async () => (await hub.request("task", { action: "list" })).tasks.find((x) => x.id === t.id)?.owner);
+		expect(existsSync(join(w.path, "setup-ran.txt"))).toBe(true);
+		expect((await hub.request("list", {})).jobs.find((j) => j.id === owner!.id)?.name).toBe(`t${t.id}`);
+		const r2 = repo("v4", { setup: "exit 9" });
+		const t1 = (await hub.request("task", { action: "add", title: "approve", project: r2 })).task!;
+		await approveShown(hub, t1.id);
+		const bad = await start(hub, r2, "bad setup");
+		const failed = await waitFor(async () => {
+			const x = await stageOf(hub, bad.t.id);
+			return x?.stage === "failed" && x;
+		});
+		expect(failed.note).toContain("setup failed (exit 9)");
+	});
+
 	it("the commands changed between showing and approving: refused; a drop while verifying stops the verify; a timeout fails it", async () => {
 		const hub = await startDaemon();
 		const r = repo("v5", { verify: "sleep 30", verifyTimeout: 1, maxRounds: 1 });

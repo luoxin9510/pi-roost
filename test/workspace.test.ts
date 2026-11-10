@@ -573,28 +573,38 @@ describe("M66: the Workspace's rules, in process", () => {
 		expect(s.t.workspace?.verify).toBeUndefined();
 	});
 
-	it("a restart finds a Verify with no job: review, not verified (interrupted); a queued one too", async () => {
+	it("a restart finds a Verify with no run: review, not verified (interrupted), a queued one too; an interrupted setup fails; the jobs left behind are stopped and removed", async () => {
 		const r = repo({ verify: "check" });
 		const board = new Map<number, BoardTask>();
 		const first = world(undefined, undefined, board);
 		await approveShown(first, newTask(9, r));
-		const verifying = new Map<number, Awaited<ReturnType<typeof startTask>>>();
 		for (const id of [1, 2, 3]) {
 			const s = await startTask(first, r, id, `t${id}`);
 			commitIn(s.path, `f${id}.txt`);
 			await first.ws.done(s.session, s.t, "x");
-			verifying.set(id, s);
 		}
 		expect(board.get(1)!.workspace?.stage).toBe("verifying");
 		expect(board.get(3)!.workspace?.note).toBe("queued");
-		// the daemon restarts: a new module over the same board, its jobs gone
+		// a task setting up when the daemon stopped
+		const r2 = repo({ setup: "make deps" });
+		await approveShown(first, newTask(8, r2));
+		const st = newTask(4, r2);
+		board.set(4, st);
+		const p = (await first.ws.act(person, st, "prepare", {})).workspace!;
+		await first.ws.act(person, st, "start", { launch: launchIn(p.path) });
+		expect(st.workspace?.note).toMatch(/^setting up/);
+		// the daemon restarts: a new module over the same board; the old jobs are still in its records
 		const second = world(undefined, undefined, board);
+		const [v1, v2] = first.shells("verifyOf");
+		const setup = first.shells("setupOf").at(-1)!;
+		second.commands.push({ id: v1!.id, verifyOf: 1, running: true }, { id: v2!.id, verifyOf: 2, running: false }, { id: setup.id, setupOf: 4, running: true });
 		second.ws.settle();
 		for (const id of [1, 2, 3]) expect(board.get(id)!.workspace).toMatchObject({ stage: "review", note: "not verified (interrupted)" });
-		// the queued one is not started by the old module's ending jobs
-		first.ws.commandEnded(first.shells().at(0)!.id, { verifyOf: 1 }, 0);
-		await tick();
-		expect(board.get(3)!.workspace?.stage).toBe("review");
+		expect(st.workspace).toMatchObject({ stage: "failed", note: "setup interrupted: /tasks start again" });
+		await eventually(() => expect(second.removed.sort()).toEqual([v1!.id, v2!.id, setup.id].sort()));
+		expect(second.stopped.sort()).toEqual([v1!.id, setup.id].sort()); // only the ones still running
+		// the queued one is not started: nothing in the new module runs a Verify
+		expect(second.shells("verifyOf")).toHaveLength(0);
 	});
 
 	it("a branch merged into Base by hand is marked merged; dependents are told; one reset onto Base is not", async () => {
@@ -618,6 +628,41 @@ describe("M66: the Workspace's rules, in process", () => {
 			// the dependent can be started now
 			const p = (await w.ws.act(person, next, "prepare", {})).workspace!;
 			expect((await w.ws.act(person, next, "start", { launch: launchIn(p.path) })).job).toBeTruthy();
+		} finally {
+			if (old === undefined) delete process.env.PI_ROOST_HAND_MERGE_MS;
+			else process.env.PI_ROOST_HAND_MERGE_MS = old;
+		}
+	});
+
+	it("not marked merged by hand: a branch committed to after its review, one whose worktree has changes, one with no commits of its own", async () => {
+		const old = process.env.PI_ROOST_HAND_MERGE_MS;
+		process.env.PI_ROOST_HAND_MERGE_MS = "0";
+		try {
+			const r = repo();
+			const w = world();
+			const moved = await finished(w, r, 1, "moved");
+			const dirty = await finished(w, r, 2, "dirty");
+			// in review with nothing committed: its tip is Base's, "in Base" from the start
+			const empty = await startTask(w, r, 3, "empty");
+			await w.ws.done(empty.session, empty.t, "nothing to do");
+			expect(empty.t.workspace?.stage).toBe("review");
+			w.live.clear();
+			// moved after review: what reached Base is not what was reviewed
+			commitIn(moved.path, "later.txt");
+			git(r, "merge", "--no-ff", "-q", "-m", "m1", moved.branch);
+			// what was reviewed reached Base, but the worktree holds changes no one has seen
+			git(r, "merge", "--no-ff", "-q", "-m", "m2", dirty.branch);
+			writeFileSync(join(dirty.path, "wip.txt"), "x\n");
+			await w.ws.handMerges();
+			expect(moved.t.workspace?.stage).toBe("review");
+			expect(dirty.t.workspace?.stage).toBe("review");
+			expect(empty.t.workspace?.stage).toBe("review");
+			expect(w.opened).toEqual([]);
+			// the changes gone, it is marked merged
+			rmSync(join(dirty.path, "wip.txt"));
+			await w.ws.handMerges();
+			expect(dirty.t).toMatchObject({ state: "done", workspace: { stage: "merged", note: "merged by hand" } });
+			expect(moved.t.workspace?.stage).toBe("review");
 		} finally {
 			if (old === undefined) delete process.env.PI_ROOST_HAND_MERGE_MS;
 			else process.env.PI_ROOST_HAND_MERGE_MS = old;
@@ -721,13 +766,19 @@ describe("M66: the Workspace's rules, in process", () => {
 		expect(one.t.workspace?.stage).toBe("review");
 		await eventually(() => expect(three.t.workspace).toMatchObject({ stage: "verifying", note: "running check" }));
 		expect(w.shells().map((j) => j.meta?.verifyOf)).toEqual([1, 2, 4, 3]);
-		// a task dropped while it queues is not started
+		// a task dropped while it queues is not started: by drop (it leaves the queue) ...
 		const four = await finished(w, r, 5);
 		expect(four.t.workspace?.note).toBe("queued");
 		await w.ws.drop(four.t, () => void (four.t.state = "dropped"));
+		// ... or marked dropped some other way (the queue looks again when it pumps)
+		const five = await finished(w, r, 6);
+		expect(five.t.workspace?.note).toBe("queued");
+		five.t.state = "dropped";
 		w.ws.commandEnded(w.shells().find((j) => j.meta?.verifyOf === 2)!.id, { verifyOf: 2 }, 0);
-		await tick();
-		expect(w.shells().map((j) => j.meta?.verifyOf)).toEqual([1, 2, 4, 3]);
+		// a slot is free: a task queued after them proves the queue was pumped
+		const six = await finished(w, r, 7);
+		await eventually(() => expect(six.t.workspace).toMatchObject({ stage: "verifying", note: "running check" }));
+		expect(w.shells().map((j) => j.meta?.verifyOf)).toEqual([1, 2, 4, 3, 7]);
 	});
 
 	it("one merge per repository at a time: a second started together is a conflict; after the first it merges", async () => {

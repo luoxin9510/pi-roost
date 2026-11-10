@@ -130,26 +130,41 @@ lifecycle's rules there.
 
 - `test/workspace.test.ts` holds the Workspace's rules, run in process through its
   interface: a fake Board and Jobs, a manual Clock, real git in temporary repositories,
-  no daemon and no socket. 26 tests, about 7 seconds.
+  no daemon and no socket. 27 tests, about 8 seconds.
 - The four promises, each a test of its own: one action per Task at a time (a second is a
   conflict); at most 2 Verifies per repository, the rest queued and started as one ends
   (another repository not counted; a Task dropped while queued is not started); one merge
   per repository (a second started together is a conflict; another process holding the
-  merge lock is too); a restart settles what it cut short (a Verify with no job goes back
-  to review, not verified; a queued one too; the old module's ending jobs start nothing).
+  merge lock is too); a restart settles what it cut short (a Verify with no run goes back
+  to review, not verified, a queued one too; an interrupted setup fails; the jobs left
+  behind are removed, the running ones stopped first).
 - The rules the review bugs of M55–M60 were about: a conflict leaves Base untouched and
   stops in the Task's worktree; a worktree off its branch (a detached HEAD) is not merged;
   a damaged record is refused before any git runs; a Verify failure goes back with the end
   of its output, and at `maxRounds` stops for a person; an approved setup runs before the
   session; the commands changed between showing and approving are refused; a drop while
   verifying stops the Verify and nothing rewrites the Stage after; a timeout fails it; a
-  branch merged into Base by hand is marked merged (one reset onto Base is not), looked
-  for at most every 10 seconds; cleanup never removes a worktree with changes.
-- Of the socket tests of M55–M60, 7 went (their rules are above) and 10 stay end to end:
-  the loop from start to merge, a restart settling a merge, a Verify through a real command
-  job, the commands changed / a drop while verifying / a timeout with real processes, the
-  concierge's start, comments sent back, shelve and restore, a child's first message, the
-  pull request, and listing the board looking for hand merges (the daemon's wiring only).
-  `test/comms.test.ts`: 66 → 59 tests, about 43 → 39 seconds.
+  branch merged into Base by hand is marked merged (not one reset onto Base, one committed
+  to after its review, one with changes in its worktree, one with no commits of its own),
+  looked for at most every 10 seconds; cleanup never removes a worktree with changes.
+- Of the socket tests of M55–M60, 5 went (their rules are above); the rest stay end to
+  end, three of them slimmed to the daemon's wiring (the rules are in process): a real
+  setup job, a real Verify failing with its exit code and output, listing the board
+  looking for hand merges. Kept as they were: the loop from start to merge, a restart
+  settling a merge, a Verify through a real command job, the commands changed / a drop
+  while verifying / a timeout with real processes, the concierge's start, comments sent
+  back, shelve and restore, a child's first message, the pull request.
+  `test/comms.test.ts`: 66 → 61 tests.
 - A wait for what the module does after a command ends polls (`vi.waitFor`) instead of
   sleeping 30 ms; a fixed wait stays only where a test checks that nothing happened.
+
+### After review (M66)
+
+- Each guard the review named was removed in turn to see a test fail: the reviewed tip, a
+  branch with no commits of its own, a worktree with changes (hand merges), a task marked
+  dropped while queued, what a restart does with the jobs left behind and with an
+  interrupted setup. Each now fails a test (7 of 7).
+- The restart test no longer checks the old module's jobs (a stopped daemon has none);
+  it checks what the new one does with them.
+- A real setup job and a real Verify failure stay end to end: the daemon's own wiring
+  (a command job's exit code and log) is not in the module.
