@@ -150,7 +150,7 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 	/** M55: repositories a merge is under way in (one at a time; the lock file guards against another daemon). */
 	const mergingRepos = new Set<string>();
 	/** M65: worktrees made for a start that has not come (yet): removed after PREPARED_MS. */
-	const prepared = new Map<number, { path: string; branch: string; baseRef: string; baseSha: string; repo: string; made: "new" | "restored"; timer: Timer }>();
+	const prepared = new Map<number, { path: string; branch: string; baseRef: string; baseSha: string; repo: string; made: "new" | "restored"; sourceDirty?: boolean; timer: Timer }>();
 	/** M55: tasks an action on the workspace is under way for (start, merge, …): another waits its turn. */
 	const workspaceBusy = new Set<number>();
 	const BASE_REF = /^(?!-)(?!.*\.\.)[A-Za-z0-9._\/-]{1,200}$/;
@@ -397,6 +397,7 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 			// M65: the worktree is the one prepare made (or the Workspace's own, there again)
 			const w = preparedFor(t);
 			if (!w) throw new OpError("bad_request", `#${t.id}: its worktree is not prepared (task prepare first)`);
+			if (!prepared.has(t.id) && t.workspace) await onItsBranch(t, w);
 			try {
 				return await startIn(a, t, t.project, w, args);
 			} catch (err) {
@@ -548,22 +549,22 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 	 * PREPARED_MS for its start, then removed.
 	 */
 	async function prepare(t: BoardTask, repo: string): Promise<PreparedWorkspace> {
+		// asked again before its start: the same worktree, its time not extended
 		const held = prepared.get(t.id);
-		if (held) {
-			held.timer.clear();
-			held.timer = clock.timer(() => discardPrepared(t.id), PREPARED_MS);
-			return { path: held.path, branch: held.branch, baseRef: held.baseRef, baseSha: held.baseSha };
-		}
+		if (held) return { path: held.path, branch: held.branch, baseRef: held.baseRef, baseSha: held.baseSha, ...(held.sourceDirty ? { sourceDirty: true } : {}) };
 		const w = t.workspace;
 		if (w) {
-			if (existsSync(w.path)) return { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha };
+			if (existsSync(w.path)) {
+				await onItsBranch(t, w);
+				return { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha };
+			}
 			// M59: shelved (or a shelve cut short): made again from its branch
 			try {
 				await remakeTaskWorktree(repo, w.path, w.branch);
 			} catch (err) {
 				throw new OpError("bad_request", `#${t.id}: ${(err as Error).message}`);
 			}
-			prepared.set(t.id, { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, repo, made: "restored", timer: clock.timer(() => discardPrepared(t.id), PREPARED_MS) });
+			prepared.set(t.id, { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha, repo, made: "restored", timer: expiry(t.id) });
 			return { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha };
 		}
 		let made: Awaited<ReturnType<typeof makeTaskWorktree>>;
@@ -573,9 +574,25 @@ export function createWorkspaces(deps: WorkspaceDeps): Workspaces {
 			throw new OpError("bad_request", `#${t.id}: ${(err as Error).message}`);
 		}
 		const out = { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base };
-		prepared.set(t.id, { ...out, repo: made.repo, made: "new", timer: clock.timer(() => discardPrepared(t.id), PREPARED_MS) });
+		prepared.set(t.id, { ...out, repo: made.repo, made: "new", sourceDirty: made.sourceDirty, timer: expiry(t.id) });
 		// what is uncommitted in the main checkout is not in it (said to the caller)
 		return made.sourceDirty ? { ...out, sourceDirty: true } : out;
+	}
+
+	/** Its time: then it goes, unless an action on the Task is under way (a start dispatching into it): then looked at again later. */
+	function expiry(id: number): Timer {
+		return clock.timer(() => {
+			const held = prepared.get(id);
+			if (!held) return;
+			if (workspaceBusy.has(id)) held.timer = clock.timer(() => discardPrepared(id), PREPARED_MS);
+			else discardPrepared(id);
+		}, PREPARED_MS);
+	}
+
+	/** An existing Workspace's worktree is started again only on its own branch (someone may have checked out another in it). */
+	async function onItsBranch(t: BoardTask, w: { path: string; branch: string }): Promise<void> {
+		const on = await currentBranch(w.path);
+		if (on !== w.branch) throw new OpError("bad_request", `#${t.id}: its worktree ${w.path} is on ${on ?? "a detached HEAD"}, not ${w.branch}: check ${w.branch} out there again`);
 	}
 
 	/** The worktree a start goes into: the one prepared, or the Workspace's own when it is there. */

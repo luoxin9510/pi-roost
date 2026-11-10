@@ -111,3 +111,17 @@ lifecycle's rules there.
   `baseRef` and under its `HEAD`, M57) are gone with it.
 - The task actions the daemon accepts are the callers' table's list (one list).
 - Real model (haiku 5.5, `npm run eval -- --only "roost workspaces"`): 2/2 through prepare → start, $0.0028.
+
+### After review (M65)
+
+- A prepared worktree's time running out while an action on its Task is under way (a
+  start still dispatching into it) does not remove it: it is looked at again
+  `PREPARED_MS` later (by then taken by the start, or still waiting).
+- Asking `prepare` again before the start gives the same worktree, `sourceDirty` with it,
+  and does not extend its time.
+- An existing Workspace is prepared and started again only while its worktree is on its
+  own branch (M57's check of a re-start, kept where it still means something).
+- Known: prepared worktrees are in memory; a daemon stopped while one waits leaves it to
+  `/tasks cleanup` (task worktrees no task holds, older than 10 minutes). Removing a
+  prepared worktree (`discardWorktree`) is git on the daemon's thread, as it was in the
+  clients'; only making one moved to a worker.

@@ -61,7 +61,7 @@ function manualClock() {
 	return { clock, advance };
 }
 
-function world(clock?: Clock) {
+function world(clock?: Clock, gate?: Promise<void>) {
 	const tasks = new Map<number, BoardTask>();
 	const events: Omit<RoostEvent, "seq" | "at">[] = [];
 	const dispatched: DispatchArgs[] = [];
@@ -82,6 +82,7 @@ function world(clock?: Clock) {
 		},
 		jobs: {
 			dispatch: async (launch) => {
+				if (gate) await gate;
 				dispatched.push(launch);
 				const id = `j${dispatched.length}`;
 				live.add(id);
@@ -204,5 +205,50 @@ describe("M64: the Workspace module, in process", () => {
 		expect(existsSync(w.path)).toBe(true);
 		advance(1);
 		expect(existsSync(w.path)).toBe(false);
+	});
+
+	it("M65: its time running out while a start dispatches into it does not remove it; asking again does not extend its time", async () => {
+		const r = repo();
+		const { clock, advance } = manualClock();
+		let open!: () => void;
+		const gate = new Promise<void>((res) => (open = res));
+		const { ws, tasks } = world(clock, gate);
+		const t = newTask(1, r);
+		tasks.set(1, t);
+		const w = (await ws.act(person, t, "prepare", {})).workspace!;
+		const starting = ws.act(person, t, "start", { launch: { cwd: w.path, sessionFile: join(w.path, "s.jsonl"), command: ["pi"], env: {}, name: "writer", origin: "dispatch" } });
+		await new Promise((res) => setTimeout(res, 50));
+		advance(PREPARED_MS);
+		expect(existsSync(w.path)).toBe(true);
+		open();
+		await starting;
+		expect(t.workspace).toMatchObject({ stage: "working", path: w.path });
+		advance(PREPARED_MS);
+		expect(existsSync(w.path)).toBe(true);
+
+		// another task: prepared, asked again near its end, gone at the first one's end
+		const t2 = newTask(2, r);
+		tasks.set(2, t2);
+		const w2 = (await ws.act(person, t2, "prepare", {})).workspace!;
+		advance(PREPARED_MS - 1);
+		expect((await ws.act(person, t2, "prepare", {})).workspace?.path).toBe(w2.path);
+		advance(1);
+		expect(existsSync(w2.path)).toBe(false);
+	});
+
+	it("M65: an existing Workspace whose worktree is on another branch is not prepared or started again", async () => {
+		const r = repo();
+		const { ws, tasks, live } = world();
+		const t = newTask(1, r);
+		tasks.set(1, t);
+		const w = (await ws.act(person, t, "prepare", {})).workspace!;
+		const launch: DispatchArgs = { cwd: w.path, sessionFile: join(w.path, "s.jsonl"), command: ["pi"], env: {}, name: "writer", origin: "dispatch" };
+		await ws.act(person, t, "start", { launch });
+		live.clear();
+		git(w.path, "checkout", "-q", "-b", "elsewhere");
+		await expect(ws.act(person, t, "prepare", {})).rejects.toThrow(/on elsewhere, not roost\/t1-/);
+		await expect(ws.act(person, t, "start", { launch })).rejects.toThrow(/on elsewhere/);
+		git(w.path, "checkout", "-q", w.branch);
+		expect((await ws.act(person, t, "start", { launch })).job).toBeTruthy();
 	});
 });
