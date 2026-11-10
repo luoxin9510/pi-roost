@@ -660,7 +660,7 @@ describe("wakes", () => {
 		const t = setup();
 		await t.up();
 		await t.c.op("concierge-order", hub, { action: "add", text: "x", when: "every 1m" });
-		t.happen();
+		t.happen("first-undelivered");
 		t.c.nudge();
 		t.ctl.result = { outcome: "queued-full", reached: false };
 		const saves = t.ctl.saves;
@@ -673,6 +673,14 @@ describe("wakes", () => {
 		expect(t.ctl.orderSaves).toBe(osaves);
 		expect(t.logs.filter((l) => l.msg === "concierge woken").at(-1)).toMatchObject({ extra: { why: "events", events: 1, outcome: "queued-full" } });
 		expect(t.pending()).toBe(0);
+		// the next wake still brings what was not delivered (the cursor did not move in memory either)
+		t.ctl.result = { outcome: "delivered", reached: true };
+		t.happen("second-news");
+		t.c.nudge();
+		await t.go(5000);
+		expect(t.delivered).toHaveLength(2);
+		expect(t.delivered[1]).toContain("first-undelivered");
+		expect(t.delivered[1]).toContain("second-news");
 	});
 
 	it("a delivery that found the session stopped turns it off, and says so", async () => {
