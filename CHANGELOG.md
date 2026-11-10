@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- The hub's options in groups (M80, [docs/plans/hub-input.md](docs/plans/hub-input.md)): the 44 fields of `AgentViewOptions` are seven named types by purpose (`HubCore`, `HubDisplay`, `HubLaunching`, `HubModels`, `HubResume`, `HubCommands`, `HubTasks`), and `AgentViewOptions` is their intersection: callers still pass one flat object; `piHubOptions` says by groups what pi provides. Types only; nothing else changes.
 - The hub's view and layer (M79, [docs/plans/hub-input.md](docs/plans/hub-input.md)): `hub/agent-view.ts` kept seven flags for what is on screen (`peek`, `peekId`, `help`, `picker`, `renaming`, `overlay`, `attached`), read in a different order by the keys and the render. Now a `view` (the list, or a row's peek) and one `layer` on top (the help, a picker, a rename, an overlay; [GLOSSARY.md](GLOSSARY.md): Layer); `handleInput` gives the keys to the layer open, else to the view, the list's own keys (`Ctrl+P`, `Shift+Tab`, `Ctrl+O`, `Ctrl+F`) in `listKey`. One layer at a time: what opens last is open, and the concierge's answer waits for whatever is open to close (it waited for an overlay only; over a picker it took the keys). `OverlayHost.selectRow(id)` replaces compare's own `select` option. Screens and keys otherwise unchanged (pinned by snapshots of key sequences before the change).
 
 ## [0.1.20] - 2026-11-10

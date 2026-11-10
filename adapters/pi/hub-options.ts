@@ -5,7 +5,7 @@
  */
 import { join } from "node:path";
 import { type SessionInfo, SessionManager, SessionSelectorComponent, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
-import type { AgentViewOptions } from "../../hub/agent-view.ts";
+import type { HubCommands, HubCore, HubDisplay, HubLaunching, HubModels, HubResume, HubTasks } from "../../hub/agent-view.ts";
 import { discoverAgents } from "../../lib/agents.ts";
 import { CONCIERGE_DEFAULTS, CONCIERGE_NAME, CONCIERGE_ROLE_ENV } from "../../lib/concierge.ts";
 import { envPolicy, loadConfig, loadUserConfig, saveUserConfig, saveUserPreset } from "../../lib/config.ts";
@@ -28,7 +28,8 @@ export interface PiHost {
 	sessionDir: () => string | undefined;
 }
 
-export type PiHubOptions = Omit<AgentViewOptions, "tui" | "theme" | "setTitle" | "done">;
+/** M80: what pi gives the hub: everything but its terminal, colours and exits (display options are mostly the caller's). */
+export type PiHubOptions = Omit<HubCore, "tui" | "theme" | "setTitle" | "done"> & Partial<HubDisplay> & HubLaunching & HubModels & HubResume & HubCommands & HubTasks;
 
 export function piHubOptions(h: PiHost): PiHubOptions {
 	const dispatchCwd = h.cwd;

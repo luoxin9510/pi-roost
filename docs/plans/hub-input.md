@@ -63,3 +63,24 @@ help, rename); and `AgentViewOptions` is 45 flat fields that the two adapters
   test pins the order: close, select, attach).
 - GLOSSARY: the Layer entry had taken Overlay's `_Avoid_` line.
 
+## M80, as done
+
+- **Groups as types, not nested objects** (found while doing it): nested groups would turn each
+  adapter's one spread of `piHubOptions(…)` (with a field or two of its own over it) into a
+  spread per group, and about 60 test call sites passing a field or two would each name its
+  group, for no change in behaviour or in what can be tested. So `AgentViewOptions` is
+  `HubCore & HubDisplay & HubLaunching & HubModels & HubResume & HubCommands & HubTasks`, each a
+  documented interface; the fields, their names and signatures, and every caller are as they
+  were. 44 fields (not 45: the count had a field of a parameter's type).
+- Groups: `HubCore` (tui, theme, cwd, connect, setTitle, done); `HubDisplay` (the list's
+  display: cwdFilter, groupBy, onGroupBy, notify, highlightId, origin, banner, reducedMotion,
+  fullscreen, rowDetails, subagents, switchCheckMs); `HubLaunching` (what a new session runs:
+  launch, launchShell, scheduleLaunch, launchProfile, profiles, agents, defaultAgent,
+  conciergeLaunch, worktreeDefault, presets, savePreset, userPreset); `HubModels` (models,
+  defaultModel, scopedModels); `HubResume` (resumable, sessionSelector, currentSession);
+  `HubCommands` (commands, sessionCommands, profileCommands); `HubTasks` (taskMerge and the
+  local reads: taskChanges, taskDiff, worktreeChange, hostControl). Three comments stacked on a field with another (one repeating it, two out of date) are gone.
+- `PiHubOptions` (`adapters/pi/hub-options.ts`) is now the groups pi provides (all but the
+  terminal, the colours and the exits) instead of an `Omit` of the whole.
+- Tests: `tsc` is the test (types only); the hub's tests pass unchanged.
+
