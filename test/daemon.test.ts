@@ -789,9 +789,7 @@ describe("M76: the entry check", () => {
 			[client, "events", { id: "" }, "id must be a job id"],
 			[client, "schedule-add", { name: "-" }, "name: 1-40 of A-Z a-z 0-9 _ . -, starting with a letter or digit"],
 			[client, "concierge", { action: "answer", answer: "x" }, "answer must be never, routine or always"],
-			[client, "concierge-order", { action: "add", text: " " }, "empty order"],
 			[await asWorker(), "hello", { protocol: 0 }, "protocol must be a version number"],
-			[await asWorker(), "report", { id, token: "t", report: { state: "x" } }, "invalid report"],
 			[await asWorker(), "peer_register", { name: "q", cwd: work }, "pid must be a live process"],
 			[peer, "send", { to: " ", message: "hi" }, "to required"],
 			[peer, "send", { to: "alpha", message: " " }, "empty message"],
@@ -801,6 +799,19 @@ describe("M76: the entry check", () => {
 		// what the daemon took before, it takes: a fractional cursor, capabilities that are not strings
 		expect(await client.request("events", { after: 0.5, limit: 2.5 })).toMatchObject({ cursor: expect.any(Number) });
 		expect(await (await asWorker()).request("hello", { protocol: 1, capabilities: [1, "agent-items"] as string[] })).toMatchObject({ protocol: expect.any(Number) });
+		// a report for a job that ended is taken whatever it says; for a live one, refused in its words
+		const token = readState(id)?.jobToken as string;
+		const fresh = async () => {
+			const c = await DaemonClient.connect();
+			clients.push(c);
+			return c;
+		};
+		await expect((await fresh()).request("report", { id, token, report: { state: "x" } as never })).rejects.toMatchObject({ code: "bad_request", message: "invalid report" });
+		await client.request("stop", { id });
+		await waitFor(async () => (await find(client, id))?.state === "stopped");
+		expect(await (await fresh()).request("report", { id, token, report: { state: "x" } as never })).toEqual({});
+		// an order's action is looked up by its id first
+		await expect(client.request("concierge-order", { action: "bogus" } as never)).rejects.toMatchObject({ code: "not_found" });
 	});
 });
 

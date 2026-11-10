@@ -77,11 +77,6 @@ describe("the entry check", () => {
 		["hello", { protocol: 0 }, "protocol must be a version number"],
 		["hello", { protocol: 1.5 }, "protocol must be a version number"],
 		["hello", { protocol: "1" }, "protocol must be a version number"],
-		["report", { id: "a", token: "t" }, "invalid report"],
-		["report", { report: "x" }, "invalid report"],
-		["report", { report: { state: "nope", status: "idle" } }, "invalid report"],
-		["report", { report: { state: "done", status: "asleep" } }, "invalid report"],
-		["report", { report: { state: "done" } }, "invalid report"],
 		["peer_register", { name: "x" }, "pid must be a live process"],
 		["peer_register", { pid: "12" }, "pid must be a live process"],
 		// not an integer: no process (process.kill throws), refused in the same words before
@@ -110,9 +105,6 @@ describe("the entry check", () => {
 		["concierge-say", { text: "x", kind: "shout" }, "kind must be info, need or answer"],
 		["concierge-suggest", { text: "x" }, "id required"],
 		["concierge-suggest", { id: "a", text: "" }, "empty suggestion"],
-		["concierge-order", { action: "bogus" }, "action must be add, rm, list or applied"],
-		["concierge-order", {}, "action must be add, rm, list or applied"],
-		["concierge-order", { action: "add", text: "  " }, "empty order"],
 	];
 	it.each(refused)("%s %j: %s", (op, args, words) => {
 		expect(argsProblem(op, args)).toBe(words);
@@ -153,6 +145,12 @@ describe("the entry check", () => {
 		["concierge-order", { action: "applied" }],
 		["concierge-order", { action: "list", text: 3 }],
 		["concierge-policy", { x: 1 }],
+		// for a job that ended, any report is taken; an order's action is looked up by its id first
+		["report", { report: "x" }],
+		["report", { report: { state: "nope" } }],
+		["concierge-order", {}],
+		["concierge-order", { action: "bogus" }],
+		["concierge-order", { action: "add", text: " " }],
 	];
 	it.each(taken)("%s %j: taken", (op, args) => {
 		expect(argsProblem(op, args)).toBeUndefined();

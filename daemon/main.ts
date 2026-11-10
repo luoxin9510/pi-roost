@@ -2331,7 +2331,11 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		const session = rec ? recKey(rec) : "";
 		if (session) setImmediate(() => void retryReports(session));
 	}
-	const r = args.report!; // M76: its state and status checked at the entry
+	// checked here, not at the entry: a report for a job that ended is taken (above) whatever it says
+	const r = args.report;
+	if (!r || !REPORT_STATES.has(r.state as string) || !REPORT_STATUS.has(r.status as string)) {
+		throw new OpError("bad_request", "invalid report");
+	}
 	const opt = (v: unknown, max = 500) => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
 	const before = st.state;
 	const waitingBefore = st.waitingFor ?? null;
@@ -2378,6 +2382,9 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	// M13: a subagent that finished closes (each report while done and idle starts the wait again)
 	if (r.state === "done" && r.status === "idle" && (recs.get(id)?.parentSession || recs.get(id)?.schedule)) scheduleAutoClose(id);
 }
+
+const REPORT_STATES = new Set(["working", "blocked", "done", "failed"]);
+const REPORT_STATUS = new Set(["busy", "waiting", "idle"]);
 
 /** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
 function rename(args: { id?: unknown; name?: unknown } | undefined): { id: string; name: string } {

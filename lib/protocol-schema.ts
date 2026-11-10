@@ -137,28 +137,26 @@ export const HandbackArgsSchema = obj({
 }, { description: "M9, on a worker connection: the run it was spawned for (or a user turn) ended." });
 export type HandbackArgs = Infer<typeof HandbackArgsSchema>;
 
-const INVALID_REPORT = "invalid report";
-// M76: the daemon refuses a report whose state or status is not one of these; the rest is read loosely
-export const WorkerReportSchema = objS({
-	state: oneOfS(["working", "blocked", "done", "failed"], { message: INVALID_REPORT }),
-	status: oneOfS(["busy", "waiting", "idle"], { message: INVALID_REPORT }),
-	waitingFor: loose(WaitingForS),
-	summary: loose(nullable(str())),
-	question: loose(nullable(str())),
-	choices: loose(arr(str())),
-	tool: loose(nullable(str())),
-	error: loose(nullable(str())),
-	name: loose(nullable(str())),
-	model: loose(nullable(str())),
-	thinking: opt(loose(nullable(str(), "M8; absent from workers before 0.1.5."))),
-	context: opt(loose(nullable(ContextInfoS))),
-	usage: opt(loose(nullable(UsageInfoS, "M24: absent from workers before 0.1.11."))),
-	attachSignal: opt(loose(bool("The worker reacts to the host's SIGUSR2 attach signal (AT-5)."))),
-	attachRepaint: opt(loose(bool("M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21)."))),
-	agentItems: opt(loose(bool("M9: the worker takes agent messages and reports (custom messages, per-item acks)."))),
-	remoteAt: opt(loose(num("M11: when a phone (pi-mobile) last acted on this session (ms epoch): it is in use."))),
-	prLinks: opt(loose(arr(str(), "M16: pull request URLs the session linked (gh output, branch lookups)."))),
-}, { description: "What a worker reports about itself (full snapshot every time).", message: INVALID_REPORT });
+export const WorkerReportSchema = obj({
+	state: oneOf(["working", "blocked", "done", "failed"]),
+	status: oneOf(["busy", "waiting", "idle"]),
+	waitingFor: WaitingForS,
+	summary: nullable(str()),
+	question: nullable(str()),
+	choices: arr(str()),
+	tool: nullable(str()),
+	error: nullable(str()),
+	name: nullable(str()),
+	model: nullable(str()),
+	thinking: opt(nullable(str(), "M8; absent from workers before 0.1.5.")),
+	context: opt(nullable(ContextInfoS)),
+	usage: opt(nullable(UsageInfoS, "M24: absent from workers before 0.1.11.")),
+	attachSignal: opt(bool("The worker reacts to the host's SIGUSR2 attach signal (AT-5).")),
+	attachRepaint: opt(bool("M14: on attach the worker sets the terminal up again and repaints itself (read by hosts before M21).")),
+	agentItems: opt(bool("M9: the worker takes agent messages and reports (custom messages, per-item acks).")),
+	remoteAt: opt(num("M11: when a phone (pi-mobile) last acted on this session (ms epoch): it is in use.")),
+	prLinks: opt(arr(str(), "M16: pull request URLs the session linked (gh output, branch lookups).")),
+}, { description: "What a worker reports about itself (full snapshot every time)." });
 export type WorkerReport = Infer<typeof WorkerReportSchema>;
 
 const ProfileTermS = obj({
@@ -340,8 +338,9 @@ export const ArgSchemas = {
 	status: Empty,
 	shutdown: obj({ keepWorkers: opt(loose(bool())) }),
 	subscribe: Empty,
-	// M76: id and token are checked against the job (not_found, unauthorized), seq after them
-	report: obj({ id: loose(str()), token: loose(str()), report: WorkerReportSchema }),
+	// M76: loose: id and token are checked against the job first (not_found, unauthorized), and a
+	// report for a job that ended is taken whatever it says
+	report: obj({ id: loose(str()), token: loose(str()), report: loose(WorkerReportSchema) }),
 	reply: obj({
 		id: need("id required"),
 		text: filled("empty reply"),
@@ -370,7 +369,8 @@ export const ArgSchemas = {
 	"concierge-reply": obj({ id: loose(filled("id required")), text: loose(filled("empty answer")), why: opt(loose(str())) }, { description: "M45, on the concierge's connection: an answer in the user's place; refused (`policy`) unless the policy allows." }),
 	// M76: loose: the policy is checked first (the module's checks, in their order)
 	"concierge-act": loose(ConciergeActArgsSchema),
-	"concierge-order": ConciergeOrderArgsSchema,
+	// M76: loose: an action that is not add or list is looked up by its order id first (not_found)
+	"concierge-order": loose(ConciergeOrderArgsSchema),
 	task: TaskArgsSchema,
 };
 
