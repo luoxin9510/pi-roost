@@ -70,8 +70,10 @@ no rule of theirs is tested in process.
   over its records, roster and state files.
 - The schedules are loaded when the module is made (the socket takes ops before `start()`;
   loading only reads).
-- The tick is a chain of one-shot timers (a `Clock` has no interval), the next armed
-  whatever the tick did (a tick that throws is logged, as `setInterval` went on).
+- The tick is a chain of one-shot timers (a `Clock` has no interval). The next is armed
+  before the tick runs, so the period stays fixed, as `setInterval`'s; a tick that throws
+  goes on to the next, as before, and is now logged (`schedule tick failed`) where it was
+  an uncaught exception.
 - `test/schedules.test.ts`: 25 tests, in process. `daemon/main.ts`: 4054 → about 3890 lines.
 - Of the socket tests of M39/M40, one went ("two runs asked at once start one", its rules
   in process); the rest stay as the end-to-end tests of the ops, of a run on the daemon's

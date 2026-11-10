@@ -174,15 +174,14 @@ export function createSchedules(deps: SchedulesDeps): Schedules {
 	}
 
 	function arm(): void {
-		// a chain of one-shot timers (a Clock has no interval): the next is armed whatever this one did,
-		// as setInterval went on after a tick that threw
+		// a chain of one-shot timers (a Clock has no interval): the next is armed first, so the
+		// period is fixed and a tick that throws (logged; it was an uncaught exception) stops nothing
 		ticker = clock.timer(() => {
+			if (ticker) arm();
 			try {
 				tick();
 			} catch (err) {
 				log("error", "schedule tick failed", { error: String(err) });
-			} finally {
-				if (ticker) arm();
 			}
 		}, tickMs);
 	}

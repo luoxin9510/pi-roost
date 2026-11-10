@@ -942,7 +942,7 @@ pi-roost schedule [list] | run|pause|resume|rm <name>
 做法：
 - `lib/schedule.ts`（仅 node）：`parseCron`/`nextCron`、`parseWhen`/`nextRun`、`/schedule` 行的解析（`parseScheduleInput`）、每次运行的派发（`runLaunch`）：模板里的 `{{run}}`（`RUN_SLOT`）换成一个 pi 风格的会话文件名（`runSlot()` = `<ISO 时间>_<uuid>`）。
 - **模板在知道 pi 的地方生成**（`adapters/pi/hub-options.ts` `scheduleLaunch`）：就是视图会为这个任务发的那次 dispatch，带视图的模型、thinking、目录（含预设的目录），会话文件 `<该目录的 pi 会话目录>/{{run}}.jsonl`，不带 worktree。**只有会话文件那个参数会被填**；任务文字里自己写了 `{{run}}` 的原样不动。
-- daemon 持有 `schedules.json`（单写者、耐久写），每 `SCHEDULE_TICK_MS`=15 s 检查一次（`PI_ROOST_SCHEDULE_TICK_MS` 可覆盖）。新 op（`lib/protocol.ts`）：`schedules` `schedule-add {name, when, launch, task?, catchUp?}` `schedule-rm` `schedule-pause {name, paused}` `schedule-run`；一次运行就是一次以计划命名的 `dispatch`，job 上标 `schedule`（行上带）。
+- daemon 持有 `schedules.json`（单写者、耐久写），每 15 s 检查一次（`PI_ROOST_SCHEDULE_TICK_MS` 可覆盖）。M67 起这些都在 `lib/schedules.ts`（`createSchedules`，注入时钟、Store 端口），daemon 只做适配与一行路由。新 op（`lib/protocol.ts`）：`schedules` `schedule-add {name, when, launch, task?, catchUp?}` `schedule-rm` `schedule-pause {name, paused}` `schedule-run`；一次运行就是一次以计划命名的 `dispatch`，job 上标 `schedule`（行上带）。
 - **先定下次再启动**，慢启动不会被重复运行；`every` 从创建（或恢复）时刻起算，间隔之后的一次落到下一个槽，**不补发一串**。
 - **本地时间且不倒退**：夏令时重复的那一小时里，下次永远在前方（以 epoch 毫秒步进；下次至少是 1 s 之后）；春季跳时那天不存在的时刻（02:30）改到次日。每个计划同一时刻只有一个运行在启动（并发的第二个请求得 `busy`）。手工改过的 `schedules.json` 缺的字段在加载时补齐。
 - **跳过**（写进 `lastSkip`）：到点时上一次运行还在 working / 启动中 / 等自动重启（M38）（`stillRunning()`）。上一次**已做完但 worker 还开着**的不算，那个 worker 会像子 agent 一样在 done 后被关闭（`scheduleAutoClose`，`AUTO_CLOSE_MS`）。
@@ -1326,10 +1326,10 @@ M61 是用户在 2026-11-06 要求提前做的（和 M48 先于 M47 一样），
 | 每 session 用量里保留的模型数（M24） | 8（其余并入 `other`） | `lib/usage.ts` `USAGE_MODELS` |
 | 自动续跑间隔，连续最多几次（M38） | 1 s / 5 s / 15 s，共 3 次 | `daemon/main.ts` `RESUME_DELAYS_MS`（`PI_ROOST_RESUME_DELAYS_MS`，逗号分隔毫秒） |
 | 宕机/重启后仍会自动续跑的最长间隔（M38） | 6 h | `daemon/main.ts` `RESUME_WINDOW_MS` |
-| 定时任务检查间隔（M39） | 15 s | `daemon/main.ts` `SCHEDULE_TICK_MS`（`PI_ROOST_SCHEDULE_TICK_MS`） |
+| 定时任务检查间隔（M39） | 15 s | `lib/schedules.ts` `tickMs`（daemon 读 `PI_ROOST_SCHEDULE_TICK_MS` 传入） |
 | 定时运行/子 agent done 后自动关闭的等待（M13/M39/M40） | 3 s（需已 done 满一半） | `daemon/main.ts` `AUTO_CLOSE_MS`（`PI_ROOST_AUTO_CLOSE_MS`），`scheduleAutoClose()` 对定时运行同样适用 |
 | 一个计划的 `every` 最小间隔（M39） | 1 min | `lib/schedule.ts` `parseWhen` |
-| 下次运行至少领先现在（M39） | 1 s | `daemon/main.ts` `runSchedule`（`Math.max(next, now + 1000)`） |
+| 下次运行至少领先现在（M39） | 1 s | `lib/schedules.ts` `run`（`Math.max(next, now + 1000)`） |
 | 档案 `settleMs` 默认 / 范围（M30） | 3000 ms / 500–60000 | `lib/profiles.ts` |
 | host 写 `term.json` 的间隔（M30） | 1 s（有变化时） | `host/main.ts` `termTimer` |
 | host `input` op 单次上限（M30） | 64 KB | `host/main.ts` `MAX_INPUT` |
