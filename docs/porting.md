@@ -1645,7 +1645,7 @@ v0.1.19 新增（M59–M60）：`tasks-command.test`（M59：pi 里的 `/tasks`�
 | 38 | M39 定时任务 | `lib/schedule.ts` + daemon ticker + hub `/schedule` | 中 |
 | 39 | M40 全 agent 续跑/定时 | daemon 的 `resumable`、`profileTick` 分支、`templateAgent` | 小到中 |
 | 40 | M42 | 仅测试 | — |
-| 41 | M43 事件流/watch/消息规则 | `lib/events.ts` + daemon `record()`/`fireWatches` + hub `/log` + CLI `log` | 小到中 |
+| 41 | M43 事件流/watch/消息规则 | `lib/events.ts` + daemon `record()` + `lib/watches.ts`（M68；原 `fireWatches`） + hub `/log` + CLI `log` | 小到中 |
 | 42 | M44 值班 agent v0 | `lib/concierge.ts` + `adapters/pi/concierge.ts` + daemon `wakeConcierge` 一族 + hub `/concierge` `?` | 中（唤醒合并/配额/预算是主体） |
 | 43 | M45 策略 | daemon 闸门 + hub 横幅/Ctrl+Y/E + prompt | 中 |
 | 44 | M46 常备指令 | daemon `orderOp`/时钟 + 摘要 + hub `/concierge orders` | 小到中 |

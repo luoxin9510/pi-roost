@@ -15,7 +15,6 @@ import {
 	foregroundPeerId,
 	isAgentKind,
 	MAX_PENDING_AGENT,
-	MAX_WATCHES,
 	MESSAGE_MAX,
 	MESSAGES_PER_MINUTE,
 	noticeBody,
@@ -48,6 +47,7 @@ import {
 import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { nextRun, parseWhen } from "../lib/schedule.ts";
 import { createSchedules } from "../lib/schedules.ts";
+import { createWatches } from "../lib/watches.ts";
 import { type BoardTask, blockedOn, boardSummary, onBoardOf, parseWorkspace, TASK_NOTE_MAX, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { newJobId, newToken } from "../lib/ids.ts";
@@ -1386,120 +1386,43 @@ function noteState(job: JobRow): void {
 		const text = job.state === "blocked" ? job.question : job.state === "failed" ? job.error : job.state === "done" ? job.summary : null;
 		record({ kind: "state", id: job.id, name: job.name, state: job.state, from: prev.state, waitingFor: job.waitingFor, text: clipText(text) });
 	}
-	if (job.state !== "working") void fireWatches(job);
+	void watches.stateChanged(job);
 	// M47: a session that failed or was stopped holds no task
 	if (job.state === "failed" || job.state === "stopped") releaseClaimsOf(job.id, `${job.name} ${job.state}`);
 }
 
-/** M43: a watch: tell `watcher` (a session key) once when job `id` is next idle, or has ended. */
-interface Watch {
-	watcher: string;
-	watcherName: string;
-	/** The watching job, when a job watches (null: a foreground session). */
-	watcherId?: string | null;
-	id: string;
-	when: "idle" | "ended";
-	at: number;
-}
-const watchesPath = () => join(roostHome(), "watches.json");
-let watches: Watch[] = [];
-const WATCH_TTL = Number(process.env.PI_ROOST_WATCH_TTL_MS) || WATCH_TTL_MS;
+// ---- M43: watches (M68: lib/watches.ts) ---------------------------------------------
 
-function loadWatches(): void {
-	const saved = readJson<Watch[]>(watchesPath());
-	if (!Array.isArray(saved)) return;
-	const now = Date.now();
-	watches = saved.filter((w) => w && str(w.watcher) && str(w.id) && (w.when === "idle" || w.when === "ended") && typeof w.at === "number" && now - w.at < WATCH_TTL && recs.has(w.id));
-}
-
-function saveWatches(): void {
-	try {
-		writeJsonAtomic(watchesPath(), watches);
-	} catch (err) {
-		log("error", "watches not saved", { error: String(err) });
-	}
-}
-
-/** Watches that never fired expire; ones on removed jobs go. */
-function sweepWatches(now = Date.now()): void {
-	const before = watches.length;
-	watches = watches.filter((w) => now - w.at < WATCH_TTL && recs.has(w.id));
-	if (watches.length !== before) saveWatches();
-}
-
-/** idle: it stopped working (done, waiting, failed, stopped); ended: it failed, was stopped, or is gone. */
-function watchFires(when: Watch["when"], state: JobStateName | "removed"): boolean {
-	if (state === "removed") return true;
-	if (when === "ended") return state === "failed" || state === "stopped";
-	return state !== "working";
-}
-
-/** The job is in a state watches fire on: tell each watcher once, and forget the watch. */
-async function fireWatches(job: JobRow | { id: string; name: string; state: "removed" }): Promise<void> {
-	const due = watches.filter((w) => w.id === job.id && watchFires(w.when, job.state));
-	if (due.length === 0) return;
-	watches = watches.filter((w) => !due.includes(w));
-	saveWatches();
-	for (const w of due) await fireWatch(w, job);
-}
-
-async function fireWatch(w: Watch, job: JobRow | { id: string; name: string; state: "removed" }): Promise<void> {
-	const removed = job.state === "removed";
-	const row = removed ? undefined : (job as JobRow);
-	const when: Watch["when"] = removed || row?.state === "failed" || row?.state === "stopped" ? "ended" : "idle";
-	const body = noticeBody({
-		when,
-		state: job.state,
-		waitingFor: row?.waitingFor ?? null,
-		question: row?.question ?? null,
-		summary: row?.summary ?? null,
-		error: removed ? null : (row?.error ?? null),
-	});
-	// what the watched session is to the watcher
-	const watched = recs.get(job.id);
-	const key = (watched ? recKey(watched) : "") || `job:${job.id}`;
-	const relation = relationOf(treeNode(w.watcher), treeNode(key));
-	const text = envelope({ from: job.name, id: job.id, relation, kind: "notice", body });
-	try {
-		const r = await deliverAgent(w.watcher, "notice", text, { from: job.name, relation });
-		log("info", "watch fired", { id: job.id, watcher: w.watcher, when: w.when, outcome: r.outcome });
-		// a watcher that is gone (a closed pi, a stopped job) is not told: the notice is lost, as a message would be
-		if (reached(r.outcome)) record({ kind: "notice", id: job.id, name: job.name, who: w.watcherName, whoId: w.watcherId ?? null, text: when === "ended" ? "ended" : "is idle" });
-	} catch (err) {
-		log("warn", "watch notice failed", { id: job.id, watcher: w.watcher, error: String(err) });
-	}
-}
-
-/** M43: the `watch` op: a peer asks to be told once when a session is next idle, or has ended. */
-async function addWatch(conn: Conn, args: { id?: unknown; when?: unknown } | undefined): Promise<{ id: string; name: string; when: Watch["when"]; fired: boolean }> {
-	const peer = requirePeer(conn);
-	// M50: the notice is an agent item: an agent that takes none would never hear it
-	if (peer.kind === "job" && refusesItems(peer.id)) throw new OpError("unsupported", "a watch is told as a notice: say agent-items in your hello to take one");
-	const to = typeof args?.id === "string" ? args.id.trim() : "";
-	const when = args?.when;
-	if (!to) throw new OpError("bad_request", "id required");
-	if (when !== "idle" && when !== "ended") throw new OpError("bad_request", "when must be idle or ended");
-	const me = sessionKeyOf(peer);
-	const target = findTarget(peer, to);
-	if (target.key === me) throw new OpError("bad_request", "a session cannot watch itself");
-	if (target.role !== "job") throw new OpError("unsupported", "a foreground session is not watched (it has no job state)");
-	const row = rowOf(target.id);
-	if (!row) throw new OpError("not_found", `no such job: ${target.id}`);
-	const w: Watch = { watcher: me, watcherName: peerName(peer), watcherId: peer.kind === "job" ? peer.id : null, id: row.id, when, at: Date.now() };
-	// already so: said at once, nothing kept
-	if (watchFires(when, row.state)) {
-		await fireWatch(w, row);
-		return { id: row.id, name: row.name, when, fired: true };
-	}
-	const mine = watches.filter((x) => x.watcher === me);
-	const same = mine.find((x) => x.id === row.id && x.when === when);
-	if (same) watches = watches.filter((x) => x !== same);
-	else if (mine.length >= MAX_WATCHES) throw new OpError("full", `at most ${MAX_WATCHES} watches at a time`);
-	watches.push(w);
-	saveWatches();
-	log("info", "watch", { id: row.id, watcher: me, when });
-	return { id: row.id, name: row.name, when, fired: false };
-}
+const watches = createWatches<PeerIdentity>({
+	sessions: {
+		refusesItems: (peer) => peer.kind === "job" && refusesItems(peer.id),
+		keyOf: (peer) => sessionKeyOf(peer),
+		name: (peer) => peerName(peer),
+		jobId: (peer) => (peer.kind === "job" ? peer.id : null),
+		find: (peer, to) => findTarget(peer, to),
+	},
+	jobs: {
+		exists: (id) => recs.has(id),
+		row: (id) => rowOf(id),
+		relation(watcherKey, jobId) {
+			// what the watched session is to the watcher
+			const watched = recs.get(jobId);
+			const key = (watched ? recKey(watched) : "") || `job:${jobId}`;
+			return relationOf(treeNode(watcherKey), treeNode(key));
+		},
+		async deliver(key, text, meta) {
+			const r = await deliverAgent(key, "notice", text, meta);
+			return { outcome: r.outcome, reached: reached(r.outcome) };
+		},
+	},
+	store: {
+		read: () => readJson<unknown>(join(roostHome(), "watches.json")),
+		write: (v) => writeJsonAtomic(join(roostHome(), "watches.json"), v),
+	},
+	record: (e) => record(e),
+	log: (level, msg, extra) => log(level, msg, extra),
+	ttlMs: Number(process.env.PI_ROOST_WATCH_TTL_MS) || WATCH_TTL_MS,
+});
 
 function persistRoster(): void {
 	const obj: Record<string, HostRef> = {};
@@ -1783,16 +1706,13 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 	const file = removedRec ? recKey(removedRec) : undefined;
 	const name = rowOf(id)?.name ?? recs.get(id)?.name ?? id;
 	// M43: before the record goes (a watcher is told, then the record and the row are gone)
-	await fireWatches({ id, name, state: "removed" });
+	await watches.removed(id, name);
 	releaseClaimsOf(id, `${name} removed`);
 	record({ kind: "removed", id, name });
 	lastSeen.delete(id);
 	recs.delete(id);
 	// M43: its own watches go with it when nothing holds its session any more
-	if (file && !holderOf(file) && watches.some((w) => w.watcher === file)) {
-		watches = watches.filter((w) => w.watcher !== file);
-		saveWatches();
-	}
+	if (file && !holderOf(file)) watches.watcherGone(file);
 	// M44: the concierge removed is the concierge off; M45: a suggestion for a removed row goes with it
 	if (isConcierge(id)) {
 		concierge = { ...concierge, id: null, on: false };
@@ -2183,7 +2103,7 @@ function loadJobs(): void {
 		const st = readState(id);
 		if (st && !hidden(st)) lastSeen.set(id, { state: st.state, waitingFor: st.endedAt === undefined ? ((st.waitingFor as JobRow["waitingFor"]) ?? null) : null, question: typeof st.question === "string" && st.question ? st.question : null });
 	}
-	loadWatches();
+	watches.load();
 	loadConcierge();
 	loadOrders();
 	loadTasks();
@@ -3718,7 +3638,7 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			return eventLog.since({ after, limit, id });
 		}
 		case "watch":
-			return addWatch(conn, args);
+			return watches.add(requirePeer(conn), args);
 		case "concierge":
 			return conciergeOp(args);
 		case "concierge-ask":
@@ -3870,7 +3790,7 @@ const shellWatcher = setInterval(shellTick, 2000);
 shellWatcher.unref();
 const reaper = setInterval(
 	() => {
-		sweepWatches();
+		watches.sweep();
 		void reapIdle().catch((err: unknown) => log("error", "reap failed", { error: String(err) }));
 		void cleanupOld().catch((err: unknown) => log("error", "cleanup failed", { error: String(err) }));
 		void pollPrs().catch((err: unknown) => log("error", "pull request poll failed", { error: String(err) }));

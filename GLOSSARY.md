@@ -55,3 +55,7 @@ _Avoid_: approval (approving is of the repository's commands)
 **Schedule**:
 A named dispatch template with a rhythm (`every 2h`, `daily 09:00`, a cron expression): the daemon starts a Session from it each time a slot comes due, never two runs at once.
 _Avoid_: cron job, timer
+
+**Watch**:
+A Session's standing request to be told once, as a notice, when another job is next idle or has ended; it expires if it never fires, and a session keeps a few at a time.
+_Avoid_: subscription, listener

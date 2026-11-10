@@ -85,3 +85,15 @@ no rule of theirs is tested in process.
 - Noted, not changed: a slot skipped because the previous run still goes is not tried
   again (the next slot is set first, on purpose); an entry loaded from the file is not
   checked for its cwd (only `schedule-add` checks).
+
+## M68, as done
+
+- `lib/watches.ts`: `createWatches<P>(deps)` → `{ load(), add(peer, args), stateChanged(row), removed(id, name), watcherGone(key), sweep() }`. The daemon's call sites are one line each: `watches.add(requirePeer(conn), args)`, `void watches.stateChanged(job)` in `noteState` (which stays the daemon's, with the suggestion drop and the claim release), `await watches.removed(id, name)` before the record goes, `watches.watcherGone(file)` after it (when nothing holds the session), `watches.load()` at startup, `watches.sweep()` in the reaper.
+- Ports: `sessions` (what the daemon knows of the asking peer `P`: `refusesItems`, `keyOf`, `name`, `jobId`, `find`; the order of the op's refusals is the module's), `jobs` (`exists`, `row`, `relation(watcherKey, jobId)`, `deliver` → `{ outcome, reached }`), `store`, `record`, `log`, `clock`, and the options `ttlMs` (the daemon reads `PI_ROOST_WATCH_TTL_MS`) and `maxPerWatcher`.
+- The sweep stays on the daemon's shared reaper (`PI_ROOST_REAP_CHECK_MS`), not a timer of the module: nothing in the module arms a timer, so there is no `start()`/`stop()`. Expiry uses `clock.now()`.
+- `load()` is called by the daemon once the jobs are loaded (the file is filtered by the jobs that exist), not by `createWatches`.
+- The `working` guard in `noteState` moved into the module (`watchFires` is false for it anyway).
+- `test/watches.test.ts`: 49 tests, in process. `daemon/main.ts`: 3886 → about 3806 lines.
+- No socket test went: the three watch tests of M43 each stay as the end-to-end test of a piece of wiring (the op and `noteState` → watches; the remove path; startup load and the reaper's sweep over a real restart).
+- Each guard was removed in turn: 44 of 46 fail a test; the other two (the file's `id` and `at` being a string and a number) cannot change anything, a bad id or `at` never matching a job or a time.
+
