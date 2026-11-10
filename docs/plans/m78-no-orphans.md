@@ -44,3 +44,9 @@ Tests: `test/orphans.test.ts`.
   (mutation-checked). The fakes' directories are removed.
 - Known limit: a followed pid reused by an unrelated process keeps the orphan alive (and spared
   by the sweep). Rare, and on the safe side.
+- Found later (2026-11-10, 44 left, some made after M78): a host killed by a test (its
+  `afterEach` SIGKILLs it) while it started its worker leaves node-pty's `spawn-helper` waiting
+  for it for ever, adopted by init, its command naming the worker's directory. The sweep now
+  kills such a helper too: an orphan (parent pid 1) whose worker directory is a test's
+  (`<tmp>/roost-*`); one with a parent, or another directory, is never touched. A test covers
+  the three (mutation-checked). The next run's sweep clears what a run leaves.
