@@ -20,7 +20,12 @@ import {
 } from "@earendil-works/pi-tui";
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError, GiveUp } from "../lib/client.ts";
-import type { OverlayHost } from "./overlay-host.ts";
+import type { Overlay, OverlayHost } from "./overlay-host.ts";
+import { createReviewOverlay } from "./overlays/review.ts";
+import { createWorkspacesOverlay } from "./overlays/workspaces.ts";
+import { CONTROL, oneLine, wrap } from "./text.ts";
+
+export type { Overlay };
 import { type RoostPort, roostPort, sends } from "./roost-port.ts";
 import { hostSocketPath } from "../lib/paths.ts";
 import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/dispatch-input.ts";
@@ -40,12 +45,10 @@ import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
 import { taskChanges } from "../lib/task-git.ts";
-import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
-import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
-import { nextNeedsYou, overlaps, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
+import { taskDiff } from "../lib/task-diff.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
 import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
-import { type BoardSummary, type BoardTask, type ReviewComment, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
+import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -65,6 +68,7 @@ import {
 	nameToneOf,
 	type Section,
 	sentenceOf,
+	rowName,
 	titleText,
 	type Tone,
 	isProfileRow,
@@ -260,16 +264,6 @@ interface Picker {
 	scope?: string;
 }
 
-/** M23: a component shown in place of the list (pi's session selector), with its keys. */
-export interface Overlay {
-	render(width: number): string[];
-	handleInput?(data: string): void;
-	focused?: boolean;
-	dispose?(): void;
-	/** M71: a pushed event, after the view took it in (the view keeps the one subscription). */
-	onEvent?(e: Event): void;
-}
-
 interface Columns {
 	mode: "full" | "share" | "none";
 	modelW: number;
@@ -314,8 +308,6 @@ export class AgentView implements Component {
 	/** AV-K10: the row being renamed, edited in its own input. */
 	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
-	/** M57: the workspace overlay's reload, while it is open (a board event refreshes it). */
-	private wsReload: (() => void) | undefined;
 	/** M60: the pull request shown for a task, confirmed by /tasks pr again within 30 s. */
 	private prShown: { id: number; at: number; hash: string } | undefined;
 	private groupBy: "state" | "directory" = "state";
@@ -585,8 +577,7 @@ export class AgentView implements Component {
 		} else if (e.event === "board") {
 			// M47: the counts for the header; an open /tasks overlay fetches the tasks itself
 			this.board = e.board;
-			// M57: the workspace overlay follows the board
-			this.wsReload?.();
+			// M57: the workspace overlay follows the board, by its onEvent
 		}
 		try {
 			this.overlay?.onEvent?.(e);
@@ -604,6 +595,9 @@ export class AgentView implements Component {
 			requestRender: () => this.o.tui.requestRender(),
 			attachTo: (id) => this.attachTo(id),
 			rows: () => this.rows,
+			current: () => this.overlay,
+			notice: () => this.notice,
+			termRows: () => this.o.tui.terminal.rows,
 			taskDiff: this.o.taskDiff,
 			taskChanges: this.o.taskChanges,
 			worktreeChange: this.o.worktreeChange,
@@ -2368,289 +2362,16 @@ export class AgentView implements Component {
 	}
 
 	private async openWorkspaces(port: RoostPort, next: boolean, focus?: number): Promise<void> {
-		const view = this;
-		const t = this.o.theme;
-		const here = projectOf(this.dispatchCwd());
-		const changesOf = this.o.taskChanges ?? taskChanges;
-		let tasks: BoardTask[] = [];
-		let entries: WsEntry[] = [];
-		let sel: number | undefined;
-		let top = 0;
-		let back: { id: number; input: Input } | undefined;
-		// approve: the commands shown in full, then y (the dry call's hash goes with it)
-		let confirm: { id: number; note: string; hash: string; kind: "approve" | "pr" } | undefined;
-		let busy = false;
-		let closed = false;
-		const changes = new Map<number, { key: string; at: number; c?: TaskChanges; loading: boolean }>();
-		const sessionOf = (x: BoardTask): WsSession | undefined => {
-			const r = x.owner ? view.rows.get(x.owner.id) : undefined;
-			return r ? { name: oneLine(rowName(r)), state: r.state, waitingFor: r.waitingFor ?? null, running: r.pid !== null } : undefined;
-		};
-		const selected = (): BoardTask | undefined => entries.find((e) => e.task.id === sel)?.task;
-		// what each worktree holds: read again when its stage, note or verify changed, or after 5 s
-		const fetchChanges = () => {
-			const now = Date.now();
-			for (const e of entries) {
-				const w = e.task.workspace;
-				if (!w || !w.path || w.stage === "merged" || !w.baseRef) continue;
-				const key = `${w.stage}:${w.note ?? ""}:${w.verify?.at ?? 0}`;
-				const hit = changes.get(e.task.id);
-				if (hit && (hit.loading || (hit.key === key && now - hit.at < 5000))) continue;
-				changes.set(e.task.id, { key, at: now, c: hit?.c, loading: true });
-				void changesOf(w.path, w.baseRef).then(
-					(c) => {
-						changes.set(e.task.id, { key, at: Date.now(), c, loading: false });
-						if (!closed) view.o.tui.requestRender();
-					},
-					() => changes.set(e.task.id, { key, at: Date.now(), loading: false }),
-				);
-			}
-		};
-		const load = async (pickNext: boolean): Promise<void> => {
-			const r = await port.tasks.list(here ? { project: here } : {});
-			if (closed) return;
-			tasks = r.tasks;
-			entries = workspaceEntries(tasks);
-			if (pickNext) sel = nextNeedsYou(entries, undefined, sessionOf) ?? sel;
-			else if (focus !== undefined && sel === undefined) sel = focus;
-			if (sel === undefined || !entries.some((e) => e.task.id === sel)) sel = entries[0]?.task.id;
-			fetchChanges();
-			view.o.tui.requestRender();
-		};
-		let reloading: Promise<void> | undefined;
-		let again = false;
-		let self: Overlay | undefined;
-		const reload = () => {
-			// replaced by another overlay without closing: stop following the board
-			if (self && view.overlay !== self) closed = true;
-			if (closed) {
-				if (view.wsReload === reload) view.wsReload = undefined;
-				return;
-			}
-			// one load at a time; one more after it when asked meanwhile (its answer may predate the change)
-			if (reloading) {
-				again = true;
-				return;
-			}
-			reloading = load(false)
-				.catch((err: unknown) => view.say((err as Error).message, "error"))
-				.finally(() => {
-					reloading = undefined;
-					if (again) {
-						again = false;
-						reload();
-					}
-				});
-		};
-		try {
-			await load(next);
-		} catch (err) {
-			return this.say((err as Error).message, "error");
-		}
-		if (next && (sel === undefined || !nextNeedsYou(entries, undefined, sessionOf))) this.say(entries.length > 0 ? "nothing needs you" : "no tasks in workspaces: /tasks add, then s on it here", "muted");
-		// a verb of /tasks on the selected task; the overlay reloads after it
-		const act = (verb: string, x: BoardTask, extra = "") => {
-			if (busy) return;
-			busy = true;
-			void view.tasksCommand(`${verb} ${x.id}${extra ? ` ${extra}` : ""}`).finally(() => {
-				busy = false;
-				reload();
-			});
-		};
-		// M60: tasks changing the same files (from what was read of each worktree)
-		let overlapNow = new Map<number, { id: number; files: string[] }[]>();
-		const listLines = (width: number): { lines: string[]; selAt: number } => {
-			overlapNow = overlaps(entries, (id) => changes.get(id)?.c);
-			const lines: string[] = [];
-			let selAt = 0;
-			let group = "";
-			for (const e of entries) {
-				if (e.group !== group) {
-					group = e.group;
-					lines.push(t.fg("dim", truncateToWidth(WS_GROUP_TITLES[e.group], width)));
-				}
-				const s = sessionOf(e.task);
-				const icon = wsIcon(e.task, s);
-				const isSel = e.task.id === sel;
-				if (isSel) selAt = lines.length;
-				const shared = overlapNow.has(e.task.id) ? "⚠ " : "";
-				const right = `${shared}${changeShort(changes.get(e.task.id)?.c) || (e.task.workspace?.stage === "working" && s && !s.running ? "idle" : "")}`.trim();
-				const head = `${isSel ? t.fg("accent", "▶") : " "} ${t.fg(icon.tone, icon.glyph)} `;
-				const room = Math.max(1, width - visibleWidth(head) - (right ? visibleWidth(right) + 1 : 0));
-				const text = truncateToWidth(oneLine(wsRowText(e.task, tasks)), room);
-				const gap = " ".repeat(Math.max(1, width - visibleWidth(head) - visibleWidth(text) - visibleWidth(right)));
-				lines.push(truncateToWidth(`${head}${isSel ? t.bold(text) : text}${right ? `${gap}${t.fg("dim", right)}` : ""}`, width));
-			}
-			if (entries.length === 0) lines.push(t.fg("dim", truncateToWidth(here ? "no tasks here: /tasks add <title>" : "no tasks", width)));
-			return { lines, selAt };
-		};
-		const detailLines = (width: number, max: number): string[] => {
-			const x = selected();
-			if (!x) return [];
-			const s = sessionOf(x);
-			const row = x.owner ? view.rows.get(x.owner.id) : undefined;
-			const hit = changes.get(x.id);
-			const items = wsDetail(x, { session: s, sentence: row ? sentenceOf(row) : undefined, changes: hit?.c ?? (hit?.loading ? "loading" : undefined), fileMax: Math.max(2, max - 12), overlap: overlapNow.get(x.id) });
-			const out = [t.bold(truncateToWidth(`#${x.id} ${oneLine(x.title)}`, width))];
-			for (const it of items) {
-				const label = it.label ? it.label.padEnd(7) : " ".repeat(7);
-				const text = truncateToWidth(oneLine(it.text), Math.max(1, width - 8));
-				out.push(`${t.fg("dim", label)} ${it.tone ? t.fg(it.tone, text) : text}`);
-			}
-			return out.slice(0, max);
-		};
-		this.wsReload = reload;
-		this.overlay = self = {
-			render(width: number) {
-				const rows = view.o.tui.terminal.rows || 30;
-				const room = Math.max(4, rows - 8);
-				const title = `${here ? projectLabel(here) : "all projects"} · workspaces`;
-				const counts = wsCounts(entries);
-				const pad = Math.max(1, width - visibleWidth(title) - visibleWidth(counts));
-				const out = [truncateToWidth(`${t.bold(title)}${" ".repeat(pad)}${t.fg("dim", counts)}`, width), ""];
-				const wide = width >= 100;
-				const listW = wide ? Math.min(48, Math.floor(width * 0.42)) : width;
-				const { lines: list, selAt } = listLines(listW);
-				const listRoom = wide ? room : Math.max(3, Math.floor(room / 2));
-				// the selection stays in view
-				if (selAt < top) top = selAt;
-				if (selAt >= top + listRoom) top = selAt - listRoom + 1;
-				top = Math.max(0, Math.min(top, Math.max(0, list.length - listRoom)));
-				const shown = list.slice(top, top + listRoom);
-				if (wide) {
-					const detail = detailLines(width - listW - 3, room);
-					for (let i = 0; i < Math.max(shown.length, detail.length); i++) {
-						const l = shown[i] ?? "";
-						out.push(`${l}${" ".repeat(Math.max(0, listW - visibleWidth(l)))} ${t.fg("dim", "│")} ${detail[i] ?? ""}`);
-					}
-				} else {
-					out.push(...shown, t.fg("dim", "─".repeat(Math.min(width, 40))), ...detailLines(width, Math.max(3, room - shown.length - 1)));
-				}
-				out.push("");
-				if (back) out.push(...back.input.render(width));
-				if (confirm) for (const l of wrap(confirm.kind === "approve" ? `approve for #${confirm.id}: ${confirm.note} · they run in your account` : `#${confirm.id}: ${confirm.note}?`, width)) out.push(t.fg("warning", l));
-				const n = view.notice;
-				if (n && n.until > Date.now()) out.push(t.fg(n.tone, truncateToWidth(oneLine(n.text), width)));
-				const x = selected();
-				const keys = back ? "Enter send back with this note (empty: none) · Esc cancel" : confirm ? `y ${confirm.kind === "approve" ? "approve these commands" : "push and open it"} · any other key: no` : [...wsKeys(x, x ? sessionOf(x) : undefined).map(([k, v]) => `${k} ${v}`), "↑↓ select", "Esc close"].join(" · ");
-				out.push(t.fg("dim", truncateToWidth(keys, width)));
-				return out;
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (back) {
-					if (key === "escape" || key === "ctrl+c") back = undefined;
-					else if (key === "enter") {
-						// the task the note was written for, wherever the selection went meanwhile
-						const note = oneLine(back.input.getValue()).trim();
-						const x = tasks.find((y) => y.id === back!.id);
-						back = undefined;
-						if (x) act("back", x, note);
-					} else back.input.handleInput(data);
-					return;
-				}
-				if (confirm) {
-					const c = confirm;
-					confirm = undefined;
-					if (data !== "y" || busy) return view.say(c.kind === "approve" ? "not approved" : "no pull request", "muted");
-					busy = true;
-					if (c.kind === "pr") view.say(`#${c.id}: pushing…`, "muted");
-					void (c.kind === "pr" ? port.tasks.pr({ id: c.id, hash: c.hash }) : port.tasks.approve({ id: c.id, hash: c.hash }))
-						.then((r) => view.say(r.note ?? "approved", "success"))
-						.catch((err: unknown) => view.say((err as Error).message, "error"))
-						.finally(() => {
-							busy = false;
-							reload();
-						});
-					return;
-				}
-				if (key === "escape" || key === "ctrl+c" || data === "q") return view.closeOverlay();
-				const i = entries.findIndex((e) => e.task.id === sel);
-				if (key === "up" || key === "down") {
-					const j = Math.max(0, Math.min(entries.length - 1, (i < 0 ? 0 : i) + (key === "up" ? -1 : 1)));
-					sel = entries[j]?.task.id;
-					fetchChanges();
-					return;
-				}
-				if (key === "home" || key === "end") {
-					sel = (key === "home" ? entries[0] : entries[entries.length - 1])?.task.id;
-					fetchChanges();
-					return;
-				}
-				if (data === "n" || key === "ctrl+n") {
-					const to = nextNeedsYou(entries, sel, sessionOf);
-					if (to === undefined) view.say("nothing needs you", "muted");
-					else sel = to;
-					return;
-				}
-				if (data === "r") {
-					changes.clear();
-					return reload();
-				}
-				const x = selected();
-				if (!x) return;
-				const s = sessionOf(x);
-				const allowed = new Set(wsKeys(x, s).map(([k]) => k));
-				// M58: Enter reviews a task with a workspace (its diff, comments); Esc comes back here
-				if (key === "enter" && x.workspace?.path && x.workspace.stage !== "merged" && x.workspace.stage !== "shelved") {
-					const at = x.id;
-					view.closeOverlay();
-					return void view.openReview(at, () => void view.showWorkspaces(false, at));
-				}
-				const attach = data === "t" || key === "right" || key === "enter";
-				if (attach) {
-					if (s?.running && x.owner) {
-						view.closeOverlay();
-						return void view.attachTo(x.owner.id).catch((err: unknown) => view.say(String((err as Error).message ?? err), "error"));
-					}
-					if (data === "t" || key === "right") view.say(`#${x.id} has no session running${allowed.has("s") ? ": s starts one" : ""}`, "muted");
-					return;
-				}
-				if (!allowed.has(data)) return;
-				if (data === "b") {
-					back = { id: x.id, input: new Input({ prompt: `#${x.id} back › ` }) };
-					back.input.focused = true;
-					return;
-				}
-				if (data === "o") {
-					if (busy) return;
-					busy = true;
-					void port.tasks
-						.pr({ id: x.id, dry: true })
-						.then((r) => {
-							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash, kind: "pr" };
-						})
-						.catch((err: unknown) => view.say((err as Error).message, "error"))
-						.finally(() => {
-							busy = false;
-							view.o.tui.requestRender();
-						});
-					return;
-				}
-				if (data === "a") {
-					if (busy) return;
-					busy = true;
-					void port.tasks
-						.approve({ id: x.id, dry: true })
-						.then((r) => {
-							if (r.hash) confirm = { id: x.id, note: oneLine(r.note ?? ""), hash: r.hash, kind: "approve" };
-							else view.say(r.note ?? "nothing to approve", "muted");
-						})
-						.catch((err: unknown) => view.say((err as Error).message, "error"))
-						.finally(() => {
-							busy = false;
-							view.o.tui.requestRender();
-						});
-					return;
-				}
-				const verb = { s: "start", m: "merge", v: "verify", p: "pass", x: "abort", h: "shelve" }[data];
-				if (verb) act(verb, x);
-			},
-			dispose() {
-				closed = true;
-				if (view.wsReload === reload) view.wsReload = undefined;
-			},
-		};
+		const o = await createWorkspacesOverlay(this.overlayHost(port), {
+			here: projectOf(this.dispatchCwd()),
+			next,
+			focus,
+			tasksCommand: (line) => this.tasksCommand(line),
+			// Esc in the review comes back here, on that task
+			openReview: (at) => void this.openReview(at, () => void this.showWorkspaces(false, at)),
+		});
+		if (!o) return;
+		this.overlay = o;
 		this.o.tui.requestRender();
 	}
 
@@ -2674,244 +2395,9 @@ export class AgentView implements Component {
 	}
 
 	private async reviewOverlay(port: RoostPort, id: number, onClose?: () => void): Promise<void> {
-		const view = this;
-		const t = this.o.theme;
-		const diffOf = this.o.taskDiff ?? taskDiff;
-		let task: BoardTask | undefined;
-		let diff: TaskDiff | undefined;
-		let fi = 0;
-		let ri = -1; // -1: the file's first line of diff
-		let top = 0;
-		let input: { kind: "comment" | "back"; box: Input } | undefined;
-		let busy = false;
-		let closed = false;
-		let self: Overlay | undefined;
-		const load = async (): Promise<void> => {
-			const { tasks } = await port.tasks.list();
-			task = tasks.find((x) => x.id === id);
-			const w = task?.workspace;
-			if (!task || !w || !w.path) throw new Error(`#${id} has no workspace to review`);
-			const d = await diffOf(w.path, w.baseRef);
-			if (!d) throw new Error(`#${id}: git could not diff ${w.branch} against ${w.baseRef}`);
-			diff = d;
-			fi = Math.min(fi, Math.max(0, d.files.length - 1));
-		};
-		try {
-			await load();
-		} catch (err) {
-			this.say((err as Error).message, "error");
-			return onClose?.();
-		}
-		const comments = () => task?.workspace?.comments ?? [];
-		// the files, and one more holding the comments on files no longer in the diff
-		const filesOf = (): DiffFile[] => {
-			const fs = diff?.files ?? [];
-			const there = new Set(fs.map((f) => f.path));
-			return comments().some((c) => !there.has(c.file)) ? [...fs, { path: "", status: "M", binary: false, hunks: [] }] : fs;
-		};
-		type Row = { kind: "hunk"; text: string; h: number } | { kind: "line"; line: DiffLine; h: number } | { kind: "note"; text: string } | { kind: "stale"; c: ReviewComment };
-		const rowsOf = (f: DiffFile | undefined): Row[] => {
-			if (!f) return [];
-			// comments not under a line of it now (outdated), first; d deletes them there
-			if (!f.path) {
-				const there = new Set((diff?.files ?? []).map((x) => x.path));
-				return comments().filter((c) => !there.has(c.file)).map((c) => ({ kind: "stale", c }));
-			}
-			const out: Row[] = outdatedIn(f, comments()).map((c) => ({ kind: "stale", c }));
-			if (f.summary) return [...out, { kind: "note", text: f.summary }];
-			if (f.binary) return [...out, { kind: "note", text: "binary file" }];
-			if (f.hunks.length === 0) return [...out, { kind: "note", text: f.status === "R" ? "renamed, its text unchanged" : f.status === "A" ? "an empty file" : f.status === "D" ? "an empty file, deleted" : "its text unchanged (its mode changed)" }];
-			f.hunks.forEach((hk, h) => {
-				out.push({ kind: "hunk", text: hk.header, h });
-				for (const line of hk.lines) out.push({ kind: "line", line, h });
-			});
-			return out;
-		};
-		const anchor = commentAnchor;
-		// a comment sits under its line while that line is where it was; otherwise it is outdated (kept)
-		const placed = (f: DiffFile, rows: Row[]) => {
-			const at = new Map<number, ReviewComment[]>();
-			for (const c of comments()) {
-				if (c.file !== f.path) continue;
-				const r = rows.findIndex((x) => x.kind === "line" && commentOn(c, f.path, x.line));
-				if (r >= 0) at.set(r, [...(at.get(r) ?? []), c]);
-			}
-			return { at };
-		};
-		const clean = (s: string) => s.replace(/\t/g, "    ").replace(CONTROL, " ").replace(/[\x80-\x9f]/g, " ");
-		// merge and back close the review when they did it (the task merged, at work again); else it stays
-		const act = (verb: string, extra = "") => {
-			if (busy) return view.say("busy: try again in a moment", "muted");
-			busy = true;
-			void view
-				.tasksCommand(`${verb} ${id}${extra ? ` ${extra}` : ""}`)
-				.then(() => reload())
-				.finally(() => {
-					busy = false;
-					const stage = task?.workspace?.stage;
-					if ((verb === "merge" && stage === "merged") || (verb === "back" && stage === "working")) close();
-				});
-		};
-		const reload = async () => {
-			try {
-				await load();
-			} catch (err) {
-				// a merged task's worktree is gone: nothing to diff any more
-				if (task?.workspace?.stage !== "merged") view.say((err as Error).message, "error");
-			}
-			if (!closed) view.o.tui.requestRender();
-		};
-		const close = () => {
-			if (closed || view.overlay !== self) return;
-			view.closeOverlay();
-			onClose?.();
-		};
-		const moveLine = (rows: Row[], to: number) => {
-			ri = Math.max(0, Math.min(rows.length - 1, to));
-		};
-		this.overlay = self = {
-			render(width: number) {
-				const room = Math.max(4, (view.o.tui.terminal.rows || 30) - 9);
-				const files = filesOf();
-				fi = Math.min(fi, Math.max(0, files.length - 1));
-				const f = files[fi];
-				const rows = rowsOf(f);
-				if (ri < 0) ri = Math.max(0, rows.findIndex((r) => r.kind === "line"));
-				moveLine(rows, ri);
-				const { at } = f ? placed(f, rows) : { at: new Map<number, ReviewComment[]>() };
-				const hunks = f?.hunks.length ?? 0;
-				const cur = rows[ri];
-				const h = cur && (cur.kind === "line" || cur.kind === "hunk") ? cur.h + 1 : 0;
-				const name = !f ? "no changes" : !f.path ? "comments on files not in the diff now" : clean(f.oldPath ? `${f.oldPath} → ${f.path}` : f.path);
-				const head = `#${id} ${oneLine(task?.title ?? "")} · ${f?.path ? `${f.status} ` : ""}${name}`;
-				const facts = [files.length > 1 ? `file ${fi + 1}/${files.length}` : "", hunks > 0 ? `hunk ${h || 1}/${hunks}` : "", comments().length > 0 ? `${comments().length} comment${comments().length === 1 ? "" : "s"}` : "", diff?.truncated ? "diff cut short" : ""].filter(Boolean).join(" · ");
-				const out = [t.bold(truncateToWidth(oneLine(head), width)), t.fg("dim", truncateToWidth(facts || " ", width)), t.fg("dim", "─".repeat(Math.max(1, Math.min(width, 120))))];
-				// the body: the rows with the comments under theirs, the cursor in view
-				const body: { text: string; row: number }[] = [];
-				rows.forEach((r, i) => {
-					const mark = i === ri ? t.fg("accent", "▶") : " ";
-					if (r.kind === "note") body.push({ text: `${mark} ${t.fg("dim", r.text)}`, row: i });
-					else if (r.kind === "stale") body.push({ text: `${mark} ${t.fg("warning", truncateToWidth(clean(`✎ ${f?.path ? "outdated" : r.c.file} (line ${r.c.line}): ${oneLine(r.c.text)}`), Math.max(1, width - 2)))}`, row: i });
-					else if (r.kind === "hunk") body.push({ text: `${mark} ${t.fg("dim", truncateToWidth(clean(r.text), Math.max(1, width - 2)))}`, row: i });
-					else {
-						const l = r.line;
-						const no = String(l.newNo ?? l.oldNo ?? "").padStart(5);
-						const text = truncateToWidth(clean(`${l.kind} ${l.text}`), Math.max(1, width - 8), "…");
-						body.push({ text: `${mark}${t.fg("dim", no)} ${l.kind === "+" ? t.fg("success", text) : l.kind === "-" ? t.fg("error", text) : text}`, row: i });
-					}
-					for (const c of at.get(i) ?? []) for (const w of wrap(clean(`└ ✎ ${oneLine(c.text)}`), Math.max(1, width - 8))) body.push({ text: `       ${t.fg("warning", w)}`, row: i });
-				});
-				const first = body.findIndex((b) => b.row === ri);
-				let last = first;
-				while (last + 1 < body.length && body[last + 1]!.row === ri) last++;
-				if (first < top) top = first;
-				if (last >= top + room) top = last - room + 1;
-				top = Math.max(0, Math.min(top, Math.max(0, body.length - room)));
-				out.push(...body.slice(top, top + room).map((b) => b.text));
-				if (files.length === 0) out.push(t.fg("dim", "  nothing changed against base"));
-				out.push("");
-				if (input) out.push(...input.box.render(width));
-				const n = view.notice;
-				if (n && n.until > Date.now()) out.push(t.fg(n.tone, truncateToWidth(oneLine(n.text), width)));
-				const keys = input
-					? `Enter ${input.kind === "comment" ? "keep the comment" : "send back with the comments"} · Esc cancel`
-					: "j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload · Esc back";
-				out.push(t.fg("dim", truncateToWidth(keys, width)));
-				return out.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width) : l));
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				const files = filesOf();
-				const f = files[fi];
-				const rows = rowsOf(f);
-				if (input) {
-					if (key === "escape" || key === "ctrl+c") input = undefined;
-					else if (key === "enter") {
-						// busy: the text stays in the box for another Enter
-						if (busy) return view.say("busy: Enter again in a moment", "muted");
-						const text = oneLine(input.box.getValue()).trim();
-						const kind = input.kind;
-						input = undefined;
-						if (kind === "back") return act("back", text);
-						const r = rows[ri];
-						if (!text || !f?.path || r?.kind !== "line") return;
-						busy = true;
-						void port.tasks
-							.comment(id, { file: f.path, ...anchor(r.line), text, tip: diff?.tip })
-							.then((res) => {
-								if (task?.workspace && res.task?.workspace) task.workspace.comments = res.task.workspace.comments;
-							})
-							.catch((err: unknown) => view.say((err as Error).message, "error"))
-							.finally(() => {
-								busy = false;
-								view.o.tui.requestRender();
-							});
-					} else input.box.handleInput(data);
-					return;
-				}
-				if (key === "escape" || data === "q" || key === "ctrl+c") return close();
-				if (data === "j" || key === "down") return moveLine(rows, ri + 1);
-				if (data === "k" || key === "up") return moveLine(rows, ri - 1);
-				if (key === "pageDown") return moveLine(rows, ri + 10);
-				if (key === "pageUp") return moveLine(rows, ri - 10);
-				if (data === "n" || data === "p") {
-					// to the first line of the next (previous) hunk; p from a hunk's start goes to the one before
-					const cur = rows[ri];
-					const h = cur && (cur.kind === "line" || cur.kind === "hunk") ? cur.h : data === "n" ? -1 : Number.MAX_SAFE_INTEGER;
-					const want = data === "n" ? h + 1 : h - 1;
-					const at = rows.findIndex((r) => r.kind === "hunk" && r.h === want);
-					if (at >= 0) moveLine(rows, at + 1 < rows.length ? at + 1 : at);
-					return;
-				}
-				if (data === "]" || data === "[") {
-					const to = fi + (data === "]" ? 1 : -1);
-					if (to >= 0 && to < files.length) {
-						fi = to;
-						// the first line of its diff (past its outdated comments and its first hunk's header)
-						const next = rowsOf(files[to]);
-						const first = next.findIndex((r) => r.kind === "line");
-						ri = first >= 0 ? first : 0;
-						top = 0;
-					}
-					return;
-				}
-				if (data === "r") return void reload();
-				if (data === "c") {
-					if (rows[ri]?.kind !== "line") return view.say("c comments on a line of the diff", "muted");
-					input = { kind: "comment", box: new Input({ prompt: "comment › " }) };
-					input.box.focused = true;
-					return;
-				}
-				if (data === "d") {
-					if (!f || busy) return;
-					const r = rows[ri];
-					const mine = r?.kind === "stale" ? [r.c] : r?.kind === "line" ? placed(f, rows).at.get(ri) : undefined;
-					if (!mine || mine.length === 0) return view.say("no comment here", "muted");
-					const c = mine[mine.length - 1]!;
-					busy = true;
-					void port.tasks
-						.uncomment(id, { file: c.file, line: c.line, at: c.at })
-						.then((res) => {
-							if (task?.workspace) task.workspace.comments = res.task?.workspace?.comments;
-						})
-						.catch((err: unknown) => view.say((err as Error).message, "error"))
-						.finally(() => {
-							busy = false;
-							view.o.tui.requestRender();
-						});
-					return;
-				}
-				if (data === "b") {
-					input = { kind: "back", box: new Input({ prompt: `#${id} back › ` }) };
-					input.box.focused = true;
-					return;
-				}
-				if (data === "m") return act("merge");
-			},
-			dispose() {
-				closed = true;
-			},
-		};
+		const o = await createReviewOverlay(this.overlayHost(port), { id, onClose, tasksCommand: (line) => this.tasksCommand(line) });
+		if (!o) return;
+		this.overlay = o;
 		this.o.tui.requestRender();
 	}
 
@@ -4378,13 +3864,6 @@ export function presetText(p: Preset): string {
 		.join(" · ");
 }
 
-/** M26: a fan-out's rows say their model (pi names each session on its own, often alike). */
-export function rowName(row: JobRow): string {
-	if (!row.fanout || !row.model) return row.name;
-	const tag = shortModel(row.model);
-	return row.name.endsWith(` · ${tag}`) ? row.name : `${row.name} · ${tag}`;
-}
-
 /**
  * Full screen: exactly `rows` lines. The bottom block (input, notices, keys) is pinned
  * to the last lines; the first `keep` lines (title, rule) stay; the rest scrolls so the
@@ -4416,9 +3895,6 @@ export function fitScreen(
 	}
 	return [...body, ...Array(Math.max(0, room - body.length)).fill(""), ...foot].slice(0, height);
 }
-
-// Control characters other than newlines would corrupt the line-based renderer.
-const CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/g;
 
 /** M48: a directory with the home as `~` (the peek's "where"). */
 function tildeDir(dir: string): string {
@@ -4464,31 +3940,10 @@ function formatAgo(ms: number): string {
 	return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
 
-function oneLine(text: string): string {
-	return text.replace(CONTROL, " ").replace(/\s+/g, " ").trim();
-}
-
 function within(dir: string, root: string): boolean {
 	return dir === root || dir.startsWith(root.endsWith("/") ? root : `${root}/`);
 }
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((r) => setTimeout(r, ms));
-}
-
-function wrap(text: string, width: number): string[] {
-	const out: string[] = [];
-	for (const para of text.split("\n")) {
-		let line = "";
-		for (const word of para.split(/\s+/)) {
-			if (!word) continue;
-			if (line && visibleWidth(line) + 1 + visibleWidth(word) > width) {
-				out.push(line);
-				line = "";
-			}
-			line = line ? `${line} ${word}` : word;
-		}
-		if (line) out.push(truncateToWidth(line, width));
-	}
-	return out.slice(0, 6);
 }

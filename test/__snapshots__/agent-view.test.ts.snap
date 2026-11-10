@@ -1,0 +1,376 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`M72: overlay renders, pinned > review: a file's diff, the next hunk, the next file 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · M a.ts
+file 1/2 · hunk 1/2
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  @@ -1,2 +1,2 @@
+▶    1   const a = 1;
+     2 - const b = 2;
+     2 + const b = 3;
+  @@ -9 +9 @@
+     9 + nine
+    10   ten
+
+j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload [0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > review: a file's diff, the next hunk, the next file 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · M a.ts
+file 1/2 · hunk 2/2
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  @@ -1,2 +1,2 @@
+     1   const a = 1;
+     2 - const b = 2;
+     2 + const b = 3;
+  @@ -9 +9 @@
+▶    9 + nine
+    10   ten
+
+j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload [0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > review: a file's diff, the next hunk, the next file 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · A logo.png
+file 2/2
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▶ binary file
+
+j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload [0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > review: a file's diff, the next hunk, the next file 4`] = `
+"pi agents  0 needs input · [0m...[0m
+──────────────────────────────
+tasks 1 in workspace (1 nee[0m...[0m
+#4 users migration · A logo[0m...[0m
+file 2/2
+──────────────────────────────
+▶ binary file
+
+j/k line · n/p hunk · ]/[ f[0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > review: the comment input, a comment under its line, an outdated one, the page of files gone 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · M a.ts
+file 1/3 · hunk 1/2 · 2 comments
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ✎ outdated (line 7): an old one
+  @@ -1,2 +1,2 @@
+▶    1   const a = 1;
+     2 - const b = 2;
+     2 + const b = 3;
+  @@ -9 +9 @@
+     9 + nine
+    10   ten
+
+j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload [0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > review: the comment input, a comment under its line, an outdated one, the page of files gone 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · M a.ts
+file 1/3 · hunk 1/2 · 2 comments
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ✎ outdated (line 7): an old one
+  @@ -1,2 +1,2 @@
+     1   const a = 1;
+     2 - const b = 2;
+▶    2 + const b = 3;
+  @@ -9 +9 @@
+     9 + nine
+    10   ten
+
+comment › drop it_pi:c_pi:fc _pi:/fc                                                                                  
+Enter keep the comment · Esc cancel"
+`;
+
+exports[`M72: overlay renders, pinned > review: the comment input, a comment under its line, an outdated one, the page of files gone 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · M a.ts
+file 1/3 · hunk 1/2 · 3 comments
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ✎ outdated (line 7): an old one
+  @@ -1,2 +1,2 @@
+     1   const a = 1;
+     2 - const b = 2;
+▶    2 + const b = 3;
+       └ ✎ drop it
+  @@ -9 +9 @@
+     9 + nine
+    10   ten
+
+j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload [0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > review: the comment input, a comment under its line, an outdated one, the page of files gone 4`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · M a.ts
+file 1/3 · hunk 1/2 · 3 comments
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ✎ outdated (line 7): an old one
+  @@ -1,2 +1,2 @@
+     1   const a = 1;
+     2 - const b = 2;
+▶    2 + const b = 3;
+       └ ✎ drop it
+  @@ -9 +9 @@
+     9 + nine
+    10   ten
+
+#4 back › see comments_pi:c_pi:fc _pi:/fc                                                                             
+Enter send back with the comments · Esc cancel"
+`;
+
+exports[`M72: overlay renders, pinned > review: the comment input, a comment under its line, an outdated one, the page of files gone 5`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+#4 users migration · comments on files not in the diff now
+file 3/3 · 3 comments
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▶ ✎ gone.ts (line 3): about gone
+
+j/k line · n/p hunk · ]/[ file · c comment · d delete comment · b send back · m merge · r reload [0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: a confirm (approve, pr), the back note, empty, nothing needs you 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces                                      1 working · 1 verifying · 1 in review · 1 to fix · 1 open
+
+REVIEW                                           │ #4 users migration
+▶ ◆ #4 users migration                  ⚠ +52 −1 │ stage   in review · verified: npm test (3s)
+CONFLICT · FAILED                                │ branch  roost/t-review (base main)
+  ✕ #6 rate limiter                     ⚠ +52 −1 │ agent   lint · working
+VERIFYING                                        │ change  2 files +52 −1 · 2 commits
+  ⧗ #7 settings page                    ⚠ +52 −1 │ overlap #6 changes db/0004_users.sql, db/schema.sql too
+WORKING                                          │ overlap #7 changes db/0004_users.sql, db/schema.sql too
+  ● #5 login page                       ⚠ +52 −1 │ overlap #5 changes db/0004_users.sql, db/schema.sql too
+OPEN                                             │ files   
+  · #9 audit log · after #4                      │         M db/schema.sql +12 −1
+SHELVED                                          │         A db/0004_users.sql +40
+  – #8 old idea                           +52 −1 │ said    "running bash"
+
+approve for #4: verify: npm test · they run in your account
+y approve these commands · any other key: no"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: a confirm (approve, pr), the back note, empty, nothing needs you 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces                                      1 working · 1 verifying · 1 in review · 1 to fix · 1 open
+
+REVIEW                                           │ #4 users migration
+▶ ◆ #4 users migration                  ⚠ +52 −1 │ stage   in review · verified: npm test (3s)
+CONFLICT · FAILED                                │ branch  roost/t-review (base main)
+  ✕ #6 rate limiter                     ⚠ +52 −1 │ agent   lint · working
+VERIFYING                                        │ change  2 files +52 −1 · 2 commits
+  ⧗ #7 settings page                    ⚠ +52 −1 │ overlap #6 changes db/0004_users.sql, db/schema.sql too
+WORKING                                          │ overlap #7 changes db/0004_users.sql, db/schema.sql too
+  ● #5 login page                       ⚠ +52 −1 │ overlap #5 changes db/0004_users.sql, db/schema.sql too
+OPEN                                             │ files   
+  · #9 audit log · after #4                      │         M db/schema.sql +12 −1
+SHELVED                                          │         A db/0004_users.sql +40
+  – #8 old idea                           +52 −1 │ said    "running bash"
+
+#4 back › use a transaction_pi:c_pi:fc _pi:/fc                                                                                            
+not approved
+Enter send back with this note (empty: none) · Esc cancel"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: a confirm (approve, pr), the back note, empty, nothing needs you 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace (1 needs you) · /tasks · Ctrl+N workspaces
+all projects · workspaces                                                                                    1 in review
+
+REVIEW                                           │ #4 users
+▶ ◆ #4 users                              +52 −1 │ stage   in review
+                                                 │ branch  roost/t-review (base main)
+                                                 │ change  2 files +52 −1 · 2 commits
+                                                 │ files   
+                                                 │         M db/schema.sql +12 −1
+                                                 │         A db/0004_users.sql +40
+
+#4: push roost/t4 (aaaaaaaa) and open a pull request into main?
+y push and open it · any other key: no"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: a confirm (approve, pr), the back note, empty, nothing needs you 4`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+all projects · workspaces                                                                          nothing in workspaces
+
+no tasks                                         │ 
+
+no tasks in workspaces: /tasks add, then s on it here
+n next · r reload · ↑↓ select · Esc close"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: a confirm (approve, pr), the back note, empty, nothing needs you 5`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 in workspace · /tasks · Ctrl+N workspaces
+all projects · workspaces                                                                                      1 working
+
+WORKING                                          │ #5 login page
+▶ ● #5 login page                         +52 −1 │ stage   working
+                                                 │ branch  roost/t-working (base main)
+                                                 │ agent   lint · working
+                                                 │ change  2 files +52 −1 · 2 commits
+                                                 │ files   
+                                                 │         M db/schema.sql +12 −1
+                                                 │         A db/0004_users.sql +40
+                                                 │ said    "running bash"
+
+nothing needs you
+Enter review · t attach · a approve · n next · r reload · ↑↓ select · Esc close"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: the pipeline at 120 columns, the detail beside it 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces                                      1 working · 1 verifying · 1 in review · 1 to fix · 1 open
+
+REVIEW                                           │ #4 users migration
+▶ ◆ #4 users migration                  ⚠ +52 −1 │ stage   in review · verified: npm test (3s)
+CONFLICT · FAILED                                │ branch  roost/t-review (base main)
+  ✕ #6 rate limiter                     ⚠ +52 −1 │ agent   lint · working
+VERIFYING                                        │ change  2 files +52 −1 · 2 commits
+  ⧗ #7 settings page                    ⚠ +52 −1 │ overlap #6 changes db/0004_users.sql, db/schema.sql too
+WORKING                                          │ overlap #7 changes db/0004_users.sql, db/schema.sql too
+  ● #5 login page                       ⚠ +52 −1 │ overlap #5 changes db/0004_users.sql, db/schema.sql too
+OPEN                                             │ files   
+  · #9 audit log · after #4                      │         M db/schema.sql +12 −1
+SHELVED                                          │         A db/0004_users.sql +40
+  – #8 old idea                           +52 −1 │ said    "running bash"
+
+Enter review · m merge · b back · v verify · o open a PR · t attach · a approve · n next · r reload · ↑↓ select · Esc[0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: the pipeline at 120 columns, the detail beside it 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces                                      1 working · 1 verifying · 1 in review · 1 to fix · 1 open
+
+REVIEW                                           │ #6 rate limiter
+  ◆ #4 users migration                  ⚠ +52 −1 │ stage   conflict · conflict in src/rate.ts
+CONFLICT · FAILED                                │ branch  roost/t-conflict (base main)
+▶ ✕ #6 rate limiter                     ⚠ +52 −1 │ change  2 files +52 −1 · 2 commits
+VERIFYING                                        │ overlap #4 changes db/0004_users.sql, db/schema.sql too
+  ⧗ #7 settings page                    ⚠ +52 −1 │ overlap #7 changes db/0004_users.sql, db/schema.sql too
+WORKING                                          │ overlap #5 changes db/0004_users.sql, db/schema.sql too
+  ● #5 login page                       ⚠ +52 −1 │ files   
+OPEN                                             │         M db/schema.sql +12 −1
+  · #9 audit log · after #4                      │         A db/0004_users.sql +40
+SHELVED                                          │ 
+  – #8 old idea                           +52 −1 │ 
+
+Enter review · m merge · b back · x abort sync · s start again · a approve · n next · r reload · ↑↓ select · Esc close"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: under 100 columns, the detail below; at 100 beside 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces 1 working · 1 verifying · 1 in review · 1 to fix · [0m...[0m
+
+REVIEW
+▶ ◆ #4 users migration                                                  ⚠ +52 −1
+CONFLICT · FAILED
+  ✕ #6 rate limiter                                                     ⚠ +52 −1
+VERIFYING
+  ⧗ #7 settings page                                                    ⚠ +52 −1
+WORKING
+  ● #5 login page                                                       ⚠ +52 −1
+OPEN
+  · #9 audit log · after #4
+SHELVED
+────────────────────────────────────────
+#4 users migration
+stage   in review · verified: npm test (3s)
+branch  roost/t-review (base main)
+agent   lint · working
+change  2 files +52 −1 · 2 commits
+overlap #6 changes db/0004_users.sql, db/schema.sql too
+overlap #7 changes db/0004_users.sql, db/schema.sql too
+overlap #5 changes db/0004_users.sql, db/schema.sql too
+files   
+        M db/schema.sql +12 −1
+
+Enter review · m merge · b back · v verify · o open a PR · t attach · a appro[0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: under 100 columns, the detail below; at 100 beside 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces                  1 working · 1 verifying · 1 in review · 1 to fix · 1 open
+
+REVIEW                                     │ #4 users migration
+▶ ◆ #4 users migration            ⚠ +52 −1 │ stage   in review · verified: npm test (3s)
+CONFLICT · FAILED                          │ branch  roost/t-review (base main)
+  ✕ #6 rate limiter               ⚠ +52 −1 │ agent   lint · working
+VERIFYING                                  │ change  2 files +52 −1 · 2 commits
+  ⧗ #7 settings page              ⚠ +52 −1 │ overlap #6 changes db/0004_users.sql, db/schema.sql too
+WORKING                                    │ overlap #7 changes db/0004_users.sql, db/schema.sql too
+  ● #5 login page                 ⚠ +52 −1 │ overlap #5 changes db/0004_users.sql, db/schema.sql too
+OPEN                                       │ files   
+  · #9 audit log · after #4                │         M db/schema.sql +12 −1
+SHELVED                                    │         A db/0004_users.sql +40
+  – #8 old idea                     +52 −1 │ said    "running bash"
+
+Enter review · m merge · b back · v verify · o open a PR · t attach · a approve · n next · r relo[0m...[0m"
+`;
+
+exports[`M72: overlay renders, pinned > workspaces: under 100 columns, the detail below; at 100 beside 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────
+tasks 1 blocked · 5 in workspaces (2 need you) · /tasks · Ctrl+N workspaces
+all projects · workspaces 1 working · 1 verifying · 1 in review · 1 to fix · [0m...[0m
+
+  ◆ #4 users migration                                                  ⚠ +52 −1
+CONFLICT · FAILED
+  ✕ #6 rate limiter                                                     ⚠ +52 −1
+VERIFYING
+  ⧗ #7 settings page                                                    ⚠ +52 −1
+WORKING
+  ● #5 login page                                                       ⚠ +52 −1
+OPEN
+  · #9 audit log · after #4
+SHELVED
+▶ – #8 old idea                                                           +52 −1
+────────────────────────────────────────
+#8 old idea
+stage   shelved
+branch  roost/t-shelved (base main)
+change  2 files +52 −1 · 2 commits
+files   
+        M db/schema.sql +12 −1
+        A db/0004_users.sql +40
+
+s start again · a approve · n next · r reload · ↑↓ select · Esc close"
+`;
