@@ -39,6 +39,7 @@ import { acquireDaemonLock, readWriterLock, releaseDaemonLock } from "../lib/loc
 import { daemonLogPath, daemonSocketPath, ensureDirs, jobDir as jobDirOf, roostHome, rosterPath, runtimeDir } from "../lib/paths.ts";
 import { isAlive, processStartToken, processStartTokenAsync, sameProcess } from "../lib/proc.ts";
 import { JOB_ENV_NAMES } from "../lib/identity.ts";
+import { followedParent, pidAlive } from "../lib/orphans.ts";
 import { telemetryFromEnv } from "../lib/telemetry.ts";
 import {
 	type DaemonStatus,
@@ -3149,6 +3150,21 @@ const reaper = setInterval(
 );
 // M44: the concierge's heartbeat, and what happened while the service was off
 concierge.start();
+// M78: test mode only (PI_ROOST_PARENT_PID is set by tests and the stress runner): with its
+// parent or its home gone the daemon stops, hosts included. Never armed in normal use.
+const followed = followedParent();
+if (followed !== undefined) {
+	const follower = setInterval(() => {
+		if (!pidAlive(followed)) {
+			log("info", "parent gone, stopping", { parent: followed });
+			void shutdown(false);
+		} else if (!existsSync(roostHome())) {
+			log("info", "home gone, stopping");
+			void shutdown(false);
+		}
+	}, 2000);
+	follower.unref();
+}
 process.on("SIGTERM", () => void shutdown(true));
 process.on("SIGINT", () => void shutdown(true));
 log("info", "started", { pid: process.pid, version: ROOST_VERSION, socket: daemonSocketPath(), ptyError, jobs: recs.size, live: roster.size });

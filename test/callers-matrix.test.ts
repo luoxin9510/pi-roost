@@ -133,7 +133,7 @@ describe("M63: who may do what", () => {
 		rt = mkdtempSync("/tmp/rtm-");
 		work = mkdtempSync(join(tmpdir(), "roost-mw-"));
 		Object.assign(process.env, { PI_ROOST_HOME: home, PI_ROOST_RUNTIME_DIR: rt, PI_ROOST_HOST_ENTRY: HOST, PI_ROOST_CONFIG_DIR: home });
-		daemon = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: process.env });
+		daemon = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) } });
 		by.person = await waitFor(async () => {
 			try {
 				const c = await connect();
@@ -219,7 +219,7 @@ describe("M63: who may do what with a task", () => {
 		rt = mkdtempSync("/tmp/rtm-");
 		work = mkdtempSync(join(tmpdir(), "roost-mw-"));
 		Object.assign(process.env, { PI_ROOST_HOME: home, PI_ROOST_RUNTIME_DIR: rt, PI_ROOST_HOST_ENTRY: HOST, PI_ROOST_CONFIG_DIR: home });
-		daemon = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: process.env });
+		daemon = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) } });
 		by.person = await waitFor(async () => {
 			try {
 				const c = await connect();

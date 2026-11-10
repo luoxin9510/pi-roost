@@ -119,7 +119,7 @@ afterEach(() => {
 });
 
 async function startDaemon(): Promise<DaemonClient> {
-	const proc = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: process.env });
+	const proc = spawn(process.execPath, [DAEMON], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) } });
 	daemons.push(proc);
 	return waitFor(async () => {
 		try {

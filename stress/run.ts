@@ -28,6 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient, DaemonError } from "../lib/client.ts";
 import type { RoostEvent } from "../lib/events.ts";
+import { sweepOrphans } from "../lib/orphans.ts";
 import { daemonSocketPath } from "../lib/paths.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
 import { readState } from "../lib/store.ts";
@@ -69,6 +70,9 @@ const BUDGET = {
 
 // ---- an isolated roost -----------------------------------------------------------
 
+// M78: what an earlier killed run left behind goes first
+sweepOrphans((l) => console.log(`[stress] ${l}`));
+
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const out = join(ROOT, "stress", ".runs", stamp);
 mkdirSync(join(out, "logs"), { recursive: true });
@@ -99,7 +103,7 @@ async function waitFor<T>(fn: () => T | undefined | false | Promise<T | undefine
 
 let daemon: ChildProcess | undefined;
 async function startDaemon(): Promise<DaemonClient> {
-	daemon = spawn(process.execPath, [join(ROOT, "daemon", "main.ts")], { stdio: "ignore", env: process.env, detached: true });
+	daemon = spawn(process.execPath, [join(ROOT, "daemon", "main.ts")], { stdio: "ignore", env: { ...process.env, PI_ROOST_PARENT_PID: String(process.pid) }, detached: true });
 	daemon.unref();
 	return waitFor(
 		async () => {
