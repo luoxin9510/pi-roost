@@ -22,6 +22,8 @@ export function pidAlive(pid: number): boolean {
 }
 
 const ROOT_RE = /(?:^|[\s/])(?:daemon\/main\.ts|host\/main\.ts|stress\/agent\.ts)(?:\s|$)/;
+/** node-pty's helper as a host starts a worker: `…/node-pty/…/spawn-helper <cwd> <command…>`. */
+const HELPER_RE = /(?:^|\/)node-pty\/\S*\/spawn-helper\s+(\S+)/;
 
 function tmpRoots(): string[] {
 	const roots = new Set<string>(["/tmp", "/private/tmp", tmpdir()]);
@@ -88,7 +90,8 @@ function listProcs(): Proc[] {
  * that carry a test marker (PI_ROOST_PARENT_PID, or PI_ROOST_HOME under the temp dir as
  * `roost-*`) and whose followed parent is gone (marked by its home only: whose own parent is
  * gone, its parent pid 1). Never touches a process without a marker, nor one whose parent is
- * alive (another run in progress). Returns the pids killed.
+ * alive (another run in progress). Also node-pty's helper left an orphan in a test's directory
+ * (M78, after review: a host killed while it started its worker). Returns the pids killed.
  */
 export function sweepOrphans(log: (line: string) => void = () => {}): number[] {
 	const procs = listProcs();
@@ -121,6 +124,16 @@ export function sweepOrphans(log: (line: string) => void = () => {}): number[] {
 				killed.push(pid);
 			} catch {}
 		}
+	}
+	// node-pty's helper of a host killed mid-start (a test's SIGKILL) waits for it for ever: an
+	// orphan whose worker's directory is a test's (`<tmp>/roost-*`) goes too
+	for (const p of procs) {
+		const m = HELPER_RE.exec(p.command);
+		if (!m || p.ppid !== 1 || mine.has(p.pid) || !isTestHome(m[1])) continue;
+		try {
+			process.kill(p.pid, "SIGKILL");
+			killed.push(p.pid);
+		} catch {}
 	}
 	if (killed.length > 0) log(`swept ${killed.length} leftover test process(es): ${killed.join(" ")}`);
 	return killed;

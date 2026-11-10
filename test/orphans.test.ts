@@ -221,4 +221,35 @@ describe("sweepOrphans", () => {
 		await waitFor(() => gone(left));
 		expect(pidAlive(running.pid!)).toBe(true);
 	});
+
+	// a host killed while it starts its worker leaves node-pty's helper waiting for ever
+	it("kills node-pty's helper left an orphan in a test's directory; spares one with a parent, or elsewhere", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "roost-fake-"));
+		fakeDirs.push(dir);
+		const bin = join(dir, "node_modules", "node-pty", "prebuilds", "x", "spawn-helper");
+		mkdirSync(join(dir, "node_modules", "node-pty", "prebuilds", "x"), { recursive: true });
+		writeFileSync(bin, "setInterval(() => {}, 1000);\n");
+		const testCwd = join(tmpdir(), "roost-w-left");
+		const helperAt = (cwd: string, orphan: boolean): number => {
+			if (!orphan) {
+				const p = spawn(process.execPath, [bin, cwd, "/bin/sh", "-c", "sleep 30"], { stdio: "ignore" });
+				procs.push(p);
+				return p.pid!;
+			}
+			const out = execFileSync("sh", ["-c", `"${process.execPath}" "${bin}" "${cwd}" /bin/sh -c "sleep 30" >/dev/null 2>&1 & echo $!`], { encoding: "utf8" });
+			const pid = Number(out.trim());
+			orphanPids.push(pid);
+			return pid;
+		};
+		const left = helperAt(testCwd, true);
+		const withParent = helperAt(testCwd, false);
+		const elsewhere = helperAt("/Users/someone/project", true);
+		await settle();
+		const killed = sweepOrphans();
+		expect(killed).toContain(left);
+		await waitFor(() => gone(left));
+		expect(killed).not.toContain(withParent);
+		expect(killed).not.toContain(elsewhere);
+		expect(pidAlive(elsewhere)).toBe(true);
+	});
 });
