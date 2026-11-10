@@ -1,7 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { constants as osConstants, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { THINKING_LEVELS } from "../lib/dispatch-input.ts";
 import { appendFileSync, chmodSync, existsSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server, Socket } from "node:net";
@@ -28,24 +27,9 @@ import {
 	WATCH_TTL_MS,
 } from "../lib/comms.ts";
 import { loadUserConfig } from "../lib/config.ts";
-import {
-	CONCIERGE_ANSWERS,
-	CONCIERGE_DEFAULTS,
-	CONCIERGE_NAME,
-	CONCIERGE_ROLE_ENV,
-	type ConciergeAnswer,
-	type ConciergePolicy,
-	type ConciergeStatus,
-	digestText,
-	heartbeatMs,
-	ORDER_MAX,
-	ORDER_TEXT_MAX,
-	type StandingOrder,
-	undoText,
-	type WakeWhy,
-} from "../lib/concierge.ts";
-import { clipText, EVENT_LOG_MAX, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
-import { nextRun, parseWhen } from "../lib/schedule.ts";
+import { CONCIERGE_DEFAULTS, CONCIERGE_NAME, firstMessage, oneLineText } from "../lib/concierge.ts";
+import { createConcierge } from "../lib/concierge-module.ts";
+import { clipText, EventLog, type RoostEvent, stateMatters } from "../lib/events.ts";
 import { createSchedules } from "../lib/schedules.ts";
 import { createWatches } from "../lib/watches.ts";
 import { type BoardTask, blockedOn, boardSummary, onBoardOf, parseWorkspace, TASK_NOTE_MAX, projectLabel, projectOf, TASK_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX, TASK_WAITING_MAX } from "../lib/board.ts";
@@ -72,7 +56,7 @@ import {
 	PROTOCOL_VERSION,
 	type ScheduleRow,
 } from "../lib/protocol.ts";
-import { todayOf, usageFrom } from "../lib/usage.ts";
+import { usageFrom } from "../lib/usage.ts";
 import {
 	type JobRecord,
 	type JobState,
@@ -268,677 +252,59 @@ const eventLog = new EventLog(join(roostHome(), "events.jsonl"), { warn: (msg) =
 function record(e: Omit<RoostEvent, "seq" | "at">): void {
 	eventLog.append(e);
 	// M44: what the concierge itself caused is not news to it
-	if (!(concierge.id && conciergeOwn(e))) nudgeConcierge();
+	if (!concierge.own(e)) concierge.nudge();
 }
 
-// ---- M44: the concierge ---------------------------------------------------------------
+// ---- M44: the concierge (M69: lib/concierge-module.ts) ----------------------------------
 //
-// The hub's resident agent: an ordinary pi job (role "concierge") the hub starts, that the
-// daemon wakes with a digest of what happened (coalesced, capped an hour, stopped by a
-// daily budget) and a heartbeat. Its tools are ops on its own connection; it reaches
-// every session. Its state (which job, the feed cursor, what it last said) is here.
+// Made here, right after `record` (which nudges it): the adapters reach the daemon's state
+// lazily, so nothing below has to exist yet.
 
-interface ConciergeState {
-	id: string | null;
-	on: boolean;
-	/** The feed's seq it was last woken up to. */
-	cursor: number;
-	onAt: number | null;
-	lastWakeAt: number | null;
-	/** When it was woken, the last hour. */
-	wakes: number[];
-	notice: ConciergeStatus["notice"];
-	answer: ConciergeStatus["answer"];
-	/** M45: the policy `/concierge answer|act` set (null: the setting's). */
-	policy: ConciergePolicy | null;
-	/** M45: its suggested answers, by the job that waits, with the question each was for. */
-	suggestions: Record<string, { text: string; why: string | null; at: number; question: string | null }>;
-	/** M45: the answers it gave sessions in the user's place, newest last (the last 20). */
-	answered: NonNullable<ConciergeStatus["answered"]>[];
-}
-const conciergePath = () => join(roostHome(), "concierge.json");
-let concierge: ConciergeState = { id: null, on: false, cursor: 0, onAt: null, lastWakeAt: null, wakes: [], notice: null, answer: null, policy: null, suggestions: {}, answered: [] };
-/** A burst of events is one wake. */
-const CONCIERGE_COALESCE_MS = Number(process.env.PI_ROOST_CONCIERGE_COALESCE_MS) || 5000;
-/** A wake held back by the hourly cap is tried again after this. */
-const CONCIERGE_RETRY_MS = Number(process.env.PI_ROOST_CONCIERGE_RETRY_MS) || 60_000;
-const CONCIERGE_TICK_MS = Number(process.env.PI_ROOST_CONCIERGE_TICK_MS) || 30_000;
-/** Tests shorten the heartbeat below what the setting allows. */
-const CONCIERGE_HEARTBEAT_MS = Number(process.env.PI_ROOST_CONCIERGE_HEARTBEAT_MS) || 0;
-let conciergeTimer: NodeJS.Timeout | undefined;
-let conciergeOverBudget = false;
-/** One wake at a time; something that happened during one is a wake after it (a heartbeat, if `on` asked for one). */
-let conciergeWaking = false;
-let conciergeNudged: false | WakeWhy = false;
-/** One `on` at a time. */
-let conciergeOnPending: Promise<ConciergeStatus> | undefined;
-
-const conciergeConfig = () => loadUserConfig().concierge ?? CONCIERGE_DEFAULTS;
-const isConcierge = (id: string | undefined | null): boolean => !!id && id === concierge.id;
-const isConciergePeer = (peer: PeerIdentity): boolean => peer.kind === "job" && isConcierge(peer.id);
-/** A name a session reports for itself (pi's /name): not the concierge's, unless it is the concierge. */
-const conciergeSafeName = (id: string, name: string | null | undefined): string | null => (name === CONCIERGE_NAME && !isConcierge(id) ? null : (name ?? null));
-
-function loadConcierge(): void {
-	const s = readJson<Partial<ConciergeState>>(conciergePath());
-	if (!s || typeof s !== "object") return;
-	concierge = {
-		id: str(s.id) ? s.id : null,
-		on: s.on === true,
-		cursor: typeof s.cursor === "number" ? s.cursor : 0,
-		onAt: typeof s.onAt === "number" ? s.onAt : null,
-		lastWakeAt: typeof s.lastWakeAt === "number" ? s.lastWakeAt : null,
-		wakes: Array.isArray(s.wakes) ? s.wakes.filter((t): t is number => typeof t === "number") : [],
-		notice: s.notice && typeof s.notice === "object" && str(s.notice.text) ? s.notice : null,
-		answer: s.answer && typeof s.answer === "object" && str(s.answer.text) ? s.answer : null,
-		policy:
-			s.policy && typeof s.policy === "object" && (CONCIERGE_ANSWERS as readonly string[]).includes(String(s.policy.answer)) && typeof s.policy.act === "boolean"
-				? { answer: s.policy.answer, act: s.policy.act }
-				: null,
-		// a suggestion for a row that no longer waits is stale
-		suggestions: Object.fromEntries(
-			Object.entries(s.suggestions && typeof s.suggestions === "object" ? s.suggestions : {})
-				.filter(([id, v]) => recs.has(id) && v && typeof v === "object" && str((v as { text?: unknown }).text) && typeof (v as { at?: unknown }).at === "number" && readState(id)?.state === "blocked")
-				.map(([id, v]) => [id, { ...(v as object), question: str((v as { question?: unknown }).question) ? (v as { question: string }).question : null }]),
-		) as ConciergeState["suggestions"],
-		answered: Array.isArray(s.answered) ? s.answered.filter((a) => a && typeof a === "object" && str(a.id) && str(a.text) && typeof a.at === "number").slice(-20) : [],
-	};
-	// its job was removed while the service was off
-	if (concierge.id && !recs.has(concierge.id)) {
-		concierge.id = null;
-		concierge.on = false;
-	}
-}
-
-function saveConcierge(): void {
-	try {
-		writeJsonAtomic(conciergePath(), concierge);
-	} catch (err) {
-		log("error", "concierge state not saved", { error: String(err) });
-	}
-}
-
-/** An event of the concierge's own doing: on its job, or caused by it (by id: a name can be shared). Not in its digests. */
-function conciergeOwn(e: Pick<RoostEvent, "id" | "whoId">): boolean {
-	return !!concierge.id && (e.id === concierge.id || e.whoId === concierge.id);
-}
-
-/** Over its budget for the day? Said once when it changes (the hub shows it). */
-function conciergeBudget(now: number): boolean {
-	const cfg = conciergeConfig();
-	const row = concierge.id ? rowOf(concierge.id) : undefined;
-	const spent = row?.usage ? todayOf(row.usage, now) : 0;
-	const over = cfg.dailyBudgetUsd > 0 && spent >= cfg.dailyBudgetUsd;
-	if (over !== conciergeOverBudget) {
-		conciergeOverBudget = over;
-		log("info", over ? "concierge over budget" : "concierge within budget", { spent, budget: cfg.dailyBudgetUsd });
-		pushConcierge();
-	}
-	return over;
-}
-
-/** A wake that could not go now (the cap, a full queue) is tried again later. */
-function conciergeRetry(why: WakeWhy): void {
-	if (conciergeTimer || shuttingDown) return;
-	conciergeTimer = setTimeout(() => {
-		conciergeTimer = undefined;
-		void wakeConcierge(why).catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
-	}, CONCIERGE_RETRY_MS);
-	conciergeTimer.unref?.();
-}
-
-function conciergeStatus(): ConciergeStatus {
-	const now = Date.now();
-	const row = concierge.id ? rowOf(concierge.id) : undefined;
-	const cfg = conciergeConfig();
-	const behind = concierge.on && concierge.id ? eventLog.since({ after: concierge.cursor, limit: EVENT_LOG_MAX }).events.filter((e) => !conciergeOwn(e)).length : 0;
-	return {
-		on: concierge.on,
-		id: concierge.id,
-		state: row?.state ?? null,
-		live: !!concierge.id && roster.has(concierge.id),
-		model: row?.model ?? null,
-		wakesLastHour: concierge.wakes.filter((t) => now - t < 3600_000).length,
-		lastWakeAt: concierge.lastWakeAt,
-		behind,
-		costToday: row?.usage ? todayOf(row.usage, now) : 0,
-		budget: cfg.dailyBudgetUsd,
-		overBudget: conciergeOverBudget,
-		notice: concierge.notice,
-		policy: conciergePolicy(),
-		orders: orders.size,
-		answered: concierge.answered.at(-1) ?? null,
-		answer: concierge.answer,
-	};
-}
-
-/** M45: the policy in force: what `/concierge answer|act` set, else the setting. */
-function conciergePolicy(): ConciergePolicy {
-	if (concierge.policy) return concierge.policy;
-	const cfg = conciergeConfig();
-	return { answer: cfg.answer, act: cfg.act };
-}
-
-/** M45: the concierge's suggestion for a row, while the row waits with the question it was for. */
-function suggestedFor(id: string, st: { state?: unknown; question?: unknown }): JobRow["suggested"] {
-	const s = concierge.suggestions[id];
-	const question = typeof st.question === "string" && st.question ? st.question : null;
-	if (!s || st.state !== "blocked" || question !== s.question) return null;
-	return { text: s.text, why: s.why, at: s.at };
-}
-
-function dropSuggestion(id: string): boolean {
-	if (!(id in concierge.suggestions)) return false;
-	delete concierge.suggestions[id];
-	saveConcierge();
-	return true;
-}
-
-function pushConcierge(): void {
-	push({ event: "concierge", status: conciergeStatus() });
-}
-
-/** The `concierge` op (the hub's, never a session's): on (a launch from the hub, or the job it has), off, status. */
-async function conciergeOp(args: { action?: unknown; launch?: unknown } | undefined): Promise<ConciergeStatus> {
-	const action = args?.action;
-	if (action === "status") return conciergeStatus();
-	if (action === "off") {
-		concierge.on = false;
-		clearTimeout(conciergeTimer);
-		conciergeTimer = undefined;
-		conciergeNudged = false;
-		saveConcierge();
-		if (concierge.id && roster.has(concierge.id)) await terminateHost(concierge.id);
-		log("info", "concierge off", { id: concierge.id });
-		pushConcierge();
-		return conciergeStatus();
-	}
-	// M45: the policy, and the undo
-	if (action === "answer") {
-		const answer = args && "answer" in args ? (args as { answer?: unknown }).answer : undefined;
-		if (!(CONCIERGE_ANSWERS as readonly string[]).includes(String(answer))) throw new OpError("bad_request", "answer must be never, routine or always");
-		concierge.policy = { ...conciergePolicy(), answer: answer as ConciergeAnswer };
-		saveConcierge();
-		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: "user", why: "policy", text: `answer: ${answer}` });
-		log("info", "concierge policy", { ...concierge.policy });
-		pushConcierge();
-		return conciergeStatus();
-	}
-	if (action === "act") {
-		const act = args && "act" in args ? (args as { act?: unknown }).act : undefined;
-		if (typeof act !== "boolean") throw new OpError("bad_request", "act must be true or false");
-		concierge.policy = { ...conciergePolicy(), act };
-		saveConcierge();
-		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: "user", why: "policy", text: `act: ${act ? "on" : "off"}` });
-		log("info", "concierge policy", { ...concierge.policy });
-		pushConcierge();
-		return conciergeStatus();
-	}
-	if (action === "undo") return conciergeUndo();
-	if (action !== "on") throw new OpError("bad_request", "action must be on, off, status, answer, act or undo");
-	if (conciergeOnPending) return conciergeOnPending;
-	conciergeOnPending = conciergeOn(args?.launch).finally(() => {
-		conciergeOnPending = undefined;
-	});
-	return conciergeOnPending;
-}
-
-/**
- * On: the job it has (its session is its memory), started again if it ended, or a new
- * one from the hub's launch. What happened while it was off is not its concern: its
- * first wake is the fleet as it stands, at once.
- */
-async function conciergeOn(launch: unknown): Promise<ConciergeStatus> {
-	const now = Date.now();
-	const had = concierge.id;
-	// already on and running (another hub, say): as it is, its backlog kept
-	if (had && recs.has(had) && concierge.on && roster.has(had)) return conciergeStatus();
-	if (had && recs.has(had)) {
-		concierge = { ...concierge, on: true, onAt: now, cursor: eventLog.cursor(), lastWakeAt: null };
-		saveConcierge();
-		if (!roster.has(had)) await respawn(had).catch((err: unknown) => log("warn", "concierge restart failed", { error: String(err) }));
-		log("info", "concierge on", { id: had });
-	} else {
-		const l = launch as DispatchArgs | undefined;
-		if (!l || typeof l !== "object" || l.kind === "shell" || l.profile) throw new OpError("bad_request", "the concierge is a pi session: the hub builds its launch");
-		const r = await dispatch({ ...l, name: CONCIERGE_NAME, requestId: undefined }, { role: "concierge" });
-		concierge = { ...concierge, id: r.id, on: true, cursor: eventLog.cursor(), onAt: now, lastWakeAt: null, wakes: [], notice: null, answer: null };
-		conciergeOverBudget = false;
-		saveConcierge();
-		log("info", "concierge started", { id: r.id });
-	}
-	pushConcierge();
-	void wakeConcierge("heartbeat").catch((err: unknown) => log("error", "concierge first wake failed", { error: String(err) }));
-	return conciergeStatus();
-}
-
-/** Something happened: wake the concierge once the burst is over (after the wake under way, if one is). */
-function nudgeConcierge(): void {
-	if (!concierge.on || !concierge.id || shuttingDown) return;
-	if (conciergeWaking) {
-		conciergeNudged ||= "events";
-		return;
-	}
-	if (conciergeTimer) return;
-	conciergeTimer = setTimeout(() => {
-		conciergeTimer = undefined;
-		void wakeConcierge("events").catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
-	}, CONCIERGE_COALESCE_MS);
-	conciergeTimer.unref?.();
-	// the hub's line says how much is new
-	pushConcierge();
-}
-
-/**
- * One wake: the events since its cursor (its own left out) and the fleet, as a digest
- * delivered like an agent message (its queue; an ended concierge starts again for it).
- * Held back while it is over its budget for the day, or over its wakes for the hour.
- */
-async function wakeConcierge(why: WakeWhy): Promise<boolean> {
-	const id = concierge.id;
-	if (!concierge.on || !id || !recs.has(id) || shuttingDown) return false;
-	if (conciergeWaking) {
-		conciergeNudged = why !== "events" ? why : conciergeNudged || "events";
-		return false;
-	}
-	const cfg = conciergeConfig();
-	const { events: all, cursor } = eventLog.since({ after: concierge.cursor, limit: EVENT_LOG_MAX });
-	const events = all.filter((e) => !conciergeOwn(e));
-	const now = Date.now();
-	// M46: the orders on a clock due now (carried by whatever wake comes first); an order wake
-	// whose orders an earlier wake took meanwhile (a retry, a nudge) is an events wake
-	const due = ordersDue(now);
-	if (why === "order" && due.length === 0) why = "events";
-	if (why === "events" && events.length === 0) {
-		if (cursor !== concierge.cursor) {
-			concierge.cursor = cursor;
-			saveConcierge();
-		}
-		return false;
-	}
-	if (conciergeBudget(now)) return false;
-	concierge.wakes = concierge.wakes.filter((t) => now - t < 3600_000);
-	if (concierge.wakes.length >= cfg.wakesPerHour) {
-		log("info", "concierge wake held", { wakes: concierge.wakes.length, cap: cfg.wakesPerHour });
-		conciergeRetry(why);
-		return false;
-	}
-	const rows = list(undefined).filter((r) => r.id !== id);
-	const text = digestText({ why, events, rows, sinceAt: concierge.lastWakeAt, now, orders: [...orders.values()], due, board: [...tasks.values()] });
-	// an `on` during the wake starts it over (its cursor is not this wake's to set)
-	const epoch = concierge.onAt;
-	conciergeWaking = true;
-	let r: Awaited<ReturnType<typeof deliverAgent>>;
-	try {
-		r = await deliverAgent(recs.get(id)!.sessionFile, "digest", text, { from: "roost", relation: "external" });
-	} catch (err) {
-		// its queue full, say: later (with whatever happened meanwhile)
-		conciergeWaking = false;
-		conciergeNudged = false;
-		log("warn", "concierge not woken", { why, error: String(err) });
-		conciergeRetry(why);
-		return false;
-	} finally {
-		conciergeWaking = false;
-	}
-	try {
-		log("info", "concierge woken", { why, events: events.length, outcome: r.outcome });
-		if (!concierge.on || concierge.id !== id) {
-			// turned off (or replaced) while the wake started it: not left running
-			if (!concierge.on && roster.has(id)) await terminateHost(id).catch(() => {});
-			return false;
-		}
-		if (concierge.onAt !== epoch) return false;
-		if (r.outcome === "stopped") {
-			// the user stopped it: that is off
-			concierge.on = false;
-			saveConcierge();
-			pushConcierge();
-			return false;
-		}
-		if (!reached(r.outcome)) return false;
-		concierge.cursor = cursor;
-		concierge.lastWakeAt = now;
-		concierge.wakes.push(now);
-		saveConcierge();
-		// the clock orders it was woken with move on to their next time (once each)
-		if (due.length > 0) {
-			for (const o of due) {
-				try {
-					o.nextAt = o.when ? nextRun(parseWhen(o.when), now, o.at) : null;
-				} catch {
-					o.nextAt = null;
-				}
-			}
-			saveOrders();
-		}
-		pushConcierge();
-		return true;
-	} finally {
-		// what happened during the wake is the next one; an `on` meanwhile wants the fleet now
-		const next = conciergeNudged;
-		conciergeNudged = false;
-		if (next && next !== "events") void wakeConcierge(next).catch((err: unknown) => log("error", "concierge wake failed", { error: String(err) }));
-		else if (next) nudgeConcierge();
-	}
-}
-
-/** The heartbeat: a wake when nothing woke it for a while, so a stuck fleet is noticed. */
-function conciergeTick(now = Date.now()): void {
-	if (!concierge.on || !concierge.id || shuttingDown || conciergeTimer || conciergeWaking) return;
-	// the budget is looked at here too, so the hub's flag is right across midnight
-	if (conciergeBudget(now)) return;
-	// M46: a standing order on a clock that is due is a wake of its own
-	if (ordersDue(now).length > 0) {
-		void wakeConcierge("order").catch((err: unknown) => log("error", "concierge order wake failed", { error: String(err) }));
-		return;
-	}
-	const hb = CONCIERGE_HEARTBEAT_MS || heartbeatMs(conciergeConfig());
-	if (hb === null) return;
-	const last = concierge.lastWakeAt ?? concierge.onAt ?? now;
-	if (now - last >= hb) void wakeConcierge("heartbeat").catch((err: unknown) => log("error", "concierge heartbeat failed", { error: String(err) }));
-}
-
-/** `concierge-say` on the concierge's connection: what it tells the user, or its answer. */
-function conciergeSay(conn: Conn, args: { kind?: unknown; text?: unknown } | undefined): {} {
-	const peer = requirePeer(conn);
-	if (!isConciergePeer(peer)) throw new OpError("unsupported", "only the concierge says things to the hub");
-	const kind = args?.kind;
-	const text = typeof args?.text === "string" ? args.text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " ").trim() : "";
-	if (!text) throw new OpError("bad_request", "empty text");
-	if (kind !== "info" && kind !== "need" && kind !== "answer") throw new OpError("bad_request", "kind must be info, need or answer");
-	const now = Date.now();
-	if (kind === "answer") concierge.answer = { text: text.slice(0, 4000), at: now };
-	else concierge.notice = { kind, text: text.slice(0, 500), at: now };
-	record({ kind: "concierge", id: peer.id, name: CONCIERGE_NAME, who: CONCIERGE_NAME, whoId: peer.id, why: kind, text: clipText(text) });
-	saveConcierge();
-	pushConcierge();
-	return {};
-}
-
-/** `concierge-ask` from the hub: the user's question, as a reply to the concierge's session. */
-async function conciergeAsk(args: { text?: unknown } | undefined): Promise<{ id: string }> {
-	const text = typeof args?.text === "string" ? args.text.trim() : "";
-	if (!text) throw new OpError("bad_request", "empty question");
-	if (!concierge.on || !concierge.id || !recs.has(concierge.id)) throw new OpError("unavailable", "the concierge is off (/concierge on)");
-	await reply({ id: concierge.id, text });
-	return { id: concierge.id };
-}
-
-// ---- M45: escalation and policy ---------------------------------------------------------
-
-function requireConcierge(conn: Conn): PeerIdentity {
-	const peer = requirePeer(conn);
-	if (!isConciergePeer(peer)) throw new OpError("unsupported", "only the concierge does this");
-	return peer;
-}
-
-/** The job a concierge op names, by id or exact name; never the concierge itself. */
-function conciergeTarget(args: { id?: unknown } | undefined): JobRow {
-	const id = typeof args?.id === "string" ? args.id.trim() : "";
-	if (!id) throw new OpError("bad_request", "id required");
-	const row = rowOf(id) ?? list(undefined).find((r) => r.name === id);
-	if (!row) throw new OpError("not_found", `no session ${id}`);
-	if (isConcierge(row.id)) throw new OpError("bad_request", "that is you");
-	return row;
-}
-
-const conciergeText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " ").trim().slice(0, max) : "");
-/** M49: one line of it (a rule, a title): newlines and tabs fold too, so a digest's lines stay the digest's. */
-const oneLineText = (v: unknown, max: number): string => conciergeText(v, max).replace(/\s+/g, " ").trim();
-
-/** `concierge-policy`: what it may do now (its tools follow it). */
-function conciergePolicyOp(conn: Conn): ConciergePolicy {
-	requireConcierge(conn);
-	return conciergePolicy();
-}
-
-/** `concierge-suggest`: the answer it would give a session that waits for one; on the row, for the hub. */
-function conciergeSuggest(conn: Conn, args: { id?: unknown; text?: unknown; why?: unknown } | undefined): { id: string; name: string } {
-	const peer = requireConcierge(conn);
-	const row = conciergeTarget(args);
-	const text = conciergeText(args?.text, 2000);
-	if (!text) throw new OpError("bad_request", "empty suggestion");
-	// the hub sends it as the user's reply with one key: plain text only
-	if (text.startsWith("/") || text.startsWith("!")) throw new OpError("bad_request", "a suggestion is plain text, not a command");
-	if (row.state !== "blocked") throw new OpError("bad_request", `${row.name} is not waiting for an answer (${row.state})`);
-	const why = conciergeText(args?.why, 500) || null;
-	concierge.suggestions[row.id] = { text, why, at: Date.now(), question: row.question ?? null };
-	saveConcierge();
-	record({ kind: "concierge", id: row.id, name: row.name, who: CONCIERGE_NAME, whoId: peer.id, why: "suggest", text: clipText(text) });
-	pushJob(row.id);
-	return { id: row.id, name: row.name };
-}
-
-/** `concierge-reply`: an answer in the user's place, if the policy lets it; kept, so the user can undo it. */
-async function conciergeReply(conn: Conn, args: { id?: unknown; text?: unknown; why?: unknown } | undefined): Promise<{ id: string; name: string }> {
-	const peer = requireConcierge(conn);
-	const policy = conciergePolicy();
-	if (policy.answer === "never") throw new OpError("policy", "the user answers questions (answer: never): suggest the answer instead (hub_suggest)");
-	const row = conciergeTarget(args);
-	const text = conciergeText(args?.text, 4000);
-	if (!text) throw new OpError("bad_request", "empty answer");
-	if (text.startsWith("/") || text.startsWith("!")) throw new OpError("bad_request", "an answer is plain text, not a command");
-	if (row.state !== "blocked" || row.waitingFor !== "question") throw new OpError("bad_request", `${row.name} is not waiting for an answer to a question (${row.state}${row.waitingFor ? `, ${row.waitingFor}` : ""})`);
-	const r = await reply({ id: row.id, text }, { who: CONCIERGE_NAME, whoId: peer.id });
-	if (!(r.delivered || r.saved)) throw new OpError("unavailable", `not delivered to ${row.name}${r.error ? `: ${r.error}` : ""}`);
-	concierge.answered = [...concierge.answered, { id: row.id, name: row.name, text, at: Date.now(), undone: false }].slice(-20);
-	delete concierge.suggestions[row.id];
-	saveConcierge();
-	log("info", "concierge answered", { id: row.id, why: conciergeText(args?.why, 200) || undefined });
-	pushJob(row.id);
-	pushConcierge();
-	return { id: row.id, name: row.name };
-}
-
-/** `concierge {action: "undo"}`: the last answer it gave is withdrawn: the session is told to disregard it. */
-async function conciergeUndo(): Promise<ConciergeStatus> {
-	const found = [...concierge.answered].reverse().find((a) => !a.undone);
-	if (!found) throw new OpError("not_found", "nothing to undo: the concierge has answered no session");
-	// the one undone goes last: the status (and the hub) say which
-	const last = { ...found, undone: true };
-	concierge.answered = [...concierge.answered.filter((a) => a !== found), last];
-	saveConcierge();
-	const row = rowOf(last.id);
-	// still waiting with the question it answered (the answer not taken yet): a reply after it;
-	// at work: a steer; waiting on something else (a new question, a dialog), or ended: marked only
-	const how = !row || !recs.has(last.id) ? null : row.state === "working" ? "steer" : row.state === "blocked" && row.waitingFor === "question" && row.stateSince <= last.at ? "reply" : null;
-	if (how) {
-		await reply({ id: last.id, text: undoText(last.text), ...(how === "steer" ? { mode: "steer" } : {}) }).catch((err: unknown) => log("warn", "concierge undo not delivered", { id: last.id, error: String(err) }));
-	}
-	record({ kind: "concierge", id: last.id, name: last.name, who: "user", why: "undo", text: clipText(last.text) });
-	log("info", "concierge answer undone", { id: last.id, how });
-	pushConcierge();
-	return conciergeStatus();
-}
-
-/**
- * M59: a session's first message from another agent (a spawned child, the concierge's) is a
- * task: never a slash command (pi would run it: `/tasks merge` is a person's), a shell line
- * or a file to attach. Undefined: there is none.
- */
-function firstMessage(command: unknown): string | null | undefined {
-	if (!Array.isArray(command)) return undefined;
-	const dash = command.indexOf("--");
-	if (dash < 0) return null;
-	const task = dash === command.length - 2 && typeof command[dash + 1] === "string" ? (command[dash + 1] as string) : undefined;
-	if (task === undefined) throw new OpError("bad_request", "launch: one task after --");
-	if (/^\s*[\/!@]/.test(task)) throw new OpError("bad_request", "a task is plain text, not a command (/, !) or a file (@)");
-	return task;
-}
-
-/**
- * M59: a session the concierge starts runs what the concierge runs: the daemon builds its
- * launch from the concierge's own job (its pi, its flags, its environment and policy) and
- * takes from the concierge's only the task, the directory, a new session file, the name,
- * and a model and thinking level of the right shape. Nothing else it sent is used.
- */
-function conciergeLaunch(launch: DispatchArgs): DispatchArgs {
-	const own = concierge.id ? recs.get(concierge.id) : undefined;
-	if (!own || own.kind === "shell" || !Array.isArray(own.command) || own.command.length < 4 || own.command[2] !== "--session") throw new OpError("bad_request", "the concierge's own launch is unknown: it cannot start sessions now");
-	if (!launch || typeof launch !== "object" || !Array.isArray(launch.command)) throw new OpError("bad_request", "launch required");
-	if (launch.kind === "shell" || launch.profile || launch.worktree) throw new OpError("bad_request", "the concierge starts pi sessions only");
-	if (!str(launch.cwd) || !isAbsolute(launch.cwd) || !existsSync(launch.cwd)) throw new OpError("bad_request", "launch: cwd must be a directory");
-	const sf = launch.sessionFile;
-	if (!str(sf) || !isAbsolute(sf) || !sf.endsWith(".jsonl") || existsSync(sf) || [...recs.values()].some((r) => r.sessionFile === sf)) throw new OpError("bad_request", "launch: a new session file");
-	// the task: the argument after "--" (one, the last), plain text
-	const task = firstMessage(launch.command) ?? null;
-	const ownDash = own.command.indexOf("--");
-	const flags = own.command.slice(4, ownDash >= 0 ? ownDash : undefined);
-	const without = (args: string[], flag: string) => args.filter((x, i) => x !== flag && args[i - 1] !== flag && !x.startsWith(`${flag}=`));
-	const model = typeof launch.model === "string" && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._:@\/-]+$/.test(launch.model) ? launch.model : undefined;
-	const thinking = typeof launch.thinking === "string" && (THINKING_LEVELS as readonly string[]).includes(launch.thinking) ? launch.thinking : undefined;
-	let args = flags;
-	if (model) args = [...without(args, "--model"), "--model", model];
-	if (thinking) args = [...without(args, "--thinking"), "--thinking", thinking];
-	const env = Object.fromEntries(Object.entries(own.env ?? {}).filter(([k]) => k !== CONCIERGE_ROLE_ENV && !/^(ROOST|PI_ROOST|PI)_(JOB|SOCKET)/.test(k)));
-	return {
-		kind: "pi",
-		cwd: launch.cwd,
-		sessionFile: sf,
-		command: [own.command[0]!, own.command[1]!, "--session", sf, ...args, ...(task ? ["--", task] : [])],
-		env,
-		name: oneLineText(typeof launch.name === "string" ? launch.name : "", 80) || "session",
-		origin: "dispatch",
-		...(own.workspaceEnv ? { workspaceEnv: own.workspaceEnv } : {}),
-		...(own.envDeny ? { envDeny: own.envDeny } : {}),
-		...(own.envForce ? { envForce: own.envForce } : {}),
-		...(model ? { model } : {}),
-		...(thinking ? { thinking } : {}),
-		...(own.piVersion ? { piVersion: own.piVersion } : {}),
-	};
-}
-
-/** `concierge-act`: stop, restart or start a session, if the policy lets it. */
-async function conciergeAct(conn: Conn, args: { what?: unknown; id?: unknown; launch?: unknown; why?: unknown } | undefined): Promise<{ id: string; name: string }> {
-	const peer = requireConcierge(conn);
-	if (!conciergePolicy().act) throw new OpError("policy", "the concierge may not start, stop or restart sessions (act: off): ask the user to");
-	const what = args?.what;
-	const why = conciergeText(args?.why, 200);
-	if (what === "stop" || what === "respawn") {
-		const row = conciergeTarget(args);
-		// the policy let it: the op runs as the hub's (the concierge's own connection is a session's)
-		await handle({ ...conn, peer: undefined, agentSide: false }, what, { id: row.id });
-		record({ kind: "concierge", id: row.id, name: row.name, who: CONCIERGE_NAME, whoId: peer.id, why: "act", text: `${what === "stop" ? "stopped" : "restarted"} ${row.name}${why ? `: ${why}` : ""}` });
-		return { id: row.id, name: row.name };
-	}
-	if (what === "dispatch") {
-		// M59: a pi session like the concierge's own, built here (not a command, a profile, a worktree; not a concierge)
-		const r = await dispatch(conciergeLaunch(args?.launch as DispatchArgs));
-		record({ kind: "concierge", id: r.id, name: r.name, who: CONCIERGE_NAME, whoId: peer.id, why: "act", text: `started ${r.name}${why ? `: ${why}` : ""}` });
-		return r;
-	}
-	throw new OpError("bad_request", "what must be stop, respawn or dispatch");
-}
-
-// ---- M46: standing orders ---------------------------------------------------------------
-//
-// Rules in the user's words the concierge keeps: in every digest; the ones on a clock
-// wake it when due. The daemon keeps them (orders.json); the model applies them.
-
-const ordersPath = () => join(roostHome(), "orders.json");
-const orders = new Map<number, StandingOrder>();
-/** The next order's id: never one that was used (a dropped #5 is not the next order's). */
-let orderNext = 1;
-
-function loadOrders(): void {
-	const raw = readJson<StandingOrder[] | { next?: unknown; orders?: unknown }>(ordersPath());
-	// `{next, orders}`; a bare list (an older file, a hand-written one) is taken too
-	const saved = Array.isArray(raw) ? raw : raw && Array.isArray(raw.orders) ? (raw.orders as StandingOrder[]) : null;
-	if (!saved) return;
-	const now = Date.now();
-	for (const o of saved) {
-		try {
-			if (!o || typeof o !== "object" || !Number.isInteger(o.id) || o.id <= 0 || !str(o.text)) continue;
-			const when = str(o.when) ? o.when : null;
-			if (when) parseWhen(when);
-			const at = Number.isFinite(o.at) ? o.at : now;
-			orders.set(o.id, {
-				id: o.id,
-				text: oneLineText(o.text, ORDER_TEXT_MAX) || o.text.slice(0, ORDER_TEXT_MAX),
-				when,
-				by: o.by === "concierge" ? "concierge" : "user",
-				at,
-				lastAt: Number.isFinite(o.lastAt) ? o.lastAt : null,
-				// a time that passed while the service was off is due now, once
-				nextAt: when ? (Number.isFinite(o.nextAt) ? o.nextAt : nextRun(parseWhen(when), now, at)) : null,
-				count: Number.isInteger(o.count) && o.count! > 0 ? o.count! : 0,
-			});
-		} catch (err) {
-			log("warn", "standing order dropped", { id: o?.id, error: String(err) });
-		}
-	}
-	const kept = !Array.isArray(raw) && Number.isInteger(raw?.next) ? (raw!.next as number) : 0;
-	orderNext = Math.max(kept, Math.max(0, ...orders.keys()) + 1);
-}
-
-function saveOrders(): void {
-	try {
-		writeJsonAtomic(ordersPath(), { next: orderNext, orders: [...orders.values()] });
-	} catch (err) {
-		log("error", "standing orders not saved", { error: String(err) });
-	}
-}
-
-/** The orders on a clock whose time has come. */
-function ordersDue(now: number): StandingOrder[] {
-	return [...orders.values()].filter((o) => o.when && o.nextAt !== null && o.nextAt <= now);
-}
-
-/** `concierge-order`: keep, drop, list, mark applied. */
-function orderOp(conn: Conn, args: { action?: unknown; text?: unknown; when?: unknown; id?: unknown } | undefined): { orders: StandingOrder[]; order?: StandingOrder } {
-	const peer = conn.peer;
-	const by: StandingOrder["by"] = peer ? "concierge" : "user";
-	const action = args?.action;
-	const all = () => [...orders.values()].sort((a, b) => a.id - b.id);
-	if (action === "list") return { orders: all() };
-	if (action === "add") {
-		const text = oneLineText(args?.text, ORDER_TEXT_MAX);
-		if (!text) throw new OpError("bad_request", "empty order");
-		if (orders.size >= ORDER_MAX) throw new OpError("full", `${ORDER_MAX} standing orders at most; drop one first`);
-		const whenText = typeof args?.when === "string" ? args.when.trim() : "";
-		let when: string | null = null;
-		if (whenText) {
-			try {
-				parseWhen(whenText);
-				when = whenText;
-			} catch (err) {
-				throw new OpError("bad_request", `when: ${(err as Error).message}`);
-			}
-		}
-		const now = Date.now();
-		const id = orderNext++;
-		const order: StandingOrder = { id, text, when, by, at: now, lastAt: null, nextAt: when ? nextRun(parseWhen(when), now, now) : null, count: 0 };
-		orders.set(id, order);
-		saveOrders();
-		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: by, whoId: peer?.id ?? null, why: "order-kept", text: clipText(`#${id} ${when ? `${when} · ` : ""}${text}`) });
-		log("info", "standing order kept", { id, by, when });
-		pushConcierge();
-		return { orders: all(), order };
-	}
-	const id = typeof args?.id === "number" ? args.id : Number(args?.id);
-	if (!Number.isInteger(id) || !orders.has(id)) throw new OpError("not_found", `no standing order #${String(args?.id)}`);
-	const order = orders.get(id)!;
-	if (action === "rm") {
-		// the user's orders are the user's to drop
-		if (peer && order.by !== "concierge") throw new OpError("unsupported", `#${id} is the user's order: only the hub drops it`);
-		orders.delete(id);
-		saveOrders();
-		if (concierge.id) record({ kind: "concierge", id: concierge.id, name: CONCIERGE_NAME, who: by, whoId: peer?.id ?? null, why: "order-dropped", text: clipText(`#${id} ${order.text}`) });
-		log("info", "standing order dropped", { id, by });
-		pushConcierge();
-		return { orders: all() };
-	}
-	if (action === "applied") {
-		if (!peer) throw new OpError("unsupported", "the concierge marks an order applied");
-		order.lastAt = Date.now();
-		order.count += 1;
-		saveOrders();
-		record({ kind: "concierge", id: concierge.id ?? peer.id, name: CONCIERGE_NAME, who: CONCIERGE_NAME, whoId: peer.id, why: "order", text: clipText(`#${id} ${conciergeText(args?.text, 500) || order.text}`) });
-		return { orders: all(), order };
-	}
-	throw new OpError("bad_request", "action must be add, rm, list or applied");
-}
+const concierge = createConcierge<Conn>({
+	sessions: {
+		require: (conn) => requirePeer(conn),
+		optional: (conn) => conn.peer,
+		asHub: (conn, what, id) => handle({ ...conn, peer: undefined, agentSide: false }, what, { id }),
+	},
+	jobs: {
+		exists: (id) => recs.has(id),
+		live: (id) => roster.has(id),
+		row: (id) => rowOf(id),
+		list: () => list(undefined),
+		stateOf: (id) => readState(id)?.state as string | undefined,
+		launchOf: (id) => recs.get(id),
+		sessionFileUsed: (sf) => [...recs.values()].some((r) => r.sessionFile === sf),
+		pathExists: (p) => existsSync(p),
+		dispatch: (launch, extra) => dispatch(launch, extra),
+		respawn: (id) => respawn(id),
+		terminate: (id) => terminateHost(id),
+		reply: (args, by) => reply(args, by),
+		async deliver(id, text) {
+			const r = await deliverAgent(recs.get(id)!.sessionFile, "digest", text, { from: "roost", relation: "external" });
+			return { outcome: r.outcome, reached: reached(r.outcome) };
+		},
+		pushJob: (id) => pushJob(id),
+	},
+	events: { since: (q) => eventLog.since(q), cursor: () => eventLog.cursor() },
+	store: {
+		read: () => readJson<unknown>(join(roostHome(), "concierge.json")),
+		write: (v) => writeJsonAtomic(join(roostHome(), "concierge.json"), v),
+	},
+	ordersStore: {
+		read: () => readJson<unknown>(join(roostHome(), "orders.json")),
+		write: (v) => writeJsonAtomic(join(roostHome(), "orders.json"), v),
+	},
+	record: (e) => record(e),
+	push: (event) => push(event),
+	log: (level, msg, extra) => log(level, msg, extra),
+	config: () => loadUserConfig().concierge ?? CONCIERGE_DEFAULTS,
+	board: () => [...tasks.values()],
+	shuttingDown: () => shuttingDown,
+	coalesceMs: Number(process.env.PI_ROOST_CONCIERGE_COALESCE_MS) || 5000,
+	retryMs: Number(process.env.PI_ROOST_CONCIERGE_RETRY_MS) || 60_000,
+	tickMs: Number(process.env.PI_ROOST_CONCIERGE_TICK_MS) || 30_000,
+	heartbeatMs: Number(process.env.PI_ROOST_CONCIERGE_HEARTBEAT_MS) || 0,
+});
 
 // ---- M47: the shared task board ----------------------------------------------------
 //
@@ -1067,7 +433,7 @@ function boardActor(conn: Conn): BoardWho {
 		if (conn.agentSide) throw new OpError("unauthorized", "a session acts on the board after its report is accepted");
 		return { who: "user", whoId: null, sessionId: null, concierge: false, project: null };
 	}
-	if (isConciergePeer(peer)) return { who: CONCIERGE_NAME, whoId: peer.id, sessionId: null, concierge: true, project: null };
+	if (concierge.isPeer(peer)) return { who: CONCIERGE_NAME, whoId: peer.id, sessionId: null, concierge: true, project: null };
 	return { who: peerName(peer), whoId: peer.kind === "job" ? peer.id : null, sessionId: peer.id, concierge: false, project: peer.kind === "fg" ? projectAt(peer.cwd) : sessionProject(peer.id) };
 }
 
@@ -1123,7 +489,7 @@ function tellOpened(d: BoardTask, by: string | null): void {
 		const told = new Map<string, string>();
 		for (const w of t.waiting) told.set(w.id, w.name);
 		if (t.assigned) told.set(t.assigned.id, t.assigned.name);
-		if (t.by.whoId && recs.has(t.by.whoId) && !isConcierge(t.by.whoId)) told.set(t.by.whoId, t.by.who);
+		if (t.by.whoId && recs.has(t.by.whoId) && !concierge.isConcierge(t.by.whoId)) told.set(t.by.whoId, t.by.who);
 		if (by !== null) told.delete(by); // the session that did it knows
 		t.waiting = [];
 		saveTasks();
@@ -1159,8 +525,8 @@ const ws = createWorkspaces({
 		commandJobs: () => [...recs.values()].filter((r) => r.verifyOf !== undefined || r.setupOf !== undefined).map((r) => ({ id: r.id, verifyOf: r.verifyOf, setupOf: r.setupOf, running: roster.has(r.id) })),
 	},
 	log,
-	conciergeMayAct: () => conciergePolicy().act,
-	conciergeLaunch,
+	conciergeMayAct: () => concierge.mayAct(),
+	conciergeLaunch: (launch) => concierge.launch(launch),
 });
 
 /** The `task` op: the board, for the hub, the concierge and the sessions. */
@@ -1380,7 +746,7 @@ function noteState(job: JobRow): void {
 	// going quiet (no worker: waitingFor null) or being restored is not a change
 	const waits = job.state === "blocked" && prev.state === "blocked" && !!prev.waitingFor && !!job.waitingFor && prev.waitingFor !== job.waitingFor;
 	// M45: a suggestion is for the question the row waited with (another question, the same wait, is another)
-	if ((prev.state === "blocked" && job.state !== "blocked") || waits || (job.state === "blocked" && prev.question !== job.question)) dropSuggestion(job.id);
+	if ((prev.state === "blocked" && job.state !== "blocked") || waits || (job.state === "blocked" && prev.question !== job.question)) concierge.dropSuggestion(job.id);
 	if (prev.state === job.state && !waits) return;
 	if (stateMatters(prev.state, job.state) || job.state === "blocked") {
 		const text = job.state === "blocked" ? job.question : job.state === "failed" ? job.error : job.state === "done" ? job.summary : null;
@@ -1503,7 +869,7 @@ function rowOf(id: string): JobRow | undefined {
 		...(agentCaps(st) ? { capabilities: agentCaps(st) } : {}),
 		...(rec.role ? { role: rec.role } : {}),
 		// M45: the concierge's suggested answer, while it waits for one
-		...(id in concierge.suggestions ? { suggested: suggestedFor(id, st) } : {}),
+		...concierge.suggestionField(id, st),
 		...(Array.isArray(st.prs) && st.prs.length > 0 ? { prs: st.prs as PrInfo[] } : {}),
 		// M48: the task it was started on, and the user replies waiting for it (the peek shows both)
 		task: rowTask(rec),
@@ -1714,11 +1080,7 @@ async function removeRecord(id: string): Promise<{ id: string; worktree?: Cleanu
 	// M43: its own watches go with it when nothing holds its session any more
 	if (file && !holderOf(file)) watches.watcherGone(file);
 	// M44: the concierge removed is the concierge off; M45: a suggestion for a removed row goes with it
-	if (isConcierge(id)) {
-		concierge = { ...concierge, id: null, on: false };
-		saveConcierge();
-		pushConcierge();
-	} else dropSuggestion(id);
+	concierge.removed(id);
 	replyAt.delete(id);
 	shellPids.delete(id);
 	stopping.delete(id);
@@ -2104,8 +1466,7 @@ function loadJobs(): void {
 		if (st && !hidden(st)) lastSeen.set(id, { state: st.state, waitingFor: st.endedAt === undefined ? ((st.waitingFor as JobRow["waitingFor"]) ?? null) : null, question: typeof st.question === "string" && st.question ? st.question : null });
 	}
 	watches.load();
-	loadConcierge();
-	loadOrders();
+	concierge.load();
 	loadTasks();
 	// M55/M56: what a restart cut short (merges, verifies, setups)
 	ws.settle();
@@ -2825,7 +2186,7 @@ async function reply(
 	const recordReply = (text: string) => {
 		record({ kind: "reply", id, name: rowOf(id)?.name ?? id, who: by.who, whoId: by.whoId, text: clipText(text) });
 		// an answer reached it: the concierge's suggestion for it is spent
-		if (dropSuggestion(id)) pushJob(id);
+		if (concierge.dropSuggestion(id)) pushJob(id);
 	};
 	const text = typeof args?.text === "string" ? args.text.trim() : "";
 	const steer = args?.mode === "steer";
@@ -2992,7 +2353,7 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		tool: opt(r.tool, 100),
 		error: opt(r.error, 1000),
 		// a rename the session has not taken yet keeps the daemon's name; the concierge's name is its own
-		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : conciergeSafeName(id, opt(r.name, 200)),
+		displayName: str(st.pendingName) && opt(r.name, 200) !== st.pendingName ? st.pendingName : concierge.safeName(id, opt(r.name, 200)),
 		...(str(st.pendingName) && opt(r.name, 200) === st.pendingName ? { pendingName: null } : {}),
 		model: opt(r.model, 200),
 		// M8: workers before 0.1.5 send neither; keep what is known then
@@ -3030,7 +2391,7 @@ function rename(args: { id?: unknown; name?: unknown } | undefined): { id: strin
 	const name = typeof args?.name === "string" ? args.name.replace(/\s+/g, " ").trim().slice(0, 200) : "";
 	if (!name) throw new OpError("bad_request", "empty name");
 	// M44: the concierge's name is its own (a session could pass for it otherwise)
-	if (name === CONCIERGE_NAME && !isConcierge(id)) throw new OpError("bad_request", `${CONCIERGE_NAME} is the concierge's name`);
+	if (name === CONCIERGE_NAME && !concierge.isConcierge(id)) throw new OpError("bad_request", `${CONCIERGE_NAME} is the concierge's name`);
 	const rec = recs.get(id)!;
 	const next = { ...rec, name };
 	writeJsonAtomic(`${jobDirOf(id)}/job.json`, next);
@@ -3146,7 +2507,7 @@ function peerRows(peer: PeerIdentity): (PeerRow & { key: string })[] {
 	const me = sessionKeyOf(peer);
 	const meNode = treeNode(me);
 	// M44: the concierge reaches every session (it is the hub's); others, their tree
-	const external = loadUserConfig().agentExternalMessages || isConciergePeer(peer);
+	const external = loadUserConfig().agentExternalMessages || concierge.isPeer(peer);
 	const keys = new Set<string>();
 	for (const c of fgPeers.values()) if (c.peer?.kind === "fg") keys.add(fgKey(c.peer));
 	for (const r of recs.values()) if (r.kind !== "shell" && r.sessionFile) keys.add(r.sessionFile);
@@ -3190,7 +2551,7 @@ function findTarget(peer: PeerIdentity, to: string): PeerRow & { key: string } {
 	const rows = peerRows(peer);
 	const byId = rows.find((r) => r.id === to);
 	if (byId) return byId;
-	const byName = rows.filter((r) => r.name === to && (r.relation !== "external" || isConciergePeer(peer)));
+	const byName = rows.filter((r) => r.name === to && (r.relation !== "external" || concierge.isPeer(peer)));
 	if (byName.length === 1) return byName[0]!;
 	if (byName.length > 1) {
 		throw new OpError("ambiguous", `"${to}" names ${byName.length} sessions: ${byName.map((r) => `${r.id} (${r.relation})`).join(", ")}; use the id`);
@@ -3498,8 +2859,7 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 	schedules.stop();
 	clearInterval(shellWatcher);
 	clearInterval(reaper);
-	clearInterval(conciergeTicker);
-	clearTimeout(conciergeTimer);
+	concierge.stop();
 	if (!keepWorkers) {
 		const ids = [...roster.keys()];
 		await Promise.all(ids.map((id) => terminateHost(id)));
@@ -3519,7 +2879,7 @@ async function shutdown(keepWorkers: boolean): Promise<void> {
 
 async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 	// M63: who may do it, by the caller's kind (lib/callers.ts); the op checks what needs state
-	const refused = allow(callerOf(conn, isConcierge), op, args?.action);
+	const refused = allow(callerOf(conn, (id) => concierge.isConcierge(id)), op, args?.action);
 	if (refused) throw new OpError(refused.code, refused.message);
 	switch (op) {
 		case "ping":
@@ -3639,24 +2999,16 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		}
 		case "watch":
 			return watches.add(requirePeer(conn), args);
+		// M44-M46: the concierge, its policy, suggestions, answers, acts and standing orders (the hub's, and its own connection)
 		case "concierge":
-			return conciergeOp(args);
 		case "concierge-ask":
-			return conciergeAsk(args);
 		case "concierge-say":
-			return conciergeSay(conn, args);
-		// M45: the concierge's policy, suggestions, answers and acts (its own connection)
 		case "concierge-policy":
-			return conciergePolicyOp(conn);
 		case "concierge-suggest":
-			return conciergeSuggest(conn, args);
 		case "concierge-reply":
-			return conciergeReply(conn, args);
 		case "concierge-act":
-			return conciergeAct(conn, args);
-		// M46: the standing orders (the hub's, and the concierge's own connection)
 		case "concierge-order":
-			return orderOp(conn, args);
+			return concierge.op(op, conn, args);
 		// M47: the shared task board (the hub, the concierge, the sessions)
 		case "task":
 			return taskOp(conn, args);
@@ -3798,9 +3150,7 @@ const reaper = setInterval(
 	Number(process.env.PI_ROOST_REAP_CHECK_MS) || REAP_CHECK_MS,
 );
 // M44: the concierge's heartbeat, and what happened while the service was off
-const conciergeTicker = setInterval(() => conciergeTick(), CONCIERGE_TICK_MS);
-conciergeTicker.unref();
-nudgeConcierge();
+concierge.start();
 process.on("SIGTERM", () => void shutdown(true));
 process.on("SIGINT", () => void shutdown(true));
 log("info", "started", { pid: process.pid, version: ROOST_VERSION, socket: daemonSocketPath(), ptyError, jobs: recs.size, live: roster.size });

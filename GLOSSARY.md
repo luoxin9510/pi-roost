@@ -59,3 +59,7 @@ _Avoid_: cron job, timer
 **Watch**:
 A Session's standing request to be told once, as a notice, when another job is next idle or has ended; it expires if it never fires, and a session keeps a few at a time.
 _Avoid_: subscription, listener
+
+**Standing order**:
+A rule in the user's words that the Concierge keeps: it is in every digest, and one with a rhythm (`daily 18:00`) wakes the Concierge when its time comes. The Person or the Concierge adds one; the Person's are the Person's to drop. The Concierge says when it has applied one; the model applies it, the daemon only keeps it.
+_Avoid_: rule, reminder, instruction

@@ -6,6 +6,7 @@
 import { THINKING_LEVELS } from "./dispatch-input.ts";
 import { eventAgo, eventLine, type RoostEvent } from "./events.ts";
 import type { JobRow } from "./protocol.ts";
+import { OpError } from "./op.ts";
 import { parseWhen } from "./schedule.ts";
 
 export const CONCIERGE_NAME = "concierge";
@@ -259,4 +260,24 @@ export interface ConciergeStatus {
 	answered: { id: string; name: string; text: string; at: number; undone: boolean } | null;
 	/** Its last answer to a question from the hub (`? …`). */
 	answer: { text: string; at: number } | null;
+}
+
+/** Text a session or the concierge sent, as one clean string: control characters folded, trimmed, cut at `max`. */
+export const conciergeText = (v: unknown, max: number): string => (typeof v === "string" ? v.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]+/g, " ").trim().slice(0, max) : "");
+/** M49: one line of it (a rule, a title): newlines and tabs fold too, so a digest's lines stay the digest's. */
+export const oneLineText = (v: unknown, max: number): string => conciergeText(v, max).replace(/\s+/g, " ").trim();
+
+/**
+ * M59: a session's first message from another agent (a spawned child, the concierge's) is a
+ * task: never a slash command (pi would run it: `/tasks merge` is a person's), a shell line
+ * or a file to attach. Undefined: there is none.
+ */
+export function firstMessage(command: unknown): string | null | undefined {
+	if (!Array.isArray(command)) return undefined;
+	const dash = command.indexOf("--");
+	if (dash < 0) return null;
+	const task = dash === command.length - 2 && typeof command[dash + 1] === "string" ? (command[dash + 1] as string) : undefined;
+	if (task === undefined) throw new OpError("bad_request", "launch: one task after --");
+	if (/^\s*[\/!@]/.test(task)) throw new OpError("bad_request", "a task is plain text, not a command (/, !) or a file (@)");
+	return task;
 }
