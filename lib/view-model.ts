@@ -327,3 +327,10 @@ export function nameToneOf(id: string): NameTone {
 	for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
 	return NAME_TONES[h % NAME_TONES.length]!;
 }
+
+/** M26: a fan-out's rows say their model (pi names each session on its own, often alike). */
+export function rowName(row: JobRow): string {
+	if (!row.fanout || !row.model) return row.name;
+	const tag = shortModel(row.model);
+	return row.name.endsWith(` · ${tag}`) ? row.name : `${row.name} · ${tag}`;
+}

@@ -2460,7 +2460,9 @@ describe("M57: the workspace overlay", () => {
 		task(9, "audit log", { after: [4] }),
 	];
 
-	it("/workspaces lists the pipeline (review first), the selected one's detail beside it; Ctrl+N goes to the next that needs you", async () => {
+	// M72: the screen and the keys are tested on their own (test/workspaces-overlay.test.ts) and pinned below;
+	// what stays here is the wiring: the command and the key that open it, the daemon behind it.
+	it("/workspaces opens the pipeline from the daemon's board; Esc closes it; Ctrl+N opens it at the first task that needs you", async () => {
 		const { view, client } = setup([row({ id: "w1", name: "lint", state: "working" })], { extra: { taskChanges: changes } });
 		client.tasks = board();
 		await view.start();
@@ -2469,30 +2471,36 @@ describe("M57: the workspace overlay", () => {
 		await sleep(30);
 		const out = view.render(120).join("\n");
 		expect(out).toContain("all projects · workspaces");
-		expect(out.indexOf("REVIEW")).toBeLessThan(out.indexOf("CONFLICT · FAILED"));
-		expect(out.indexOf("CONFLICT · FAILED")).toBeLessThan(out.indexOf("WORKING"));
 		expect(out).toContain("▶ ◆ #4 users migration");
 		expect(out).toContain("+52 −1");
-		expect(out).toContain("#9 audit log · after #4");
-		// the detail: branch, agent, change, files
-		expect(out).toContain("roost/t-review (base main)");
-		expect(out).toContain("2 files +52 −1 · 2 commits");
-		expect(out).toContain("db/0004_users.sql");
-		expect(out).toContain("m merge · b back · v verify");
-		// n: the next that needs you (the conflict), then back round to the review
 		view.handleInput("n");
 		expect(view.render(120).join("\n")).toContain("▶ ✕ #6 rate limiter");
-		view.handleInput("n");
-		expect(view.render(120).join("\n")).toContain("▶ ◆ #4 users migration");
 		view.handleInput("\x1b");
 		expect(view.render(120).join("\n")).not.toContain("· workspaces");
-		// Ctrl+N from the list opens it at the first that needs you
 		view.handleInput("\x0e");
 		await sleep(30);
 		expect(view.render(120).join("\n")).toContain("▶ ◆ #4 users migration");
 	});
 
-	it("the keys act on the selected task: m merges, b sends back with a note, s starts an open one; keys a stage has not do nothing", async () => {
+	it("a board event from the daemon reloads the open overlay (Overlay.onEvent); a job event does not", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint", state: "working" })], { extra: { taskChanges: changes } });
+		client.tasks = board();
+		await view.start();
+		view.handleInput("\x0e");
+		await sleep(30);
+		const lists = () => client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action === "list").length;
+		const before = lists();
+		client.emit({ event: "job", job: row({ id: "w1", name: "lint", state: "done" }) } as never);
+		await sleep(30);
+		expect(lists()).toBe(before);
+		client.tasks = [...board(), task(10, "billing export", { workspace: ws("review") })];
+		client.emit({ event: "board", board: { open: 1, claimed: 2, blocked: 1, done: 0 } });
+		await sleep(30);
+		expect(lists()).toBe(before + 1);
+		expect(view.render(120).join("\n")).toContain("#10 billing export");
+	});
+
+	it("the keys reach the daemon through /tasks: m merges (in the configured mode), b sends back with a note, s starts an open one in its worktree; a key a stage has not does nothing", async () => {
 		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes, taskMerge: "ff" } });
 		client.tasks = board();
 		await view.start();
@@ -2520,57 +2528,6 @@ describe("M57: the workspace overlay", () => {
 		expect(acts().some((a) => (a as { action: string; id: number }).action === "start" && (a as { id: number }).id === 9)).toBe(true);
 	});
 
-	it("a shows the commands in full and approves on y only, with the shown hash; a note goes to the task it was written for", async () => {
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes } });
-		client.tasks = board();
-		await view.start();
-		view.handleInput("\x0e");
-		await sleep(30);
-		const acts = () => client.requests.filter((r) => r.op === "task" && (r.args as { action: string }).action !== "list").map((r) => r.args);
-		view.handleInput("a");
-		await sleep(20);
-		expect(view.render(120).join("\n")).toContain("approve for #4: verify: npm test · they run in your account");
-		// a second a is not a yes
-		view.handleInput("a");
-		await sleep(20);
-		expect(acts()).toEqual([{ action: "approve", id: 4, dry: true }]);
-		view.handleInput("a");
-		await sleep(20);
-		view.handleInput("y");
-		await sleep(20);
-		expect(acts()).toContainEqual({ action: "approve", id: 4, hash: "h1" });
-		// b on #4, then the selection moves (a reload): the note still goes to #4
-		view.handleInput("b");
-		for (const ch of "fix it") view.handleInput(ch);
-		client.tasks = client.tasks.filter((t) => t.id !== 4);
-		client.tasks.push(task(4, "users migration", { workspace: ws("review") }));
-		view.handleInput("\r");
-		await sleep(30);
-		expect(acts()).toContainEqual({ action: "back", id: 4, note: "fix it" });
-	});
-
-	it("no line is wider than the terminal", async () => {
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes } });
-		client.tasks = board();
-		await view.start();
-		view.handleInput("\x0e");
-		await sleep(30);
-		for (const w of [8, 12, 20, 40, 99, 100, 120]) for (const l of view.render(w)) expect(visibleWidth(l)).toBeLessThanOrEqual(w);
-	});
-
-	it("under 100 columns the detail goes below the list", async () => {
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes } });
-		client.tasks = board();
-		await view.start();
-		type(view, "/ws");
-		view.handleInput("\r");
-		await sleep(30);
-		const lines = view.render(80);
-		const at = (s: string) => lines.findIndex((l) => l.includes(s));
-		expect(at("roost/t-review (base main)")).toBeGreaterThan(at("#9 audit log"));
-		expect(lines.every((l) => !l.includes("│"))).toBe(true);
-	});
-
 	it("the header says Ctrl+N while tasks are in workspaces", async () => {
 		const { view, client } = setup([row({ id: "w1", name: "lint" })]);
 		client.tasks = board();
@@ -2592,7 +2549,7 @@ describe("M58: review in the hub", () => {
 	})) as never;
 	const review = (): BoardTask => ({ id: 4, title: "users migration", detail: null, state: "claimed", after: [], by: { who: "user", whoId: null }, at: 1, owner: { id: "w1", name: "lint" }, claimedAt: 1, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], workspace: { path: "/r/wt", branch: "roost/t4-users-ab12", baseRef: "main", baseSha: sha, stage: "review", note: null, comments: [{ file: "db/users.sql", line: 7, lineText: "+gone", text: "an old one", tip: "", at: 0 }] } });
 
-	it("Enter in the workspace overlay opens the diff; c comments on a line; it shows under it; d deletes it; Esc goes back to the overlay", async () => {
+	it("Enter in the workspace overlay opens the diff; a comment reaches the daemon and shows under its line; Esc goes back to the overlay", async () => {
 		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff, taskChanges: (async () => undefined) as never } });
 		client.tasks = [review()];
 		await view.start();
@@ -2600,103 +2557,34 @@ describe("M58: review in the hub", () => {
 		await sleep(30);
 		view.handleInput("\r");
 		await sleep(30);
-		let out = view.render(120).join("\n");
-		expect(out).toContain("#4 users migration · M db/users.sql");
-		expect(out).toContain("file 1/2 · hunk 1/1 · 1 comment");
-		expect(out).toContain("outdated (line 7): an old one");
-		expect(out).toContain("    2 + drop table users;");
-		// it opens on the first line of the diff (context); down to the added line (removed, added)
-		expect(view.render(120).find((l) => l.startsWith("▶"))).toContain("create table users;");
+		expect(view.render(120).join("\n")).toContain("#4 users migration · M db/users.sql");
 		for (let i = 0; i < 2; i++) view.handleInput("j");
-		expect(view.render(120).find((l) => l.startsWith("▶"))).toContain("drop table users;");
 		view.handleInput("c");
 		for (const ch of "drop the index first") view.handleInput(ch);
 		view.handleInput("\r");
 		await sleep(20);
 		const sent = client.requests.find((r) => r.op === "task" && (r.args as { action: string }).action === "comment")!.args;
 		expect(sent).toEqual({ action: "comment", id: 4, comment: { file: "db/users.sql", line: 2, lineText: "+drop table users;", text: "drop the index first", tip: "b".repeat(40) } });
-		out = view.render(120).join("\n");
-		expect(out).toMatch(/drop table users;\n\s+└ ✎ drop the index first/);
-		view.handleInput("d");
-		await sleep(20);
-		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "uncomment", id: 4, comment: { file: "db/users.sql", line: 2, at: 101 } });
-		expect(view.render(120).join("\n")).not.toContain("drop the index first");
-		// the outdated one is a row of its own at the top: d deletes it there
-		view.handleInput("\x1b[H");
-		for (let i = 0; i < 9; i++) view.handleInput("k");
-		expect(view.render(120).find((l) => l.startsWith("▶"))).toContain("✎ outdated (line 7): an old one");
-		view.handleInput("d");
-		await sleep(20);
-		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "uncomment", id: 4, comment: { file: "db/users.sql", line: 7, at: 0 } });
-		// the next file: binary
-		view.handleInput("]");
-		expect(view.render(120).join("\n")).toContain("binary file");
+		expect(view.render(120).join("\n")).toMatch(/drop table users;\n\s+└ ✎ drop the index first/);
 		view.handleInput("\x1b");
 		await sleep(30);
 		expect(view.render(120).join("\n")).toContain("· workspaces");
 	});
 
-	it("b sends it back with a note; /tasks review opens it; no line is wider than the terminal", async () => {
+	it("/tasks review opens it; b sends it back with a note through the daemon", async () => {
 		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff } });
 		client.tasks = [review()];
 		await view.start();
 		type(view, "/tasks review 4");
 		view.handleInput("\r");
 		await sleep(30);
-		for (const w of [10, 30, 80, 120]) for (const l of view.render(w)) expect(visibleWidth(l)).toBeLessThanOrEqual(w);
+		expect(view.render(120).join("\n")).toContain("#4 users migration · M db/users.sql");
 		view.handleInput("b");
 		for (const ch of "see comments") view.handleInput(ch);
 		view.handleInput("\r");
 		await sleep(30);
 		expect(client.requests.map((r) => r.args)).toContainEqual({ action: "back", id: 4, note: "see comments" });
 		expect(view.render(120).join("\n")).not.toContain("hunk 1/1");
-	});
-});
-
-describe("M58: review, after review", () => {
-	const sha = "a".repeat(40);
-	const line = (kind: "+" | "-" | " ", text: string, n: number) => ({ kind, text, oldNo: kind === "+" ? null : n, newNo: kind === "-" ? null : n });
-	const diff = (async () => ({
-		base: sha,
-		tip: "b".repeat(40),
-		truncated: false,
-		files: [{ path: "a.ts", status: "M", binary: false, hunks: [{ header: "@@ -1 +1 @@", lines: [line("+", "one", 1)] }, { header: "@@ -9 +9 @@", lines: [line("+", "nine", 9), line(" ", "ten", 10)] }] }],
-	})) as never;
-	const task = (comments: ReviewComment[]): BoardTask => ({ id: 4, title: "t", detail: null, state: "claimed", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: 1, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], workspace: { path: "/r/wt", branch: "roost/t4-t-ab12", baseRef: "main", baseSha: sha, stage: "review", note: null, comments } });
-
-	it("n and p go hunk to hunk both ways; comments on files no longer in the diff have a page of their own", async () => {
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff } });
-		client.tasks = [task([{ file: "gone.ts", line: 3, lineText: "+x", text: "about gone", tip: "", at: 5 }])];
-		await view.start();
-		type(view, "/tasks review 4");
-		view.handleInput("\r");
-		await sleep(30);
-		const cursor = () => view.render(120).find((l) => l.startsWith("▶")) ?? "";
-		expect(view.render(120).join("\n")).toContain("file 1/2");
-		view.handleInput("n");
-		expect(cursor()).toContain("+ nine");
-		view.handleInput("j");
-		view.handleInput("p");
-		expect(cursor()).toContain("+ one");
-		view.handleInput("]");
-		expect(view.render(120).join("\n")).toContain("comments on files not in the diff now");
-		expect(cursor()).toContain("✎ gone.ts (line 3): about gone");
-	});
-
-	it("a merge that did not happen keeps the review open", async () => {
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff } });
-		client.tasks = [task([])];
-		client.request = (async (op: string, args: unknown) => {
-			if (op === "task" && (args as { action: string }).action === "merge") return { tasks: client.tasks, task: client.tasks[0], note: "conflict in a.ts" };
-			return FakeClient.prototype.request.call(client, op as never, args as never);
-		}) as never;
-		await view.start();
-		type(view, "/tasks review 4");
-		view.handleInput("\r");
-		await sleep(30);
-		view.handleInput("m");
-		await sleep(40);
-		expect(view.render(120).join("\n")).toContain("#4 t · M a.ts");
 	});
 });
 
@@ -2757,5 +2645,116 @@ describe("M60: the pull request exit in the hub", () => {
 		await sleep(20);
 		expect(prs()).toHaveLength(4);
 		expect(prs()[3]).toEqual({ action: "pr", id: 4, hash: "t1" });
+	});
+});
+
+// M72: the two overlays' screens pinned before they moved to hub/overlays/ (docs/plans/hub-overlays.md)
+describe("M72: overlay renders, pinned", () => {
+	const sha = "a".repeat(40);
+	const task = (id: number, title: string, extra: Partial<BoardTask> = {}): BoardTask => ({ id, title, detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], ...extra });
+	const ws = (stage: string, extra: object = {}) => ({ path: `/r/.pi/worktrees/x-${stage}`, branch: `roost/t-${stage}`, baseRef: "main", baseSha: sha, stage, note: null, ...extra }) as never;
+	const changes = (async () => ({ files: [{ status: "M", path: "db/schema.sql", add: 12, del: 1 }, { status: "A", path: "db/0004_users.sql", add: 40, del: 0 }], insertions: 52, deletions: 1, commits: 2, dirty: false })) as never;
+	const board = () => [
+		task(5, "login page", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: ws("working") }),
+		task(7, "settings page", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: ws("verifying", { note: "verify running" }) }),
+		task(4, "users migration", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: ws("review", { note: "verified: npm test (3s)" }) }),
+		task(6, "rate limiter", { workspace: ws("conflict", { note: "conflict in src/rate.ts" }) }),
+		task(8, "old idea", { workspace: ws("shelved") }),
+		task(9, "audit log", { after: [4] }),
+	];
+	const open = async (tasks: BoardTask[], extra: Partial<AgentViewOptions> = { taskChanges: changes }) => {
+		const { view, client } = setup([row({ id: "w1", name: "lint", state: "working" })], { extra });
+		client.tasks = tasks;
+		await view.start();
+		view.handleInput("\x0e");
+		await sleep(40);
+		return { view, client };
+	};
+	const shot = (view: AgentView, w: number) => view.render(w).join("\n");
+
+	it("workspaces: the pipeline at 120 columns, the detail beside it", async () => {
+		const { view } = await open(board());
+		expect(shot(view, 120)).toMatchSnapshot();
+		view.handleInput("n");
+		expect(shot(view, 120)).toMatchSnapshot();
+	});
+
+	it("workspaces: under 100 columns, the detail below; at 100 beside", async () => {
+		const { view } = await open(board());
+		expect(shot(view, 80)).toMatchSnapshot();
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("\x1b[F");
+		expect(shot(view, 80)).toMatchSnapshot();
+	});
+
+	it("workspaces: a confirm (approve, pr), the back note, empty, nothing needs you", async () => {
+		const { view } = await open(board());
+		view.handleInput("a");
+		await sleep(20);
+		expect(shot(view, 120)).toMatchSnapshot();
+		view.handleInput("n");
+		view.handleInput("b");
+		for (const ch of "use a transaction") view.handleInput(ch);
+		expect(shot(view, 120)).toMatchSnapshot();
+		const pr = await open([task(4, "users", { workspace: ws("review") })]);
+		pr.view.handleInput("o");
+		await sleep(20);
+		expect(shot(pr.view, 120)).toMatchSnapshot();
+		const none = await open([]);
+		expect(shot(none.view, 120)).toMatchSnapshot();
+		const quiet = await open([task(5, "login page", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: ws("working") })]);
+		quiet.view.handleInput("n");
+		expect(shot(quiet.view, 120)).toMatchSnapshot();
+	});
+
+	const line = (kind: "+" | "-" | " ", text: string, n: number) => ({ kind, text, oldNo: kind === "+" ? null : n, newNo: kind === "-" ? null : n });
+	const diff = (async () => ({
+		base: sha,
+		tip: "b".repeat(40),
+		truncated: false,
+		files: [
+			{ path: "a.ts", status: "M", binary: false, hunks: [{ header: "@@ -1,2 +1,2 @@", lines: [line(" ", "const a = 1;", 1), line("-", "const b = 2;", 2), line("+", "const b = 3;", 2)] }, { header: "@@ -9 +9 @@", lines: [line("+", "nine", 9), line(" ", "ten", 10)] }] },
+			{ path: "logo.png", status: "A", binary: true, hunks: [] },
+		],
+	})) as never;
+	const reviewTask = (comments: ReviewComment[]): BoardTask => task(4, "users migration", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: { path: "/r/wt", branch: "roost/t4-users-ab12", baseRef: "main", baseSha: sha, stage: "review", note: null, comments } as never });
+	const reviewOpen = async (comments: ReviewComment[]) => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskDiff: diff } });
+		client.tasks = [reviewTask(comments)];
+		await view.start();
+		type(view, "/tasks review 4");
+		view.handleInput("\r");
+		await sleep(40);
+		return { view, client };
+	};
+
+	it("review: a file's diff, the next hunk, the next file", async () => {
+		const { view } = await reviewOpen([]);
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("n");
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("]");
+		expect(shot(view, 100)).toMatchSnapshot();
+		expect(shot(view, 30)).toMatchSnapshot();
+	});
+
+	it("review: the comment input, a comment under its line, an outdated one, the page of files gone", async () => {
+		const { view } = await reviewOpen([{ file: "a.ts", line: 7, lineText: "+gone", text: "an old one", tip: "", at: 0 }, { file: "gone.ts", line: 3, lineText: "+x", text: "about gone", tip: "", at: 5 }]);
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("j");
+		view.handleInput("j");
+		view.handleInput("c");
+		for (const ch of "drop it") view.handleInput(ch);
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("\r");
+		await sleep(20);
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("b");
+		for (const ch of "see comments") view.handleInput(ch);
+		expect(shot(view, 100)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		view.handleInput("]");
+		view.handleInput("]");
+		expect(shot(view, 100)).toMatchSnapshot();
 	});
 });
