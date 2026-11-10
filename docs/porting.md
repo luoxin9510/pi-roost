@@ -1,8 +1,8 @@
-# pi-roost 移植说明（基于 v0.1.19：main `9e4320b` 加发布提交）
+# pi-roost 移植说明（基于 v0.1.20：main `f8ad3f5` 加发布提交）
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
-> 用法：对照源码 `git checkout v0.1.19`（发布提交；代码与 M60 合入的 main `9e4320b` 相同）逐节实现，每节末尾有验收标准。
-> **v0.1.19（本文依据）= v0.1.18 之上再加 M59–M60；v0.1.18 = v0.1.17 之上再加 M57–M58；v0.1.17 = v0.1.16 之上再加 M54–M56 + M61；v0.1.16 = v0.1.15 之上再加 M50–M53；v0.1.15 = v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
+> 用法：对照源码 `git checkout v0.1.20`（发布提交；代码与 M77 合入的 main `f8ad3f5` 相同）逐节实现，每节末尾有验收标准。
+> **v0.1.20（本文依据）= v0.1.19 之上再加 M62–M78；v0.1.19 = v0.1.18 之上再加 M59–M60；v0.1.18 = v0.1.17 之上再加 M57–M58；v0.1.17 = v0.1.16 之上再加 M54–M56 + M61；v0.1.16 = v0.1.15 之上再加 M50–M53；v0.1.15 = v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
 > v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
 >
 > **v0.1.8–v0.1.12 新增**（详见 Step 20–40，附录 C 有提交号）：
@@ -16,6 +16,7 @@
 > - **v0.1.17 = M54–M56 + M61**（ADE 路线 `docs/plans/ade-roadmap.md`，PR #82 的设计文档），详见 Step 52–55：M54 任务的工作区作为数据（`workspace` 字段、阶段 `stage`、依赖"等合并"、`tasks.json` 版本 2）；M61 会话自己的斜杠命令进 peek（按用户要求提前做）；M55 `/tasks start` 给任务开 worktree 和会话、完成进 review、`/tasks merge` 在本地合进基线分支；M56 完成时跑仓库的 `verify` 命令，项目配置 `.roost/project.json` 与每条命令需人批准。合入顺序 M54、M61、M55、M56。
 > - **v0.1.18 = M57–M58**（ADE 路线的界面部分，`docs/plans/m57-workspace-overlay.md`、`docs/plans/m58-review.md`），详见 Step 56–57：M57 工作区总览（`/workspaces`、`Ctrl+N`，任务按阶段排成流水线，选中的任务旁边显示它的 worktree 相对基线改了什么，按键都走 `/tasks <动作>`）加值班 agent 的 `hub_task_start`（`act on` 时可以替用户开任务）；M58 评审（在 hub 里看任务相对基线的 diff、在行上写评论、一次性连同退回发给会话；`pi-roost review` 在终端做同样的事）。合入顺序 M57、M58。
 > - **v0.1.19 = M59–M60**（ADE 路线的收尾，`docs/plans/m59-shelve-cleanup.md`、`docs/plans/m60-exits.md`），详见 Step 58–59：M59 搁置（`/tasks shelve`：删干净的 worktree、留分支，`start` 再从分支建回来）、清理（`/tasks cleanup` 列出、`cleanup yes` 删除遗留的 worktree 与 verify 日志）、手工合并的识别、`/tasks` 成为每个 pi 会话的命令（手机经 pi-mobile 也能用）、值班 agent 开的会话由 daemon 按值班 agent 自己的 launch 重建；M60 可选出口（`/tasks pr`：推送展示过的那个提交、用 `gh` 开 PR）与重叠标记（改同一批文件的在做任务）。合入顺序 M59、M60；对抗性审查堵上了"会话借子会话首条消息 `/tasks merge` 自行合并"的漏洞。
+> - **v0.1.20 = M62–M78**（2026-11-07 架构体检的五个候选 + 真模型 evals + 防孤儿；**除 M65 的协议变化与 M77 的工具上限外，行为都不变**——大多是重构，移植时照新结构搭会省很多事），详见 Step 60–66：M62 ADE 全流程的真模型 evals；M63 谁能做什么收进一张表（`lib/callers.ts`）；M64–M66 任务的 Workspace 成为模块（`lib/workspace.ts`，daemon 只做适配）、worktree 改由 daemon 建（`task prepare`）、规则可在进程内测试；M67–M70 daemon 的定时部分（schedules、watches、值班 agent 与常备指令）成为由注入时钟驱动的模块；M71–M74 hub 的所有 daemon 调用走 `RoostPort`、各屏成为 `hub/overlays/` 下的模块；M75–M77 每个 op 一份 schema，既是类型、文档的 op 参考，也是 daemon 入口的参数检查；M78 测试与压测不再留孤儿进程。**对客户端的两处变化**：M65 起 `task start` 不再带 `workspace`，先 `task prepare` 拿到 worktree 路径、按它构造 launch，再 `task start {id, launch}`；M77 起 pi 的 `roost_send` 等工具在发出之前就拒绝超长消息。合入顺序 M62、（#95 只改文档）、M63、M64–M66、M67–M70、M71–M74、M75、M78、M76、M77。
 > - **Step 20 起（M21 及之后）全部是可选增强**；核心 Step 1–8 不依赖它们。其中真正改变"移植怎么做"的是 M29/M31/M32：现在可以不写适配器代码，直接用档案（级别 0）或协议（级别 1）接入，见 §0 与 §1.3。
 
 ---
@@ -153,7 +154,7 @@
 
 ## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
 
-**现状（v0.1.19；分层自 v0.1.12 的 M32 起未再变，M43–M58 与 M61 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`；v0.1.17 的 M54–M56 把 git 步骤放在 core 的 `lib/task-git.ts`、项目配置与批准放在 `lib/project-config.ts`、M61 的 pi 内建命令清单放在 `lib/pi-commands.ts`，task 的新动作在 `daemon/main.ts`；适配层只改 `adapters/pi/worker.ts`（写 `commands.json`、任务 worktree 的提示）、`agent-tools.ts`（`roost_task_done` 进 review 的回话）与 `hub-options.ts`（`taskMerge`、档案命令）；`/tasks start|merge|…` 和 peek 的命令菜单在 `hub/agent-view.ts`；host 多一个 control op `command`；v0.1.18 的 M57–M58 同样：core 新增纯函数 `lib/workspace-view.ts`（总览的分组、图标、按键、详情行）、`lib/task-diff.ts`（取 diff 并解析）、`lib/review.ts`（评论落在哪、终端文本），`lib/task-git.ts` 多了 `taskChanges`，`lib/board.ts` 多了 `reviewText`/`taskPrompt`；daemon 多了 `task` 的 `comment`/`uncomment`，并让值班 agent 可以 `start`；适配层只改 `adapters/pi/concierge.ts`（`hub_task_start`）；`/workspaces` 总览与评审界面在 `hub/agent-view.ts`；CLI `review` 在 `bin/pi-roost.ts`；v0.1.19 的 M59–M60 同样：适配层新增 `adapters/pi/tasks-command.ts`（pi 会话里的 `/tasks` 命令，经 `adapters/pi/index.ts` 注册）与 `adapters/pi/task-start.ts`（从 pi 进程建/恢复任务 worktree 并构造 launch，值班 agent 的 `hub_task_start` 与 `/tasks start` 共用，从 `adapters/pi/concierge.ts` 抽出）；core 的 `lib/task-git.ts` 多了 `removeTaskWorktree` `restoreTaskWorktree` `taskWorktrees` `prTarget` `ghRepoOf` `openTaskPr`，`lib/board.ts` 多了 `workspace.reviewTip` 与 `workspace.pr`，`lib/workspace-view.ts` 多了 `overlaps`；daemon 的 `shelve` `pr` `cleanup`、`settleHandMerges` 在 `daemon/main.ts`，`firstMessage` 在 `lib/concierge.ts`，`conciergeLaunch`（现为 `concierge.launch`）在 `lib/concierge-module.ts`；`h`（搁置）`o`（PR）键与重叠标记在 `hub/agent-view.ts`）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+**现状（v0.1.20；分层自 v0.1.12 的 M32 起未再变，M43–M58 与 M61 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`；v0.1.17 的 M54–M56 把 git 步骤放在 core 的 `lib/task-git.ts`、项目配置与批准放在 `lib/project-config.ts`、M61 的 pi 内建命令清单放在 `lib/pi-commands.ts`，task 的新动作在 `daemon/main.ts`；适配层只改 `adapters/pi/worker.ts`（写 `commands.json`、任务 worktree 的提示）、`agent-tools.ts`（`roost_task_done` 进 review 的回话）与 `hub-options.ts`（`taskMerge`、档案命令）；`/tasks start|merge|…` 和 peek 的命令菜单在 `hub/agent-view.ts`；host 多一个 control op `command`；v0.1.18 的 M57–M58 同样：core 新增纯函数 `lib/workspace-view.ts`（总览的分组、图标、按键、详情行）、`lib/task-diff.ts`（取 diff 并解析）、`lib/review.ts`（评论落在哪、终端文本），`lib/task-git.ts` 多了 `taskChanges`，`lib/board.ts` 多了 `reviewText`/`taskPrompt`；daemon 多了 `task` 的 `comment`/`uncomment`，并让值班 agent 可以 `start`；适配层只改 `adapters/pi/concierge.ts`（`hub_task_start`）；`/workspaces` 总览与评审界面在 `hub/agent-view.ts`；CLI `review` 在 `bin/pi-roost.ts`；v0.1.19 的 M59–M60 同样：适配层新增 `adapters/pi/tasks-command.ts`（pi 会话里的 `/tasks` 命令，经 `adapters/pi/index.ts` 注册）与 `adapters/pi/task-start.ts`（从 pi 进程建/恢复任务 worktree 并构造 launch，值班 agent 的 `hub_task_start` 与 `/tasks start` 共用，从 `adapters/pi/concierge.ts` 抽出）；core 的 `lib/task-git.ts` 多了 `removeTaskWorktree` `restoreTaskWorktree` `taskWorktrees` `prTarget` `ghRepoOf` `openTaskPr`，`lib/board.ts` 多了 `workspace.reviewTip` 与 `workspace.pr`，`lib/workspace-view.ts` 多了 `overlaps`；daemon 的 `shelve` `pr` `cleanup`、`settleHandMerges` 在 `daemon/main.ts`，`firstMessage` 在 `lib/concierge.ts`，`conciergeLaunch`（现为 `concierge.launch`）在 `lib/concierge-module.ts`；`h`（搁置）`o`（PR）键与重叠标记在 `hub/agent-view.ts`；v0.1.20 的 M62–M78 同样不改分层，新代码按层落位：core 新增 `lib/callers.ts`（谁能做什么的表）、`lib/workspace.ts`（Workspace 模块）、`lib/schedules.ts` `lib/watches.ts` `lib/concierge-module.ts`（定时部分的模块）、`lib/clock.ts`（注入的时钟）、`lib/op.ts`（`OpError` 等）、`lib/schema.ts` 与 `lib/protocol-schema.ts`（schema 与每个 op 的参数/结果）、`lib/orphans.ts`（M78，只给测试用）、`lib/task-worktree-worker.ts`（worker 线程里建 worktree）；`scripts/protocol-doc.ts` 生成文档；hub 新增 `hub/roost-port.ts`（`RoostPort`，hub 与 daemon 之间**唯一**的缝）、`hub/overlay-host.ts` 与 `hub/overlays/*`、`hub/text.ts`；适配层只改 `adapters/pi/task-start.ts`（改成 `task prepare` → 构造 launch → `task start`）和 `agent-tools.ts`（工具字段用协议的 schema）；`daemon/main.ts` 因此从约 4780 行降到 3170 行，`hub/agent-view.ts` 从约 4450 行降到 3605 行）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
 
 | 层 | 目录 | 允许 import | 守护 |
 |---|---|---|---|
@@ -227,7 +228,11 @@ M5+（转后台、agent view、摘要、M9）再增量加 `switchSession`、`ope
 观测          telemetry.ts(M34)
 定位 pi       pi-resolve.ts(M33，仅 node；找 pi 的包并注册解析钩子，只有独立 hub 用)
 daemon/main.ts   host/main.ts   bin/pi-roost.ts
+v0.1.20 新增   clock.ts callers.ts op.ts schema.ts protocol-schema.ts workspace.ts schedules.ts
+              watches.ts concierge-module.ts orphans.ts task-worktree-worker.ts（都不 import pi 的包）
 ```
+
+v0.1.20 新增的 `lib/` 文件**整个拷贝**，不要照着行为重写：它们的依赖都是注入的（时钟、Store、Board/Jobs 端口），换宿主时只需重写 daemon 里的适配对象；`lib/schema.ts` 无任何依赖，宿主 agent 的工具若想用协议的字段 schema，可原样拿来（`jsonSchemaOf` 把字段转成普通 JSON Schema，不需要 typebox）。hub 一侧：`hub/roost-port.ts`、`hub/overlay-host.ts` 与 `hub/overlays/*` 只依赖 pi-tui 的渲染接口，若宿主没有 pi-tui，重写它们时**以 `RoostPort` 为准**。
 
 另有两处不在 `lib/` 但同样可复用：`stress/`（M35 压测，只用协议客户端与假 agent）、`sdk/python/roost_agent.py`（M31，单文件、纯标准库）。**必须按宿主重写的是 `adapters/pi/` 与（若不想依赖 pi-tui）`hub/`**。
 
@@ -1239,6 +1244,94 @@ M61 是用户在 2026-11-06 要求提前做的（和 M48 先于 M47 一样），
 
 移植提示：确认必须绑定"你看到的"——提交、地点、将用的仓库——任何一样在展示与执行之间变了就拒绝；地点要读**实际生效**的配置（推送 URL），不要读名字；推送要推展示过的提交而不是名字指向的当前位置。
 
+### Step 60：ADE 全流程的真模型 evals（M62，`docs/plans/m62-workspace-evals.md`）
+
+M37/M41 的 evals 量过消息、值班 agent 和任务板；M62 补上 M54–M60 造出来的那条循环：任务在自己的 worktree 里开始、会话提交并 `roost_task_done`、仓库的 verify 跑、人在本地合并。**只加测量，不改产品代码。**
+
+- **用法**：`npm run eval -- --only "roost workspaces" --runs 3`（`evals/workspace.eval.ts`，两个用例）。**workspace loop**：任务要一个带 token 的文件，verify（`.roost/project.json` 里已批准的 `sh check.sh`）检查它；检查项：先 verifying 后 review、verify 通过、被用户合进 main、main 上有会话的提交、合并后 worktree 没了、**会话自己从没合并**、花费。**workspace verify loop**：要的确切输出只有检查失败时才会说出来（脚本里把期望值写成十六进制，读脚本也看不出）；检查项：verify 失败被送回会话（`working · verify failed`）、之后通过、合并、main 的脚本打印出检查要的东西。
+- **harness**（`evals/harness.ts`）：用例带 `git` 和 `workspace` 时，仓库有本地身份（`eval@example.invalid`）并提交 `.roost/project.json`；任务以该仓库为项目加入，命令先 dry 再带 hash 批准；然后和 hub 的 `/tasks start` 一样建 worktree、`buildLaunch` + `taskPrompt`、发 `task start`（M65 之后改为 `prepare` → `start`）。任务处于 verifying/merging 时才算稳定；`merge` 选项在会话停掉并消失之后才合并（还有活着的持有者时 worktree 会保留，`worktree kept while … runs`）。
+- **第一次结果**（haiku 5.5，thinking low，各 3 次）：workspace loop 3/3、p50 9 s、$0.0019；verify loop 3/3、p50 21 s、$0.0052。
+- **审查后**：期望行用十六进制，否则会话先读 `check.sh` 就能绕过本用例要测的失败；"只有用户合并"的检查看每个 merging/merged 事件都是用户的、且 merge 的 note 在（旧检查会放过 `roost` 发的事件）；一个 workspace 用例就是一个 pi 会话，与 `extra`/`fanout`/`agent` 同用是错误而不是静默丢弃。
+
+**验收标准**：既有测试不变（`evals-judge.test` 只改了一行）；真模型上两个用例过（不属于 `npm test`，要花钱，要凭证）。
+
+移植提示：evals 的价值在于用**真模型**走一遍整条循环并让"失败的 verify 能被模型读懂并修好"成为被测量的东西；harness 必须和产品用同一条启动路径（同样的 prepare/start），否则测的是测试自己。
+
+### Step 61：谁能做什么，收进一张表（M63，`docs/plans/m63-caller-policy.md`、`GLOSSARY.md`）
+
+此前 daemon 在约 44 处判断谁能用哪个 op（`requireHub` 12 处、`handle` 里内联、各 handler 与 task 动作里），而且有三种"身份"（`conn.peer`、`conn.agentSide`、`boardActor`）；M59 最严重的那个洞（子会话首条消息 `/tasks merge 5` 被当成人）就是这一类。M63 起由一个模块回答。**行为不变（除下面说的"先后"）。**
+
+- **Caller 四种**（`lib/callers.ts` `callerOf(conn, isConcierge)`）：Person（从没自称 agent 的连接：hub、CLI、pi 里的 `/tasks`）、Session（daemon 起的 job，或注册为 peer 的前台 pi；有 `job`/`fg` 两种形式）、Concierge、Unregistered agent（说过 `hello` 或 `report` 但报告没被接受）。
+- **表**：`POLICY: Record<PolicyKey, Policy>`，每个 op 一行，`task` 与 `concierge-order` 每个动作再一行（`task.merge`、`concierge-order.rm`）加一行兜底；每行对四种 caller 各写 `allow` 或"拒绝的代码与原话"；Session 的规则可按形式不同（只有后台会话 `handback`、只有前台会 `ack`）。**给协议加了 op 而没有行，类型检查不过。** `allow(caller, op, action)` 在 `handle()` 里**最先问一次**；需要 daemon 状态的规则仍留在 op 里（job 已删的 `not_found`、谁持有任务、值班 agent 的 `act` 策略：表放行 `task.start`，op 再查 `act`）。`concierge-act` 仍以 Person 身份调 `handle`。
+- **变化的只有"先后"**：被 caller 种类拒绝的请求，在读参数、查任务或 job 之前就被拒了。此前许多请求先看别的：值班 agent 合并无工作区的任务先听到 "no workspace"（现在是被拒，合并是人的事）；hub 认领/会话 drop、assign、start 一个不存在的任务先听到 "no such task"；已删除的 job 问 concierge op 或 `ack` 先听到 `not_found`。每种拒绝的代码和原话都是旧的；原来允许的仍允许，原来拒绝的仍拒绝。
+- **没动**：Person 由 socket 信任（从不表明身份的连接就是人）；拒绝的措辞；对子会话首条消息的过滤（`firstMessage`，另一类守卫）。
+- **审查后**：叫得像动作行的 op（把 `task.merge` 当 op 名发来）是未知 op，不是那一行；不是字符串的 action 不算动作；矩阵里钉住了"值班 agent 在 `act` 开着时 start 一个任务"（越过表与策略、到任务自己的检查），不只是关着的情形；说明里写的是"哪些拒绝现在先出现"的通则而不是两个例子。
+
+**验收标准**：`callers-matrix.test`（真 daemon，对每个 op 与 task 动作、五种 caller 各发一遍，结果做 snapshot；改动前先拍、改动后唯一的差别是值班 agent 的九个工作区动作）；`callers.test`（`callerOf`、每一行、未知动作、对象原型上的名字、Person 的 op、peer 的 op、会话的两种形式、每条拒绝格式合规）；`comms.test`（hub 认领不存在的任务）。
+
+移植提示：把"谁能做什么"写成**一张按 (caller 种类 × op/动作) 编码的表**并在入口先问一次；这是以后审计权限的唯一入口，也让"新增 op 忘了写权限"变成编译错误。Caller 的判定依据仍是**来源通道**（连接做过什么），不是消息内容。
+
+### Step 62：Workspace 模块、daemon 建 worktree、规则进进程测试（M64–M66，`docs/plans/workspace-module.md`）
+
+任务工作区的整个生命（start → setup → working → verify → review → merge、shelve、pr、重启）原本是 `daemon/main.ts` 里约 800 行、十几个互相调用的函数和 7 个模块级 map/set（`verifyRuns` `setupRuns` `setupNote` `verifyQueue` `verifyReserved` `workspaceBusy` `mergingRepos`）；M55–M60 的审查 bug 都出在它们的交错上，规则只能起真 daemon 经 socket 测。M64–M66 把它做成一个模块。
+
+- **M64：搬到 `lib/workspace.ts`**（约 910 行，`createWorkspaces(deps)`）：拥有阶段机、每个工作区动作（start setup verify pass back comment uncomment approve shelve pr commit abort merge）、verify 队列与名额、每仓库一次合并、启动时的结算、手工合并识别、遗留清理；**任务板自己的动作（add claim done drop assign）不在内**。接口：`act(who, task, action, args)`、`done(who, task, result)`（会话说完成，verify 开始）、`commandEnded(jobId, of, code)`（verify/setup 命令结束）、`settle()`（启动时）；搬的时候发现板上动作还需要三个入口：`drop(task, mark)`（工作区忙或在 merging 时不行；`mark` 在板上标记 drop；然后停掉运行中的命令、删干净的 worktree）、`handMerges()`（任务板被列出时找手工合并的分支）、`cleanup(dry)`。**缝**：Jobs（派发会话/命令、停止、会话是否活着）与 Board（读存任务、记事件、推板、通知持有者）是端口，各有两个适配器（daemon 的和测试用的内存版）；**Git 不是端口**，测试跑真 git；**时钟是传进来的**（`lib/clock.ts`），verify 超时无需真等。它只写任务的 `workspace`，以及工作区合并后把任务标 done，然后 `board.save()`；其余字段（持有者、标题、依赖）不碰。`OpError`、`str`、`realPath`、`taskText` 搬到 `lib/op.ts` 共用。daemon 在 `task`（工作区动作、`done`/`drop` 的工作区一半、`list`、`cleanup`）、job 结束、启动时调它。行为不变，靠搬之前的 snapshot 与原有 66 个 socket 测试钉住。**审查后**：`drop` 的拒绝顺序要和以前一致（工作区忙或 merging 先 `conflict`，再是已 done/dropped 的 `bad_request`，最后才碰板）；`workspace.test` 也钉住 `settle()`（中断的 verify 回 review、中断的 setup 变 failed、没人报告的命令 job 标 stopped 并清理）。
+- **M65：worktree 由 daemon 建**（**协议变化**）：此前 hub、pi 的 `/tasks start`、值班 agent 的 `hub_task_start`、eval harness 四个调用方各自写 git 建 worktree，daemon 再事后检查它们建的对不对（`validWorktree`、`baseSha` 在 `baseRef` 上且在 `HEAD` 之下，M57）。现在分两步，因为 agent 的启动参数需要 worktree 路径（pi 的会话文件按目录分，daemon 不认识 agent）：`task prepare {id}` 做与 `start` 同样的任务检查，再用 `makeTaskWorktree`（已搁置的用 `remakeTaskWorktree`）建 worktree 并回 `path`、`branch`、`baseRef`、`baseSha`，主检出有未提交改动而不被带过去时还有 `sourceDirty`；客户端在那里构造 launch；`task start {id, launch}` 启动（**不再有 `workspace` 参数**，没有 prepare 过就拒绝）。prepare 过但没 start 的 worktree 5 分钟后撤掉（`PREPARED_MS`，测试用 `PI_ROOST_PREPARED_MS`），被拒的 start 立刻撤掉它建的（新建的连分支，搁置恢复的只撤 worktree），drop 也撤；`/tasks cleanup` 不动 prepared 的。建 worktree 是 git checkout 加复制 `.worktreeinclude`，在 daemon 里放到 **worker 线程**（`lib/task-worktree-worker.ts`），不卡 daemon 自己的线程。`prepare` 是 Person 的 op，值班 agent 在 `act` 开着时可用，否则 `policy`（callers 表里一行）。四个调用方都不再写 git；daemon 能接受的 task 动作清单就是 callers 表的清单（只有一份）。真模型 evals 走 prepare → start：2/2。**审查后**：撤销倒计时到了而该任务正有动作在进行（start 还在派发进去）时不撤，`PREPARED_MS` 之后再看；再次 `prepare` 给同一个 worktree（含 `sourceDirty`）且**不延长**时间；已有工作区只在其 worktree 还在自己的分支上时才再 prepare/start；**已知**：prepared 记录只在内存，daemon 在其间停掉，留给 `/tasks cleanup`（无主、超过 10 分钟）；撤销 prepared worktree（`discardWorktree`）仍是 daemon 线程上的 git，只有"建"搬到了 worker。
+- **M66：规则在进程内测试**：`test/workspace.test.ts`（27 个，约 8 s）经模块自己的接口测，用假 Board、假 Jobs、手动时钟和真 git，不起 daemon 不开 socket。**四个承诺各一个测试**：每个任务一次一个动作（第二个是 `conflict`）；每仓库最多 2 个 verify 同时跑，其余排队、一个结束再开一个（别的仓库不计，排队中被 drop 的不开始）；每仓库一次一个合并（同时发的第二个 `conflict`，另一个进程持有合并锁也是）；重启结算被打断的（没有 run 的 verify 回 review/未验证、排队的也是，中断的 setup 失败，遗留的 job 先停后清）。再加 M55–M60 审查 bug 背后的规则：冲突不动基线并停在任务的 worktree；detached HEAD 不合并；损坏记录先于任何 git 被拒；verify 失败带输出末尾退回，到 `maxRounds` 停下等人；已批准的 setup 在会话前跑；批准与展示之间命令变了被拒；verify 中 drop 会停 verify 且之后没人改写阶段；超时变 failed；手工合并识别（不含被重置到基线的、评审后又提交的、worktree 有改动的、没有自己提交的），至多每 10 s 看一次；cleanup 绝不删有改动的 worktree。原 socket 测试里 5 个（规则已在上面）删掉，其余留作端到端：真 setup job、真 verify 失败的退出码与输出、列板找手工合并、从 start 到 merge 的整条循环、重启结算合并、verify 经真命令 job、命令变了/verify 中 drop/超时用真进程、值班 agent 的 start、评论送回、搁置与恢复、子会话首条消息、PR；`comms.test` 66 → 61。**审查后**：把审查点名的每个守卫逐个拿掉看是否有测试失败（7/7）；重启测试不再检查旧模块的 job（停掉的 daemon 没有），检查新模块对它们做了什么；真 setup 与真 verify 失败留作端到端，因为 daemon 的接线（命令 job 的退出码与日志）不在模块里。
+
+**验收标准**：`workspace.test`（上面的承诺与规则）；`callers-matrix.test` 不变；`comms.test` 里每个动作至少一个端到端用例；`task-git.test`、`workspace-env.test` 不变并通过；M65：`prepare` 的各种拒绝、重复 prepare 同一个 worktree、5 分钟后撤掉、被拒的 start 撤掉 worktree、`/tasks start`/`hub_task_start` 都走 prepare → start。
+
+移植提示：**照模块拷贝，别照行为重写**——`lib/workspace.ts` 的依赖是注入的，你只需要为宿主写 Jobs 与 Board 的适配对象；`makeTaskWorktree` 在宿主里同样要放到 worker 线程；客户端**不要再自己写 git**，这样"worktree 对不对"只有 daemon 一处负责，也不再需要事后校验。
+
+### Step 63：daemon 的定时部分成为模块（M67–M70，`docs/plans/daemon-modules.md`）
+
+schedules、watches、值班 agent 与常备指令原本都在 `daemon/main.ts` 里，各自用 `Date.now()` 和自己的 `setTimeout`/`setInterval`，测试要起真 daemon、用环境变量缩短计时器、真等（一个值班 agent 用例最长 8 s）。**行为都不变**（ops、事件、文件、拒绝的原话），做法就是 Workspace 模块那一套。
+
+- **共同的约定**：`lib/clock.ts` 的 `Clock { now(); timer(fn, ms) }`（`timer` 不拖住进程）和 `systemClock`（从 `lib/workspace.ts` 搬来）；测试用 `test/support/clock.ts` 的 `manualClock`（`advance(ms)` 让到期的每个计时器**在各自的时刻**触发，重复的触发多次，`pending()` 看还有几个）。每个模块声明自己要的几个窄端口，daemon 的一个适配对象满足；**模块自己拥有计时器**（`start()` 起、`stop()` 清），模块**不读环境变量**——缩短计时的 `PI_ROOST_*_MS` 由 daemon 读后作为选项传入；文件状态走 **Store 端口** `{ read(): unknown; write(v): void }`（daemon 的原子写在 roost home 下，测试的在内存里；测试里"重启"就是在同一个 store 上新建模块；坏条目带警告丢弃仍归模块）。`noteState`（job 状态变了）仍留在 daemon，它去调各模块（`watches.stateChanged`、值班 agent 的 `dropSuggestion` 等），释放板上认领也留在 daemon。
+- **M67 `lib/schedules.ts`**（`createSchedules(deps)` → `{ op(name, args), start(), stop() }`）：五个 schedule op 经 `op`；`start()` 补跑并起 tick。端口：`jobs`（`dispatch` `stillRunning` `shuttingDown`）、`store`、`record`、`log`、`span`（telemetry）、`isDir`、`clock`、`tickMs`。**tick 是一串单次计时器**（Clock 没有 interval）：下一个在 tick 运行**之前**就安排好，周期固定，和 `setInterval` 一样；tick 抛错仍继续，现在会记日志 `schedule tick failed`（以前是未捕获异常）。**已知**：因上一次还在跑而跳过的槽不补（下一个槽已先设好，是有意的）；从文件加载的条目不再检查 cwd（只有 `schedule-add` 检查）。`schedules.test` 25 个；逐个拿掉守卫，17 个中 15 个有测试失败，剩 2 个（暂停的计划被 tick 和补跑跳过）不可能有影响，因为暂停的 `nextAt` 是 null；socket 测试里 1 个删掉。
+- **M68 `lib/watches.ts`**（`createWatches<P>(deps)` → `{ load(), add(peer, args), stateChanged(row), removed(id, name), watcherGone(key), sweep() }`）：daemon 的调用点各一行。没有计时器，**过期清扫仍挂在 daemon 共用的 reaper 上**（`PI_ROOST_REAP_CHECK_MS`），所以没有 `start()`/`stop()`；过期用 `clock.now()`；`load()` 由 daemon 在 job 都加载之后调（文件按存在的 job 过滤）；`ttlMs`（daemon 读 `PI_ROOST_WATCH_TTL_MS`）与 `maxPerWatcher` 是选项。`watches.test` 49 个；没删 socket 测试（M43 的三个各留作一块接线的端到端）。**审查后**：此前没有测试覆盖 daemon 丢弃已删除 watcher 的 watch 的那个调用（`watcherGone`，main 上也没有），现在有 socket 测试，拿掉该调用就失败。
+- **M69 `lib/concierge-module.ts`**（`createConcierge<C>(deps)` → `{ load start stop op nudge status isConcierge isPeer own safeName launch mayAct suggestionField dropSuggestion removed }`，常备指令在其中，两个 Store）：八个 concierge op 经 `op`；纯函数 `conciergeText` `oneLineText` `firstMessage` 搬到 `lib/concierge.ts`。端口很多（`sessions` `jobs` `events` `store` `ordersStore` `record` `push` `log` `config()` `board()` `shuttingDown()` `clock`），选项 `coalesceMs` `retryMs` `tickMs` `heartbeatMs`（daemon 读 `PI_ROOST_CONCIERGE_*_MS`）。**初始化顺序**要紧：模块在 `record` 之后立刻创建；适配器在箭头函数里**惰性**读 `recs` `roster` `tasks` 等；创建时什么都不读（`load()` 由 daemon 在 job 加载之后调）。唤醒合并与重试共用**一个**单次槽（和原来的 `conciergeTimer` 一样），30 s 心跳是一串单次计时器；tick 抛错现在记日志 `concierge tick failed`。
+- **M70 规则进进程**：`concierge-module.test` 98 个，经接口、假端口、内存 store 与手动时钟：开关（第一次 `on` 派发、之后 `on` 重启、同时两个 `on` 共用一次启动、`off` 只终止活着的、重启后读同一份文件、状态文件的防御式加载）；唤醒（合并、唤醒中又来 nudge、摘要与游标、自己的事件、投递失败与共用的合并/重试槽、每小时上限、每日预算、唤醒中被关或被替换）；心跳与 30 s tick（设置或覆盖、到期的指令、周期不漂、tick 抛错、`stop()` 后无计时器）；say/ask/policy/suggest/reply/undo/act（谁能、拒绝顺序、代码与原话、带 `why` 的事件、建议的保留/过期/丢弃）；值班 agent 开会话的 launch 构造；常备指令（add/list/rm/applied、`by`、上限、加载格式、id 不复用）。断言的是假端口收到了什么。**变异检查**：逐个拿掉或反转 `lib/concierge-module.ts` 里的守卫，400 个里 380 个有测试失败，余下 20 个都有解释（调用方到不了的状态、两个互相覆盖的守卫、跑不到的 `catch`、空操作变异等）；第一遍只抓到 331，漏的 49 个补了测试。**审查后**：又发现一个：投递失败时只在内存里移动游标而不保存，所有测试都放过（旧测试只读保存的状态）；现在测试再投递一次并检查最初那个没送出去的事件仍在摘要里。socket 测试 `comms.test` 62 → 60（M44 那块 12 → 10，41 s → 36 s）：删的两个是"off 之后 on"与"时钟指令到期唤醒"（后者要等 8 s），其余各留作一块接线的端到端。
+
+**验收标准**：`schedules.test`、`watches.test`、`concierge-module.test`（上面各项，时间只由手动时钟推进）；`comms.test` 与 `daemon.test` 里每块接线至少一个端到端用例；`test/support/clock.ts` 的 `manualClock` 让"每 30 s""每小时上限""预算跨日"这类用例不再真等。
+
+移植提示：**注入的 Clock 与 `manualClock` 是让定时部分可测的关键**，要先拷这两样；模块不读环境、不直接碰文件（Store 端口）、不碰 daemon 的状态（窄端口）；初始化顺序与惰性适配器是最容易踩的坑。tick 做成"先安排下一个再执行本次"的单次计时器链，周期才不漂。
+
+### Step 64：hub 的 daemon 端口与各屏模块（M71–M74，`docs/plans/hub-overlays.md`）
+
+`hub/agent-view.ts`（约 4450 行）把每一屏（工作区总览、评审、任务板、值班 agent 的屏、定时、日志、用量、对比）都建在类里，直接伸手进它的字段，并用写在各处的 op 名和 daemon 说话（60 多处 `request(...)`）；测试要围着整个视图造一个按 op 名应答的假 client。**屏幕和按键都不变**（每个移动之前先用 snapshot 钉住旧渲染，之后逐字符一致）。
+
+- **M71：一个端口**。`hub/roost-port.ts` 的 `RoostPort`（49 个方法，每个就是一次 request，结果原样返回，不改形状）按区域分组：`jobs`（list listAt stop rm pin rename reorder respawn reply dispatch）、`tasks`（list add assign done drop release prepare start merge back abort commit approve verify pass comment uncomment shelve cleanup pr）、`concierge`（status on off answer act undo ask，及 `orders`）、`schedules`、`events`，加 `subscribe(onEvent)`（先监听再问，和原来的 `connect()` 一致）、`listen(onEvent)`、`position()`；`roostPort(client, via?)` 是基于 `DaemonClient` 的适配器，测试用 `test/support/roost-port.ts` 的内存版 `fakePort(answers)`。视图里全部 69 处内联请求都改走端口。**请求 ID 仍保留**：`jobs.reply` 与 `jobs.dispatch` 用 `requestOnce`，`via` 让重发在重连之后走视图当时持有的连接、用同一个 ID。**不进端口的**：`taskDiff` `taskChanges` `worktreeChange` `hostControl`（读 git 或本机，不是 daemon），由宿主交给需要的屏。`hub/overlay-host.ts` 定义 `OverlayHost<P>`：`port`、`theme`、`say`、`close`、`requestRender`、`attachTo`、`rows()`（只读）及按需的 `current()` `notice()` `termRows()`；`Overlay` 多一个可选的 `onEvent`。**审查后**：`reply`/`dispatch` 原本走 `this.port`，而视图重连期间它是 `undefined`，在 await 之后的发送（标记行的回复、fan-out 的派发）会抛错而不是等待（M51）；现在走 `sends(via)`，不持有连接，每次尝试取当前活着的。
+- **M72–M74：各屏成为模块**。每个是 `createXOverlay(host, opts)`，返回 `Promise<Overlay | undefined>`（首次加载在里面做；`undefined` 表示失败而且已告知宿主），只拿自己需要的那一片端口（如 `{ tasks: Pick<…, "list" | "pr" | "approve"> }`），不 import 视图。M72：`hub/overlays/workspaces.ts`、`review.ts`（`wsReload` 钩子取消，工作区屏用 `onEvent` 跟随 `board` 事件；`tasksCommand(line)` 仍是视图的 `/tasks` 命令，两屏都经它行动，所以 `/tasks start` 的 prepare → launch → start 仍是一条路径）；`hub/agent-view.ts` 4494 → 3949 行。M73：`tasks.ts`（任务板与 cleanup 的行）、`concierge.ts`（常备指令屏与回答屏）、`schedules.ts`；→ 3829 行。板、行、回答屏是只读的，不问 daemon（`/tasks` 把任务交进来）；回答在 `onEvent` 里到达，可能正值重连，所以不需要端口，而被打开的 overlay 挡住时延后到关闭时再开（`pendingAnswer`，此前没有测试）。M74：`log.ts`、`usage.ts`、`compare.ts`；→ **3605 行**（M71 之前 4455）；`DOUBLE_PRESS_MS`（2000）搬到 `hub/overlay-host.ts` 共用。视图仍保留核心（列表、选择、输入、派发、peek）、斜杠命令和改变自己状态的事。共用的文本工具搬到 `hub/text.ts`（`oneLine` `wrap` `CONTROL`），`rowName` 到 `lib/view-model.ts`。
+- **测试**：每屏一个测试文件，跑在 `fakePort` 与假 host 上（`test/support/overlay-host.ts`、`overlay-keys.ts`）：`workspaces-overlay.test`（60）、`review-overlay.test`（61）、`tasks-overlay.test`（19）、`concierge-overlay.test`（21）、`schedules-overlay.test`（14）、`log-overlay.test`（11）、`usage-overlay.test`（11）、`compare-overlay.test`（36）；`roost-port.test`（54：每个方法的 op/参数/结果、subscribe 顺序、请求 ID、丢失的应答用同一 ID 在 `via` 的 client 上重发、被拒的不重发）。`agent-view.test` 里保留的是接线：每屏一个端到端用例，加各屏的 snapshot（M72 19 个、M73 19 个、M74 25 个）。变异检查（M72–M74）：731/753 个守卫有测试失败，余下全部等价。**审查后**：M72 之后没有测试证明"视图把推送的 `board` 事件交给打开着的 overlay"（取代 `wsReload` 的接线），现在有；M74 的 compare 里 Enter 的顺序（先关闭、再动视图光标、最后 attach）现在有测试钉住。一个顺带修的 M26 间歇性测试（fan-out 的三行各自取 `Date.now()`，跨过毫秒边界时 `startedAt` 排序把另一行放到光标下），现在三行共用一个起始时间——只改测试。
+
+**验收标准**：`roost-port.test`；八个 overlay 测试；`agent-view.test` 的 snapshot 与接线用例（含 `/workspaces`、`Ctrl+N`、Enter 进评审再 Esc、评论与合并到达 daemon、`/schedule list`、回答在板后到达并在 Esc 时打开、`k k`、`/compare` 需要 fan-out 或标记）；`grep "\.request(\|requestOnce(" hub/agent-view.ts` 找不到内联请求。
+
+移植提示：**`RoostPort` 是 hub 与 daemon 之间唯一的缝**——宿主如果自己写 hub，只实现这个端口的适配器，其余屏幕就能复用；先把端口做全再搬屏（搬的时候只是移动代码）；每个屏幕在搬之前先用 snapshot 钉住渲染；测试用内存端口和假 host，不用再围着整个视图造假 client。
+
+### Step 65：每个 op 一份 schema（M75–M77，`docs/plans/protocol-schema.md`）
+
+协议的 38 个 op（M75 数出来是 39 个）原本只是 TypeScript 类型（`lib/protocol.ts` 的 `OpArgs`/`OpResults`），参数在每个 handler 里手工检查（约 120 处 `bad_request`，风格各异），又在 `docs/protocol.md`、TS 与 Python 两个 SDK、pi 工具的 typebox 参数里各写一遍，互相没有核对；文档漏了 `ping` `list` `resolve` `peer_ack` 与四个 schedule op，示例里的 capabilities 是 6 个而 daemon 是 10 个。M75–M77 之后，**一份 schema 同时是类型、文档的 op 参考和 daemon 入口的检查**。
+
+- **M75：schema 与派生类型、生成的文档**（行为不变）。`lib/schema.ts`（无依赖的小构建器）：`obj` `optional` `str({min,max,pattern})` `num({int,min,max})` `bool` `nul` `nullable` `literal` `oneOf`（字符串枚举）`union`（普通或按判别字段）`arr` `rec` `opaque<T>(title, desc)` `unknown`、`Infer<S>`、`check(schema, value)`（第一处失败的路径与消息；schema 的 `message` 就是原手工检查的原话）。schema 是普通的 JSON Schema 形状的对象，所以文档生成器能读，pi 的工具也能在适配层用 `Type.Unsafe` 引入。**不用 typebox**：它由 pi 提供，daemon 是独立的 node 进程，依赖不得是 host 提供的包，装好的包里也没有它——typebox 只留在 `adapters/pi` 的 peer/dev 依赖。`lib/protocol-schema.ts`（约 470 行）：每个 op 的参数（`ArgSchemas`）与结果（`ResultSchemas`），39 个 op；`task`（21 个动作）、`concierge`（6）、`concierge-order`（4）是按 `action` 的 union，`concierge-act` 按 `what`；`DispatchArgs` 是一份 schema，被 `dispatch` `spawn` `schedule-add` `concierge on` `concierge-act dispatch` `task start` 共用。`OpArgs` `OpResults` `JobRow` `PeerRow` `SendResult` `HandbackArgs` `WorkerReport` `DispatchArgs` `DaemonStatus` `ScheduleRow` 等**都从 schema 派生**，手写声明删掉，`lib/protocol.ts` 重新导出，所以别处的 import 不变；别的模块拥有的类型（`BoardTask` `RoostEvent` `ConciergeStatus` `StandingOrder` `UsageInfo` `PrInfo`）是 `opaque<T>`，文档里只写名字。`TASK_ACTIONS`、`ORDER_ACTIONS` 由 union 派生；`DAEMON_CAPABILITIES` 搬进 `lib/protocol.ts`。`scripts/protocol-doc.ts`（`npm run docs:protocol`）把 "Op reference" 写进 `docs/protocol.md` 的标记之间：capabilities、共用形状、每个 op 的调用方（来自 `POLICY`）、参数、结果；`protocol-doc.test` 在文档过期时失败，核对 Python SDK 的 `PROTOCOL_VERSION` 与它调用的 op，并断言 `lib/` `daemon/` `hub/` `host/` 下没有文件 import typebox 或 pi 的包（静态、动态、re-export、`require` 全抓）。**审查后**：派生出的 `TASK_ACTIONS` 顺序改变了 daemon 的 `action must be one of …` 原话，union 顺序改回旧的，测试钉住两张表；`concierge-policy` 的参数原为 `Record<string, never>`，用 `empty()` 保持精确；所有 39 个 op 派生出的类型逐个与旧类型比过严格相等；文档补上 daemon 其实在用而 schema 没写的限制（任务 id 与 hello 的 `protocol` 至少为 1，`requestId` 的形状）。
+- **M76：简单 op 的入口检查**。`ENTRY_CHECKED`（先是除 `dispatch` `spawn` `task` 以外的所有 op）与 `argsProblem(op, args)`：daemon 在**callers 表之后、op 之前**调它，所以被拒的 caller 仍按以前的话回答；不是对象的参数当作 `{}`；`hello` 与 `report` 在检查前先把连接标成 agent（原来就在各自检查之前）。每个字段要么 `loose`，要么带原手工检查的原话（`need` 非空字符串、`filled` 去空白后有内容）。`lib/schema.ts` 增加：`loose(s)`（类型与文档同，`check` 一律通过，缺必填也过）、`str({ trim })`（限制作用在去空白后的值上）、`str({ maxBy: "cut" | "op" })`（daemon 截断或用自己的码拒绝的上限，`check` 不拒，文档里写明）、`union(…, { discriminant })`（只按该字段选成员，别的值以 union 的话失败）。**哪些保持 loose 及原因**：daemon 本来就丢弃或宽松读取的（`list` `pin.pinned` `respawn` `shutdown` `peer_ack` `hello.agent`/`capabilities`、除 `pid` 外的 `peer_register`）；要先对状态检查、代码不同的（`report` 与 `ack` 先查 `id` 与 `token`，对已结束 job 的 report 不管内容都收；`schedule-*` 的名字：`not_found`；`concierge-order`，除 add/list 之外的动作先按 id 查，id 可以是 `"3"`）；自带措辞解析的（计划的 `when`/`launch`、指令的 `when`）；`handback`（不是子会话的会话先回 `routed: false`）；`concierge-act`/`concierge-reply`（先查策略：`policy`）。daemon 自己删掉的检查：`reorder.key`、`events` 的 `after`/`limit`/`id`、hello 的 protocol、`rename` 的空名、`send` 的 `to` 与空消息、`peer_register` 的 pid 类型；保留的是要状态的（`reorder` 的 id 是否认识、活的 pid、去空白后超长的 `too_long`）、其他路径也会调用的函数（`requireJob`、`reply()`），以及各模块自己的检查（它们的进程内测试直接调用；入口先用同样的话拒绝）。**与以前不太一样的两处**：两个错误并存的请求可能按另一个回答（对不收通知的 agent 发错参数的 `watch`：`bad_request`，原来是 `unsupported`）；`concierge answer` 给一个单元素数组（`["never"]`）现在被拒（原来 `String()` 收下）。**审查后**：对已结束或正被停止的 job 的 report 不管内容都收——原来 state/status 检查在这之后，入口把它拒了，现在 `report.report` 是 loose，检查回到 op 里（在 report 绑定连接之后）；`concierge-order` 缺少或未知动作原来回 `not_found`（先查 id），入口放行；`requestId` 不合形状的 `reply`/`dispatch` 是**被拒**（M75 写的"被忽略"是错的，文档已更正）；`events.after`/`limit` 与 `hello.capabilities` 以 daemon 的为准。
+- **M77：其余 op 与 pi 的工具**。`ENTRY_CHECKED` 就是全部 `OPS`。**入口检查可以比 op 里的弱，绝不能更强**（M77 审查定下的规则）。`dispatch`：只检查 `requestId` 的形状（`relax(DispatchArgsSchema, { requestId })`，措辞 `missing args`）——同一个 ID 的重发要在读任何别的字段之前就返回第一次的 job，入口多检查一个字段就会把这个应答变成拒绝；其余仍在 `dispatch()` 里（schedules、值班 agent、`task start`、`spawn` 不经 socket 也调它）。`spawn`：`shallow(DispatchArgsSchema, { message: "launch required" })`（只要求是对象），其他检查需要会话状态。`task`：按 `action` 的判别 union（`action must be one of …`，顺序即 `TASK_ACTIONS`），各成员 `relax`（字段全 loose，保留 literal）；`add` 保留标题（`a task needs a title`，去空白、截到上限）与 `after`（`after must be a list of task ids`）；id 保持 loose（`"3"` 也收；先 `not_found`）。**审查后**：只含控制字符的标题（`"\x01"`）原本被 op 的 `taskTitle` 清成空而拒绝，入口的 trim 不会，所以 op 的检查在入口之后保留；没有 launch 的 `spawn` 在非 peer 连接上回 `launch required`（原为 peer 拒绝；两处错误并存）。**pi 的工具**：`roost_send` 的 `to`/`message`、`roost_watch` 的 `to`、`roost_task_add` 的 `title`/`detail` 用 `Type.Unsafe(jsonSchemaOf(field))` 加上工具自己的描述；`jsonSchemaOf` 去掉 `message` 和 `x-` 标记，以及 daemon 会截断的上限。**这是一处有意的变化**：超过 `MESSAGE_MAX`（未 trim）的消息，以及空的 `to`/`message`/`title`，现在由 pi 的校验器在发出之前拒绝（原来是 daemon 的 `too_long`）；过长的标题仍被截断而不拒绝；工具的 `maxLength` 按码点数，daemon 按 UTF-16 单元，且作用在未 trim 的文本上。`lib/schema.ts` 增加 `shallow`、`relax`、`jsonSchemaOf`；`relax` 只保留 `const` 判别字段，按 `enum` 判别的 union（如 `concierge-act` 的 `what`，目前是 loose）要用 `keep` 保留。
+
+**验收标准**：`schema.test`（构建器与 `check`，变异检查 48/48；M76/M77 的新构建器 `loose` `trim` `maxBy` `discriminant` `shallow` `relax` `jsonSchemaOf`）；`protocol-doc.test`（文档不过期、Python SDK 一致、没有 typebox）；`entry-check.test`（每个被检查的字段要么带原话要么 loose；约 49 条原话下的拒绝；38 个 daemon 原本收下的参数仍被收下；M77 的拒绝与仍被收的情形，每条都和 main 上的 handler 对过）；`daemon.test`（每个被删的检查在 socket 上的原话；拿掉 daemon 的入口调用会失败）；`tool-fields.test`（工具对 pi 自己的校验器）；`callers-matrix.test` 不变。
+
+移植提示：**schema 是协议的唯一来源**——op 的类型、文档的 op 参考、入口的检查都从它来；新增 op 只改 `lib/protocol-schema.ts`（再加 callers 表一行，再跑 `npm run docs:protocol`）。入口检查要**逐条对着旧 handler 比较原话与宽严**（不要想当然统一措辞——措辞与拒绝范围的改变是协议变化，应另开）。**宿主 agent 可以原样复用 `lib/schema.ts`**（无依赖），用 `jsonSchemaOf` 把协议字段变成自己工具框架的 JSON Schema，就不必在工具里再写一遍上限。
+
+### Step 66：测试与压测不再留孤儿进程（M78，`docs/plans/m78-no-orphans.md`）
+
+daemon 与 host 被设计成比父进程活得久（M38：重启 daemon 会续上还在跑的 host）；测试和压测依赖的清理代码在运行被杀掉或中断时从不执行。2026-11-10 实测：一次 vitest 留下 60 个 daemon（约 3 GB），一次压测留下 150 个 host 和 150 个压测 agent（约 14 GB），ppid 都是 1，已经几天。**正常使用不变**：不设 `PI_ROOST_PARENT_PID` 就什么计时器都不起、什么都不扫，用户自己的 daemon（`dist/daemon/main.js`）从不会被匹配。
+
+- **三层**。(1) **跟随父进程（仅测试模式）**：`PI_ROOST_PARENT_PID` 只由测试与压测 runner 设置；daemon 每 2 s（unref 的计时器）用 `kill(pid, 0)` 看它是否还活着，没了就 `shutdown(false)`（干净关闭，host 一并终止）；daemon 的环境会传给它起的 host，host 跟随同一个 pid，没了就杀 worker 的进程组然后退出。(2) **运行前清扫**：vitest 的 `globalSetup`（`test/support/global-setup.ts`，`vitest.config.ts` 里挂上）与 `stress/run.ts` 开头调 `sweepOrphans`（`lib/orphans.ts`）：命令是 `daemon/main.ts` / `host/main.ts` / `stress/agent.ts`、带测试标记（`PI_ROOST_PARENT_PID`，或 `PI_ROOST_HOME` 形如 `<tmp>/roost-*`）、而它跟随的父进程已经不在的进程，被杀（连带 host 的子进程）。环境读自 `/proc/<pid>/environ`（Linux）或 `ps eww`（macOS），读不到的跳过。没有标记的绝不碰；父进程还活着的（另一个运行）绝不碰；只有 home 标记（旧代码起的，可能在别的检出里）的，仅当已成孤儿（父 pid 为 1）才杀。(3) **home 没了就退出**：同一个计时器（也只在设了 `PI_ROOST_PARENT_PID` 时才起），`PI_ROOST_HOME` 被删就关闭。
+- **审查后**：清扫先按进程组杀 host 的 worker（否则 worker 起的 `sleep` 之类会被 init 收养）；`PI_ROOST_PARENT_PID` 不是大于 1 的整数时当作没有，适用 home 标记的规则（仅孤儿）；测试同时杀掉 daemon 和被跟随的父进程，host 靠自己的跟随退出（变异检查过）；假进程的目录会清理。
+
+**验收标准**：`orphans.test`（真进程：daemon 随父进程退出并带走 host 及其子进程；host 在 daemon 同时被杀时自己跟随退出；home 被删则退出；不设变量时忽略父进程死亡；清扫杀掉父已死的带标记进程、放过父还活着的和无标记的；只有 home 标记的仅在成为孤儿后才杀）。
+
+移植提示：长寿的 daemon 一定要有"测试模式下跟着父进程死"的开关，并且**默认关闭**；清扫只对带明确测试标记、且其父进程已死的进程动手，认不准就跳过——宁可留下也不要误杀用户自己的 daemon。
+
 ---
 
 ## 5. 配置项（`lib/config.ts`）
@@ -1384,6 +1477,9 @@ M61 是用户在 2026-11-06 要求提前做的（和 M48 先于 M47 一样），
 | `/tasks approve` / `/tasks pr` 再敲一次的窗口（M59/M60） | 30 s | `adapters/pi/tasks-command.ts` `APPROVE_MS`、`hub/agent-view.ts` |
 | PR 的 `git push` / `gh` 超时（M60） | 120 s / 60 s | `lib/task-git.ts` `openTaskPr` |
 | 删除 worktree 的 `git worktree remove` 超时（M59） | 30 s | `lib/task-git.ts` `removeTaskWorktree` |
+| prepare 过但没 start 的 worktree 保留多久（M65） | 5 min（`PI_ROOST_PREPARED_MS`） | `lib/workspace.ts` `PREPARED_MS`（再次 prepare 不延长；撤销时该任务正有动作则再等一轮） |
+| 测试模式下 daemon 与 host 检查父进程/home 的间隔（M78） | 2 s（仅设了 `PI_ROOST_PARENT_PID` 时才起） | `daemon/main.ts`、`host/main.ts` |
+| 每仓库同时跑的 verify（M56，M64 起在模块里） | 2 | `lib/workspace.ts` |
 
 调试用环境变量：`PI_ROOST_HOME` `PI_ROOST_RUNTIME_DIR` `PI_ROOST_CONFIG_DIR` `PI_ROOST_HOST_ENTRY` `PI_ROOST_REAP_MINUTES` `PI_ROOST_REAP_CHECK_MS` `PI_ROOST_SHELL_KEEP_MS` `PI_ROOST_PROGRESS_MS` `PI_ROOST_FIRST_PROGRESS_MS`；v0.1.7 新增：`PI_ROOST_AUTO_CLOSE_MS`（M13）、`PI_ROOST_CLEANUP_DAYS` `PI_ROOST_CLEANUP_CHECK_MS`（M15）、`PI_ROOST_PR_POLL_MS` `PI_ROOST_GH`（M16，`gh` 可执行文件路径）——测试全靠它们把时间缩短、把目录隔离到临时路径、用假的 `gh`。`PI_ROOST_PARENT_PID`（M78，仅测试：守护进程和 host 跟随该进程，它消失就退出；正常使用绝不设置）。（内部标记变量 `PI_ROOST_RESTORE`、`PI_ROOST_CHILD` 见 §3。）
 
@@ -1392,6 +1488,8 @@ v0.1.12 新增：`ROOST_HOME` `ROOST_RUNTIME_DIR` `ROOST_CONFIG_DIR`（M29，分
 v0.1.14 新增：`PI_ROOST_WATCH_TTL_MS`（M43）；`PI_ROOST_CONCIERGE_COALESCE_MS` `PI_ROOST_CONCIERGE_RETRY_MS` `PI_ROOST_CONCIERGE_TICK_MS` `PI_ROOST_CONCIERGE_HEARTBEAT_MS`（M44）；`ROOST_ROLE=concierge`（M44，hub 为值班 agent 构造启动参数时写进 env，`adapters/pi/hub-options.ts`；pi 扩展据此换成值班角色，`isConciergeRole()`；daemon 在 `concierge-act` 里会把它从代启动的 env 中去掉）；`PI_ROOST_FG_CLAIM_GRACE_MS`（M47）。
 
 v0.1.19 新增：`PI_ROOST_HAND_MERGE_MS`（M59，手工合并的检查间隔，默认 10000）。
+
+v0.1.20 新增：`PI_ROOST_PREPARED_MS`（M65，prepare 过的 worktree 保留多久，默认 300000，测试用）；`PI_ROOST_PARENT_PID`（M78，**仅测试与压测 runner 设置**：daemon 与 host 跟随该进程，它消失或 `PI_ROOST_HOME` 被删就退出；正常使用绝不设置，daemon 会把它传给自己起的 host）。其余没有新增的配置项；M67–M70 之后各模块**不读环境变量**，原有的 `PI_ROOST_SCHEDULE_TICK_MS` `PI_ROOST_WATCH_TTL_MS` `PI_ROOST_CONCIERGE_*_MS` 仍由 daemon 读取后作为选项传入模块。`package.json` 新增脚本 `docs:protocol`（M75，重新生成 `docs/protocol.md` 的 op 参考），并且 `docs/agents` 不进发布包。
 
 ---
 
@@ -1412,7 +1510,7 @@ v0.1.19 新增：`PI_ROOST_HAND_MERGE_MS`（M59，手工合并的检查间隔，
 
 ## 8. 测试策略
 
-`test/` 下 **49 个** vitest 文件（v0.1.7 时 25 个，v0.1.12 时 38 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
+`test/` 下 **70 个** vitest 文件、1234 个测试（v0.1.7 时 25 个文件，v0.1.12 时 38 个，v0.1.19 时 50 个；`pool: "forks"`，超时 20 s），移植时建议**先移植测试**：
 
 | 测试 | 覆盖 | 移植难度 |
 |---|---|---|
@@ -1460,6 +1558,8 @@ v0.1.17 新增（M54–M56、M61）：`task-git.test`（M55：真仓库上的 wo
 v0.1.18 新增（M57–M58）：`workspace-view.test`（M57：分组、顺序、图标、按键、详情）；`task-diff.test`（M58：diff 解析器与真仓库上的 `taskDiff`）；`review.test`（M58：评论位置、过期评论、打印的评审）；`task-git.test` 加 `taskChanges`；`agent-view.test` 加总览（宽/窄、`Ctrl+N`、各键）与评审（移动、评论、退回、各宽度）；`comms.test` 加值班 agent 的 start（有无 act）、评论/`uncomment`、`back` 带评论。测试总数 565（49 个文件）。
 
 v0.1.19 新增（M59–M60）：`tasks-command.test`（M59：pi 里的 `/tasks`：板、merge 的错误、带 note 的 back、shelve、approve 两次、cleanup、用法；M60：`/tasks pr` 两次）；`task-git.test` 加 `removeTaskWorktree`/`restoreTaskWorktree`/`taskWorktrees`；`comms.test` 加搁置（会话在跑/有改动被拒、start 恢复）、手工合并（含分支被重置不算）、cleanup 的 dry 与真实执行、值班 agent 的 launch 由 daemon 重建、子会话首条消息不得以 `/` `!` `@` 开头、`pr`（被拒的情形、dry 的 note、错误的 hash、真推到 bare remote 加假 `gh`）；`workspace-view.test` 加重叠与 PR 行；`agent-view.test` 加 `h`、`o` 再 `y`、`/tasks shelve|cleanup|pr`、已搁置任务的 start 先恢复 worktree。测试从不运行真的测试命令。测试总数 577（50 个文件）。
+
+v0.1.20 新增（M62–M78）：测试总数 **1234**（**70 个**文件）。纯重构的里程碑靠"先钉住再搬"：`callers-matrix.test`（M63：真 daemon 对每个 op 与 task 动作、五种 caller 的应答做 snapshot，搬动前拍好）、`agent-view.test` 里各屏的 snapshot（M72 19、M73 19、M74 25 个，搬动后逐字符一致）。**进程内、不起 daemon 的模块测试**：`workspace.test`（M64/M66，27 个：四个承诺与审查 bug 的规则，假 Board/Jobs + 手动时钟 + 真 git）、`schedules.test`（M67，25）、`watches.test`（M68，49）、`concierge-module.test`（M69/M70，98）；它们共用 `test/support/clock.ts` 的 `manualClock`。**hub 一侧**：`roost-port.test`（M71，54）、`workspaces-overlay.test`（60）、`review-overlay.test`（61）、`tasks-overlay.test`（19）、`concierge-overlay.test`（21）、`schedules-overlay.test`（14）、`log-overlay.test`（11）、`usage-overlay.test`（11）、`compare-overlay.test`（36），用 `test/support/roost-port.ts`（内存端口）、`overlay-host.ts`（假 host）与 `overlay-keys.ts`（原始按键、会把颜色写进文本的主题、"哪些键关闭"的检查）。**协议与 schema**：`callers.test`（M63）、`schema.test`（M75–M77）、`protocol-doc.test`（文档不过期、Python SDK 一致、不 import typebox）、`entry-check.test`（M76/M77：每个被检查的字段带原话或 loose、daemon 原话下的拒绝、原本被收下的参数仍被收）、`tool-fields.test`（M77：pi 工具的字段对 pi 自己的校验器）；`daemon.test` 加每个被删检查在 socket 上的原话。**其他**：`orphans.test`（M78）与 `test/support/global-setup.ts`（vitest 的 `globalSetup`，运行前扫孤儿）；`evals/workspace.eval.ts`（M62，不属 `npm test`）；`comms.test` 从 66 个减到 60 个（见 Step 62/63；删掉的都是规则已在进程内测试里的 socket 用例，每块接线仍留一个端到端用例）。这几个里程碑都用**变异检查**验收测试：逐个拿掉守卫看是否有测试失败（workspace 7/7；schedules 15/17；watches 44/46；concierge 380/400；三个 overlay 批次合计 731/753；schema 48/48；余下的都逐个解释过是等价或不可达）。测试从不运行真的测试命令。
 
 **单列**：
 - `npm run stress`（M35，`stress/run.ts`）：真 daemon + 真 host + 假 agent，场景 `sessions replies chaos board soak`（默认跑前四个；`board` 是 M49 加的），不变量 + 预算，**不花钱**，应当在每次改动 daemon 的存储/事件路径后跑；默认规模约几十秒。
@@ -1517,10 +1617,15 @@ v0.1.19 新增（M59–M60）：`tasks-command.test`（M59：pi 里的 `/tasks`�
 44. （M59）手工合并靠任务板被列出时检查（最多每 10 s 一次），没有自己的定时器；只认"送去评审的那个提交"，评审后又动过的分支、被重置到基线上的分支不算合并（要人自己 `/tasks merge` 或丢弃）；清理会删已完成任务的 verify 日志；清理不动创建不满 10 分钟的无主 worktree（它可能属于刚开始的 start）。
 45. （M59）手机上"需要你"的推送**没做**：pi-mobile 的通知跟随它自己会话的状态（会话在提问），"任务在 review"不是在提问的会话；要 pi-mobile 的契约（今天只有 `pi-mobile:starters` 和 `pi-mobile:activity`）增加一条通道，那是 pi-mobile 的事。手机上能用的是 `/tasks` 命令本身（pi-mobile 里敲斜杠命令）。`.roost/project.json` 的 `teardown` 命令也没有。
 46. （M60）`git push` 会运行仓库的 `pre-push` 钩子（同一账户下的 agent 能写一个，就像它能运行任何程序）；推送带上分支上远端缺少的全部提交，包括基线本地领先的那些；推送 URL 不是论坛 URL 时 `gh` 自己选仓库（展示里写明 "gh picks the repository"）；remote 是 `origin`，否则唯一的一个，多个而没有 origin 就拒绝；PR 开出之后任务就留在 review，PR 的状态（评审、检查、合并）不会回写到任务上——在论坛上合并并拉回基线后才靠手工合并识别；`ROOST_PORT`（每个工作区一段端口）没做；重叠标记依赖总览读到的改动，最多滞后一个重读周期（5 s，`r` 强制）。
+47. （M65）prepare 过的 worktree 只记在内存里：daemon 在 prepare 与 start 之间停掉，它留给 `/tasks cleanup`（无任务持有、创建超过 10 分钟的无主 worktree）；撤销 prepared worktree 仍是 daemon 线程上的 git，只有「建」在 worker 线程里；再次 prepare 不延长保留时间。
+48. （M69/M67）tick 现在是一串单次计时器，抛错只记日志（`schedule tick failed`、`concierge tick failed`）而不再是未捕获异常；因上一次仍在跑而跳过的计划槽不补；从文件加载的计划条目不再检查 cwd（只有 `schedule-add` 检查）。
+49. （M76/M77）入口检查可以比 op 里的检查弱、绝不更强：所以有些检查仍在 op 或模块里（标题只含控制字符、`dispatch` 的字段、`spawn` 的 launch 需要会话状态、id 可以是 `"3"`）。**两个错误并存的请求可能按另一个回答**（对不收通知的 agent 发错参数的 `watch`：`bad_request` 而不是 `unsupported`；没有 launch 的 `spawn` 在非 peer 连接上回 `launch required`）；`concierge answer` 给单元素数组（`["never"]`）现在被拒；pi 工具的 `maxLength` 按码点数而 daemon 按 UTF-16 单元，且作用在未 trim 的文本上，所以超过 `MESSAGE_MAX` 的消息由 pi 在发出前拒绝（而不是 daemon 的 `too_long`），过长的标题仍被截断；`relax` 只保留 `const` 判别字段，按 `enum` 判别的 union 若将来要 relax 必须用 `keep`。
+50. （M78）被跟随的 pid 若被无关进程复用，孤儿会继续活着（也不会被清扫）：很少见，且在安全一侧；清扫在 `/proc` 与 `ps eww` 都读不到环境时跳过该进程；只有 home 标记（M78 之前的代码起的）的进程只在成为孤儿（父 pid 为 1）后才被杀。
+51. （M63）Person 仍由 socket 信任（从不表明身份的连接就是人），加固 socket 是另一步；callers 表只管 caller 种类，需要 daemon 状态的规则（job 已删、谁持有任务、值班 agent 的 `act`）仍在各 op 里。
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.19）
+## 附录 A：daemon op 一览（v0.1.20）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -1601,6 +1706,14 @@ v0.1.19 新增（M59–M60）：`tasks-command.test`（M59：pi 里的 `/tasks`�
 - **launch 的校验**：值班 agent 的 `start`/`hub_dispatch` 的 launch 由 daemon 按值班 agent 自己的 job 重建（只取任务、`cwd`、新会话文件、名字、model、thinking）；`spawn` 和值班 agent 的 launch 里的首条消息（`--` 后恰好一个参数）不得以 `/` `!` `@` 开头（`bad_request`）。
 - **`BoardTask.workspace`** 新增 `reviewTip?`（M59，送去评审的提交）与 `pr?: {url, tip, at}`（M60）；事件流 `task` 多了 `pr`。`docs/protocol.md` 已描述。
 - **pi 命令**：`/tasks [start | merge | back <id> [note] | verify | pass | shelve | approve | pr <id> | cleanup [yes]]`（`adapters/pi/tasks-command.ts`，每个 pi 会话都有）。hub 总览新增 `h`（搁置）、`o` 再 `y`（PR），行上的 `⚠` 表示重叠。
+
+**v0.1.20 的变化**（M62–M78；**没有新 op，`task` 多一个动作 `prepare`，`start` 的参数变了**）：
+- **`task prepare {id}`**（M65；Person，值班 agent 在 `act` 开着时可用、否则 `policy`，会话与协议 agent 回 `unsupported`）：做与 `start` 相同的任务检查，在 daemon 里建 worktree，回 `path` `branch` `baseRef` `baseSha`（主检出有未提交改动时还有 `sourceDirty`）；5 分钟内不 start 则撤掉。**`task start` 的参数是 `{id, launch}`，不再有 `workspace`**；没有 prepare 过（且任务没有现成的工作区）就拒绝。客户端的流程：`prepare` → 在返回的 `path` 里构造 launch → `start`。旧客户端发 `workspace` 会被忽略并因没有 prepare 而被拒。
+- **每个 op 的参数都在 daemon 入口按 schema 检查**（M76/M77；`argsProblem`，在 callers 表之后、op 之前），拒绝一律是 `bad_request` 且用原来的措辞；没有哪个以前被收下的请求现在被拒，唯一例外是 `concierge answer` 给单元素数组。需要状态的检查仍在 op 里。**对客户端更有意义的是**：参数写错时可能按"另一个"错误回答（两个错误并存时）；`requestId` 不合 `^[A-Za-z0-9_.:-]{1,64}$` 的 `reply`/`dispatch` 被拒。
+- **谁能调哪个 op 现在是 `lib/callers.ts` 的 `POLICY` 一张表**（M63），文档的 op 参考里每个 op 都写了调用方；拒绝的先后有变化（先按 caller 种类拒，再读参数/任务/job），代码与措辞不变。
+- **`docs/protocol.md` 的 op 参考由 `lib/protocol-schema.ts` 生成**（`npm run docs:protocol`，字段、类型、上限、调用方、capabilities，39 个 op），`protocol-doc.test` 在它过期时失败；`OpArgs`/`OpResults` 等协议类型从 schema 派生，`lib/protocol.ts` 导出不变；`DAEMON_CAPABILITIES` 现在在 `lib/protocol.ts`。Python SDK 不生成，由测试核对它的 `PROTOCOL_VERSION` 和调用的 op。
+- **pi 的工具**：`roost_send`、`roost_watch`、`roost_task_add` 的字段取协议字段的 schema（`jsonSchemaOf`），超过上限或为空的值由 pi 在发出之前拒绝（M77）。
+- 事件流、`BoardTask`、`JobRow` 没有变化。
 
 **v0.1.7 没有新增 op**：M11–M20 的新功能都复用现有 op，只在字段上扩展——`list`/`job` 事件里的 `JobRow` 新增 `parentOpen`（M13）、`agent`（M18）、`prs`（M16，`PrInfo[]`），M10 的 `worktree`；`dispatch` 的 `DispatchArgs` 新增 `agent` `workspaceEnv` `envDeny` `envForce`；`report` 的 `WorkerReport` 新增 `attachRepaint`（M21 起只有旧 host 读）`remoteAt` `prLinks`。`reply`（M19 记录视图发消息、M12b 面板 `m`）、`respawn`（M13 唤醒休眠的子会话）、`rm`（M15 `.worktreeinclude` 感知的清理）语义不变。host 帧协议新增：attach 的首个回复帧 `HELLO {repaint}`（M14）/ `{replay:true}`（M21，之后第一帧 DATA 是快照），`attached.json` 的 `replay`（M21），数据流里的私有标记 `OSC 7700;pi-roost-repaint`（M21 起 host 只负责剔除）。
 
@@ -1740,8 +1853,27 @@ v0.1.19 新增（M59–M60）：`tasks-command.test`（M59：pi 里的 `/tasks`�
 | `3ea3e9e` | PR #90：发布 v0.1.18（tag `v0.1.18`；代码与 `a10e666` 相同） |
 | `77602c7` | PR #91：M59 搁置、清理、`/tasks` 进 pi 会话、加固 |
 | `9e4320b` | PR #92：M60 可选出口（PR）与重叠标记 |
-| （发布提交） | PR #93：发布 v0.1.19（本文依据，tag `v0.1.19`；代码与 `9e4320b` 相同） |
+| `8b2eb6d` | PR #93：发布 v0.1.19（tag `v0.1.19`；代码与 `9e4320b` 相同） |
+| `424ce0f` | PR #94：M62 ADE 全流程的真模型 evals |
+| `05e6b84` | PR #95：agent skills 的设置（GitHub tracker、triage 标签、domain 文档；只改文档） |
+| `e43f394` | PR #96：M63 谁能做什么，收进一张表 |
+| `c83ae01` | PR #97：M64 Workspace 模块 |
+| `bf3e2ac` | PR #98：M65 daemon 建任务的 worktree（`task prepare`；协议变化） |
+| `8702e2d` | PR #99：M66 Workspace 的规则在进程内测试 |
+| `c66a223` | PR #100：M67 schedules 成为模块，由注入的时钟驱动 |
+| `96bc0fe` | PR #101：M68 watches 成为模块 |
+| `d07d5e2` | PR #102：M69 值班 agent 与常备指令成为模块 |
+| `b38f39b` | PR #103：M70 值班 agent 的规则在进程内测试 |
+| `51e1c6e` | PR #104：M71 hub 的唯一 daemon 端口 `RoostPort` 与 `OverlayHost` |
+| `0528f57` | PR #105：M72 工作区总览与评审成为 overlay 模块 |
+| `ee0558c` | PR #106：M73 任务板、值班 agent 的屏、定时成为 overlay 模块 |
+| `561aa7c` | PR #107：M74 日志、用量、对比成为 overlay 模块（候选 04 收尾） |
+| `8b426b7` | PR #108：M75 每个 op 一份 schema，文档的 op 参考由它生成 |
+| `ebb9888` | PR #109：M78 测试与压测不再留孤儿进程（插队，在 M76 之前合入） |
+| `ecf6511` | PR #110：M76 daemon 按 schema 检查简单 op 的参数 |
+| `f8ad3f5` | PR #111：M77 `dispatch` `spawn` `task` 与 pi 的工具走 schema |
+| （发布提交） | PR #112：发布 v0.1.20（本文依据，tag `v0.1.20`；代码与 `f8ad3f5` 相同） |
 
-> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=`801e9e9`，`v0.1.17`=`5ce0be7`，`v0.1.18`=`3ea3e9e`，`v0.1.19`=PR #93 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=`801e9e9`，`v0.1.17`=`5ce0be7`，`v0.1.18`=`3ea3e9e`，`v0.1.19`=`8b2eb6d`（PR #93 的 squash 提交），`v0.1.20`=PR #112 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
 
-所需 pi 最低版本（v0.1.19 / v0.1.18 / v0.1.17 / v0.1.16 / v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证（v0.1.17 的 M61 内建命令清单对照 1.5.0 的 `slash-commands.js` 核对，并在真 pi 1.5.0 上验证了 bracketed paste 的 `/session`），M53 依赖的布局树结构也是在 1.5.0 上核对的，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
+所需 pi 最低版本（v0.1.20 / v0.1.19 / v0.1.18 / v0.1.17 / v0.1.16 / v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证（`package.json` 的 devDependencies 仍钉 1.5.0；v0.1.20 的 M62 evals 与 M65–M77 的适配层改动都在 1.5.0 上）（v0.1.17 的 M61 内建命令清单对照 1.5.0 的 `slash-commands.js` 核对，并在真 pi 1.5.0 上验证了 bracketed paste 的 `/session`），M53 依赖的布局树结构也是在 1.5.0 上核对的，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。

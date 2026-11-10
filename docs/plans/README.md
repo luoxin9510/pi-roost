@@ -69,13 +69,13 @@ Claude Code's documented behaviour.
 | M59 | [shelving, leftovers, `/tasks` in pi sessions (the phone), the concierge's launches built by the daemon](m59-shelve-cleanup.md) | 0.1.19 |
 | M60 | [optional exits: `/tasks pr` (push and open a pull request), a warning when tasks change the same files](m60-exits.md) | 0.1.19 |
 | M61 | [a session's own slash commands in its peek](m61-session-commands.md) | 0.1.17 |
-| M62 | [the ADE loop with a real model: evals of a task in its worktree, verify, merge](m62-workspace-evals.md) | — |
-| M63 | [who may do what, in one table: the daemon's callers and a policy per op](m63-caller-policy.md) | — |
-| M64–M66 | [the Workspace module: a Task's workspace behind one interface; the daemon makes worktrees](workspace-module.md) | — |
-| M67–M70 | [the daemon's timed parts as modules: schedules, watches, the concierge and its standing orders, by an injected clock](daemon-modules.md) | — |
-| M71–M74 | [the hub's overlays as modules and one typed daemon port](hub-overlays.md) | — |
-| M75–M77 | [one schema per op: the check, the type and the doc's op reference from one source](protocol-schema.md) | — |
-| M78 | [no orphans: test daemons and hosts follow the run that started them; a sweep clears the leftovers](m78-no-orphans.md) | — |
+| M62 | [the ADE loop with a real model: evals of a task in its worktree, verify, merge](m62-workspace-evals.md) | 0.1.20 |
+| M63 | [who may do what, in one table: the daemon's callers and a policy per op](m63-caller-policy.md) | 0.1.20 |
+| M64–M66 | [the Workspace module: a Task's workspace behind one interface; the daemon makes worktrees](workspace-module.md) | 0.1.20 |
+| M67–M70 | [the daemon's timed parts as modules: schedules, watches, the concierge and its standing orders, by an injected clock](daemon-modules.md) | 0.1.20 |
+| M71–M74 | [the hub's overlays as modules and one typed daemon port](hub-overlays.md) | 0.1.20 |
+| M75–M77 | [one schema per op: the check, the type and the doc's op reference from one source](protocol-schema.md) | 0.1.20 |
+| M78 | [no orphans: test daemons and hosts follow the run that started them; a sweep clears the leftovers](m78-no-orphans.md) | 0.1.20 |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
 
