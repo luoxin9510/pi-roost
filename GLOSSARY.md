@@ -63,3 +63,13 @@ _Avoid_: subscription, listener
 **Standing order**:
 A rule in the user's words that the Concierge keeps: it is in every digest, and one with a rhythm (`daily 18:00`) wakes the Concierge when its time comes. The Person or the Concierge adds one; the Person's are the Person's to drop. The Concierge says when it has applied one; the model applies it, the daemon only keeps it.
 _Avoid_: rule, reminder, instruction
+
+## The hub
+
+**Hub**:
+The TUI a Person drives the roost with: the list of Sessions, the input, dispatch and the peek, and the Overlays on top. It talks to the daemon only through one port (`hub/roost-port.ts`).
+_Avoid_: dashboard, agent view (the name of the class that is the hub's core)
+
+**Overlay**:
+A screen the Hub shows in place of its list (workspaces, review, the task board, the concierge, schedules, the log, usage, compare), with its own keys. It is built from a host (the port, the theme, a few verbs) and sees pushed events through `onEvent`; it does not hold the Hub.
+_Avoid_: modal, popup, panel (the subagent panel is another thing)
