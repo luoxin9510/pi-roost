@@ -631,6 +631,22 @@ describe("M43: the event feed, watches and message rules", () => {
 		expect(notices(wa.events)).toHaveLength(1);
 	});
 
+	it("a removed watcher's watches go; another session's watch of the same job stays", async () => {
+		await startDaemon();
+		const p = await foreground("lead");
+		const { id: aId } = await p.c.request("spawn", { launch: launch("sleep 30", "a") });
+		const { id: bId } = await p.c.request("spawn", { launch: launch("sleep 30", "b") });
+		await waitFor(async () => (await p.c.request("list", {})).jobs.filter((j) => (j.id === aId || j.id === bId) && j.pid).length === 2);
+		const wa = await worker(aId);
+		await wa.c.request("watch", { id: "b", when: "ended" });
+		await p.c.request("watch", { id: bId, when: "ended" });
+		const saved = () => JSON.parse(readFileSync(join(home, "watches.json"), "utf8")) as { watcherName: string; id: string }[];
+		expect(saved().map((w) => w.watcherName).sort()).toEqual(["a", "lead"]);
+		await (await hubc()).request("rm", { id: aId });
+		await waitFor(() => saved().length === 1);
+		expect(saved()).toMatchObject([{ watcherName: "lead", id: bId }]);
+	});
+
 	it("a watch is kept across a restart of the service, and expires when it never fires", async () => {
 		process.env.PI_ROOST_WATCH_TTL_MS = "600";
 		process.env.PI_ROOST_REAP_CHECK_MS = "100";

@@ -94,6 +94,7 @@ no rule of theirs is tested in process.
 - `load()` is called by the daemon once the jobs are loaded (the file is filtered by the jobs that exist), not by `createWatches`.
 - The `working` guard in `noteState` moved into the module (`watchFires` is false for it anyway).
 - `test/watches.test.ts`: 49 tests, in process. `daemon/main.ts`: 3886 → about 3806 lines.
-- No socket test went: the three watch tests of M43 each stay as the end-to-end test of a piece of wiring (the op and `noteState` → watches; the remove path; startup load and the reaper's sweep over a real restart).
+- No socket test went: the three watch tests of M43 each stay as the end-to-end test of a piece of wiring (the op and `noteState` → watches; a removed watched job's notice; startup load and the reaper's sweep over a real restart).
+- After review (M68): nothing tested the daemon's call that drops a removed watcher's watches (`watcherGone`, on main too); a socket test now does (a removed watcher's watches go, another session's of the same job stays), and fails with the call taken out.
 - Each guard was removed in turn: 44 of 46 fail a test; the other two (the file's `id` and `at` being a string and a number) cannot change anything, a bad id or `at` never matching a job or a time.
 
