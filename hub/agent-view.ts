@@ -21,6 +21,9 @@ import {
 import { attachToHost, type DetachReason } from "../lib/attach.ts";
 import { DaemonClient, type DaemonError, GiveUp } from "../lib/client.ts";
 import type { Overlay, OverlayHost } from "./overlay-host.ts";
+import { createAnswerOverlay, createOrdersOverlay } from "./overlays/concierge.ts";
+import { createSchedulesOverlay } from "./overlays/schedules.ts";
+import { createLinesOverlay, createTasksOverlay } from "./overlays/tasks.ts";
 import { createReviewOverlay } from "./overlays/review.ts";
 import { createWorkspacesOverlay } from "./overlays/workspaces.ts";
 import { CONTROL, oneLine, wrap } from "./text.ts";
@@ -34,7 +37,7 @@ import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
 import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
 import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
-import { agoText, parseScheduleInput, untilText } from "../lib/schedule.ts";
+import { parseScheduleInput, untilText } from "../lib/schedule.ts";
 import { TaskEditor } from "./task-editor.ts";
 import { type AgentDef, findAgent, pickAgent } from "../lib/agents.ts";
 import { hyperlink, prLabel, prTone, rowHasPr } from "../lib/pr.ts";
@@ -47,8 +50,8 @@ import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.
 import { taskChanges } from "../lib/task-git.ts";
 import { taskDiff } from "../lib/task-diff.ts";
 import { readTail, transcriptItems } from "../lib/transcript.ts";
-import { type ConciergeStatus, orderLine, type StandingOrder } from "../lib/concierge.ts";
-import { type BoardSummary, type BoardTask, boardSummary, liveOrder, manyProjects, projectLabel, projectOf, summaryLine, taskLine, taskPrompt } from "../lib/board.ts";
+import type { ConciergeStatus } from "../lib/concierge.ts";
+import { type BoardSummary, type BoardTask, boardSummary, projectLabel, projectOf, summaryLine, taskPrompt } from "../lib/board.ts";
 import { type Preset, presetFrom, projectConfigPath } from "../lib/config.ts";
 import {
 	ageOf,
@@ -587,8 +590,12 @@ export class AgentView implements Component {
 
 	/** M71: the host of an overlay opened on `port` (the connection it was opened on, as the closures hold theirs). */
 	overlayHost(port: RoostPort): OverlayHost {
+		return { port, ...this.hostBase() };
+	}
+
+	/** M73: the host without a port, for the overlays that ask the daemon nothing. */
+	private hostBase(): Omit<OverlayHost, "port"> {
 		return {
-			port,
 			theme: this.o.theme,
 			say: (text, tone) => this.say(text, tone),
 			close: () => this.closeOverlay(),
@@ -1230,7 +1237,7 @@ export class AgentView implements Component {
 		if (!port) return this.say("background service unavailable", "error");
 		const words = arg.trim().split(/\s+/).filter(Boolean);
 		try {
-			if (words.length === 0 || (words.length === 1 && words[0] === "list")) return await this.showSchedules();
+			if (words.length === 0 || (words.length === 1 && words[0] === "list")) return await this.showSchedules(port);
 			const [verb, name] = words as [string, string | undefined];
 			if (words.length === 2 && name && ["rm", "pause", "resume", "run"].includes(verb)) {
 				if (verb === "rm") {
@@ -1274,39 +1281,10 @@ export class AgentView implements Component {
 	}
 
 	/** M39 /schedule list: each schedule, when it runs next, its last run; Esc closes. */
-	private async showSchedules(): Promise<void> {
-		const list = (await this.port!.schedules.list()).schedules;
-		if (list.length === 0) return this.say('no schedules: /schedule <name> <every 1h | daily 09:00 | weekdays 09:00 | cron "…"> <task>');
-		let top = 0;
-		const view = this;
-		const lines = (width: number): string[] => {
-			const t = view.o.theme;
-			const now = Date.now();
-			const out = [t.bold("Schedules"), ""];
-			for (const s of list) {
-				const next = s.paused ? t.fg("warning", "paused") : s.nextAt === null ? "never" : `next ${untilText(s.nextAt, now)}`;
-				const last = s.lastRunAt ? `last ${agoText(now - s.lastRunAt)} ago` : "not run yet";
-				out.push(truncateToWidth(`${t.fg("accent", s.name)}  ${s.when}  · ${next} · ${last}`, width));
-				out.push(t.fg("dim", truncateToWidth(`  ${oneLine(s.task ?? "")}  · ${s.agent} · ${s.cwd}${s.model ? ` · ${s.model}` : ""}`, width)));
-				if (s.lastSkip) out.push(t.fg("warning", truncateToWidth(`  skipped ${agoText(now - s.lastSkip.at)} ago: ${oneLine(s.lastSkip.why)}`, width)));
-			}
-			return out;
-		};
-		this.overlay = {
-			render(width: number) {
-				const all = lines(width);
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				top = Math.max(0, Math.min(top, all.length - room));
-				const keys = view.o.theme.fg("dim", truncateToWidth("/schedule run|pause|resume|rm <name> · ↑↓ scroll · Esc close", width));
-				return [...all.slice(top, top + room), "", keys];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-			},
-		};
+	private async showSchedules(port: RoostPort): Promise<void> {
+		const o = await createSchedulesOverlay(this.overlayHost(port));
+		if (!o) return;
+		this.overlay = o;
 		this.o.tui.requestRender();
 	}
 
@@ -1476,9 +1454,7 @@ export class AgentView implements Component {
 					return this.say(`dropped standing order #${id}`, "success");
 				}
 				if (sub) return this.say("/concierge orders | orders add <rule> | orders rm <id>", "warning");
-				const { orders } = await port.concierge.orders.list();
-				if (orders.length === 0) return this.say("no standing orders · /concierge orders add <rule> (or tell the concierge: ? remember …)", "muted");
-				return this.showOrders(orders);
+				return await this.showOrders(port);
 			}
 			this.say("/concierge on | off | status | log | attach | ask <question> | answer never|routine|always | act on|off | undo | orders [add <rule> | rm <id>]", "warning");
 		} catch (err) {
@@ -1564,34 +1540,10 @@ export class AgentView implements Component {
 	}
 
 	/** M46: the standing orders, newest first. */
-	private showOrders(orders: StandingOrder[]): void {
-		let top = 0;
-		const view = this;
-		const lines = (width: number): string[] => {
-			const t = view.o.theme;
-			const now = Date.now();
-			const out = [t.bold(truncateToWidth("Standing orders · what the concierge keeps in mind", width)), ""];
-			for (const o of [...orders].reverse()) {
-				const by = o.by === "concierge" ? "" : t.fg("dim", " · yours");
-				out.push(truncateToWidth(`  ${t.fg(o.when ? "accent" : "muted", oneLine(orderLine(o, now)))}${by}`, width));
-			}
-			out.push("", t.fg("dim", truncateToWidth("/concierge orders add <rule> · /concierge orders rm <id>", width)));
-			return out;
-		};
-		this.overlay = {
-			render(width: number) {
-				const all = lines(width);
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				top = Math.max(0, Math.min(top, all.length - room));
-				return [...all.slice(top, top + room), "", view.o.theme.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-			},
-		};
+	private async showOrders(port: RoostPort): Promise<void> {
+		const o = await createOrdersOverlay(this.overlayHost(port));
+		if (!o) return;
+		this.overlay = o;
 		this.o.tui.requestRender();
 	}
 
@@ -1627,25 +1579,7 @@ export class AgentView implements Component {
 	}
 
 	private showAnswer(answer: string): void {
-		let top = 0;
-		const view = this;
-		this.overlay = {
-			render(width: number) {
-				const t = view.o.theme;
-				const clean = stripTerminalSequences(answer).replace(/\t/g, "  ").replace(CONTROL, "");
-				const body = wrapTextWithAnsi(clean, Math.max(4, width - 2)).map((l) => `  ${l}`);
-				const all = [t.bold(truncateToWidth("Concierge", width)), "", ...body];
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				top = Math.max(0, Math.min(top, all.length - room));
-				return [...all.slice(top, top + room), "", t.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-			},
-		};
+		this.overlay = createAnswerOverlay(this.hostBase(), { answer });
 		this.o.tui.requestRender();
 	}
 
@@ -2278,67 +2212,13 @@ export class AgentView implements Component {
 
 	/** M59: lines in an overlay (what cleanup found or did); ↑↓ scroll, Esc closes. */
 	private showLines(title: string, lines: string[]): void {
-		const view = this;
-		const t = this.o.theme;
-		let top = 0;
-		this.overlay = {
-			render(width: number) {
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				const body = lines.map((l) => truncateToWidth(`  ${oneLine(l)}`, width));
-				top = Math.max(0, Math.min(top, Math.max(0, body.length - room)));
-				return [t.bold(truncateToWidth(title, width)), "", ...body.slice(top, top + room), "", t.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-			},
-		};
+		this.overlay = createLinesOverlay(this.hostBase(), { title, lines });
 		this.o.tui.requestRender();
 	}
 
 	/** M47: the board as an overlay: open (claimable), blocked, claimed, then done, newest first. */
 	private showTasks(tasks: BoardTask[], scope = "all projects"): void {
-		const projects = manyProjects(tasks);
-		let top = 0;
-		const view = this;
-		const lines = (width: number): string[] => {
-			const t = view.o.theme;
-			const now = Date.now();
-			const out = [t.bold(truncateToWidth(`Task board · ${scope} · ${summaryLine(boardSummary(tasks))}`, width)), ""];
-			const live = tasks.filter((x) => x.state === "open" || x.state === "claimed");
-			const group = (x: BoardTask) => liveOrder(x, tasks);
-			for (const x of [...live].sort((a, b) => group(a) - group(b) || a.id - b.id)) {
-				const g = group(x);
-				const line = oneLine(taskLine(x, tasks, now, projects));
-				out.push(truncateToWidth(`  ${t.fg(g === 0 ? "accent" : g === 1 ? "warning" : "muted", line)}`, width));
-				if (x.detail && g !== 2) out.push(truncateToWidth(`      ${t.fg("dim", oneLine(x.detail))}`, width));
-			}
-			if (live.length === 0) out.push(t.fg("dim", tasks.some((x) => x.state === "done") ? "  every task is done" : "  the board is empty"));
-			const done = tasks.filter((x) => x.state === "done").sort((a, b) => (b.doneAt ?? b.at) - (a.doneAt ?? a.at));
-			if (done.length > 0) {
-				out.push("");
-				for (const x of done.slice(0, 30)) out.push(truncateToWidth(`  ${t.fg("dim", oneLine(taskLine(x, tasks, now, projects)))}`, width));
-				if (done.length > 30) out.push(t.fg("dim", `  … ${done.length - 30} more done`));
-			}
-			out.push("", t.fg("dim", truncateToWidth("/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm <id> · release <id>", width)));
-			return out;
-		};
-		this.overlay = {
-			render(width: number) {
-				const all = lines(width);
-				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
-				top = Math.max(0, Math.min(top, all.length - room));
-				return [...all.slice(top, top + room), "", view.o.theme.fg("dim", truncateToWidth("↑↓ scroll · Esc close", width))];
-			},
-			handleInput(data: string) {
-				const key = parseKey(data);
-				if (key === "escape" || key === "enter" || key === "ctrl+c" || data === "q") view.closeOverlay();
-				else if (key === "up") top = Math.max(0, top - 1);
-				else if (key === "down") top++;
-			},
-		};
+		this.overlay = createTasksOverlay(this.hostBase(), { tasks, scope });
 		this.o.tui.requestRender();
 	}
 

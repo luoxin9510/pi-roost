@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentDef } from "../lib/agents.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentView, type AgentViewOptions } from "../hub/agent-view.ts";
 import type { DaemonClient } from "../lib/client.ts";
-import type { Event, JobRow } from "../lib/protocol.ts";
+import type { Event, JobRow, ScheduleRow } from "../lib/protocol.ts";
 import type { RoostEvent } from "../lib/events.ts";
 import type { ConciergeStatus, StandingOrder } from "../lib/concierge.ts";
 import type { BoardTask, ReviewComment } from "../lib/board.ts";
@@ -106,6 +106,7 @@ class FakeClient {
 		if (op === "rename") return args;
 		if (op === "pin") return { id: (args as { id: string }).id, pinned: (args as { pinned: boolean }).pinned };
 		if (op === "schedule-add") return { ...(args as object), paused: false, nextAt: Date.now() + 3600_000 };
+		if (op === "schedules") return { schedules: this.schedules };
 		if (op === "events") return { events: this.log, cursor: this.log.length };
 		if (op === "concierge") {
 			const a = args as { action: string };
@@ -180,6 +181,7 @@ class FakeClient {
 	}
 	orders: StandingOrder[] = [];
 	tasks: BoardTask[] = [];
+	schedules: ScheduleRow[] = [];
 }
 
 const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
@@ -1132,7 +1134,7 @@ describe("M46: standing orders in the hub", () => {
 		await sleep(20);
 		expect(view.render(200).join("\n")).toContain("that starts like a clock but is not one in roost's words");
 		expect(client.requests.filter((r) => r.op === "concierge-order" && (r.args as { action: string }).action === "add")).toHaveLength(2);
-		// the list: an overlay, newest first, the user's marked, the ones on a clock with their when and count
+		// the list: an overlay (the daemon's list, from the port)
 		const now = Date.now();
 		client.orders = [
 			{ id: 1, text: "when build ends, tell deploy its result", when: null, by: "user", at: now - 3600_000, lastAt: now - 60_000, nextAt: null, count: 2 },
@@ -1141,11 +1143,10 @@ describe("M46: standing orders in the hub", () => {
 		type(view, "/concierge orders");
 		view.handleInput("\r");
 		await sleep(20);
-		const screen = view.render(200);
-		const text = screen.join("\n");
+		// the screen's rules (order, marks, clock, keys) are in test/concierge-overlay.test.ts
+		const text = view.render(200).join("\n");
 		expect(text).toContain("Standing orders · what the concierge keeps in mind");
-		expect(text.indexOf("#2 every 30m · say what is blocked")).toBeLessThan(text.indexOf("#1 when build ends, tell deploy its result (applied ×2, 1m ago) · yours"));
-		expect(text).toContain("↑↓ scroll · Esc close");
+		expect(text).toContain("#2 every 30m · say what is blocked");
 		view.handleInput("\x1b");
 		expect(view.render(200).join("\n")).not.toContain("Standing orders · what");
 		// rm
@@ -1625,10 +1626,13 @@ describe("AgentView fan-out (M26)", () => {
 	});
 
 	it("M26 review: k in kitty encoding; pinned ones stay; marked rows cannot be kept; no escapes from replies", async () => {
+		// one start time for the three: the list and the columns order by it (rows made either
+		// side of a millisecond put another row under the cursor)
+		const startedAt = Date.now() - 60_000;
 		const rows = [
-			row({ id: "a", name: "t · one", model: "a/one", fanout: "f1", state: "done", summary: "ok\x1b]0;pwned\x07\tdone\x1b[2J" }),
-			row({ id: "b", name: "t · two", model: "b/two", fanout: "f1", state: "done", pinned: true }),
-			row({ id: "c", name: "t · three", model: "c/three", fanout: "f1", state: "done", pid: null }),
+			row({ id: "a", name: "t · one", model: "a/one", fanout: "f1", state: "done", startedAt, summary: "ok\x1b]0;pwned\x07\tdone\x1b[2J" }),
+			row({ id: "b", name: "t · two", model: "b/two", fanout: "f1", state: "done", pinned: true, startedAt }),
+			row({ id: "c", name: "t · three", model: "c/three", fanout: "f1", state: "done", pid: null, startedAt }),
 		];
 		const { view, client } = setup(rows, { extra: { worktreeChange: async () => undefined } });
 		await view.start();
@@ -2001,12 +2005,10 @@ describe("M47: the task board in the hub", () => {
 		type(view, "/tasks");
 		view.handleInput("\r");
 		await sleep(20);
+		// the screen's rules (groups, detail, colours, keys) are in test/tasks-overlay.test.ts
 		const screen = view.render(120).join("\n");
 		expect(screen).toContain("Task board · all projects · 1 open · 1 blocked");
-		expect(screen).toContain("#1 open · the schema");
 		expect(screen).toContain("#2 blocked on #1 · write the tests");
-		expect(screen).toContain("the unit tests for the board");
-		expect(screen).toContain("/tasks all · add <title> [after #n] [-- detail] · assign <id> <session>");
 		view.handleInput("\x1b");
 		// assign, done, rm (by number, # or not)
 		type(view, "/tasks assign 1 lint");
@@ -2028,7 +2030,6 @@ describe("M47: the task board in the hub", () => {
 		view.handleInput("\r");
 		await sleep(20);
 		const again = view.render(120).join("\n");
-		expect(again).toContain("every task is done");
 		expect(again).toContain("· the schema → applied v2");
 		expect(again).not.toContain("write the tests");
 		view.handleInput("\x1b");
@@ -2756,5 +2757,179 @@ describe("M72: overlay renders, pinned", () => {
 		view.handleInput("]");
 		view.handleInput("]");
 		expect(shot(view, 100)).toMatchSnapshot();
+	});
+});
+
+describe("M73: the overlays' wiring", () => {
+	it("/schedule list opens the schedules from the daemon; Esc closes; none says how to add one", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })]);
+		await view.start();
+		type(view, "/schedule list");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(client.requests.filter((r) => r.op === "schedules")).toHaveLength(1);
+		expect(view.render(120).join("\n")).toContain("no schedules: /schedule <name>");
+		const at = Date.now();
+		client.schedules = [{ name: "nightly", when: "every 2h", task: "check the build", agent: "pi", cwd: "/w", model: null, paused: false, catchUp: false, nextAt: at + 3600_000, lastRunAt: null, lastJob: null, lastSkip: null }];
+		type(view, "/schedule");
+		view.handleInput("\r");
+		await sleep(20);
+		const text = view.render(120).join("\n");
+		expect(text).toContain("nightly  every 2h");
+		expect(text).toContain("/schedule run|pause|resume|rm <name>");
+		view.handleInput("\x1b");
+		expect(view.render(120).join("\n")).not.toContain("nightly  every 2h");
+	});
+
+	it("the concierge's answer waits behind an open overlay and opens when that closes", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: {}, name: "concierge", origin: "dispatch" as const };
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { conciergeLaunch: () => launch } });
+		await view.start();
+		type(view, "/concierge on");
+		view.handleInput("\r");
+		await sleep(20);
+		type(view, "/ask what is blocked");
+		view.handleInput("\r");
+		await sleep(20);
+		type(view, "/tasks");
+		view.handleInput("\r");
+		await sleep(20);
+		expect(view.render(120).join("\n")).toContain("Task board");
+		client.emit({ event: "concierge", status: { ...client.concierge, answer: { text: "nothing is blocked.", at: Date.now() } } });
+		let screen = view.render(120).join("\n");
+		expect(screen).toContain("Task board");
+		expect(screen).not.toContain("  nothing is blocked.");
+		view.handleInput("\x1b");
+		screen = view.render(120).join("\n");
+		expect(screen).toContain("Concierge");
+		expect(screen).toContain("  nothing is blocked.");
+		expect(screen).not.toContain("Task board");
+		view.handleInput("\x1b");
+		expect(view.render(120).join("\n")).not.toContain("  nothing is blocked.");
+	});
+});
+
+// M73: the screens of the task board, the standing orders, the concierge's answer, the lines and
+// the schedules, pinned before they moved to hub/overlays/ (docs/plans/hub-overlays.md)
+describe("M73: overlay renders, pinned", () => {
+	const NOW = 1_800_000_000_000;
+	const MIN = 60_000;
+	afterEach(() => vi.useRealTimers());
+	const t = (id: number, title: string, extra: Partial<BoardTask> = {}): BoardTask => ({ id, title, detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: NOW - 3600_000, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: null, waiting: [], ...extra });
+	const shot = (view: AgentView, w = 100) => view.render(w).join("\n");
+	const run = async (view: AgentView, line: string) => {
+		type(view, line);
+		view.handleInput("\r");
+		await sleep(30);
+	};
+	const start = async (extra: Partial<AgentViewOptions> = {}) => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(NOW);
+		const s = setup([row({ id: "w1", name: "lint" })], { extra });
+		await s.view.start();
+		return s;
+	};
+
+	it("the task board: open, blocked, claimed, a workspace, done; the done ones past 30", async () => {
+		const { view, client } = await start();
+		client.tasks = [
+			t(1, "the schema", { detail: "tables for users and teams" }),
+			t(2, "write the tests", { after: [1], detail: "the unit tests" }),
+			t(3, "wire the api", { state: "claimed", owner: { id: "w1", name: "lint" }, claimedAt: NOW - 5 * MIN, detail: "hidden: claimed shows no detail" }),
+			t(4, "handed on", { assigned: { id: "w1", name: "lint", at: NOW - 2 * MIN } }),
+			t(5, "in review", { state: "claimed", owner: { id: "w1", name: "lint" }, workspace: { path: "/r/wt", branch: "roost/t5", baseRef: "main", baseSha: "a".repeat(40), stage: "review", note: "verified" } as never }),
+			t(6, "done one", { state: "done", doneAt: NOW - 10 * MIN, owner: { id: "w1", name: "lint" }, result: "applied v2" }),
+			t(7, "dropped one", { state: "dropped" }),
+		];
+		await run(view, "/tasks");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.tasks = [t(1, "open"), ...Array.from({ length: 33 }, (_, i) => t(10 + i, `finished ${i}`, { state: "done", doneAt: NOW - (i + 1) * MIN }))];
+		await run(view, "/tasks");
+		expect(shot(view)).toMatchSnapshot();
+		for (let i = 0; i < 30; i++) view.handleInput("\x1b[B");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b[A");
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	it("the task board: several projects name each task's own; only done; empty", async () => {
+		const { view, client } = await start();
+		client.tasks = [t(1, "in a", { project: "/p/alpha" }), t(2, "in b", { project: "/p/beta" }), t(3, "anywhere")];
+		await run(view, "/tasks all");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.tasks = [t(1, "finished", { state: "done", doneAt: NOW - MIN })];
+		await run(view, "/tasks");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.tasks = [];
+		await run(view, "/tasks");
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	it("the lines overlay (/tasks cleanup): what it would remove, what it did", async () => {
+		const { view } = await start();
+		await run(view, "/tasks cleanup");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		await run(view, "/tasks cleanup yes");
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	it("the standing orders: newest first, yours marked, a clock, applied", async () => {
+		const { view, client } = await start();
+		client.orders = [
+			{ id: 1, text: "when build ends, tell deploy its result", when: null, by: "user", at: NOW - 3600_000, lastAt: NOW - MIN, nextAt: null, count: 2 },
+			{ id: 2, text: "say what is blocked", when: "every 30m", by: "concierge", at: NOW - 600_000, lastAt: null, nextAt: NOW + 20 * MIN, count: 0 },
+			{ id: 3, text: "a very long rule ".repeat(14) + "that is cut", when: "daily 18:00", by: "user", at: NOW - 100, lastAt: null, nextAt: null, count: 0 },
+		];
+		await run(view, "/concierge orders");
+		expect(shot(view)).toMatchSnapshot();
+		expect(shot(view, 50)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.orders = [];
+		await run(view, "/concierge orders");
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	it("the concierge's answer: short, long and wrapped, scrolled; control characters and escapes cleaned", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: {}, name: "concierge", origin: "dispatch" as const };
+		const { view, client } = await start({ conciergeLaunch: () => launch });
+		await run(view, "/concierge on");
+		let at = NOW;
+		const answer = async (text: string) => {
+			await run(view, "/ask what now");
+			client.emit({ event: "concierge", status: { ...client.concierge, answer: { text, at: ++at } } });
+		};
+		await answer("fix tests waits for a branch name.");
+		expect(shot(view)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		const long = Array.from({ length: 40 }, (_, i) => `line ${i}: ${"word ".repeat(i % 5 === 0 ? 30 : 3)}`).join("\n");
+		await answer(long);
+		expect(shot(view, 60)).toMatchSnapshot();
+		for (let i = 0; i < 6; i++) view.handleInput("\x1b[B");
+		expect(shot(view, 60)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		await answer("tab\tseparated \x1b[31mred\x1b[0m and \x07bell");
+		expect(shot(view)).toMatchSnapshot();
+	});
+
+	it("the schedules: several, paused, never, a last skip, a long task; empty", async () => {
+		const { view, client } = await start();
+		const sch = (name: string, extra: Partial<ScheduleRow> = {}): ScheduleRow => ({ name, when: "every 2h", task: "check the build", agent: "pi", cwd: "/w", model: null, paused: false, catchUp: false, nextAt: NOW + 90 * MIN, lastRunAt: NOW - 30 * MIN, lastJob: null, lastSkip: null, ...extra });
+		client.schedules = [
+			sch("nightly"),
+			sch("deps", { when: "daily 09:00", task: "update the dependencies\nand test", agent: "codex", model: "o3-mini", lastRunAt: null }),
+			sch("tests", { when: "weekdays 18:00", task: "! npm test", agent: "shell", paused: true }),
+			sch("once", { nextAt: null, task: null, lastSkip: { at: NOW - 5 * MIN, why: "the previous run\nwas still going" } }),
+		];
+		await run(view, "/schedule");
+		expect(shot(view)).toMatchSnapshot();
+		expect(shot(view, 50)).toMatchSnapshot();
+		view.handleInput("\x1b");
+		client.schedules = [];
+		await run(view, "/schedule list");
+		expect(shot(view)).toMatchSnapshot();
 	});
 });
