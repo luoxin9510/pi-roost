@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -1820,58 +1820,6 @@ describe("M55: start and merge from the board", () => {
 		expect((await hub.request("events", {})).events.find((e) => e.kind === "task" && e.why === "open")?.text).toBe(`#${next.id} migration: #${t.id} merged`);
 	});
 
-	it("a conflict stops in the task's worktree with base untouched; abort returns it to review; back sends it to its session", async () => {
-		const hub = await startDaemon();
-		const r = repo("web");
-		const { t, w, job } = await started(hub, r, "edit a");
-		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
-		const s = await worker(job.id);
-		writeFileSync(join(w.path, "a.txt"), "task\n");
-		git(w.path, "commit", "-qam", "task");
-		await s.c.request("task", { action: "done", id: t.id });
-		writeFileSync(join(r, "a.txt"), "main\n");
-		git(r, "commit", "-qam", "main");
-		const before = gitOut(r, "rev-parse", "main");
-		const c = await hub.request("task", { action: "merge", id: t.id });
-		expect(c.task?.workspace).toMatchObject({ stage: "conflict" });
-		expect(c.task?.workspace?.note).toContain("a.txt");
-		expect(gitOut(r, "rev-parse", "main")).toBe(before);
-		expect(existsSync(join(gitOut(w.path, "rev-parse", "--absolute-git-dir"), "MERGE_HEAD"))).toBe(true);
-		expect((await hub.request("task", { action: "abort", id: t.id })).task?.workspace?.stage).toBe("review");
-		const back = await hub.request("task", { action: "back", id: t.id, note: "rebase onto main's a.txt" });
-		expect(back.task?.workspace?.stage).toBe("working");
-		expect(back.note).toContain(`sent back to t${t.id}`);
-		const told = await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes(`Task #${t.id}`)));
-		expect(told.text).toContain("came back from review");
-	});
-
-	it("a worktree off its branch is not merged (a detached HEAD's commits would be lost); a damaged record never reaches git", async () => {
-		const hub = await startDaemon();
-		const r = repo("ops");
-		const { t, w, job } = await started(hub, r, "detach me");
-		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
-		const s = await worker(job.id);
-		writeFileSync(join(w.path, "n.txt"), "n\n");
-		git(w.path, "add", ".");
-		git(w.path, "commit", "-qm", "n");
-		await s.c.request("task", { action: "done", id: t.id });
-		git(w.path, "checkout", "-q", "--detach");
-		const before = gitOut(r, "rev-parse", "main");
-		const m = await hub.request("task", { action: "merge", id: t.id });
-		expect(m.task?.workspace).toMatchObject({ stage: "review" });
-		expect(m.task?.workspace?.note).toContain("detached HEAD");
-		expect(gitOut(r, "rev-parse", "main")).toBe(before);
-	});
-
-	it("a damaged workspace record is refused before any git runs", async () => {
-		const base = { after: [], by: { who: "user", whoId: null }, at: 1, project: work, owner: null, waiting: [] };
-		writeFileSync(join(home, "tasks.json"), JSON.stringify({ version: 2, next: 2, tasks: [{ ...base, id: 1, title: "damaged", state: "open", workspace: { stage: "review" } }] }));
-		const hub = await startDaemon();
-		for (const action of ["commit", "merge", "abort"] as const) {
-			await expect(hub.request("task", { action, id: 1 } as never)).rejects.toMatchObject({ code: "bad_request" });
-		}
-	});
-
 	it("a daemon restarted with a merge cut short settles it from the recorded intent", async () => {
 		const r = repo("svc");
 		const w = createTaskWorktree(r, 1, "cut short");
@@ -1958,55 +1906,6 @@ describe("M56: verify before review, setup before the session", () => {
 		await waitFor(async () => !(await hub.request("list", {})).jobs.some((j) => j.name === `verify #${t.id}`));
 	});
 
-	it("a failure goes back to the session with the end of its output; at maxRounds it stops for a person; pass accepts it", async () => {
-		const hub = await startDaemon();
-		const r = repo("v2", { verify: "echo boom; exit 3", maxRounds: 2 });
-		const { t, w, res } = await start(hub, r, "flaky");
-		await approveShown(hub, t.id);
-		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === res.job!.id)?.pid);
-		const s = await worker(res.job!.id);
-		writeFileSync(join(w.path, "b.txt"), "b\n");
-		git(w.path, "add", ".");
-		git(w.path, "commit", "-qm", "b");
-		await s.c.request("task", { action: "done", id: t.id });
-		const back = await waitFor(() => delivered(s.events, "message").find((e) => e.text.includes("failed (exit 3)")));
-		expect(back.text).toContain("The end of its output:\n\nboom\n");
-		expect(await stageOf(hub, t.id)).toMatchObject({ stage: "working", verify: { ok: false, rounds: 1 } });
-		await s.c.request("task", { action: "done", id: t.id });
-		const failed = await waitFor(async () => {
-			const x = await stageOf(hub, t.id);
-			return x?.stage === "failed" && x;
-		});
-		expect(failed.verify, JSON.stringify(failed)).toMatchObject({ rounds: 2 });
-		expect(failed.verify?.tail).toBe("boom");
-		expect(failed.note).toContain("boom");
-		expect((await hub.request("task", { action: "list" })).tasks.length).toBeGreaterThan(0);
-		await hub.request("task", { action: "pass", id: t.id });
-		expect((await stageOf(hub, t.id))?.note).toBe("passed by hand");
-	});
-
-	it("an approved setup runs in the new worktree before the session starts; a failing one stops the task", async () => {
-		const hub = await startDaemon();
-		const r = repo("v3", { setup: "echo set > setup-ran.txt" });
-		const t0 = (await hub.request("task", { action: "add", title: "approve first", project: r })).task!;
-		await approveShown(hub, t0.id);
-		const { t, w, res } = await start(hub, r, "with setup");
-		expect(res.job).toBeUndefined();
-		expect(res.note).toContain("setting up");
-		const owner = await waitFor(async () => (await hub.request("task", { action: "list" })).tasks.find((x) => x.id === t.id)?.owner);
-		expect(existsSync(join(w.path, "setup-ran.txt"))).toBe(true);
-		expect((await hub.request("list", {})).jobs.find((j) => j.id === owner!.id)?.name).toBe(`t${t.id}`);
-		const r2 = repo("v4", { setup: "exit 9" });
-		const t1 = (await hub.request("task", { action: "add", title: "approve", project: r2 })).task!;
-		await approveShown(hub, t1.id);
-		const bad = await start(hub, r2, "bad setup");
-		const failed = await waitFor(async () => {
-			const x = await stageOf(hub, bad.t.id);
-			return x?.stage === "failed" && x;
-		});
-		expect(failed.note).toContain("setup failed (exit 9)");
-	});
-
 	it("the commands changed between showing and approving: refused; a drop while verifying stops the verify; a timeout fails it", async () => {
 		const hub = await startDaemon();
 		const r = repo("v5", { verify: "sleep 30", verifyTimeout: 1, maxRounds: 1 });
@@ -2037,13 +1936,6 @@ describe("M56: verify before review, setup before the session", () => {
 		expect(dropped.note).toContain("its verify was stopped");
 		await waitFor(async () => !(await hub.request("list", {})).jobs.some((j) => j.name === `verify #${b.t.id}` && j.pid));
 		expect((await stageOf(hub, b.t.id))?.stage).toBe("verifying"); // dropped: nothing rewrites it
-	});
-
-	it("a restart finds verifying with no job: review, not verified (interrupted)", async () => {
-		const w = { path: "/x/.pi/worktrees/t1-a-ab12", branch: "roost/t1-a-ab12", baseRef: "main", baseSha: "a".repeat(40), stage: "verifying", note: "running x" };
-		writeFileSync(join(home, "tasks.json"), JSON.stringify({ version: 2, next: 2, tasks: [{ id: 1, title: "x", state: "claimed", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, waiting: [], project: "/x", workspace: w }] }));
-		const hub = await startDaemon();
-		expect((await hub.request("task", { action: "list" })).tasks[0]!.workspace).toMatchObject({ stage: "review", note: "not verified (interrupted)" });
 	});
 });
 
@@ -2209,7 +2101,7 @@ describe("M59: shelve, hand merges, cleanup", () => {
 		expect(existsSync(join(w.path, `${t.id}.txt`))).toBe(true);
 	});
 
-	it("a branch merged into base by hand is marked merged when the board is listed; dependents are free", async () => {
+	it("listing the board looks for hand merges (the rules: test/workspace.test.ts)", async () => {
 		const restore = (() => {
 			process.env.PI_ROOST_HAND_MERGE_MS = "0";
 			return () => delete process.env.PI_ROOST_HAND_MERGE_MS;
@@ -2218,56 +2110,13 @@ describe("M59: shelve, hand merges, cleanup", () => {
 			const hub = await startDaemon();
 			const r = repo("hm");
 			const { t, w, job } = await inReview(hub, r, "schema");
-			const next = (await hub.request("task", { action: "add", title: "after", project: r, after: [t.id] })).task!;
 			await stopped(hub, job.id);
-			// a branch moved onto base (reset) is not a merge of what was reviewed
-			const other = await inReview(hub, r, "reset");
-			await stopped(hub, other.job.id);
-			git(other.w.path, "reset", "-q", "--hard", "main");
 			git(r, "merge", "--ff-only", "-q", w.branch);
 			const list = (await hub.request("task", { action: "list" })).tasks;
 			expect(list.find((x) => x.id === t.id)).toMatchObject({ state: "done", workspace: { stage: "merged" } });
-			expect(list.find((x) => x.id === other.t.id)?.workspace?.stage).toBe("review");
-			// the next one can be started now
-			const w2 = await prepareTask(hub, next.id);
-			await expect(hub.request("task", { action: "start", id: next.id, launch: { ...launch("sleep 30", "n"), cwd: w2.path } })).resolves.toBeTruthy();
 		} finally {
 			restore();
 		}
-	});
-
-	it("cleanup: dry lists, yes removes clean worktrees of dropped tasks and of task branches no task holds, and old verify logs; never one with changes", async () => {
-		const hub = await startDaemon();
-		const r = repo("cl");
-		const { t: a, w: wa, job: ja } = await inReview(hub, r, "kept clean");
-		const { t: b, w: wb, job: jb } = await inReview(hub, r, "dirty");
-		await stopped(hub, ja.id);
-		await stopped(hub, jb.id);
-		writeFileSync(join(wb.path, "wip.txt"), "x\n");
-		// drop: a session's worktree in use is kept by drop when dirty; a clean one goes at once, so make it come back
-		await hub.request("task", { action: "drop", id: b.id });
-		await hub.request("task", { action: "drop", id: a.id });
-		const orphan = createTaskWorktree(r, 999, "orphan");
-		// one made moments ago may be a start under way: only an older one is left behind
-		const young = createTaskWorktree(r, 998, "young");
-		const old = (Date.now() - 3_600_000) / 1000;
-		utimesSync(orphan.path, old, old);
-		const logs = join(process.env.PI_ROOST_HOME ?? join(work, "home"), "verify");
-		mkdirSync(logs, { recursive: true });
-		writeFileSync(join(logs, `${a.id}-1.log`), "ok\n");
-		const dry = (await hub.request("task", { action: "cleanup", dry: true })).note!;
-		expect(dry).toContain(`#${b.id} kept: ${wb.path} has uncommitted changes`);
-		expect(dry).toContain(`${orphan.branch}: remove ${orphan.path}`);
-		expect(existsSync(orphan.path)).toBe(true);
-		const done = (await hub.request("task", { action: "cleanup" })).note!;
-		expect(done).toContain(`${orphan.branch}: worktree removed · branch kept`);
-		expect(existsSync(orphan.path)).toBe(false);
-		expect(existsSync(young.path)).toBe(true);
-		expect(existsSync(wb.path)).toBe(true);
-		expect(existsSync(wa.path)).toBe(false);
-		expect(done).toContain("removed 1 verify log");
-		expect(existsSync(join(logs, `${a.id}-1.log`))).toBe(false);
-		await expect((await foreground("lead")).c.request("task", { action: "cleanup" })).rejects.toMatchObject({ code: "unsupported" });
 	});
 });
 

@@ -125,3 +125,31 @@ lifecycle's rules there.
   `/tasks cleanup` (task worktrees no task holds, older than 10 minutes). Removing a
   prepared worktree (`discardWorktree`) is git on the daemon's thread, as it was in the
   clients'; only making one moved to a worker.
+
+## M66, as done
+
+- `test/workspace.test.ts` holds the Workspace's rules, run in process through its
+  interface: a fake Board and Jobs, a manual Clock, real git in temporary repositories,
+  no daemon and no socket. 26 tests, about 7 seconds.
+- The four promises, each a test of its own: one action per Task at a time (a second is a
+  conflict); at most 2 Verifies per repository, the rest queued and started as one ends
+  (another repository not counted; a Task dropped while queued is not started); one merge
+  per repository (a second started together is a conflict; another process holding the
+  merge lock is too); a restart settles what it cut short (a Verify with no job goes back
+  to review, not verified; a queued one too; the old module's ending jobs start nothing).
+- The rules the review bugs of M55–M60 were about: a conflict leaves Base untouched and
+  stops in the Task's worktree; a worktree off its branch (a detached HEAD) is not merged;
+  a damaged record is refused before any git runs; a Verify failure goes back with the end
+  of its output, and at `maxRounds` stops for a person; an approved setup runs before the
+  session; the commands changed between showing and approving are refused; a drop while
+  verifying stops the Verify and nothing rewrites the Stage after; a timeout fails it; a
+  branch merged into Base by hand is marked merged (one reset onto Base is not), looked
+  for at most every 10 seconds; cleanup never removes a worktree with changes.
+- Of the socket tests of M55–M60, 7 went (their rules are above) and 10 stay end to end:
+  the loop from start to merge, a restart settling a merge, a Verify through a real command
+  job, the commands changed / a drop while verifying / a timeout with real processes, the
+  concierge's start, comments sent back, shelve and restore, a child's first message, the
+  pull request, and listing the board looking for hand merges (the daemon's wiring only).
+  `test/comms.test.ts`: 66 → 59 tests, about 43 → 39 seconds.
+- A wait for what the module does after a command ends polls (`vi.waitFor`) instead of
+  sleeping 30 ms; a fixed wait stays only where a test checks that nothing happened.
