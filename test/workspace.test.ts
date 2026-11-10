@@ -11,7 +11,9 @@ import type { DispatchArgs } from "../lib/protocol.ts";
 import { roostHome } from "../lib/paths.ts";
 import { verifyLogPath } from "../lib/project-config.ts";
 import { makeTaskWorktree, withMergeLock } from "../lib/task-git.ts";
-import { type BoardWho, type Clock, createWorkspaces, PREPARED_MS } from "../lib/workspace.ts";
+import type { Clock } from "../lib/clock.ts";
+import { type BoardWho, createWorkspaces, PREPARED_MS } from "../lib/workspace.ts";
+import { manualClock } from "./support/clock.ts";
 
 const dirs: string[] = [];
 let home: string;
@@ -48,27 +50,6 @@ const person: BoardWho = { who: "user", whoId: null, sessionId: null, concierge:
 
 /** The module with its board and jobs in memory: what it recorded, what it dispatched. */
 /** A clock the test moves: its timers fire when it passes them. */
-function manualClock(start = 0) {
-	let t = start;
-	const timers: { at: number; fn: () => void; done: boolean }[] = [];
-	const clock: Clock = {
-		now: () => t,
-		timer: (fn, ms) => {
-			const x = { at: t + ms, fn, done: false };
-			timers.push(x);
-			return { clear: () => void (x.done = true) };
-		},
-	};
-	const advance = (ms: number) => {
-		t += ms;
-		for (const x of timers) if (!x.done && x.at <= t) {
-			x.done = true;
-			x.fn();
-		}
-	};
-	return { clock, advance };
-}
-
 function world(clock?: Clock, gate?: Promise<void>, board?: Map<number, BoardTask>) {
 	const tasks = board ?? new Map<number, BoardTask>();
 	const events: Omit<RoostEvent, "seq" | "at">[] = [];

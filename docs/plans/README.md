@@ -72,6 +72,7 @@ Claude Code's documented behaviour.
 | M62 | [the ADE loop with a real model: evals of a task in its worktree, verify, merge](m62-workspace-evals.md) | — |
 | M63 | [who may do what, in one table: the daemon's callers and a policy per op](m63-caller-policy.md) | — |
 | M64–M66 | [the Workspace module: a Task's workspace behind one interface; the daemon makes worktrees](workspace-module.md) | — |
+| M67–M70 | [the daemon's timed parts as modules: schedules, watches, the concierge and its standing orders, by an injected clock](daemon-modules.md) | — |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
 

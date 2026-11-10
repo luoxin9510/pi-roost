@@ -15,6 +15,7 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { type BoardTask, blockedOn, projectLabel, REVIEW_COMMENTS_MAX, type ReviewComment, reviewText, stageLabel, TASK_NOTE_MAX, TASK_TEXT_MAX, type TaskWorkspace, type WorkspaceStage } from "./board.ts";
 import { CONCIERGE_NAME } from "./concierge.ts";
+import { type Clock, systemClock, type Timer } from "./clock.ts";
 import { envPolicy, loadUserConfig } from "./config.ts";
 import { workerEnv } from "./dispatch.ts";
 import { clipText, type RoostEvent } from "./events.ts";
@@ -70,22 +71,6 @@ export interface JobsPort {
 	commandJobs(): { id: string; verifyOf?: number; setupOf?: number; running: boolean }[];
 }
 
-export interface Timer {
-	clear(): void;
-}
-export interface Clock {
-	now(): number;
-	/** A timer that does not keep the process alive. */
-	timer(fn: () => void, ms: number): Timer;
-}
-export const systemClock: Clock = {
-	now: () => Date.now(),
-	timer: (fn, ms) => {
-		const h = setTimeout(fn, ms);
-		h.unref?.();
-		return { clear: () => clearTimeout(h) };
-	},
-};
 
 export interface WorkspaceDeps {
 	board: BoardPort;
