@@ -56,3 +56,30 @@ no rule of theirs is tested in process.
   behaviour pinned by the socket tests as they are.
 - **M70**: the concierge's rules in process (wake, coalesce, retry, heartbeat, budget,
   orders due); the socket tests whose rules moved go.
+
+## M67, as done
+
+- `lib/clock.ts`: `Clock`, `Timer`, `systemClock` (moved out of `lib/workspace.ts`).
+  `test/support/clock.ts`: `manualClock` fires each timer due within an advance at its own
+  time, in order (the one in `test/workspace.test.ts` fired each once, at the end).
+- `lib/schedules.ts`: `createSchedules(deps)` → `{ op(name, args), start(), stop() }`.
+  The five schedule ops go through `op` (the daemon's routing is one line); `start()`
+  catches up and arms the tick, `stop()` clears it. Ports: `jobs` (`dispatch`,
+  `stillRunning`, `shuttingDown`), `store`, `record`, `log`, `span` (telemetry), `isDir`
+  (`schedule-add`'s cwd), `clock`, `tickMs`. The daemon's `stillRunning` is the old check
+  over its records, roster and state files.
+- The schedules are loaded when the module is made (the socket takes ops before `start()`;
+  loading only reads).
+- The tick is a chain of one-shot timers (a `Clock` has no interval), the next armed
+  whatever the tick did (a tick that throws is logged, as `setInterval` went on).
+- `test/schedules.test.ts`: 25 tests, in process. `daemon/main.ts`: 4054 → about 3890 lines.
+- Of the socket tests of M39/M40, one went ("two runs asked at once start one", its rules
+  in process); the rest stay as the end-to-end tests of the ops, of a run on the daemon's
+  tick, of `start()` at startup, of the file over a real restart, of the daemon's
+  `stillRunning` and of a scheduled run's auto-close.
+- Each guard was removed in turn: 15 of 17 fail a test; the other two (a paused schedule
+  skipped by the tick and by the catch-up) cannot change anything, a paused schedule's
+  `nextAt` being null.
+- Noted, not changed: a slot skipped because the previous run still goes is not tried
+  again (the next slot is set first, on purpose); an entry loaded from the file is not
+  checked for its cwd (only `schedule-add` checks).
