@@ -63,8 +63,6 @@ help, rename); and `AgentViewOptions` is 45 flat fields that the two adapters
   test pins the order: close, select, attach).
 - GLOSSARY: the Layer entry had taken Overlay's `_Avoid_` line.
 
-
-
 ## M80, as done
 
 - **Groups as types, not nested objects** (found while doing it): nested groups would turn each
