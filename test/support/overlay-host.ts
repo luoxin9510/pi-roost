@@ -9,6 +9,7 @@ import type { Tone } from "../../lib/view-model.ts";
 export function fakeHost<P>(port: P, over: Partial<OverlayHost<P>> = {}) {
 	const said: { text: string; tone: Tone | undefined }[] = [];
 	const attached: string[] = [];
+	const selected: string[] = [];
 	const rows = new Map<string, JobRow>();
 	const log = { closes: 0, renders: 0 };
 	let current: Overlay | undefined;
@@ -30,6 +31,7 @@ export function fakeHost<P>(port: P, over: Partial<OverlayHost<P>> = {}) {
 		attachTo: async (id) => {
 			attached.push(id);
 		},
+		selectRow: (id) => void selected.push(id),
 		rows: () => rows,
 		current: () => current,
 		notice: () => notice,
@@ -40,6 +42,7 @@ export function fakeHost<P>(port: P, over: Partial<OverlayHost<P>> = {}) {
 		host,
 		said,
 		attached,
+		selected,
 		rows,
 		log,
 		/** The view shows `o` now. */

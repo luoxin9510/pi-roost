@@ -23,7 +23,6 @@ function open(rows: JobRow[], over: { opts?: Partial<CompareOpts>; termRows?: nu
 	vi.useFakeTimers({ toFake: over.timers ? ["Date", "setTimeout"] : ["Date"] });
 	vi.setSystemTime(NOW);
 	const kept: { keep: JobRow; others: JobRow[] }[] = [];
-	const selected: string[] = [];
 	const change = over.change === undefined ? changed : (over.change ?? undefined);
 	const h = fakeHost(undefined as never, { ...(change ? { worktreeChange: change } : {}), ...(over.termRows !== undefined ? { termRows: () => over.termRows! } : {}), ...(over.tag ? { theme: tagTheme } : {}), ...over.host });
 	for (const r of rows) h.rows.set(r.id, r);
@@ -31,10 +30,9 @@ function open(rows: JobRow[], over: { opts?: Partial<CompareOpts>; termRows?: nu
 		ids: rows.map((r) => r.id),
 		fanoutId: "f1",
 		keepOne: async (keep, others) => void kept.push({ keep, others }),
-		select: (id) => void selected.push(id),
 		...over.opts,
 	});
-	return { ...h, overlay, kept, selected, text: (w = 120) => strip(overlay.render(w)).join("\n") };
+	return { ...h, overlay, kept, text: (w = 120) => strip(overlay.render(w)).join("\n") };
 }
 
 describe("M74: the compare overlay", () => {
@@ -321,8 +319,7 @@ describe("M74: the compare overlay", () => {
 		it("Enter: closed, then the cursor moved, then attached (in that order)", () => {
 			const order: string[] = [];
 			const o = open(fan(), {
-				host: { close: () => void order.push("close"), attachTo: async (id: string) => void order.push(`attach ${id}`) },
-				opts: { select: (id) => void order.push(`select ${id}`) },
+				host: { close: () => void order.push("close"), attachTo: async (id: string) => void order.push(`attach ${id}`), selectRow: (id: string) => void order.push(`select ${id}`) },
 			});
 			o.overlay.handleInput!(KEY.enter);
 			expect(order).toEqual(["close", "select a", "attach a"]);

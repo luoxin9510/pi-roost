@@ -43,6 +43,8 @@ export interface OverlayHost<P = RoostPort> {
 	requestRender(): void;
 	/** Leave the overlay and attach to session `id`. */
 	attachTo(id: string): Promise<void>;
+	/** M79: the view's selection goes to row `id` (where it is when the overlay closes). */
+	selectRow(id: string): void;
 	/** The view's rows as they are now, read only. */
 	rows(): ReadonlyMap<string, JobRow>;
 	/** M72: the overlay the view shows now (an overlay replaced without closing is not it). */

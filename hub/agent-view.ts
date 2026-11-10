@@ -253,6 +253,11 @@ export interface Resumable {
 	modified: number;
 }
 
+/** M79: the list, or one row's peek (its panel and reply box) under the selection. */
+type View = { kind: "list" } | { kind: "peek"; id: string };
+/** M79: what is open on top of the view and takes the keys: the help, a picker, a rename, an overlay. */
+type Layer = { kind: "help" } | { kind: "picker"; picker: Picker } | { kind: "renaming"; id: string } | { kind: "overlay"; overlay: Overlay };
+
 interface Picker {
 	title: string;
 	items: { label: string; value: string }[];
@@ -301,14 +306,14 @@ export class AgentView implements Component {
 	private rows = new Map<string, JobRow>();
 	private collapsed = new Set<Section["key"]>();
 	private cursor: { kind: "row"; id: string } | { kind: "header"; key: Section["key"] } | undefined;
-	private peek = false;
-	private help = false;
+	/** M79: the list, or a row's peek (the row a reply is typed for; replies never retarget to another row). */
+	private view: View = { kind: "list" };
+	/** M79: what is open on top of the view: one at a time; what opens last is what is open. */
+	private layer: Layer | undefined;
 	/** M17: pi's editor: several lines (Shift+Enter), long pastes folded. */
 	private input: TaskEditor;
 	/** M48: the reply box is an editor like the task box (lines, pastes, undo, completion). */
 	private reply: TaskEditor;
-	/** AV-K10: the row being renamed, edited in its own input. */
-	private renaming: string | undefined;
 	private renameInput = new Input({ prompt: "rename › " });
 	/** M60: the pull request shown for a task, confirmed by /tasks pr again within 30 s. */
 	private prShown: { id: number; at: number; hash: string } | undefined;
@@ -318,8 +323,6 @@ export class AgentView implements Component {
 	private thinking: string | undefined;
 	/** M10: /worktree for the next dispatches (undefined: the user's default). */
 	private worktree: boolean | undefined;
-	private picker: Picker | undefined;
-	private overlay: Overlay | undefined;
 	private notice: Notice | undefined;
 	private armedStop: { id: string; at: number } | undefined;
 	/** M56: the commands /tasks approve showed, by their hash. */
@@ -341,6 +344,8 @@ export class AgentView implements Component {
 	private askTimer: NodeJS.Timeout | undefined;
 	/** An answer that came while another overlay was open: shown once it closes. */
 	private pendingAnswer: string | undefined;
+	/** M79: the concierge's answer on screen: replaced by a layer opened after it, it waits again. */
+	private answerShown: { overlay: Overlay; text: string } | undefined;
 	/** M45: suggestions the user dismissed (Esc), by row and time: the banner skips them. */
 	private dismissed = new Set<string>();
 	/** M47: the task board's counts, as the daemon last said (the header line; /tasks fetches the tasks). */
@@ -362,8 +367,50 @@ export class AgentView implements Component {
 	/** M30: new sessions run this profile's agent instead of pi. */
 	private profile: string | undefined;
 	private dispatching = false;
-	/** The job a reply is typed for; replies never retarget to another row. */
-	private peekId: string | undefined;
+	private get peek(): boolean {
+		return this.view.kind === "peek";
+	}
+	private get peekId(): string | undefined {
+		return this.view.kind === "peek" ? this.view.id : undefined;
+	}
+	private get help(): boolean {
+		return this.layer?.kind === "help";
+	}
+	private get picker(): Picker | undefined {
+		return this.layer?.kind === "picker" ? this.layer.picker : undefined;
+	}
+	/** AV-K10: the row being renamed, edited in its own input. */
+	private get renaming(): string | undefined {
+		return this.layer?.kind === "renaming" ? this.layer.id : undefined;
+	}
+	private get overlay(): Overlay | undefined {
+		return this.layer?.kind === "overlay" ? this.layer.overlay : undefined;
+	}
+	/** M79: opens a layer over the view, in place of the one open (if any). */
+	private openLayer(layer: Layer): void {
+		const was = this.layer;
+		// the concierge's answer, replaced (a picker's pick opened another): it opens when that closes
+		if (was?.kind === "overlay" && this.answerShown?.overlay === was.overlay) this.pendingAnswer ??= this.answerShown.text;
+		this.answerShown = undefined;
+		// a rename replaced: its input gives the focus back, as Esc would
+		if (was?.kind === "renaming") {
+			this.renameInput.focused = false;
+			this.input.focused = true;
+		}
+		this.layer = layer;
+	}
+	/** M79: closes the open layer, if it is of this kind (one of another kind opened since stays). */
+	private closeLayer(kind: Layer["kind"]): void {
+		if (this.layer?.kind !== kind) return;
+		this.layer = undefined;
+		this.answerShown = undefined;
+		// M44: the concierge's answer that waited for what was open to close (M79: whatever it was)
+		if (this.pendingAnswer !== undefined) {
+			const answer = this.pendingAnswer;
+			this.pendingAnswer = undefined;
+			this.showAnswer(answer);
+		}
+	}
 
 	private origin: string | undefined;
 	/** Esc/Enter came before the moved conversation's worker was up: attach once it is. */
@@ -569,8 +616,8 @@ export class AgentView implements Component {
 			if (!s.on) this.asked(false);
 			if (this.asking && s.answer && s.answer.at !== prev?.answer?.at) {
 				this.asked(false);
-				// not over what is open (a confirm, a picker): after it
-				if (this.overlay) {
+				// not over what is open (an overlay, a picker, the help, a rename): after it
+				if (this.layer) {
 					this.pendingAnswer = s.answer.text;
 					this.say(`concierge answered: ${oneLine(s.answer.text).slice(0, 80)} (opens when this closes)`, "muted");
 				} else this.showAnswer(s.answer.text);
@@ -600,6 +647,7 @@ export class AgentView implements Component {
 			close: () => this.closeOverlay(),
 			requestRender: () => this.o.tui.requestRender(),
 			attachTo: (id) => this.attachTo(id),
+			selectRow: (id) => void (this.cursor = { kind: "row", id }),
 			rows: () => this.rows,
 			current: () => this.overlay,
 			notice: () => this.notice,
@@ -682,8 +730,8 @@ export class AgentView implements Component {
 		this.reply.setValue("");
 		if (this.peek) {
 			// the panel follows the selection (PK: ↑↓ with the panel open)
-			this.peekId = it.kind === "row" ? it.row.id : undefined;
-			if (!this.peekId) this.closePeek();
+			if (it.kind === "row") this.view = { kind: "peek", id: it.row.id };
+			else this.closePeek();
 		}
 	}
 
@@ -697,18 +745,28 @@ export class AgentView implements Component {
 	handleInput(data: string): void {
 		if (this.attached) return;
 		const key = parseKey(data);
-		if (this.help) {
-			this.help = false;
-			this.o.tui.requestRender();
-			return;
+		// M79: the layer open takes the keys; else the view (the list, or a peek)
+		const layer = this.layer;
+		switch (layer?.kind) {
+			case "help":
+				// any key closes it
+				this.closeLayer("help");
+				this.o.tui.requestRender();
+				return;
+			case "overlay":
+				layer.overlay.handleInput?.(data);
+				this.o.tui.requestRender();
+				return;
+			case "picker":
+				return this.pickerKey(key, data);
+			case "renaming":
+				return this.renameKey(key, data);
 		}
-		if (this.overlay) {
-			this.overlay.handleInput?.(data);
-			this.o.tui.requestRender();
-			return;
-		}
-		if (this.picker) return this.pickerKey(key, data);
-		if (this.renaming) return this.renameKey(key, data);
+		this.viewKey(key, data);
+	}
+
+	/** M79: a key for the view: the list's own first, then those of both (a peek's are among them). */
+	private viewKey(key: string | undefined, data: string): void {
 		const typing = this.peek ? this.reply : this.input;
 		const text = typing.getValue();
 		// M17: Ctrl+J (a bare LF) adds a line; a paste arriving in pieces goes to the editor whole (M48: the reply box too)
@@ -725,6 +783,7 @@ export class AgentView implements Component {
 			this.o.tui.requestRender();
 			return;
 		}
+		if (!this.peek && this.listKey(key)) return;
 
 		switch (key) {
 			case "tab":
@@ -743,29 +802,11 @@ export class AgentView implements Component {
 					return;
 				}
 				return this.newModelPicker();
-			case "ctrl+p":
-				if (this.peek) break;
-				return this.cycleModel(1);
-			case "shift+ctrl+p":
-			case "ctrl+shift+p":
-				if (this.peek) break;
-				return this.cycleModel(-1);
-			case "shift+tab":
-				if (this.peek) break;
-				return this.cycleThinking();
 			case "ctrl+t":
 				return void this.togglePin();
 			case "ctrl+n":
 				// M57: the workspace overlay, at the next task that needs you
 				return void this.showWorkspaces(true);
-			case "ctrl+o":
-				if (this.peek) break;
-				return this.toggleMark();
-			case "ctrl+f":
-				if (this.peek) break;
-				fill(this.input, "n:");
-				this.o.tui.requestRender();
-				return;
 			case "ctrl+r":
 				return this.startRename();
 			case "ctrl+g":
@@ -831,7 +872,7 @@ export class AgentView implements Component {
 						this.o.tui.requestRender();
 						return;
 					}
-					this.help = true;
+					this.openLayer({ kind: "help" });
 					this.o.tui.requestRender();
 					return;
 				}
@@ -863,10 +904,33 @@ export class AgentView implements Component {
 		this.o.tui.requestRender();
 	}
 
+	/** M79: the list's own keys (in a peek they are typed into the reply, or do nothing): whether it took it. */
+	private listKey(key: string | undefined): boolean {
+		switch (key) {
+			case "ctrl+p":
+				this.cycleModel(1);
+				return true;
+			case "shift+ctrl+p":
+			case "ctrl+shift+p":
+				this.cycleModel(-1);
+				return true;
+			case "shift+tab":
+				this.cycleThinking();
+				return true;
+			case "ctrl+o":
+				this.toggleMark();
+				return true;
+			case "ctrl+f":
+				fill(this.input, "n:");
+				this.o.tui.requestRender();
+				return true;
+		}
+		return false;
+	}
+
 	private togglePeek(): void {
 		const row = this.selectedRow();
-		this.peek = !this.peek && row !== undefined;
-		this.peekId = this.peek ? row?.id : undefined;
+		this.view = !this.peek && row !== undefined ? { kind: "peek", id: row.id } : { kind: "list" };
 		// pin the selection to this row so it follows it into another group
 		if (row) this.cursor = { kind: "row", id: row.id };
 		this.reply.focused = this.peek;
@@ -876,8 +940,7 @@ export class AgentView implements Component {
 	}
 
 	private closePeek(): void {
-		this.peek = false;
-		this.peekId = undefined;
+		this.view = { kind: "list" };
 		this.reply.setValue("");
 		this.reply.focused = false;
 		this.input.focused = true;
@@ -1149,7 +1212,7 @@ export class AgentView implements Component {
 
 	private openPicker(title: string, values: string[], current: string, pick: (v: string) => void | Promise<void>): void {
 		const items = values.map((v) => ({ label: v, value: v }));
-		this.picker = { title, items, index: Math.max(0, values.indexOf(current)), pick };
+		this.openLayer({ kind: "picker", picker: { title, items, index: Math.max(0, values.indexOf(current)), pick } });
 		this.o.tui.requestRender();
 	}
 
@@ -1164,13 +1227,13 @@ export class AgentView implements Component {
 		const head = withDefault ? [{ label: `default${def ? ` (${def})` : ""}`, value: "default" }] : [];
 		const list = (ids: string[]) => [...head, ...ids.map((m) => ({ label: m, value: m }))];
 		const items = list(enabled.length > 0 ? enabled : all);
-		this.picker = {
+		this.openLayer({ kind: "picker", picker: {
 			title,
 			items,
 			index: Math.max(0, items.findIndex((it) => it.value === current)),
 			pick,
 			...(enabled.length > 0 ? { scope: "enabled models", other: { label: "all models", items: list(all) } } : {}),
-		};
+		} });
 		this.o.tui.requestRender();
 	}
 
@@ -1217,7 +1280,7 @@ export class AgentView implements Component {
 					busy: (path) => [...this.rows.values()].some((r) => r.sessionFile === path && (r.pid !== null || r.endedAt === null)),
 				});
 				if ("focused" in overlay) overlay.focused = true;
-				this.overlay = overlay;
+				this.openLayer({ kind: "overlay", overlay: overlay });
 				this.o.tui.requestRender();
 				return;
 			} catch (err) {
@@ -1283,13 +1346,13 @@ export class AgentView implements Component {
 	private async showSchedules(port: RoostPort): Promise<void> {
 		const o = await createSchedulesOverlay(this.overlayHost(port));
 		if (!o) return;
-		this.overlay = o;
+		this.openLayer({ kind: "overlay", overlay: o });
 		this.o.tui.requestRender();
 	}
 
 	/** M24 /usage: what the sessions spent, by model and by session; Esc closes, ↑↓ scroll. */
 	private showUsage(): void {
-		this.overlay = createUsageOverlay(this.hostBase());
+		this.openLayer({ kind: "overlay", overlay: createUsageOverlay(this.hostBase()) });
 		this.o.tui.requestRender();
 	}
 
@@ -1299,7 +1362,7 @@ export class AgentView implements Component {
 		if (!port) return this.say("background service unavailable", "error");
 		const o = await createLogOverlay(this.overlayHost(port), { only, title });
 		if (!o) return;
-		this.overlay = o;
+		this.openLayer({ kind: "overlay", overlay: o });
 		this.o.tui.requestRender();
 	}
 
@@ -1461,8 +1524,7 @@ export class AgentView implements Component {
 		if (!row?.suggested) return;
 		this.cursor = { kind: "row", id: row.id };
 		if (!this.peek || this.peekId !== row.id) {
-			this.peek = true;
-			this.peekId = row.id;
+			this.view = { kind: "peek", id: row.id };
 			this.reply.focused = true;
 			this.input.focused = false;
 		}
@@ -1474,7 +1536,7 @@ export class AgentView implements Component {
 	private async showOrders(port: RoostPort): Promise<void> {
 		const o = await createOrdersOverlay(this.overlayHost(port));
 		if (!o) return;
-		this.overlay = o;
+		this.openLayer({ kind: "overlay", overlay: o });
 		this.o.tui.requestRender();
 	}
 
@@ -1510,7 +1572,9 @@ export class AgentView implements Component {
 	}
 
 	private showAnswer(answer: string): void {
-		this.overlay = createAnswerOverlay(this.hostBase(), { answer });
+		const overlay = createAnswerOverlay(this.hostBase(), { answer });
+		this.openLayer({ kind: "overlay", overlay });
+		this.answerShown = { overlay, text: answer };
 		this.o.tui.requestRender();
 	}
 
@@ -1518,14 +1582,7 @@ export class AgentView implements Component {
 		try {
 			this.overlay?.dispose?.();
 		} catch {}
-		this.overlay = undefined;
-		// M44: the concierge's answer that waited for this to close
-		if (this.pendingAnswer !== undefined) {
-			const answer = this.pendingAnswer;
-			this.pendingAnswer = undefined;
-			this.showAnswer(answer);
-			return;
-		}
+		this.closeLayer("overlay");
 		this.o.tui.requestRender();
 	}
 
@@ -1570,7 +1627,7 @@ export class AgentView implements Component {
 			if (p.query) {
 				p.query = "";
 				p.index = 0;
-			} else this.picker = undefined;
+			} else this.closeLayer("picker");
 		} else if (key === "up") p.index = Math.max(0, p.index - 1);
 		else if (key === "down") p.index = Math.min(shown.length - 1, p.index + 1);
 		else if (key === "pageUp") p.index = Math.max(0, p.index - 10);
@@ -1590,7 +1647,7 @@ export class AgentView implements Component {
 		} else if (key === "enter") {
 			// nothing matches: the search stays to be changed
 			if (shown.length === 0) return this.o.tui.requestRender();
-			this.picker = undefined;
+			this.closeLayer("picker");
 			const item = shown[p.index];
 			if (item) void Promise.resolve(p.pick(item.value)).catch((err: unknown) => this.say((err as Error).message, "error"));
 		} else {
@@ -1619,7 +1676,7 @@ export class AgentView implements Component {
 		}
 		if (sessions.length === 0) return this.say("no past sessions to resume here");
 		const byPath = new Map(sessions.map((s) => [s.path, s]));
-		this.picker = {
+		this.openLayer({ kind: "picker", picker: {
 			title: "Resume a session in the background",
 			items: sessions.slice(0, 200).map((s) => ({
 				label: `${oneLine(s.name)} · ${formatAgo(Date.now() - s.modified)}${known.has(s.path) ? " · listed" : ""}`,
@@ -1627,7 +1684,7 @@ export class AgentView implements Component {
 			})),
 			index: 0,
 			pick: (path) => this.resumeSession(byPath.get(path)!),
-		};
+		} });
 		this.o.tui.requestRender();
 	}
 
@@ -1701,7 +1758,7 @@ export class AgentView implements Component {
 	private startRename(): void {
 		const row = this.selectedRow();
 		if (!row) return;
-		this.renaming = row.id;
+		this.openLayer({ kind: "renaming", id: row.id });
 		fill(this.renameInput, row.name);
 		this.renameInput.focused = true;
 		this.input.focused = false;
@@ -1709,7 +1766,7 @@ export class AgentView implements Component {
 	}
 
 	private endRename(): void {
-		this.renaming = undefined;
+		this.closeLayer("renaming");
 		this.renameInput.focused = false;
 		this.input.focused = true;
 		this.o.tui.requestRender();
@@ -2111,13 +2168,13 @@ export class AgentView implements Component {
 
 	/** M59: lines in an overlay (what cleanup found or did); ↑↓ scroll, Esc closes. */
 	private showLines(title: string, lines: string[]): void {
-		this.overlay = createLinesOverlay(this.hostBase(), { title, lines });
+		this.openLayer({ kind: "overlay", overlay: createLinesOverlay(this.hostBase(), { title, lines }) });
 		this.o.tui.requestRender();
 	}
 
 	/** M47: the board as an overlay: open (claimable), blocked, claimed, then done, newest first. */
 	private showTasks(tasks: BoardTask[], scope = "all projects"): void {
-		this.overlay = createTasksOverlay(this.hostBase(), { tasks, scope });
+		this.openLayer({ kind: "overlay", overlay: createTasksOverlay(this.hostBase(), { tasks, scope }) });
 		this.o.tui.requestRender();
 	}
 
@@ -2150,7 +2207,7 @@ export class AgentView implements Component {
 			openReview: (at) => void this.openReview(at, () => void this.showWorkspaces(false, at)),
 		});
 		if (!o) return;
-		this.overlay = o;
+		this.openLayer({ kind: "overlay", overlay: o });
 		this.o.tui.requestRender();
 	}
 
@@ -2176,7 +2233,7 @@ export class AgentView implements Component {
 	private async reviewOverlay(port: RoostPort, id: number, onClose?: () => void): Promise<void> {
 		const o = await createReviewOverlay(this.overlayHost(port), { id, onClose, tasksCommand: (line) => this.tasksCommand(line) });
 		if (!o) return;
-		this.overlay = o;
+		this.openLayer({ kind: "overlay", overlay: o });
 		this.o.tui.requestRender();
 	}
 
@@ -2292,7 +2349,7 @@ export class AgentView implements Component {
 			}
 			return out.length > 0 ? out : [t.fg("dim", "(empty)")];
 		};
-		this.overlay = {
+		this.openLayer({ kind: "overlay", overlay: {
 			render(width: number) {
 				if (body.length === 0 || bodyWidth !== width) {
 					body = load(width);
@@ -2315,7 +2372,7 @@ export class AgentView implements Component {
 				else if (key === "pageUp") top = Math.max(0, top - 10);
 				else if (key === "pageDown") top += 10;
 			},
-		};
+		} });
 		this.o.tui.requestRender();
 	}
 
@@ -2465,7 +2522,7 @@ export class AgentView implements Component {
 		const view = this;
 		const t = this.o.theme;
 		let screen = first;
-		this.overlay = {
+		this.openLayer({ kind: "overlay", overlay: {
 			render(width: number) {
 				const room = Math.max(3, (view.o.tui.terminal.rows || 30) - 6);
 				const lines = screen.trimEnd().split("\n").map((l) => truncateToWidth(l.replace(CONTROL, " "), Math.max(1, width - 2)));
@@ -2483,7 +2540,7 @@ export class AgentView implements Component {
 						(err: unknown) => view.say(String((err as Error).message ?? err), "error"),
 					);
 			},
-		};
+		} });
 		this.o.tui.requestRender();
 	}
 
@@ -2632,12 +2689,12 @@ export class AgentView implements Component {
 				this.say("no presets yet: /preset save <name> keeps what new sessions use now", "warning");
 				return false;
 			}
-			this.picker = {
+			this.openLayer({ kind: "picker", picker: {
 				title: "Preset for new sessions",
 				items: [{ label: "none (the defaults)", value: "" }, ...names.map((n) => ({ label: `${n}  ${presetText(all[n]!)}`, value: n }))],
 				index: Math.max(0, names.indexOf(this.preset?.name ?? "") + 1),
 				pick: (v) => (v ? this.applyPreset(v, all[v]!) : this.clearPreset()),
-			};
+			} });
 			this.o.tui.requestRender();
 			return true;
 		}
@@ -2805,13 +2862,12 @@ export class AgentView implements Component {
 	private compare(): void {
 		const first = this.compareRows();
 		if (first.length < 2) return this.say("/compare works on a row of a fan-out (/fanout), or on two or more marked rows", "warning");
-		this.overlay = createCompareOverlay(this.hostBase(), {
+		this.openLayer({ kind: "overlay", overlay: createCompareOverlay(this.hostBase(), {
 			ids: first.map((r) => r.id),
 			fanoutId: first[0]!.fanout && first.every((r) => r.fanout === first[0]!.fanout) ? first[0]!.fanout : undefined,
 			selectedId: this.selectedRow()?.id,
 			keepOne: (keep, others) => this.keepOne(keep, others),
-			select: (id) => void (this.cursor = { kind: "row", id }),
-		});
+		}) });
 		this.o.tui.requestRender();
 	}
 

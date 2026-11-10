@@ -1200,3 +1200,531 @@ Usage · sessions in this view
 
 ↑↓ scroll · Esc close"
 `;
+
+exports[`M79: views and layers, pinned > a rename over a peek, cancelled; over the list, done 1`] = `
+"--- " "
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u0012"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+rename › alpha work_pi:c_pi:fc _pi:/fc                                                                                
+Enter rename · Esc cancel
+--- "z"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+rename › alpha workz_pi:c_pi:fc _pi:/fc                                                                               
+Enter rename · Esc cancel
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit
+--- "\\u0012"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+rename › alpha work_pi:c_pi:fc _pi:/fc                                                                                
+Enter rename · Esc cancel
+--- ""
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+rename › alpha wor_pi:c_pi:fc _pi:/fc                                                                                 
+Enter rename · Esc cancel
+--- ""
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+rename › alpha wo_pi:c_pi:fc _pi:/fc                                                                                  
+Enter rename · Esc cancel
+--- "q"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+rename › alpha woq_pi:c_pi:fc _pi:/fc                                                                                 
+Enter rename · Esc cancel
+--- "\\r"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+renamed · alpha woq
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M79: views and layers, pinned > an overlay over a peek (Ctrl+N), closed back to the peek; a digit then picks a choice 1`] = `
+"--- " "
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u000e"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+all projects · workspaces                                                      nothing in workspaces
+
+no tasks                                   │ 
+
+no tasks in workspaces: /tasks add, then s on it here
+n next · r reload · ↑↓ select · Esc close
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+no tasks in workspaces: /tasks add, then s on it here
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "1"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     postgres_pi:c_pi:fc _pi:/fc                                                                                      
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+no tasks in workspaces: /tasks add, then s on it here
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys"
+`;
+
+exports[`M79: views and layers, pinned > help over the list and over a peek; any key closes it 1`] = `
+"--- "?"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ↑ ↓ PgUp PgDn Home End  move                      Ctrl+L                  pick the model for ne[0m...[0m
+  Enter                   attach · start the t[0m...[0m   Ctrl+P Shift+Ctrl+P     next / previous enabl[0m...[0m
+  →                       attach                    Shift+Tab               next thinking level f[0m...[0m
+  Space                   peek and reply            /worktree               new sessions in their[0m...[0m
+  Ctrl+Enter              start the typed task[0m...[0m   in a peek: /model       switch that session's[0m...[0m
+  Ctrl+X                  stop; again within 2[0m...[0m   /resume                 open a past session ([0m...[0m
+  Ctrl+S                  group by state / dir[0m...[0m   /usage                  what the sessions spe[0m...[0m
+  Ctrl+T                  pin / unpin (pinned [0m...[0m   /log                    what happened lately:[0m...[0m
+  Ctrl+O                  mark the row (on a h[0m...[0m   /concierge on|off|log   the hub's own agent: [0m...[0m
+  marked: type, Enter     send it to every mar[0m...[0m   /concierge answer|act|undomay it answer routi[0m...[0m
+  in a peek: Alt+Enter    send after its curre[0m...[0m   /concierge orders [add|rm]the standing orders[0m...[0m
+  in a peek: /…           that session: /stop [0m...[0m   /tasks [add|assign|done|rm|release]the shared[0m...[0m
+  Tab · /                 complete: / the comm[0m...[0m   /workspaces · Ctrl+N    the tasks in their ow[0m...[0m
+  Ctrl+G · Ctrl+J         edit the task or rep[0m...[0m   /tasks pr <id>          the optional exit: pu[0m...[0m
+  marked: Ctrl+X Ctrl+T   stop / delete, pin /[0m...[0m   /tasks shelve <id> · cleanupput a task away ([0m...[0m
+  Ctrl+R                  rename                    /tasks review <id>      a task's diff against[0m...[0m
+  Shift+↑ Shift+↓         move the row within [0m...[0m   ? question              ask the concierge abo[0m...[0m
+  Alt+↑ Alt+↓             previous / next group     Ctrl+Y · Ctrl+E         send the concierge's [0m...[0m
+  Alt+1…9                 attach to row N of t[0m...[0m   /schedule name when taskrun a task on a sched[0m...[0m
+  Ctrl+F                  find by name (n:)         /fanout a/x b/y         the next task runs on[0m...[0m
+  Ctrl+G                  write the task in $V[0m...[0m   /compare                a fan-out (or marked [0m...[0m
+  s: n: o:                filter by state, nam[0m...[0m   /preset [name]          saved choices for new[0m...[0m
+  @dir task               start the task in th[0m...[0m   Esc                     close peek · clear in[0m...[0m
+  ! command               run a shell command [0m...[0m   Ctrl+C                  clear input; twice to[0m...[0m
+  /profile                the agent new sessio[0m...[0m   in a session            ← on an empty prompt,[0m...[0m
+  /model /thinking        defaults for new ses[0m...[0m
+
+any key to close
+--- "x"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit
+--- ""
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit
+--- " "
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "?"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ↑ ↓ PgUp PgDn Home End  move                      Ctrl+L                  pick the model for ne[0m...[0m
+  Enter                   attach · start the t[0m...[0m   Ctrl+P Shift+Ctrl+P     next / previous enabl[0m...[0m
+  →                       attach                    Shift+Tab               next thinking level f[0m...[0m
+  Space                   peek and reply            /worktree               new sessions in their[0m...[0m
+  Ctrl+Enter              start the typed task[0m...[0m   in a peek: /model       switch that session's[0m...[0m
+  Ctrl+X                  stop; again within 2[0m...[0m   /resume                 open a past session ([0m...[0m
+  Ctrl+S                  group by state / dir[0m...[0m   /usage                  what the sessions spe[0m...[0m
+  Ctrl+T                  pin / unpin (pinned [0m...[0m   /log                    what happened lately:[0m...[0m
+  Ctrl+O                  mark the row (on a h[0m...[0m   /concierge on|off|log   the hub's own agent: [0m...[0m
+  marked: type, Enter     send it to every mar[0m...[0m   /concierge answer|act|undomay it answer routi[0m...[0m
+  in a peek: Alt+Enter    send after its curre[0m...[0m   /concierge orders [add|rm]the standing orders[0m...[0m
+  in a peek: /…           that session: /stop [0m...[0m   /tasks [add|assign|done|rm|release]the shared[0m...[0m
+  Tab · /                 complete: / the comm[0m...[0m   /workspaces · Ctrl+N    the tasks in their ow[0m...[0m
+  Ctrl+G · Ctrl+J         edit the task or rep[0m...[0m   /tasks pr <id>          the optional exit: pu[0m...[0m
+  marked: Ctrl+X Ctrl+T   stop / delete, pin /[0m...[0m   /tasks shelve <id> · cleanupput a task away ([0m...[0m
+  Ctrl+R                  rename                    /tasks review <id>      a task's diff against[0m...[0m
+  Shift+↑ Shift+↓         move the row within [0m...[0m   ? question              ask the concierge abo[0m...[0m
+  Alt+↑ Alt+↓             previous / next group     Ctrl+Y · Ctrl+E         send the concierge's [0m...[0m
+  Alt+1…9                 attach to row N of t[0m...[0m   /schedule name when taskrun a task on a sched[0m...[0m
+  Ctrl+F                  find by name (n:)         /fanout a/x b/y         the next task runs on[0m...[0m
+  Ctrl+G                  write the task in $V[0m...[0m   /compare                a fan-out (or marked [0m...[0m
+  s: n: o:                filter by state, nam[0m...[0m   /preset [name]          saved choices for new[0m...[0m
+  @dir task               start the task in th[0m...[0m   Esc                     close peek · clear in[0m...[0m
+  ! command               run a shell command [0m...[0m   Ctrl+C                  clear input; twice to[0m...[0m
+  /profile                the agent new sessio[0m...[0m   in a session            ← on an empty prompt,[0m...[0m
+  /model /thinking        defaults for new ses[0m...[0m
+
+any key to close
+--- "j"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M79: views and layers, pinned > peek, a picker over it (Ctrl+L), back to the peek, closed 1`] = `
+"--- " "
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\f"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Model for alpha work
+search: ▏
+
+› a/one
+  b/two
+
+type to search · ↑↓ choose · Enter pick · Esc cancel
+--- "\\u001b[B"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Model for alpha work
+search: ▏
+
+  a/one
+› b/two
+
+type to search · ↑↓ choose · Enter pick · Esc cancel
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M79: views and layers, pinned > the list's own keys do nothing in a peek (Ctrl+O mark, Ctrl+F), and do in the list 1`] = `
+"--- " "
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u000f"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u0006"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+    which db?
+    1. postgres
+    2. sqlite
+    /w · started 1m ago
+    needs input · waiting 30s · m1
+    p/m
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+     _pi:c_pi:fc _pi:/fc answer · Enter sends · 1-9 picks a choice · / commands
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+Enter send · Alt+Enter after work · 1-9 pick · / commands · Esc close · ? keys
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+› ✻ alpha work  which db?                                                                      m  1m
+  ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit
+--- "\\u000f"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ✓▾ Needs input (1)
+ ✓✻ alpha work  which db?                                                                      m  1m
+› ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+1 marked · type and Enter to send to all · Ctrl+X stop · Ctrl+T pin · Esc unmark
+1 marked · type, Enter: send to all · /model /thinking · Ctrl+T pin · Ctrl+X stop · Ctrl+O mark ·[0m...[0m
+--- "\\u001b"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+  ✻ alpha work  which db?                                                                      m  1m
+› ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+marks cleared
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit
+--- "\\u0006"
+pi agents  1 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Needs input (1)
+  ✻ alpha work  which db?                                                                      m  1m
+› ▾ Working (1)
+  ✽ beta work   running bash                                                                   m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ n:_pi:c_pi:fc _pi:/fc                                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────
+marks cleared
+filtering (s: n: o: a: #PR) · Enter/→ attach · Esc clear"
+`;

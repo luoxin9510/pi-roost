@@ -12,7 +12,7 @@ import { DOUBLE_PRESS_MS, type Overlay, type OverlayHost } from "../overlay-host
 import { CONTROL, oneLine } from "../text.ts";
 
 /** What the overlay needs of the view (no daemon: `keepOne` is the view's). */
-export type CompareHost = Pick<OverlayHost<never>, "theme" | "say" | "close" | "requestRender" | "attachTo" | "rows" | "termRows" | "worktreeChange">;
+export type CompareHost = Pick<OverlayHost<never>, "theme" | "say" | "close" | "requestRender" | "attachTo" | "selectRow" | "rows" | "termRows" | "worktreeChange">;
 
 export interface CompareOpts {
 	/** The sessions to compare, in column order. */
@@ -23,8 +23,6 @@ export interface CompareOpts {
 	selectedId?: string;
 	/** k twice: keep `keep`, delete `others` (the overlay has closed itself). */
 	keepOne(keep: JobRow, others: JobRow[]): Promise<void>;
-	/** Enter: the view's cursor goes to this row (the overlay has closed itself and attaches next). */
-	select(id: string): void;
 }
 
 /** The overlay's lines at `width`: the columns, or (narrow) the chosen one in full and one line for each other. */
@@ -137,7 +135,7 @@ export function createCompareOverlay(host: CompareHost, opts: CompareOpts): Over
 				const row = present()[index];
 				host.close();
 				if (row) {
-					opts.select(row.id);
+					host.selectRow(row.id);
 					void host.attachTo(row.id).catch((err: unknown) => host.say(String(err), "error"));
 				}
 			} else if (ch === "k") {
