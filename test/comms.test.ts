@@ -9,7 +9,7 @@ import { acquireWriterLock, releaseWriterLock } from "../lib/locks.ts";
 import { isAlive } from "../lib/proc.ts";
 import type { Event } from "../lib/protocol.ts";
 import { listJobIds, readJob, readState } from "../lib/store.ts";
-import { createTaskWorktree, restoreTaskWorktree } from "../lib/task-git.ts";
+import { createTaskWorktree } from "../lib/task-git.ts";
 import { createWorktree } from "../lib/worktree.ts";
 
 describe("comms pieces", () => {
@@ -152,6 +152,12 @@ async function foreground(name: string): Promise<{ c: DaemonClient; events: Even
 	const { c, events } = await connect();
 	const { id } = await c.request("peer_register", { session, name, cwd: work, pid: process.pid });
 	return { c, events, id, session };
+}
+
+/** M65: the daemon makes a task's worktree; the hub asks it where (base: the commit it was made from). */
+async function prepareTask(c: DaemonClient, id: number) {
+	const w = (await c.request("task", { action: "prepare", id })).workspace!;
+	return { ...w, base: w.baseSha };
 }
 
 let n = 0;
@@ -1763,11 +1769,10 @@ describe("M55: start and merge from the board", () => {
 	}
 	async function started(hub: DaemonClient, r: string, title: string, after?: number[]) {
 		const t = (await hub.request("task", { action: "add", title, project: r, ...(after ? { after } : {}) })).task!;
-		const w = createTaskWorktree(r, t.id, title);
+		const w = await prepareTask(hub, t.id);
 		const res = await hub.request("task", {
 			action: "start",
 			id: t.id,
-			workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base },
 			launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path },
 		});
 		return { t, w, job: res.job!, res };
@@ -1781,7 +1786,7 @@ describe("M55: start and merge from the board", () => {
 		expect(readJob(job.id)?.task).toMatchObject({ id: t.id, branch: w.branch });
 		expect(readJob(job.id)?.worktree).toBeUndefined();
 		const next = (await hub.request("task", { action: "add", title: "migration", project: r, after: [t.id] })).task!;
-		await expect(hub.request("task", { action: "start", id: next.id, workspace: { path: w.path, branch: w.branch, baseRef: "main", baseSha: w.base }, launch: { ...launch("sleep 30"), cwd: w.path } })).rejects.toMatchObject({ code: "blocked" });
+		await expect(hub.request("task", { action: "start", id: next.id, launch: { ...launch("sleep 30"), cwd: w.path } })).rejects.toMatchObject({ code: "blocked" });
 		// the session: uncommitted work is refused, committed work goes to review
 		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job.id)?.pid);
 		const s = await worker(job.id);
@@ -1912,8 +1917,8 @@ describe("M56: verify before review, setup before the session", () => {
 	}
 	async function start(hub: DaemonClient, r: string, title: string) {
 		const t = (await hub.request("task", { action: "add", title, project: r })).task!;
-		const w = createTaskWorktree(r, t.id, title);
-		const res = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
+		const w = await prepareTask(hub, t.id);
+		const res = await hub.request("task", { action: "start", id: t.id, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
 		return { t, w, res };
 	}
 	/** What a person does: see the commands, then approve what was shown. */
@@ -2061,30 +2066,26 @@ describe("M57: the concierge starts a task in its workspace", () => {
 		const wc = await worker(st.id!);
 		const r = repo("svc");
 		const t = (await hub.request("task", { action: "add", title: "health check", project: r })).task!;
-		const w = createTaskWorktree(r, t.id, t.title);
+		let w = { path: "", branch: "" };
 		const args = () => ({
 			action: "start" as const,
 			id: t.id,
-			workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base },
 			launch: { ...launch("sleep 30", `t${t.id}`), command: ["/bin/sh", "-c", "evil", "--", "Task #1"], cwd: w.path, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ROOST_ROLE: "concierge", ROOST_JOB_ID: "x" } },
 		});
+		// M65: the concierge asks the daemon for the worktree, as the hub does: only with act on
+		await expect(wc.c.request("task", { action: "prepare", id: t.id })).rejects.toMatchObject({ code: "policy" });
 		await expect(wc.c.request("task", args())).rejects.toMatchObject({ code: "policy" });
 		await hub.request("concierge", { action: "act", act: true });
-		// not a profile, a shell job, a worktree of its own, a cwd outside, a base that is not
-		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, profile: "aider" } })).rejects.toMatchObject({ code: "bad_request" });
-		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, kind: "shell" } })).rejects.toMatchObject({ code: "bad_request" });
-		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, cwd: r } })).rejects.toMatchObject({ code: "bad_request" });
-		// a session file that exists (another session's) is not taken
+		// a start not prepared for
+		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, cwd: r } })).rejects.toThrow(/not prepared/);
+		// not a profile, a shell job, a cwd outside, a session file that exists; each refusal removes the worktree prepared for it
 		writeFileSync(join(work, "taken.jsonl"), "{}\n");
-		await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, sessionFile: join(work, "taken.jsonl") } })).rejects.toMatchObject({ code: "bad_request" });
-		git(r, "branch", "other", "HEAD");
-		git(r, "checkout", "-q", "other");
-		writeFileSync(join(r, "o.txt"), "o\n");
-		git(r, "add", ".");
-		git(r, "commit", "-qm", "o");
-		const other = execFileSync("git", ["rev-parse", "HEAD"], { cwd: r, encoding: "utf8" }).trim();
-		git(r, "checkout", "-q", "main");
-		await expect(wc.c.request("task", { ...args(), workspace: { ...args().workspace, baseRef: "other", baseSha: other } })).rejects.toMatchObject({ code: "bad_request" });
+		for (const bad of [{ profile: "aider" }, { kind: "shell" }, { cwd: r }, { sessionFile: join(work, "taken.jsonl") }]) {
+			w = await prepareTask(wc.c, t.id);
+			await expect(wc.c.request("task", { ...args(), launch: { ...args().launch, ...bad } } as never)).rejects.toMatchObject({ code: "bad_request" });
+			expect(existsSync(w.path)).toBe(false);
+		}
+		w = await prepareTask(wc.c, t.id);
 		const res = await wc.c.request("task", args());
 		expect(res.task).toMatchObject({ state: "claimed", workspace: { stage: "working", branch: w.branch } });
 		const job = readJob(res.job!.id)!;
@@ -2101,7 +2102,8 @@ describe("M57: the concierge starts a task in its workspace", () => {
 		// a session (not the concierge, not the hub) is refused
 		const s = await worker(res.job!.id);
 		const t2 = (await hub.request("task", { action: "add", title: "other", project: r })).task!;
-		await expect(s.c.request("task", { action: "start", id: t2.id, workspace: args().workspace, launch: args().launch })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(s.c.request("task", { action: "prepare", id: t2.id })).rejects.toMatchObject({ code: "unsupported" });
+		await expect(s.c.request("task", { action: "start", id: t2.id, launch: args().launch })).rejects.toMatchObject({ code: "unsupported" });
 	});
 });
 
@@ -2121,8 +2123,8 @@ describe("M58: review comments", () => {
 		const hub = await startDaemon();
 		const r = repo("rv");
 		const t = (await hub.request("task", { action: "add", title: "users", project: r })).task!;
-		const w = createTaskWorktree(r, t.id, t.title);
-		const { job } = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "u"), cwd: w.path } });
+		const w = await prepareTask(hub, t.id);
+		const { job } = await hub.request("task", { action: "start", id: t.id, launch: { ...launch("sleep 30", "u"), cwd: w.path } });
 		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job!.id)?.pid);
 		const s = await worker(job!.id);
 		writeFileSync(join(w.path, "users.sql"), "drop table users;\n");
@@ -2168,8 +2170,8 @@ describe("M59: shelve, hand merges, cleanup", () => {
 	/** A task started in its worktree, its work committed, in review (its session stopped). */
 	async function inReview(hub: DaemonClient, r: string, title: string) {
 		const t = (await hub.request("task", { action: "add", title, project: r })).task!;
-		const w = createTaskWorktree(r, t.id, title);
-		const { job } = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
+		const w = await prepareTask(hub, t.id);
+		const { job } = await hub.request("task", { action: "start", id: t.id, launch: { ...launch("sleep 30", `t${t.id}`), cwd: w.path } });
 		await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job!.id)?.pid);
 		const s = await worker(job!.id);
 		writeFileSync(join(w.path, `${t.id}.txt`), `${title}\n`);
@@ -2199,8 +2201,10 @@ describe("M59: shelve, hand merges, cleanup", () => {
 		await expect(hub.request("task", { action: "merge", id: t.id })).rejects.toThrow(/shelved/);
 		// a comment on a shelved task is kept (the next start's prompt carries it)
 		expect((await hub.request("task", { action: "comment", id: t.id, comment: { file: "a.txt", line: 1, text: "later" } })).task?.workspace?.comments).toHaveLength(1);
-		restoreTaskWorktree(r, w.path, w.branch);
-		const again = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "again"), cwd: w.path } });
+		// M65: prepare makes it again from its branch
+		expect((await hub.request("task", { action: "prepare", id: t.id })).workspace?.path).toBe(w.path);
+		expect(existsSync(w.path)).toBe(true);
+		const again = await hub.request("task", { action: "start", id: t.id, launch: { ...launch("sleep 30", "again"), cwd: w.path } });
 		expect(again.task).toMatchObject({ state: "claimed", workspace: { stage: "working" } });
 		expect(existsSync(join(w.path, `${t.id}.txt`))).toBe(true);
 	});
@@ -2225,8 +2229,8 @@ describe("M59: shelve, hand merges, cleanup", () => {
 			expect(list.find((x) => x.id === t.id)).toMatchObject({ state: "done", workspace: { stage: "merged" } });
 			expect(list.find((x) => x.id === other.t.id)?.workspace?.stage).toBe("review");
 			// the next one can be started now
-			const w2 = createTaskWorktree(r, next.id, "after");
-			await expect(hub.request("task", { action: "start", id: next.id, workspace: { path: w2.path, branch: w2.branch, baseRef: w2.baseRef, baseSha: w2.base }, launch: { ...launch("sleep 30", "n"), cwd: w2.path } })).resolves.toBeTruthy();
+			const w2 = await prepareTask(hub, next.id);
+			await expect(hub.request("task", { action: "start", id: next.id, launch: { ...launch("sleep 30", "n"), cwd: w2.path } })).resolves.toBeTruthy();
 		} finally {
 			restore();
 		}
@@ -2303,8 +2307,8 @@ describe("M60: the pull request exit", () => {
 			execFileSync("git", ["init", "-q", "--bare", join(work, "remote.git")]);
 			git(r, "remote", "add", "origin", join(work, "remote.git"));
 			const t = (await hub.request("task", { action: "add", title: "users table", detail: "the users table", project: r })).task!;
-			const w = createTaskWorktree(r, t.id, t.title);
-			const { job } = await hub.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: { ...launch("sleep 30", "u"), cwd: w.path } });
+			const w = await prepareTask(hub, t.id);
+			const { job } = await hub.request("task", { action: "start", id: t.id, launch: { ...launch("sleep 30", "u"), cwd: w.path } });
 			await expect(hub.request("task", { action: "pr", id: t.id, dry: true })).rejects.toMatchObject({ code: "bad_request" });
 			await waitFor(async () => (await hub.request("list", {})).jobs.find((j) => j.id === job!.id)?.pid);
 			const s = await worker(job!.id);

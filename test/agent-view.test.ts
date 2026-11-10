@@ -148,6 +148,11 @@ class FakeClient {
 				task.assigned = { id: "w1", name: a.to ?? "", at: Date.now() };
 				return { tasks: this.tasks, task, sent: "delivered" };
 			}
+			// M65: the daemon makes the worktree
+			if (a.action === "prepare") {
+				const w = task.workspace ?? { path: `/r/.pi/worktrees/t${task.id}-${task.title.split(" ")[0]}-ab12`, branch: `roost/t${task.id}-${task.title.split(" ")[0]}-ab12`, baseRef: "main", baseSha: "a".repeat(40) };
+				return { tasks: this.tasks, task, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.baseSha } };
+			}
 			// M55: start and merge
 			if (a.action === "start") return { tasks: this.tasks, task, job: { id: "w9", name: "users" } };
 			if (a.action === "back" && task.workspace) task.workspace.stage = "working";
@@ -1901,26 +1906,22 @@ describe("AgentView agent profiles (M30)", () => {
 });
 
 describe("M55: /tasks start and merge in the hub", () => {
-	it("start makes the task's worktree, launches a session in it with the task as its prompt, and sends both; merge sends the configured mode", async () => {
-		const made: unknown[] = [];
-		const fake = ((repo: string, id: number, title: string) => {
-			made.push([repo, id, title]);
-			return { path: "/r/.pi/worktrees/t1-users-ab12", branch: "roost/t1-users-ab12", repo: "/r", base: "a".repeat(40), baseRef: "main", cwd: "/r/.pi/worktrees/t1-users-ab12", sourceDirty: false, included: [] };
-		}) as never;
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { createTaskWorktree: fake, taskMerge: "no-ff" } });
+	it("start asks the daemon for the task's worktree, launches a session in it with the task as its prompt, and starts it; merge sends the configured mode", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskMerge: "no-ff" } });
 		client.tasks = [{ id: 1, title: "users", detail: "a users table", state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [] }];
 		await view.start();
 		launches.length = 0;
 		type(view, "/tasks start 1");
 		view.handleInput("\r");
 		await sleep(20);
-		expect(made).toEqual([["/r", 1, "users"]]);
+		// M65: the worktree is the daemon's: prepared, then the start in it
+		expect(client.requests.filter((r) => r.op === "task").map((r) => (r.args as { action: string }).action).filter((x) => x !== "list")).toEqual(["prepare", "start"]);
 		expect(launches[0]!.opts).toMatchObject({ cwd: "/r/.pi/worktrees/t1-users-ab12", worktree: false });
 		expect(launches[0]!.task).toContain("Task #1: users");
 		expect(launches[0]!.task).toContain("a users table");
 		expect(launches[0]!.task).toContain("roost_task_done");
-		const start = client.requests.find((r) => r.op === "task" && (r.args as { action: string }).action === "start")!.args as { workspace: unknown; launch: { name: string } };
-		expect(start.workspace).toEqual({ path: "/r/.pi/worktrees/t1-users-ab12", branch: "roost/t1-users-ab12", baseRef: "main", baseSha: "a".repeat(40) });
+		const start = client.requests.find((r) => r.op === "task" && (r.args as { action: string }).action === "start")!.args as { workspace?: unknown; launch: { name: string } };
+		expect(start.workspace).toBeUndefined();
 		expect(view.render(120).join("\n")).toContain("#1 started · users · ⎇ roost/t1-users-ab12");
 		type(view, "/tasks merge 1");
 		view.handleInput("\r");
@@ -1930,7 +1931,7 @@ describe("M55: /tasks start and merge in the hub", () => {
 	});
 
 	it("a task for any session gets no workspace", async () => {
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { createTaskWorktree: (() => { throw new Error("not called"); }) as never } });
+		const { view, client } = setup([row({ id: "w1", name: "lint" })]);
 		client.tasks = [{ id: 1, title: "x", detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: null, waiting: [] }];
 		await view.start();
 		type(view, "/tasks start 1");
@@ -2467,8 +2468,7 @@ describe("M57: the workspace overlay", () => {
 	});
 
 	it("the keys act on the selected task: m merges, b sends back with a note, s starts an open one; keys a stage has not do nothing", async () => {
-		const fake = (() => ({ path: "/r/.pi/worktrees/t9-audit-ab12", branch: "roost/t9-audit-ab12", repo: "/r", base: sha, baseRef: "main", cwd: "/r/.pi/worktrees/t9-audit-ab12", sourceDirty: false, included: [] })) as never;
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes, createTaskWorktree: fake, taskMerge: "ff" } });
+		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { taskChanges: changes, taskMerge: "ff" } });
 		client.tasks = board();
 		await view.start();
 		view.handleInput("\x0e");
@@ -2677,9 +2677,8 @@ describe("M58: review, after review", () => {
 
 describe("M59: shelve and cleanup in the hub", () => {
 	const sha = "a".repeat(40);
-	it("/tasks shelve; /tasks cleanup lists, yes removes; start of a shelved task makes its worktree again first", async () => {
-		const restored: unknown[] = [];
-		const { view, client } = setup([row({ id: "w1", name: "lint" })], { extra: { restoreTaskWorktree: ((...a: unknown[]) => void restored.push(a)) as never } });
+	it("/tasks shelve; /tasks cleanup lists, yes removes; start of a shelved task asks the daemon for its worktree first", async () => {
+		const { view, client } = setup([row({ id: "w1", name: "lint" })]);
 		client.tasks = [{ id: 3, title: "users", detail: null, state: "open", after: [], by: { who: "user", whoId: null }, at: 1, owner: null, claimedAt: null, doneAt: null, result: null, assigned: null, project: "/r", waiting: [], workspace: { path: "/nonexistent/wt3", branch: "roost/t3-users-ab12", baseRef: "main", baseSha: sha, stage: "shelved", note: null } }];
 		await view.start();
 		type(view, "/tasks shelve 3");
@@ -2703,7 +2702,9 @@ describe("M59: shelve and cleanup in the hub", () => {
 		type(view, "/tasks start 3");
 		view.handleInput("\r");
 		await sleep(20);
-		expect(restored).toEqual([["/r", "/nonexistent/wt3", "roost/t3-users-ab12"]]);
+		// M65: the daemon makes it again from its branch (prepare), then the start
+		const acts = client.requests.filter((r) => r.op === "task").map((r) => r.args as { action: string; id?: number });
+		expect(acts.slice(-2)).toEqual([{ action: "prepare", id: 3 }, expect.objectContaining({ action: "start", id: 3 })]);
 	});
 });
 

@@ -301,10 +301,14 @@ done (its stage does not count), and a dropped one never holds. The store
 drop `workspace` on its first save, so going back to one is not supported once tasks
 have workspaces.
 
-M55 adds the workspace's actions. `{action: "start", id, workspace: {path, branch,
-baseRef, baseSha}, launch}` (the hub's and the CLI's): the caller made the worktree
-(branch `roost/t<id>-…`, `validWorktree`) and built a pi launch whose cwd is inside it;
-the daemon dispatches it with the job's `task` set (no `worktree`: the task owns it),
+M55 adds the workspace's actions; M65 has the daemon make the worktree. `{action:
+"prepare", id}` (the hub's and the CLI's; the concierge's with `act` on) makes the task's
+worktree (branch `roost/t<id>-…` from the branch checked out in the repository's main
+checkout; a shelved task's made again from its branch; one there, as it is) and answers
+`workspace: {path, branch, baseRef, baseSha, sourceDirty?}`; it is held for that task 5
+minutes, then removed unless started. `{action: "start", id, launch}`: the caller built
+an agent launch whose cwd is inside that worktree; a start not prepared for is refused,
+and a refused start removes the worktree prepared for it. The daemon dispatches it with the job's `task` set (no `worktree`: the task owns it),
 claims the task for the new job and sets `stage: working`; the result has `job`. A
 task with a workspace and no live holder may be started again into the same worktree.
 The holding session's `done` needs a clean worktree (`bad_request` otherwise) and moves

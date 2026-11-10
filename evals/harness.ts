@@ -20,7 +20,6 @@ import { createHarness, type JsonValue } from "vitest-evals/harness";
 import { DaemonClient } from "../lib/client.ts";
 import { buildLaunch, buildProfileLaunch, prepareIsolation } from "../lib/dispatch.ts";
 import { taskPrompt } from "../lib/board.ts";
-import { createTaskWorktree } from "../lib/task-git.ts";
 import type { AgentProfile } from "../lib/profiles.ts";
 import type { DispatchArgs, Event, JobRow, ReplyMode } from "../lib/protocol.ts";
 import { readState, readWorkerPid, screenPath } from "../lib/store.ts";
@@ -346,7 +345,8 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				const shown = await within(cl.request("task", { action: "approve", id: t.id, dry: true }), left(), "approve dry");
 				if (shown.hash) await within(cl.request("task", { action: "approve", id: t.id, hash: shown.hash }), left(), "approve");
 			}
-			const w = createTaskWorktree(work, t.id, t.title);
+			// M65: the daemon makes the worktree
+			const w = (await within(cl.request("task", { action: "prepare", id: t.id }), left(), "task prepare")).workspace!;
 			const base = buildLaunch({
 				task: taskPrompt(t),
 				cwd: w.path,
@@ -359,7 +359,7 @@ export async function runCase(c: RoostCase, label = "case"): Promise<RoostOutcom
 				model,
 				thinking,
 			});
-			const r = await within(cl.request("task", { action: "start", id: t.id, workspace: { path: w.path, branch: w.branch, baseRef: w.baseRef, baseSha: w.base }, launch: base }), left(), "task start");
+			const r = await within(cl.request("task", { action: "start", id: t.id, launch: base }), left(), "task start");
 			if (!r.job) throw new Error(`the task did not start: ${r.note ?? "?"}`);
 			ids.push(r.job.id);
 		} else if (c.fanout) {

@@ -88,3 +88,40 @@ lifecycle's rules there.
 - `test/workspace.test.ts` also pins that order, and `settle()`: an interrupted Verify to
   review, an interrupted setup to failed, command jobs no run reports to stopped (running
   ones) and removed.
+
+## M65, as done
+
+- `task prepare` (a Person's; the Concierge's with `act` on, refused with `policy`
+  otherwise; a row in the callers' table) checks what `start` checks of the Task, then
+  makes its worktree with `makeTaskWorktree` (or `remakeTaskWorktree` for a shelved one),
+  and answers where (`path`, `branch`, `baseRef`, `baseSha`, and `sourceDirty` when the
+  main checkout had changes it does not carry). A second `prepare` before the start gives
+  the same worktree and holds it 5 minutes more (`PREPARED_MS`, `PI_ROOST_PREPARED_MS` for
+  tests).
+- `task start {id, launch}`: into the worktree prepared (or the Workspace's own, when it
+  is there); not prepared, refused. A refused start removes what was prepared for it (a
+  new worktree with its branch, a shelved one made again without its branch); a drop
+  removes it too; `/tasks cleanup` leaves a prepared one alone.
+- Making a worktree is git's checkout and the copy of included files: in the daemon it
+  runs on a worker thread (`lib/task-worktree-worker.ts`), so the daemon's own thread is
+  never held by a large repository.
+- The four callers no longer write git: the hub's `startTask`, pi's `startTaskInPi` (the
+  `/tasks` command and the concierge's `hub_task_start`), the eval harness. The checks
+  the daemon made of a worktree a client said it made (`validWorktree`, `baseSha` on
+  `baseRef` and under its `HEAD`, M57) are gone with it.
+- The task actions the daemon accepts are the callers' table's list (one list).
+- Real model (haiku 5.5, `npm run eval -- --only "roost workspaces"`): 2/2 through prepare → start, $0.0028.
+
+### After review (M65)
+
+- A prepared worktree's time running out while an action on its Task is under way (a
+  start still dispatching into it) does not remove it: it is looked at again
+  `PREPARED_MS` later (by then taken by the start, or still waiting).
+- Asking `prepare` again before the start gives the same worktree, `sourceDirty` with it,
+  and does not extend its time.
+- An existing Workspace is prepared and started again only while its worktree is on its
+  own branch (M57's check of a re-start, kept where it still means something).
+- Known: prepared worktrees are in memory; a daemon stopped while one waits leaves it to
+  `/tasks cleanup` (task worktrees no task holds, older than 10 minutes). Removing a
+  prepared worktree (`discardWorktree`) is git on the daemon's thread, as it was in the
+  clients'; only making one moved to a worker.

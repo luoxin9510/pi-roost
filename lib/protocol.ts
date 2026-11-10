@@ -320,7 +320,9 @@ export interface OpArgs {
 		| { action: "drop"; id: number }
 		| { action: "assign"; id: number; to: string }
 		// M55: a task's own worktree and a session in it; review, merge into base locally
-		| { action: "start"; id: number; workspace: { path: string; branch: string; baseRef: string; baseSha: string }; launch: DispatchArgs }
+		// M65: the daemon makes the task's worktree (prepare: where), the client builds its launch there (start)
+		| { action: "prepare"; id: number }
+		| { action: "start"; id: number; launch: DispatchArgs }
 		| { action: "merge"; id: number; mode?: "ff" | "no-ff" }
 		| { action: "back"; id: number; note?: string }
 		| { action: "abort"; id: number }
@@ -382,7 +384,7 @@ export interface OpResults {
 	"concierge-act": { id: string; name: string };
 	"concierge-order": { orders: StandingOrder[]; order?: StandingOrder };
 	/** M47: the board as it stands (and the task acted on; `sent`: how the hand-over message went). */
-	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string; hash?: string };
+	task: { tasks: BoardTask[]; task?: BoardTask; sent?: SendResult["outcome"]; job?: { id: string; name: string }; note?: string; hash?: string; workspace?: { path: string; branch: string; baseRef: string; baseSha: string; sourceDirty?: boolean } };
 }
 
 export type Op = keyof OpArgs;

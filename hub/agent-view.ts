@@ -25,7 +25,7 @@ import { atCandidates, atPrefix, parseInput, THINKING_LEVELS } from "../lib/disp
 import { type Filter, parseFilter } from "../lib/filter.ts";
 import { forgetJob, observeJob } from "../lib/job-events.ts";
 import { ensureLive } from "../lib/resume.ts";
-import { changeText, cleanupText, discardWorktree, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
+import { changeText, cleanupText, worktreeChange, type WorktreeChange } from "../lib/worktree.ts";
 import { formatCost, todayOf, totalUsage } from "../lib/usage.ts";
 import { agoText, parseScheduleInput, untilText } from "../lib/schedule.ts";
 import { TaskEditor } from "./task-editor.ts";
@@ -37,7 +37,7 @@ import { eventAgo, eventLine, type RoostEvent } from "../lib/events.ts";
 import { commandsPath, readCommands, screenPath } from "../lib/store.ts";
 import { hostControl } from "../lib/hostclient.ts";
 import { PI_COMMANDS, piCommand, type SessionCommand } from "../lib/pi-commands.ts";
-import { createTaskWorktree, removeTaskWorktree, restoreTaskWorktree, taskChanges, type TaskWorktree } from "../lib/task-git.ts";
+import { taskChanges } from "../lib/task-git.ts";
 import { type DiffFile, type DiffLine, type TaskDiff, taskDiff } from "../lib/task-diff.ts";
 import { commentAnchor, commentOn, outdatedIn } from "../lib/review.ts";
 import { nextNeedsYou, overlaps, type TaskChanges, changeShort, type WsEntry, WS_GROUP_TITLES, type WsSession, workspaceEntries, wsCounts, wsDetail, wsIcon, wsKeys, wsRowText } from "../lib/workspace-view.ts";
@@ -156,13 +156,11 @@ export interface AgentViewOptions {
 	/** M55: how /tasks merge goes into base (config taskMerge). */
 	taskMerge?: "ff" | "no-ff";
 	/** M55: a task's worktree (tests pass a fake). */
-	createTaskWorktree?: typeof createTaskWorktree;
 	/** M57: what a task's worktree holds against base (tests pass a fake). */
 	taskChanges?: typeof taskChanges;
 	/** M58: a task's diff against base (tests pass a fake). */
 	taskDiff?: typeof taskDiff;
 	/** M59: a shelved task's worktree made again (tests pass a fake). */
-	restoreTaskWorktree?: typeof restoreTaskWorktree;
 	/** DI-4: models for the /model picker, as "provider/id". */
 	models?: () => string[];
 	/** DI-4: past sessions of a directory for /resume. */
@@ -2220,10 +2218,10 @@ export class AgentView implements Component {
 	}
 
 	/**
-	 * M55: a task in its own worktree: made here (from the branch checked out in its
-	 * repository's main checkout), a session launched in it as /new launches one, and the
-	 * daemon records the workspace and claims the task for that session. A refused start
-	 * leaves no worktree behind.
+	 * M55/M65: a task in its own worktree: the daemon makes it (prepare: where), a session
+	 * is launched in it as /new launches one, and the daemon starts it there and claims the
+	 * task for it. A worktree prepared for a start that does not come is the daemon's to
+	 * remove (a refused start's at once, one never asked for after a while).
 	 */
 	private async startTask(id: number): Promise<void> {
 		const client = this.client;
@@ -2232,45 +2230,14 @@ export class AgentView implements Component {
 		const t = tasks.find((x) => x.id === id);
 		if (!t) return this.say(`no task #${id}`, "warning");
 		if (!t.project) return this.say(`#${id} is for any session: add it in a repository to give it a workspace`, "warning");
-		let made: TaskWorktree | undefined;
-		let w = t.workspace && t.workspace.path ? { path: t.workspace.path, branch: t.workspace.branch, baseRef: t.workspace.baseRef, baseSha: t.workspace.baseSha } : undefined;
-		// M59: its worktree gone (shelved, or a shelve cut short): made again from its branch; undone when the start is refused
-		let restored = false;
-		if (w && !existsSync(w.path)) {
-			try {
-				(this.o.restoreTaskWorktree ?? restoreTaskWorktree)(t.project, w.path, w.branch);
-				restored = true;
-			} catch (err) {
-				return this.say((err as Error).message, "error");
-			}
-		}
-		if (!w) {
-			try {
-				made = (this.o.createTaskWorktree ?? createTaskWorktree)(t.project, t.id, t.title);
-			} catch (err) {
-				return this.say((err as Error).message, "error");
-			}
-			w = { path: made.path, branch: made.branch, baseRef: made.baseRef, baseSha: made.base };
-		}
-		const prompt = taskPrompt(t);
-		const discard = () => {
-			if (made) discardWorktree({ path: made.path, branch: made.branch, repo: made.repo, base: made.base });
-			if (restored && w) void removeTaskWorktree(t.project!, w.path);
-		};
-		let request: DispatchArgs;
 		try {
-			const { discard: _d, note: _n, ...rest } = this.o.launch(prompt, { cwd: w.path, model: this.model, thinking: this.thinking, worktree: false });
-			request = rest as DispatchArgs;
-		} catch (err) {
-			discard();
-			return this.say((err as Error).message, "error");
-		}
-		try {
-			const r = await client.request("task", { action: "start", id, workspace: w, launch: request });
+			const w = (await client.request("task", { action: "prepare", id })).workspace;
+			if (!w) return this.say(`#${id}: no worktree came back`, "error");
+			const { discard: _d, note: _n, ...rest } = this.o.launch(taskPrompt(t), { cwd: w.path, model: this.model, thinking: this.thinking, worktree: false });
+			const r = await client.request("task", { action: "start", id, launch: rest as DispatchArgs });
 			if (r.job) this.cursor = { kind: "row", id: r.job.id };
-			this.say(`#${id} started · ${r.job?.name ?? "?"} · ⎇ ${w.branch}${made?.sourceDirty ? " · uncommitted changes in the main checkout are not in it" : ""}`, made?.sourceDirty ? "warning" : "success");
+			this.say(`#${id} started · ${r.job?.name ?? "?"} · ⎇ ${w.branch}${w.sourceDirty ? " · uncommitted changes in the main checkout are not in it" : ""}`, w.sourceDirty ? "warning" : "success");
 		} catch (err) {
-			if (refusedByDaemon(err)) discard();
 			this.say((err as Error).message, "error");
 		}
 	}

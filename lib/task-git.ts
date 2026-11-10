@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, open, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import { addWorktree, copyIncluded, GIT_ENV, mainCheckout, real, slugOf, tryGit, WorktreeError } from "./worktree.ts";
 
 interface Run {
@@ -376,3 +377,22 @@ export async function openTaskPr(o: { path: string; branch: string; baseRef: str
 	if (found) return { ok: true, url: found };
 	return { ok: false, reason: `pushed to ${o.remote}; gh pr create: ${plain(lastLines(made, 2))}` };
 }
+
+/** M65: createTaskWorktree and restoreTaskWorktree off the calling thread (the daemon's stays free). */
+function offThread<T>(data: Record<string, unknown>): Promise<T> {
+	const file = new URL(`./task-worktree-worker${import.meta.url.endsWith(".ts") ? ".ts" : ".js"}`, import.meta.url);
+	return new Promise((resolve, reject) => {
+		const w = new Worker(file, { workerData: data });
+		w.once("message", (m: { ok: true; result: T } | { ok: false; worktree: boolean; message: string }) => {
+			if (m.ok) resolve(m.result);
+			else reject(m.worktree ? new WorktreeError(m.message) : new Error(m.message));
+		});
+		w.once("error", reject);
+		w.once("exit", (code) => {
+			if (code !== 0) reject(new Error(`the worktree worker exited with ${code}`));
+		});
+	});
+}
+
+export const makeTaskWorktree = (repo: string, id: number, title: string): Promise<TaskWorktree> => offThread({ op: "create", repo, id, title });
+export const remakeTaskWorktree = (repo: string, path: string, branch: string): Promise<void> => offThread({ op: "restore", repo, path, branch });
