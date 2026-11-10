@@ -1,6 +1,6 @@
 // M75: lib/schema.ts, the protocol's own schema builder (no dependencies).
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { arr, bool, check, type Infer, literal, nul, nullable, num, obj, oneOf, opaque, optional, rec, str, union, unknown } from "../lib/schema.ts";
+import { arr, bool, check, discriminantValues, type Infer, literal, loose, looseOf, nul, nullable, num, obj, oneOf, opaque, optional, rec, str, union, unknown } from "../lib/schema.ts";
 
 const fails = (r: ReturnType<typeof check>) => (r.ok ? "ok" : `${r.path}: ${r.message}`);
 
@@ -114,5 +114,52 @@ describe("check", () => {
 		expect(fails(check(N, "abc"))).toBe(": must be at most 2 characters");
 		expect(fails(check(N, 3))).toBe(": must be a string");
 		expect(fails(check(union([str(), num()], { message: "a string or a number" }), true))).toBe(": a string or a number");
+	});
+});
+
+// M76: what the daemon's entry check needs to say what the hand checks said
+describe("check, for the entry check", () => {
+	it("passes anything for a loose field, a missing required one too; the type and the shape stay", () => {
+		const inner = str({ min: 3 });
+		const S = obj({ a: loose(inner), b: num() });
+		expect(fails(check(S, { b: 1 }))).toBe("ok");
+		expect(fails(check(S, { a: 5, b: 1 }))).toBe("ok");
+		expect(fails(check(S, {}))).toBe("b: is required");
+		expectTypeOf<Infer<typeof S>>().toEqualTypeOf<{ a: string; b: number }>();
+		expect(S.required).toEqual(["a", "b"]);
+		expect(looseOf.get(S.properties!.a!)).toBe(inner);
+	});
+
+	it("trims before the limits when told, and a cut or op-refused maximum is not refused", () => {
+		const T = str({ min: 1, trim: true, message: "empty" });
+		expect(fails(check(T, "  \n\t "))).toBe(": empty");
+		expect(fails(check(T, " x "))).toBe("ok");
+		expect(fails(check(T, 3))).toBe(": empty");
+		const P = str({ pattern: "^ab$", trim: true });
+		expect(fails(check(P, " ab "))).toBe("ok");
+		expect(fails(check(str({ max: 3, trim: true }), "  abc  "))).toBe("ok");
+		expect(fails(check(str({ max: 3 }), "  abc  "))).toBe(": must be at most 3 characters");
+		expect(fails(check(str({ max: 3, maxBy: "cut" }), "abcdef"))).toBe("ok");
+		expect(fails(check(str({ max: 3, maxBy: "op" }), "abcdef"))).toBe("ok");
+		expect(fails(check(str({ min: 2, max: 3, maxBy: "cut" }), "a"))).toBe(": must be at least 2 characters");
+	});
+
+	it("picks a discriminated member by its discriminant only; another value gets the union's words", () => {
+		const U = union(
+			[
+				obj({ action: literal("merge"), mode: optional(oneOf(["ff", "no-ff"])) }),
+				obj({ action: oneOf(["a", "b"]), n: num({ message: "n please" }) }),
+				obj({ action: literal("other"), mode: literal("ff") }),
+			],
+			{ discriminant: "action", message: "action must be merge, a, b or other" },
+		);
+		expect(discriminantValues(U, "action")).toEqual(["merge", "a", "b", "other"]);
+		expect(fails(check(U, { action: "bogus", mode: "ff" }))).toBe("action: action must be merge, a, b or other");
+		expect(fails(check(U, {}))).toBe("action: action must be merge, a, b or other");
+		expect(fails(check(U, "x"))).toBe("action: action must be merge, a, b or other");
+		expect(fails(check(U, { action: "b" }))).toBe("n: n please");
+		expect(fails(check(U, { action: "a", n: 2 }))).toBe("ok");
+		expect(fails(check(U, { action: "merge", mode: "x" }))).toBe("mode: must be one of ff, no-ff");
+		expect(fails(check(union([obj({ k: literal("x") })], { discriminant: "k" }), { k: "y" }))).toBe("k: must be one of x");
 	});
 });

@@ -767,6 +767,54 @@ describe("organise ops", () => {
 	});
 });
 
+// M76: the daemon checks these ops' arguments by their schemas at its entry; the hand checks it
+// replaced answered in these words (each pinned, so a check lost on the way shows here)
+describe("M76: the entry check", () => {
+	it("answers bad arguments in the words the ops said", async () => {
+		const { client } = await startDaemon();
+		const { id } = await client.request("dispatch", args("sleep 30", { name: "alpha" }));
+		const peer = await asWorker();
+		await peer.request("peer_register", { name: "p", cwd: work, pid: process.pid });
+		const bad = (c: DaemonClient, op: string, a: unknown) => c.request(op as "ping", a as {});
+		const cases: [DaemonClient, string, unknown, string][] = [
+			[client, "resolve", {}, "query required"],
+			[client, "stop", {}, "id required"],
+			[client, "rename", { id, name: " " }, "empty name"],
+			[client, "reorder", { ids: [id] }, "key required"],
+			[client, "reorder", { ids: "x", key: "k" }, "ids must be job ids"],
+			[client, "reply", { id, text: " " }, "empty reply"],
+			[client, "reply", { id, text: "x", requestId: "a b" }, "requestId: 1-64 of A-Z a-z 0-9 _ . : -"],
+			[client, "events", { after: "x" }, "after must be a number"],
+			[client, "events", { limit: "x" }, "limit must be a number"],
+			[client, "events", { id: "" }, "id must be a job id"],
+			[client, "schedule-add", { name: "-" }, "name: 1-40 of A-Z a-z 0-9 _ . -, starting with a letter or digit"],
+			[client, "concierge", { action: "answer", answer: "x" }, "answer must be never, routine or always"],
+			[await asWorker(), "hello", { protocol: 0 }, "protocol must be a version number"],
+			[await asWorker(), "peer_register", { name: "q", cwd: work }, "pid must be a live process"],
+			[peer, "send", { to: " ", message: "hi" }, "to required"],
+			[peer, "send", { to: "alpha", message: " " }, "empty message"],
+			[peer, "watch", { id: "alpha", when: "soon" }, "when must be idle or ended"],
+		];
+		for (const [c, op, a, words] of cases) await expect(bad(c, op, a), `${op} ${JSON.stringify(a)}`).rejects.toMatchObject({ code: "bad_request", message: words });
+		// what the daemon took before, it takes: a fractional cursor, capabilities that are not strings
+		expect(await client.request("events", { after: 0.5, limit: 2.5 })).toMatchObject({ cursor: expect.any(Number) });
+		expect(await (await asWorker()).request("hello", { protocol: 1, capabilities: [1, "agent-items"] as string[] })).toMatchObject({ protocol: expect.any(Number) });
+		// a report for a job that ended is taken whatever it says; for a live one, refused in its words
+		const token = readState(id)?.jobToken as string;
+		const fresh = async () => {
+			const c = await DaemonClient.connect();
+			clients.push(c);
+			return c;
+		};
+		await expect((await fresh()).request("report", { id, token, report: { state: "x" } as never })).rejects.toMatchObject({ code: "bad_request", message: "invalid report" });
+		await client.request("stop", { id });
+		await waitFor(async () => (await find(client, id))?.state === "stopped");
+		expect(await (await fresh()).request("report", { id, token, report: { state: "x" } as never })).toEqual({});
+		// an order's action is looked up by its id first
+		await expect(client.request("concierge-order", { action: "bogus" } as never)).rejects.toMatchObject({ code: "not_found" });
+	});
+});
+
 describe("shell jobs (DI-6)", () => {
 	it("runs without a session, shows its last output line, and goes away after a while", async () => {
 		process.env.PI_ROOST_SHELL_KEEP_MS = "1500";

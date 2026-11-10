@@ -3,6 +3,7 @@
 // markers) from the schemas in lib/protocol-schema.ts, the callers table (lib/callers.ts)
 // and the capability lists (lib/protocol.ts). test/protocol-doc.test.ts fails when it is stale.
 import { readFileSync, writeFileSync } from "node:fs";
+import { looseOf, type Schema } from "../lib/schema.ts";
 import { fileURLToPath } from "node:url";
 import { POLICY, type Policy, type PolicyKey } from "../lib/callers.ts";
 import { AGENT_CAPABILITIES, type AgentCapability, DAEMON_CAPABILITIES, type DaemonCapability, PROTOCOL_VERSION } from "../lib/protocol.ts";
@@ -82,12 +83,16 @@ type S = {
 	additionalProperties?: S;
 	maxLength?: number;
 	minLength?: number;
+	"x-trim"?: true;
+	"x-max"?: "cut" | "op";
 };
+/** A shared shape's name, also through a loose copy of it (M76). */
+const sharedName = (s: S): string | undefined => SHARED.get(s) ?? SHARED.get(looseOf.get(s as unknown as Schema) ?? {});
 
 const cell = (t: string) => t.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
 
 function ty(s: S): string {
-	const name = SHARED.get(s);
+	const name = sharedName(s);
 	if (name) return name;
 	if (s.enum) return s.enum.map((v) => JSON.stringify(v)).join(" | ");
 	if ("const" in s) return JSON.stringify(s.const);
@@ -112,9 +117,12 @@ function ty(s: S): string {
 
 function limit(s: S): string {
 	for (const m of s.anyOf ?? []) if (m.maxLength !== undefined || m.minLength !== undefined) return limit(m);
-	if (s.minLength !== undefined && s.maxLength !== undefined) return `${s.minLength}-${s.maxLength} chars`;
-	if (s.maxLength !== undefined) return `<= ${s.maxLength} chars`;
-	if (s.minLength !== undefined) return `>= ${s.minLength} chars`;
+	// M76: trimmed first; past the maximum cut, or refused by the op with its own code
+	const trim = s["x-trim"] ? " (trimmed)" : "";
+	const over = s["x-max"] === "cut" ? ", longer is cut" : s["x-max"] === "op" ? ", longer is refused (`too_long`)" : "";
+	if (s.minLength !== undefined && s.maxLength !== undefined) return `${s.minLength}-${s.maxLength} chars${trim}${over}`;
+	if (s.maxLength !== undefined) return `<= ${s.maxLength} chars${trim}${over}`;
+	if (s.minLength !== undefined) return `>= ${s.minLength} chars${trim}`;
 	return "";
 }
 
@@ -173,7 +181,7 @@ function opSection(op: string): string[] {
 	if (!key) {
 		if (a.description) out.push(a.description, "");
 		out.push(who(op as PolicyKey), "", "Args:", "");
-		out.push(...(SHARED.has(a) ? [`\`${SHARED.get(a)}\` (see shared shapes).`, ""] : fields(a, true)));
+		out.push(...(sharedName(a) ? [`\`${sharedName(a)}\` (see shared shapes).`, ""] : fields(a, true)));
 	} else {
 		out.push(who(op as PolicyKey), "", `Args: one of these, by \`${key}\`.`, "");
 		for (const m of a.anyOf!) {
@@ -185,7 +193,7 @@ function opSection(op: string): string[] {
 		}
 	}
 	out.push("Result:", "");
-	out.push(...(SHARED.has(r) ? [`\`${SHARED.get(r)}\` (see shared shapes).`, ""] : fields(r, false)));
+	out.push(...(sharedName(r) ? [`\`${sharedName(r)}\` (see shared shapes).`, ""] : fields(r, false)));
 	return out;
 }
 

@@ -30,6 +30,14 @@ export interface Schema<T = unknown> extends Meta {
 	maximum?: number;
 	minItems?: number;
 	maxItems?: number;
+	/** M76: `check` passes any value (no check today: a bad one is dropped where it is read). */
+	"x-loose"?: true;
+	/** M76: the limits apply to the value trimmed (the daemon trims it first). */
+	"x-trim"?: true;
+	/** M76: maxLength is not refused here: the daemon cuts the value ("cut"), or the op refuses it with its own code ("op"). */
+	"x-max"?: "cut" | "op";
+	/** M76: a union picked by this field alone; another value fails with the union's message. */
+	"x-discriminant"?: string;
 }
 
 export type Infer<S> = S extends Schema<infer T> ? T : never;
@@ -54,8 +62,18 @@ const make = <T>(json: Omit<Schema<T>, "~type">, meta: Meta = {}): Schema<T> => 
 	return out as unknown as Schema<T>;
 };
 
-export const str = (o: Meta & { min?: number; max?: number; pattern?: string } = {}): Schema<string> =>
-	make({ type: "string", ...(o.min !== undefined ? { minLength: o.min } : {}), ...(o.max !== undefined ? { maxLength: o.max } : {}), ...(o.pattern !== undefined ? { pattern: o.pattern } : {}) }, o);
+export const str = (o: Meta & { min?: number; max?: number; pattern?: string; trim?: boolean; maxBy?: "cut" | "op" } = {}): Schema<string> =>
+	make(
+		{
+			type: "string",
+			...(o.min !== undefined ? { minLength: o.min } : {}),
+			...(o.max !== undefined ? { maxLength: o.max } : {}),
+			...(o.pattern !== undefined ? { pattern: o.pattern } : {}),
+			...(o.trim ? { "x-trim": true as const } : {}),
+			...(o.maxBy ? { "x-max": o.maxBy } : {}),
+		},
+		o,
+	);
 export const num = (o: Meta & { int?: boolean; min?: number; max?: number } = {}): Schema<number> =>
 	make({ type: o.int ? "integer" : "number", ...(o.min !== undefined ? { minimum: o.min } : {}), ...(o.max !== undefined ? { maximum: o.max } : {}) }, o);
 export const bool = (o: Meta = {}): Schema<boolean> => make({ type: "boolean" }, o);
@@ -64,7 +82,16 @@ export const literal = <const V extends string | number | boolean>(v: V, o: Meta
 /** A string that is one of these. */
 export const oneOf = <const V extends string>(values: readonly V[], o: Meta = {}): Schema<V> => make({ type: "string", enum: [...values] }, o);
 /** Plain, or discriminated by a literal field (`check` then reports the matching member's error). */
-export const union = <const M extends readonly Schema[]>(members: M, o: Meta = {}): Schema<Infer<M[number]>> => make({ anyOf: [...members] }, o);
+export const union = <const M extends readonly Schema[]>(members: M, o: Meta & { discriminant?: string } = {}): Schema<Infer<M[number]>> =>
+	make({ anyOf: [...members], ...(o.discriminant ? { "x-discriminant": o.discriminant } : {}) }, o);
+/** M76: the same schema (its type, its doc), not checked: a bad value is dropped where the daemon reads it. */
+export const loose = <S extends Schema>(s: S): S => {
+	const out = { ...s, "x-loose": true } as S;
+	looseOf.set(out, s);
+	return out;
+};
+/** The schema a loose one was made from (the doc names a shared shape by it). */
+export const looseOf = new WeakMap<Schema, Schema>();
 export const nullable = <S extends Schema>(s: S, o: Meta = {}): Schema<Infer<S> | null> => union([s, nul()], o);
 export const arr = <S extends Schema>(item: S, o: Meta & { min?: number; max?: number } = {}): Schema<Infer<S>[]> =>
 	make({ type: "array", items: item, ...(o.min !== undefined ? { minItems: o.min } : {}), ...(o.max !== undefined ? { maxItems: o.max } : {}) }, o);
@@ -95,15 +122,17 @@ const join = (path: string, key: string) => (path ? `${path}.${key}` : key);
 /** Whether `value` is what `schema` says; the first failure's path ("launch.env", "ids[2]") and message. Unknown fields are ignored. */
 export function check(schema: Schema, value: unknown, path = ""): CheckResult {
 	const s = schema;
+	if (s["x-loose"]) return { ok: true };
 	if (s.anyOf) return checkAnyOf(s, value, path);
 	if (s.const !== undefined) return value === s.const ? { ok: true } : fail(s, path, `must be ${JSON.stringify(s.const)}`);
 	if (s.enum) return typeof value === "string" && s.enum.includes(value) ? { ok: true } : fail(s, path, `must be one of ${s.enum.join(", ")}`);
 	switch (s.type) {
 		case "string": {
 			if (typeof value !== "string") return fail(s, path, "must be a string");
-			if (s.minLength !== undefined && value.length < s.minLength) return fail(s, path, `must be at least ${s.minLength} characters`);
-			if (s.maxLength !== undefined && value.length > s.maxLength) return fail(s, path, `must be at most ${s.maxLength} characters`);
-			if (s.pattern !== undefined && !new RegExp(s.pattern).test(value)) return fail(s, path, `must match ${s.pattern}`);
+			const v = s["x-trim"] ? value.trim() : value;
+			if (s.minLength !== undefined && v.length < s.minLength) return fail(s, path, `must be at least ${s.minLength} characters`);
+			if (s.maxLength !== undefined && !s["x-max"] && v.length > s.maxLength) return fail(s, path, `must be at most ${s.maxLength} characters`);
+			if (s.pattern !== undefined && !new RegExp(s.pattern).test(v)) return fail(s, path, `must match ${s.pattern}`);
 			return { ok: true };
 		}
 		case "number":
@@ -133,7 +162,7 @@ export function check(schema: Schema, value: unknown, path = ""): CheckResult {
 			const o = value as Record<string, unknown>;
 			for (const [k, p] of Object.entries(s.properties ?? {})) {
 				if (o[k] === undefined) {
-					if (s.required?.includes(k)) return fail(p, join(path, k), "is required");
+					if (s.required?.includes(k) && !p["x-loose"]) return fail(p, join(path, k), "is required");
 					continue;
 				}
 				const r = check(p, o[k], join(path, k));
@@ -154,6 +183,16 @@ export function check(schema: Schema, value: unknown, path = ""): CheckResult {
 
 function checkAnyOf(s: Schema, value: unknown, path: string): CheckResult {
 	const members = s.anyOf!;
+	const key = s["x-discriminant"];
+	if (key) {
+		// picked by the discriminant alone (not by any other literal field that happens to match)
+		const v = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+		const m = members.find((m) => {
+			const p = m.properties?.[key];
+			return p !== undefined && v !== undefined && check(p, v).ok;
+		});
+		return m ? check(m, value, path) : fail(s, path ? `${path}.${key}` : key, `must be one of ${discriminantValues(s, key).join(", ")}`);
+	}
 	const results = members.map((m) => check(m, value, path));
 	if (results.some((r) => r.ok)) return { ok: true };
 	// a discriminated member (its literal fields match the value) says what is wrong with it
@@ -165,4 +204,12 @@ function checkAnyOf(s: Schema, value: unknown, path: string): CheckResult {
 	const real = members.filter((m) => m.type !== "null");
 	if (real.length === 1) return results[members.indexOf(real[0])];
 	return fail(s, path, "does not match any of the allowed forms");
+}
+
+/** The values a discriminated union's members take on `key`, in their order. */
+export function discriminantValues(union: Schema, key: string): string[] {
+	return (union.anyOf ?? []).flatMap((m) => {
+		const p = m.properties?.[key];
+		return p?.const !== undefined ? [String(p.const)] : (p?.enum ?? []);
+	});
 }

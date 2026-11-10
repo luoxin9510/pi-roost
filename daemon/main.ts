@@ -58,6 +58,7 @@ import {
 	PROTOCOL_VERSION,
 	type ScheduleRow,
 } from "../lib/protocol.ts";
+import { argsProblem } from "../lib/protocol-schema.ts";
 import { usageFrom } from "../lib/usage.ts";
 import {
 	type JobRecord,
@@ -2118,8 +2119,6 @@ function resolve(query: unknown): string {
 	throw new OpError("ambiguous", `"${query}" is ambiguous: ${list}`);
 }
 
-const REPORT_STATES = new Set(["working", "blocked", "done", "failed"]);
-const REPORT_STATUS = new Set(["busy", "waiting", "idle"]);
 const REPORT_WAITING = new Set([null, "dialog", "question", "first-prompt"]);
 
 interface PendingReply {
@@ -2288,10 +2287,9 @@ async function replyToProfile(id: string, text: string, live: boolean): Promise<
  * protocol than this daemon's is answered with this one's: the agent decides.
  */
 function hello(conn: Conn, args: { protocol?: unknown; agent?: unknown; capabilities?: unknown } | undefined): import("../lib/protocol.ts").HelloResult {
-	if (typeof args?.protocol !== "number" || !Number.isInteger(args.protocol) || args.protocol < 1) throw new OpError("bad_request", "protocol must be a version number");
-	const a = (args.agent && typeof args.agent === "object" ? args.agent : {}) as { name?: unknown; version?: unknown };
+	const a = (args?.agent && typeof args.agent === "object" ? args.agent : {}) as { name?: unknown; version?: unknown };
 	const name = (str(a.name) ? oneLineText(a.name, 64) : "") || "unknown";
-	const caps = Array.isArray(args.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
+	const caps = Array.isArray(args?.capabilities) ? [...new Set(args.capabilities.filter(str).map((c) => c.slice(0, 40)))].slice(0, 32) : [];
 	conn.hello = { name, version: str(a.version) ? a.version.slice(0, 40) : null, capabilities: caps };
 	return { protocol: PROTOCOL_VERSION, daemon: { name: "roost", version: ROOST_VERSION }, capabilities: [...DAEMON_CAPABILITIES] };
 }
@@ -2333,6 +2331,7 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 		const session = rec ? recKey(rec) : "";
 		if (session) setImmediate(() => void retryReports(session));
 	}
+	// checked here, not at the entry: a report for a job that ended is taken (above) whatever it says
 	const r = args.report;
 	if (!r || !REPORT_STATES.has(r.state as string) || !REPORT_STATUS.has(r.status as string)) {
 		throw new OpError("bad_request", "invalid report");
@@ -2384,11 +2383,13 @@ function acceptReport(conn: Conn, args: { id?: unknown; token?: unknown; report?
 	if (r.state === "done" && r.status === "idle" && (recs.get(id)?.parentSession || recs.get(id)?.schedule)) scheduleAutoClose(id);
 }
 
+const REPORT_STATES = new Set(["working", "blocked", "done", "failed"]);
+const REPORT_STATUS = new Set(["busy", "waiting", "idle"]);
+
 /** AV-K10: the row's name, the job's name for `attach <name>`, and the live session's name. */
 function rename(args: { id?: unknown; name?: unknown } | undefined): { id: string; name: string } {
 	const id = requireJob(args);
-	const name = typeof args?.name === "string" ? args.name.replace(/\s+/g, " ").trim().slice(0, 200) : "";
-	if (!name) throw new OpError("bad_request", "empty name");
+	const name = (args!.name as string).replace(/\s+/g, " ").trim().slice(0, 200);
 	// M44: the concierge's name is its own (a session could pass for it otherwise)
 	if (name === CONCIERGE_NAME && !concierge.isConcierge(id)) throw new OpError("bad_request", `${CONCIERGE_NAME} is the concierge's name`);
 	const rec = recs.get(id)!;
@@ -2610,10 +2611,8 @@ async function deliverAgent(
 
 async function sendMessage(conn: Conn, args: { to?: unknown; message?: unknown } | undefined): Promise<SendResult> {
 	const peer = requirePeer(conn);
-	const to = typeof args?.to === "string" ? args.to.trim() : "";
-	const message = typeof args?.message === "string" ? args.message.trim() : "";
-	if (!to) throw new OpError("bad_request", "to required");
-	if (!message) throw new OpError("bad_request", "empty message");
+	const to = (args!.to as string).trim();
+	const message = (args!.message as string).trim();
 	if (message.length > MESSAGE_MAX) throw new OpError("too_long", `a message is at most ${MESSAGE_MAX} characters`);
 	const me = sessionKeyOf(peer);
 	const target = findTarget(peer, to);
@@ -2781,8 +2780,8 @@ function peerRegister(conn: Conn, args: { session?: unknown; name?: unknown; cwd
 	// M49: one line of plain characters (it is quoted in digests and events)
 	const name = (typeof args?.name === "string" ? oneLineText(args.name, 200) : "") || "pi";
 	const cwd = typeof args?.cwd === "string" ? args.cwd : "";
-	const pid = args?.pid;
-	if (typeof pid !== "number" || !isAlive(pid)) throw new OpError("bad_request", "pid must be a live process");
+	const pid = args!.pid as number;
+	if (!isAlive(pid)) throw new OpError("bad_request", "pid must be a live process");
 	const session = typeof args?.session === "string" && args.session ? args.session : undefined;
 	if (session) {
 		if (!isAbsolute(session)) throw new OpError("bad_request", "session must be an absolute path");
@@ -2880,6 +2879,11 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 	// M63: who may do it, by the caller's kind (lib/callers.ts); the op checks what needs state
 	const refused = allow(callerOf(conn, (id) => concierge.isConcierge(id)), op, args?.action);
 	if (refused) throw new OpError(refused.code, refused.message);
+	// an agent's first words mark its connection as an agent's, even when they are refused
+	if (op === "hello" || op === "report") conn.agentSide = true;
+	// M76: the arguments' shape, by the op's schema (lib/protocol-schema.ts); what needs state is the op's
+	const problem = argsProblem(op, args);
+	if (problem) throw new OpError("bad_request", problem);
 	switch (op) {
 		case "ping":
 			return { pid: process.pid, version: ROOST_VERSION };
@@ -2955,11 +2959,11 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 		case "rename":
 			return rename(args);
 		case "reorder": {
-			const ids: unknown = args?.ids;
-			const key: unknown = args?.key;
-			if (!Array.isArray(ids) || !ids.every((v) => str(v) && recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
-			if (!str(key)) throw new OpError("bad_request", "key required");
-			ids.forEach((id: string, i: number) => updateState(id, { order: i, orderKey: key }));
+			// M76: a list of job ids and a key, checked at the entry; ids of jobs it knows, here
+			const ids = args.ids as string[];
+			const key = args.key as string;
+			if (!ids.every((v) => recs.has(v))) throw new OpError("bad_request", "ids must be job ids");
+			ids.forEach((id, i) => updateState(id, { order: i, orderKey: key }));
 			for (const id of ids) pushJob(id);
 			return {};
 		}
@@ -2991,9 +2995,6 @@ async function handle(conn: Conn, op: string, args: any): Promise<unknown> {
 			const after = args?.after;
 			const limit = args?.limit;
 			const id = args?.id;
-			if (after !== undefined && (typeof after !== "number" || !Number.isFinite(after))) throw new OpError("bad_request", "after must be a number");
-			if (limit !== undefined && (typeof limit !== "number" || !Number.isFinite(limit))) throw new OpError("bad_request", "limit must be a number");
-			if (id !== undefined && !str(id)) throw new OpError("bad_request", "id must be a job id");
 			return eventLog.since({ after, limit, id });
 		}
 		case "watch":
