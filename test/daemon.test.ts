@@ -800,6 +800,7 @@ describe("M76: the entry check", () => {
 			[peer, "spawn", { launch: "x" }, "launch required"],
 			[client, "task", { action: "bogus" }, `action must be one of ${TASK_ACTIONS.join(", ")}`],
 			[client, "task", { action: "add", title: " " }, "a task needs a title"],
+			[client, "task", { action: "add", title: "\u0001\u001f" }, "a task needs a title"],
 			[client, "task", { action: "add", title: "t", after: "x" }, "after must be a list of task ids"],
 		];
 		for (const [c, op, a, words] of cases) await expect(bad(c, op, a), `${op} ${JSON.stringify(a)}`).rejects.toMatchObject({ code: "bad_request", message: words });

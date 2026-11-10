@@ -179,6 +179,8 @@ describe("the entry check", () => {
 		["task", { action: "claim" }],
 		["task", { action: "list", project: 5 }],
 		["task", { action: "add", title: "t".repeat(500), detail: 4, after: ["x", -1], project: 9 }],
+		// control characters only: refused by the op (its words), not here
+		["task", { action: "add", title: "\u0001" }],
 		["task", { action: "start", id: 1, launch: 5 }],
 		["task", { action: "merge", id: 1, mode: "squash" }],
 		["task", { action: "comment", id: 1, comment: "x" }],

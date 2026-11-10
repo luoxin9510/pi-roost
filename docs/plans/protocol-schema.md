@@ -156,3 +156,15 @@ not the daemon's (10).
   daemon's call removed fails it), `test/tool-fields.test.ts` (the tools against pi's own
   validator). The callers matrix (M63) is unchanged.
 
+### After review (M77)
+
+- A title of control characters only (`"\x01"`) was refused by the op (its `taskTitle` blanks
+  them), and the entry's trim does not: the op's check is back, after the entry's (a socket test
+  pins it). The rule from M76 holds: an entry check may be weaker than the op's, never stronger.
+- `spawn` with no launch on a connection that is not a peer is answered `launch required` (was
+  the peer refusal): two faults.
+- `relax` keeps a `const` discriminant only; a union discriminated by an `enum` (as
+  `concierge-act`'s `what`) must keep it by `keep` if it is ever relaxed (today it is loose).
+- The tools' `maxLength` counts code points where the daemon counts UTF-16 units, on the
+  untrimmed text: part of the deliberate change.
+

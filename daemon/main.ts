@@ -562,8 +562,10 @@ async function taskOp(
 		return { tasks: all(), note: r.join("\n") };
 	}
 	if (action === "add") {
-		// M77: a title and a list (if any) checked at the entry; the tasks it names, here
+		// M77: a title and a list (if any) checked at the entry; the tasks it names, here, and a
+		// title of control characters only (the entry trims whitespace; taskTitle blanks those too)
 		const title = taskTitle(args?.title);
+		if (!title) throw new OpError("bad_request", "a task needs a title");
 		const after: number[] = [];
 		if (args?.after !== undefined) {
 			for (const x of args.after as unknown[]) {
