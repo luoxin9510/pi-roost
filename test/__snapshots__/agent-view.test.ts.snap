@@ -729,3 +729,474 @@ Task board · all projects · none
 
 ↑↓ scroll · Esc close"
 `;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 1`] = `
+"pi agents  0 needs input · 1 working · 2 completed · $0.42 today · $0.42 all
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+› one                                            three                                          two                                        
+  done · 0s                                      working · 9m                                   done · 0s                                  
+  $0.42 · 56k tok                                no usage yet                                   no usage yet                               
+  1 file +3 −1                                   no worktree                                    2 new                                      
+                                                                                                                                           
+  Fixed by retrying.                             still at it                                    Rewrote the test, and a long line of text  
+                                                                                                that has to wrap in its column             
+
+← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 2`] = `
+"pi agents  0 needs input · 1 working · 2 completed · $0.42 today · $0.42 all
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+› one                               three                             two                           
+  done · 0s                         working · 9m                      done · 0s                     
+  $0.42 · 56k tok                   no usage yet                      no usage yet                  
+  1 file +3 −1                      no worktree                       2 new                         
+                                                                                                    
+  Fixed by retrying.                still at it                       Rewrote the test, and a long  
+                                                                      line of text that has to wrap 
+                                                                      in its column                 
+
+← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 3`] = `
+"pi agents  0 needs input · 1 working [0m...[0m
+────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+› one
+  done · 0s
+  $0.42 · 56k tok
+  1 file +3 −1
+
+  Fixed by retrying.
+  three · working · - · no worktree
+  two · done · - · 2 new
+
+← → choose · Enter open · k keep this[0m...[0m"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 4`] = `
+"pi agents  0 needs input · 1 working · 2 completed · $0.42 today · $0.42 all
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+  one                                          › three                                          two                                        
+  done · 0s                                      working · 9m                                   done · 0s                                  
+  $0.42 · 56k tok                                no usage yet                                   no usage yet                               
+  1 file +3 −1                                   no worktree                                    2 new                                      
+                                                                                                                                           
+  Fixed by retrying.                             still at it                                    Rewrote the test, and a long line of text  
+                                                                                                that has to wrap in its column             
+
+← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 5`] = `
+"pi agents  0 needs input · 1 working [0m...[0m
+────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+  one · done · $0.42 · 1 file +3 −1
+› three
+  working · 9m
+  no usage yet
+  no worktree
+
+  still at it
+  two · done · - · 2 new
+
+← → choose · Enter open · k keep this[0m...[0m"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 6`] = `
+"pi agents  0 needs input · 1 working · 2 completed · $0.42 today · $0.42 all
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+  one                                          › three                                          two                                        
+  done · 0s                                      working · 9m                                   done · 0s                                  
+  $0.42 · 56k tok                                no usage yet                                   no usage yet                               
+  1 file +3 −1                                   no worktree                                    2 new                                      
+                                                                                                                                           
+  Fixed by retrying.                             still at it                                    Rewrote the test, and a long line of text  
+                                                                                                that has to wrap in its column             
+
+k again: keep this one, delete the others (pinned ones stay)"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 7`] = `
+"pi agents  0 needs input · 1 working [0m...[0m
+────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+  one · done · $0.42 · 1 file +3 −1
+› three
+  working · 9m
+  no usage yet
+  no worktree
+
+  still at it
+  two · done · - · 2 new
+
+k again: keep this one, delete the ot[0m...[0m"
+`;
+
+exports[`M74: overlay renders, pinned > compare: a fan-out of 3, wide and narrow, a column chosen, the k prompt 8`] = `
+"pi agents  0 needs input · 1 working · 2 completed · $0.42 today · $0.42 all
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · fix it · 3 sessions
+
+  one                                          › three                                          two                                        
+  done · 0s                                      working · 9m                                   done · 0s                                  
+  $0.42 · 56k tok                                no usage yet                                   no usage yet                               
+  1 file +3 −1                                   no worktree                                    2 new                                      
+                                                                                                                                           
+  Fixed by retrying.                             still at it                                    Rewrote the test, and a long line of text  
+                                                                                                that has to wrap in its column             
+
+← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > compare: the change text states: no worktree, no diff, gone, an error, a change; marked rows 1`] = `
+"pi agents  0 needs input · 0 working · 5 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · t · 5 sessions
+
+  five                                    four                                    one                                     three                                 › two                                 
+  done · 0s                               done · 0s                               done · 0s                               done · 0s                               done · 0s                           
+  no usage yet                            no usage yet                            no usage yet                            no usage yet                            no usage yet                        
+  ?                                       worktree gone                           2 files +10 −4 · 1 new                  no diff (its base is gone?)             no worktree                         
+                                                                                                                                                                                                      
+  running bash                            running bash                            running bash                            running bash                            running bash                        
+
+← → choose · Enter open · k keep this one (deletes the others) · r refresh · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > compare: the change text states: no worktree, no diff, gone, an error, a change; marked rows 2`] = `
+"pi agents  0 needs input · 0 working · 5 completed
+────────────────────────────────────────────────────────────
+Compare · t · 5 sessions
+
+  five · done · - · ?
+  four · done · - · worktree gone
+  one · done · - · 2 files +10 −4 · 1 new
+  three · done · - · no diff (its base is gone?)
+› two
+  done · 0s
+  no usage yet
+  no worktree
+
+  running bash
+
+← → choose · Enter open · k keep this one (deletes the ot[0m...[0m"
+`;
+
+exports[`M74: overlay renders, pinned > compare: the change text states: no worktree, no diff, gone, an error, a change; marked rows 3`] = `
+"pi agents  0 needs input · 0 working · 2 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Compare · y · 2 sessions
+
+  m                                                          › m                                                        
+  done · 0s                                                    done · 0s                                                
+  no usage yet                                                 no usage yet                                             
+  no worktree                                                  no worktree                                              
+                                                                                                                        
+  running bash                                                 running bash                                             
+
+← → choose · Enter open · r refresh · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+› ✽ fix tests  running bash                                                                    m  9m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing happened yet (the log starts with the next task, reply or message)
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Log · what happened lately (newest first)
+
+    5s  fix tests removed
+   10s  user → fix tests: main please
+   30s  lead was told fix tests went idle
+    1m  fix tests reported to lead: tests pass
+    2m  lead → fix tests: use main
+    5m  fix tests works again (was blocked)
+   10m  fix tests finished: all green
+   30m  fix tests failed: exit 1
+    1h  fix tests asks: Which branch?
+    2h  started fix tests ← user
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 3`] = `
+"pi agents  0 needs input · 1 working [0m...[0m
+────────────────────────────────────────
+Log · what happened lately (newest fi[0m...[0m
+
+    5s  fix tests removed
+   10s  user → fix tests: main please
+   30s  lead was told fix tests went [0m...[0m
+    1m  fix tests reported to lead: t[0m...[0m
+    2m  lead → fix tests: use main
+    5m  fix tests works again (was bl[0m...[0m
+   10m  fix tests finished: all green
+   30m  fix tests failed: exit 1
+    1h  fix tests asks: Which branch?
+    2h  started fix tests ← user
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 4`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Log · what happened lately (newest first)
+
+    1s  lead → fix tests: note 229
+    2s  lead → fix tests: note 228
+    3s  lead → fix tests: note 227
+    4s  lead → fix tests: note 226
+    5s  lead → fix tests: note 225
+    6s  lead → fix tests: note 224
+    7s  lead → fix tests: note 223
+    8s  lead → fix tests: note 222
+    9s  lead → fix tests: note 221
+   10s  lead → fix tests: note 220
+   11s  lead → fix tests: note 219
+   12s  lead → fix tests: note 218
+   13s  lead → fix tests: note 217
+   14s  lead → fix tests: note 216
+   15s  lead → fix tests: note 215
+   16s  lead → fix tests: note 214
+   17s  lead → fix tests: note 213
+   18s  lead → fix tests: note 212
+   19s  lead → fix tests: note 211
+   20s  lead → fix tests: note 210
+   21s  lead → fix tests: note 209
+   22s  lead → fix tests: note 208
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 5`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+    4s  lead → fix tests: note 226
+    5s  lead → fix tests: note 225
+    6s  lead → fix tests: note 224
+    7s  lead → fix tests: note 223
+    8s  lead → fix tests: note 222
+    9s  lead → fix tests: note 221
+   10s  lead → fix tests: note 220
+   11s  lead → fix tests: note 219
+   12s  lead → fix tests: note 218
+   13s  lead → fix tests: note 217
+   14s  lead → fix tests: note 216
+   15s  lead → fix tests: note 215
+   16s  lead → fix tests: note 214
+   17s  lead → fix tests: note 213
+   18s  lead → fix tests: note 212
+   19s  lead → fix tests: note 211
+   20s  lead → fix tests: note 210
+   21s  lead → fix tests: note 209
+   22s  lead → fix tests: note 208
+   23s  lead → fix tests: note 207
+   24s  lead → fix tests: note 206
+   25s  lead → fix tests: note 205
+   26s  lead → fix tests: note 204
+   27s  lead → fix tests: note 203
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 6`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+   14s  lead → fix tests: note 216
+   15s  lead → fix tests: note 215
+   16s  lead → fix tests: note 214
+   17s  lead → fix tests: note 213
+   18s  lead → fix tests: note 212
+   19s  lead → fix tests: note 211
+   20s  lead → fix tests: note 210
+   21s  lead → fix tests: note 209
+   22s  lead → fix tests: note 208
+   23s  lead → fix tests: note 207
+   24s  lead → fix tests: note 206
+   25s  lead → fix tests: note 205
+   26s  lead → fix tests: note 204
+   27s  lead → fix tests: note 203
+   28s  lead → fix tests: note 202
+   29s  lead → fix tests: note 201
+   30s  lead → fix tests: note 200
+   31s  lead → fix tests: note 199
+   32s  lead → fix tests: note 198
+   33s  lead → fix tests: note 197
+   34s  lead → fix tests: note 196
+   35s  lead → fix tests: note 195
+   36s  lead → fix tests: note 194
+   37s  lead → fix tests: note 193
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 7`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+    4s  lead → fix tests: note 226
+    5s  lead → fix tests: note 225
+    6s  lead → fix tests: note 224
+    7s  lead → fix tests: note 223
+    8s  lead → fix tests: note 222
+    9s  lead → fix tests: note 221
+   10s  lead → fix tests: note 220
+   11s  lead → fix tests: note 219
+   12s  lead → fix tests: note 218
+   13s  lead → fix tests: note 217
+   14s  lead → fix tests: note 216
+   15s  lead → fix tests: note 215
+   16s  lead → fix tests: note 214
+   17s  lead → fix tests: note 213
+   18s  lead → fix tests: note 212
+   19s  lead → fix tests: note 211
+   20s  lead → fix tests: note 210
+   21s  lead → fix tests: note 209
+   22s  lead → fix tests: note 208
+   23s  lead → fix tests: note 207
+   24s  lead → fix tests: note 206
+   25s  lead → fix tests: note 205
+   26s  lead → fix tests: note 204
+   27s  lead → fix tests: note 203
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: every kind of event with its tone, newest first; scrolled; a long list cut at 200; empty 8`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+    3m  lead → fix tests: note 53
+    3m  lead → fix tests: note 52
+    3m  lead → fix tests: note 51
+    3m  lead → fix tests: note 50
+    3m  lead → fix tests: note 49
+    3m  lead → fix tests: note 48
+    3m  lead → fix tests: note 47
+    3m  lead → fix tests: note 46
+    3m  lead → fix tests: note 45
+    3m  lead → fix tests: note 44
+    3m  lead → fix tests: note 43
+    3m  lead → fix tests: note 42
+    3m  lead → fix tests: note 41
+    3m  lead → fix tests: note 40
+    3m  lead → fix tests: note 39
+    3m  lead → fix tests: note 38
+    3m  lead → fix tests: note 37
+    3m  lead → fix tests: note 36
+    3m  lead → fix tests: note 35
+    3m  lead → fix tests: note 34
+    3m  lead → fix tests: note 33
+    3m  lead → fix tests: note 32
+    3m  lead → fix tests: note 31
+    3m  lead → fix tests: note 30
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: filtered to one session with its title; filtered to the concierge; nothing from either 1`] = `
+"pi agents  0 needs input · 2 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Log · other (newest first)
+
+   30s  j2 → fix tests: hello
+    1m  other finished: fine
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: filtered to one session with its title; filtered to the concierge; nothing from either 2`] = `
+"pi agents  0 needs input · 2 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Concierge · what it did and said (newest first)
+
+   30s  concierge needs you: a branch name
+    1m  concierge: all quiet
+
+r reload · ↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > log: filtered to one session with its title; filtered to the concierge; nothing from either 3`] = `
+"pi agents  0 needs input · 2 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (2)
+› ✽ other      running bash                                                                    m  8m
+  ✽ fix tests  running bash                                                                    m  9m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+nothing from the concierge yet
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M74: overlay renders, pinned > usage: several sessions and models, a subscription, at two widths; nothing spent 1`] = `
+"pi agents  0 needs input · 4 working · 0 completed · $2.30 today · $13.90 all
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Usage · sessions in this view
+
+  today $2.30 · all $13.90 · 168k tokens · $0.30 of it on a subscription (as if billed per token)
+
+  By model
+  claude-opus-5-5                             $13.50     76k tok  2 sessions
+  claude-haiku-5-5                             $0.40     92k tok  2 sessions
+
+  By session
+  big job                                     $12.50     56k tok  $2.00 today  claude-opus-5-5
+  mixed lines                                  $1.10     56k tok  claude-haiku-5-5
+  small job with a rather long name tha[0m...[0m     $0.30     56k tok  $0.30 today  (sub)  claude-haik[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > usage: several sessions and models, a subscription, at two widths; nothing spent 2`] = `
+"pi agents  0 needs input · 4 working · 0 comple[0m...[0m
+──────────────────────────────────────────────────
+Usage · sessions in this view
+
+  today $2.30 · all $13.90 · 168k tokens · $0.3[0m...[0m
+
+  By model
+  claude-opus-5-5         $13.50     76k tok  2[0m...[0m
+  claude-haiku-5-5         $0.40     92k tok  2[0m...[0m
+
+  By session
+  big job                 $12.50     56k tok  $[0m...[0m
+  mixed lines              $1.10     56k tok  c[0m...[0m
+  small job with a [0m...[0m     $0.30     56k tok  $[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M74: overlay renders, pinned > usage: several sessions and models, a subscription, at two widths; nothing spent 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Usage · sessions in this view
+
+  nothing spent yet (sessions report what they spend as they work)
+
+↑↓ scroll · Esc close"
+`;

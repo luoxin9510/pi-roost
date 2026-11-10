@@ -3,7 +3,7 @@
 import { expect } from "vitest";
 import type { Overlay, OverlayHost } from "../../hub/overlay-host.ts";
 
-export const KEY = { esc: "\x1b", enter: "\r", ctrlC: "\x03", up: "\x1b[A", down: "\x1b[B", pageDown: "\x1b[6~", left: "\x1b[D" };
+export const KEY = { esc: "\x1b", enter: "\r", ctrlC: "\x03", up: "\x1b[A", down: "\x1b[B", pageDown: "\x1b[6~", left: "\x1b[D", right: "\x1b[C" };
 
 /** A theme that writes the colour into the text: `⟨accent⟩x⟨/accent⟩`; bold is `**x**`. */
 export const tagTheme: OverlayHost<never>["theme"] = { fg: (c, t) => `⟨${c}⟩${t}⟨/${c}⟩`, bold: (t) => `**${t}**` };

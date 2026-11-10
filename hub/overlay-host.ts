@@ -11,6 +11,9 @@ import type { worktreeChange } from "../lib/worktree.ts";
 import type { RoostPort } from "./roost-port.ts";
 import type { HubTheme } from "./theme.ts";
 
+/** A second press within this long confirms (Ctrl+X delete, Ctrl+C exit, compare's k). */
+export const DOUBLE_PRESS_MS = 2000;
+
 /** M23: a component shown in place of the list (pi's session selector), with its keys. */
 export interface Overlay {
 	render(width: number): string[];
