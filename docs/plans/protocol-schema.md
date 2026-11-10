@@ -47,3 +47,27 @@ not the daemon's (10).
 - Types owned by other modules (`BoardTask`, `RoostEvent`, `ConciergeStatus`, `StandingOrder`, `UsageInfo`, `PrInfo`) are `opaque<T>` schemas named in the doc, not field by field. Not exact: `concierge-policy`'s args are `{}` (were `Record<string, never>`). Limits (`MESSAGE_MAX`, `TASK_TITLE_MAX`, `TASK_TEXT_MAX`, `TASK_NOTE_MAX`, `ORDER_TEXT_MAX`, `requestId` 1-64) are imported constants, documentation only until M76; some are cut by the daemon, not refused.
 - `TASK_ACTIONS`, `ORDER_ACTIONS` derive from the unions (the schema's order); `lib/callers.ts` re-exports them. `DAEMON_CAPABILITIES` is in `lib/protocol.ts` (`as const`, same values and order).
 - `scripts/protocol-doc.ts` (`npm run docs:protocol`) writes the "Op reference" between markers in `docs/protocol.md`: capabilities, shared shapes, each op with its callers (from `POLICY`), args and result. `test/protocol-doc.test.ts` fails when stale, checks the Python SDK, and asserts no file under `lib/`, `daemon/`, `hub/`, `host/` imports typebox.
+
+### After review (M75)
+
+- `TASK_ACTIONS` and `ORDER_ACTIONS` came out in the schemas' order, which changed the words
+  of the daemon's `action must be one of …`: the unions are in the old order again, and a
+  test pins both lists.
+- `concierge-policy` took `{}` (any fields, to the types) where it was `Record<string, never>`:
+  `empty()` in `lib/schema.ts` keeps it exact. Every other derived type was compared with the
+  old one for strict equality (all 39 ops' args and results, the shared shapes): equal.
+- The doc now says the limits the daemon applies that the schemas lacked: a task id and
+  hello's `protocol` at least 1, `requestId`'s form (`^[A-Za-z0-9_.:-]{1,64}$`; one not of
+  this form is ignored, not refused).
+- The import-graph test catches every form (static, dynamic, re-export, `require`), and no
+  pi package in lib, daemon or host either.
+- **For M76** (the schemas become the entry check), each to match the daemon as it is:
+  - a union whose discriminant is unknown must answer the daemon's words
+    (`action must be one of …`), and a member must be picked by its discriminant only (not
+    by any literal field: `{action: "bogus", mode: "ff"}` matched `merge`);
+  - text the daemon trims and refuses when empty (`reply.text`, `send.message`, `send.to`)
+    needs a check of its own;
+  - `requestId` not of its form is dropped, not refused (the pattern is for the doc);
+  - looser in the daemon than in the schemas: `events.after`/`limit` (any finite number,
+    the schema says integer), `hello.capabilities` (non-strings filtered out, the schema says
+    strings): the schemas follow the daemon.

@@ -81,6 +81,8 @@ export const obj = <P extends Fields>(fields: P, o: Meta = {}): Schema<ObjectOf<
 	}
 	return make({ type: "object", properties, ...(required.length ? { required } : {}) }, o);
 };
+/** An object with no fields (`Record<string, never>`); like `obj({})` to `check`: other keys are ignored. */
+export const empty = (o: Meta = {}): Schema<Record<string, never>> => make({ type: "object", properties: {} }, o);
 /** A type another module owns (its interface stays there): checked only as an object. */
 export const opaque = <T>(title: string, description: string): Schema<T> => make({ type: "object", title }, { description });
 /** Anything. */

@@ -475,7 +475,7 @@ A session to start (dispatch, spawn, a schedule's launch, a task's start).
 | `taskInArgv` | `boolean` | no |  | M30: the first task is in its argv (it has been given something to do). |
 | `resumable` | `boolean` | no |  | M40: a profile with `resume`: a run of it cut short can carry on (autoResume). |
 | `protocol` | `boolean` | no |  | M31: a profile's agent that speaks the roost agent protocol. |
-| `requestId` | `string` | no |  | M36: a resend with the same id returns the job the first one made. |
+| `requestId` | `string` | no |  | M36: a resend with the same id returns the job the first one made (one not of this form is ignored). |
 
 #### `HelloArgs`
 
@@ -905,7 +905,7 @@ Args:
 | `id` | `string` | yes |  |  |
 | `text` | `string` | yes |  |  |
 | `mode` | `"steer" \| "followUp"` | no |  | "steer" joins the work under way, after its current tool calls; "followUp" waits until it is done |
-| `requestId` | `string` | no | 1-64 chars | M36: makes a resend safe: the same id is taken once (the first answer is given again). |
+| `requestId` | `string` | no |  | M36: makes a resend safe: the same id is taken once (the first answer is given again; one not of this form is ignored). |
 
 Result:
 
@@ -1345,6 +1345,16 @@ Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent
 
 Args: one of these, by `action`.
 
+#### `concierge-order` action "list"
+
+List them.
+
+Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"list"` | yes |  |  |
+
 #### `concierge-order` action "add"
 
 Keep one (the hub's or the concierge's connection).
@@ -1367,16 +1377,6 @@ Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent
 |---|---|---|---|---|
 | `action` | `"rm"` | yes |  |  |
 | `id` | `integer` | yes |  |  |
-
-#### `concierge-order` action "list"
-
-List them.
-
-Callers: Person, Concierge. Refused: Session (`unsupported`), Unregistered agent (`unsupported`).
-
-| Field | Type | Required | Limit | |
-|---|---|---|---|---|
-| `action` | `"list"` | yes |  |  |
 
 #### `concierge-order` action "applied"
 
@@ -1427,6 +1427,17 @@ Callers: Person, Concierge, Session. Refused: Unregistered agent (`unauthorized`
 | `detail` | `string` | no | <= 2000 chars |  |
 | `after` | `integer[]` | no |  | Tasks on the board it waits on. |
 | `project` | `string \| null` | no |  |  |
+
+#### `task` action "cleanup"
+
+M59: removes (dry: lists) worktrees and verify logs left behind. No id.
+
+Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
+
+| Field | Type | Required | Limit | |
+|---|---|---|---|---|
+| `action` | `"cleanup"` | yes |  |  |
+| `dry` | `boolean` | no |  | List only. |
 
 #### `task` action "claim"
 
@@ -1624,17 +1635,6 @@ Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Un
 |---|---|---|---|---|
 | `action` | `"shelve"` | yes |  |  |
 | `id` | `integer` | yes |  | a task's id (a positive integer) |
-
-#### `task` action "cleanup"
-
-M59: removes (dry: lists) worktrees and verify logs left behind. No id.
-
-Callers: Person. Refused: Concierge (`unsupported`), Session (`unsupported`), Unregistered agent (`unauthorized`).
-
-| Field | Type | Required | Limit | |
-|---|---|---|---|---|
-| `action` | `"cleanup"` | yes |  |  |
-| `dry` | `boolean` | no |  | List only. |
 
 #### `task` action "pr"
 

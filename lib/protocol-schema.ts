@@ -3,7 +3,7 @@
 // them), of the op reference in docs/protocol.md (npm run docs:protocol), and, from M76,
 // of the daemon's entry check. Nothing here is checked at run time yet: the limits are
 // documentation until then.
-import { type Infer, type Schema, arr as arrS, bool as boolS, literal, nullable as nullableS, num as numS, obj as objS, oneOf as oneOfS, opaque, optional, rec, str as strS, union } from "./schema.ts";
+import { type Infer, type Schema, arr as arrS, bool as boolS, literal, nullable as nullableS, num as numS, obj as objS, oneOf as oneOfS, opaque, optional, rec, str as strS, union, empty } from "./schema.ts";
 import type { BoardTask } from "./board.ts";
 import { TASK_NOTE_MAX, TASK_TEXT_MAX, TASK_TITLE_MAX } from "./board.ts";
 import { MESSAGE_MAX } from "./comms.ts";
@@ -17,9 +17,9 @@ import type { UsageInfo } from "./usage.ts";
 
 type Opts = { description?: string };
 const d = (description?: string) => (description ? { description } : {});
-const str = (description?: string, o: { maxLength?: number; minLength?: number } = {}) => strS({ ...d(description), min: o.minLength, max: o.maxLength });
+const str = (description?: string, o: { maxLength?: number; minLength?: number; pattern?: string } = {}) => strS({ ...d(description), min: o.minLength, max: o.maxLength, pattern: o.pattern });
 const num = (description?: string) => numS(d(description));
-const int = (description?: string) => numS({ ...d(description), int: true });
+const int = (description?: string, o: { min?: number } = {}) => numS({ ...d(description), int: true, min: o.min });
 const bool = (description?: string) => boolS(d(description));
 const nullable = <T extends Schema>(t: T, description?: string) => nullableS(t, d(description));
 /** A string that is one of these (the doc lists the values). */
@@ -184,7 +184,7 @@ export const DispatchArgsSchema = obj({
 	taskInArgv: opt(bool("M30: the first task is in its argv (it has been given something to do).")),
 	resumable: opt(bool("M40: a profile with `resume`: a run of it cut short can carry on (autoResume).")),
 	protocol: opt(bool("M31: a profile's agent that speaks the roost agent protocol.")),
-	requestId: opt(str("M36: a resend with the same id returns the job the first one made.")),
+	requestId: opt(str("M36: a resend with the same id returns the job the first one made (one not of this form is ignored).", { pattern: "^[A-Za-z0-9_.:-]{1,64}$" })),
 }, { description: "A session to start (dispatch, spawn, a schedule's launch, a task's start)." });
 export type DispatchArgs = Infer<typeof DispatchArgsSchema>;
 
@@ -200,7 +200,7 @@ export const DaemonStatusSchema = obj({
 export type DaemonStatus = Infer<typeof DaemonStatusSchema>;
 
 export const HelloArgsSchema = obj({
-	protocol: int("The highest protocol version the agent speaks."),
+	protocol: int("The highest protocol version the agent speaks.", { min: 1 }),
 	agent: opt(obj({ name: str(), version: opt(str()) })),
 	capabilities: opt(arr(str(), "What the agent can do (AGENT_CAPABILITIES); unknown ones are ignored.")),
 }, { description: "M31: an agent says which protocol and capabilities it has, before it reports." });
@@ -233,13 +233,14 @@ const ConciergeAnswerS = oneOf(["never", "routine", "always"]);
 
 // -- task ---------------------------------------------------------------------------------
 
-const Id = int("a task's id (a positive integer)");
+const Id = int("a task's id (a positive integer)", { min: 1 });
 const TaskComment = obj({ file: str(), line: int(), text: str(undefined, { maxLength: TASK_TEXT_MAX }), lineText: opt(str()), tip: opt(str()) });
 
 /** M47: the shared task board. The hub and the concierge name a project by a directory in its repository (a session's is where it works). */
 export const TaskArgsSchema = union([
 	obj({ action: lit("list"), project: opt(str("M52: a directory in the project's repository (absolute).")) }, { description: "The lot (done and dropped ones too)." }),
 	obj({ action: lit("add"), title: str(undefined, { maxLength: TASK_TITLE_MAX }), detail: opt(str(undefined, { maxLength: TASK_TEXT_MAX })), after: opt(arr(Id, "Tasks on the board it waits on.")), project: opt(nullable(str())) }, { description: "A new task, open." }),
+	obj({ action: lit("cleanup"), dry: opt(bool("List only.")) }, { description: "M59: removes (dry: lists) worktrees and verify logs left behind. No id." }),
 	obj({ action: lit("claim"), id: Id }, { description: "A session takes it." }),
 	obj({ action: lit("release"), id: Id }, { description: "The owner gives it back." }),
 	obj({ action: lit("done"), id: Id, result: opt(str(undefined, { maxLength: TASK_TEXT_MAX })) }, { description: "The owner marks it done." }),
@@ -262,7 +263,6 @@ export const TaskArgsSchema = union([
 	obj({ action: lit("uncomment"), id: Id, comment: obj({ file: str(), line: int(), at: num() }) }, { description: "M58: withdraws a review comment." }),
 	// M59: put away (worktree removed, branch kept; start brings it back); leftovers removed (dry: listed)
 	obj({ action: lit("shelve"), id: Id }, { description: "M59: removes a clean worktree, keeps the branch." }),
-	obj({ action: lit("cleanup"), dry: opt(bool("List only.")) }, { description: "M59: removes (dry: lists) worktrees and verify logs left behind. No id." }),
 	// M60: push the branch and open a pull request (dry: what it would do; then with the tip shown as hash)
 	obj({ action: lit("pr"), id: Id, dry: opt(bool("Say what it would do and the tip as `hash`.")), hash: opt(str("The tip shown by the dry run.")) }, { description: "M60: pushes the branch and opens a pull request." }),
 ]);
@@ -286,9 +286,9 @@ export type ConciergeActArgs = Infer<typeof ConciergeActArgsSchema>;
 
 /** M46: the standing orders. */
 export const ConciergeOrderArgsSchema = union([
+	obj({ action: lit("list") }, { description: "List them." }),
 	obj({ action: lit("add"), text: str(undefined, { maxLength: ORDER_TEXT_MAX }), when: opt(str("M39's vocabulary (`every 30m`, `daily 18:00`, `weekdays 09:00`, `cron \"...\"`).")) }, { description: "Keep one (the hub's or the concierge's connection)." }),
 	obj({ action: lit("rm"), id: int() }, { description: "Drop one (the hub's; the concierge's own only)." }),
-	obj({ action: lit("list") }, { description: "List them." }),
 	obj({ action: lit("applied"), id: int(), text: opt(str()) }, { description: "Mark one applied (the concierge's)." }),
 ]);
 export type ConciergeOrderArgs = Infer<typeof ConciergeOrderArgsSchema>;
@@ -330,7 +330,7 @@ export const ArgSchemas = {
 		id: str(),
 		text: str(),
 		mode: opt(ReplyModeS),
-		requestId: opt(str("M36: makes a resend safe: the same id is taken once (the first answer is given again).", { minLength: 1, maxLength: 64 })),
+		requestId: opt(str("M36: makes a resend safe: the same id is taken once (the first answer is given again; one not of this form is ignored).", { pattern: "^[A-Za-z0-9_.:-]{1,64}$" })),
 	}, { description: "M28: a reply to a working session steers into its current work (pi's Enter) or waits for it to finish (Alt+Enter); absent: waits." }),
 	ack: obj({ id: str(), token: str(), seq: int(), exact: opt(bool()) }, { description: "Worker to daemon: the reply with this seq was handed to pi (exact: only that agent item)." }),
 	respawn: obj({ id: opt(str()), all: opt(bool()), restart: opt(bool()), prompt: opt(str()) }, { description: "Start an ended job again from its session file; `restart` also restarts a live one." }),
@@ -348,7 +348,7 @@ export const ArgSchemas = {
 	concierge: ConciergeArgsSchema,
 	"concierge-ask": obj({ text: str() }, { description: "M44, from the hub: a question for the concierge (`? ...`); its answer comes as a `concierge` event." }),
 	"concierge-say": obj({ kind: oneOf(["info", "need", "answer"]), text: str() }, { description: "M44, on the concierge's own connection: what it tells the user (hub_notify), or its answer to a question." }),
-	"concierge-policy": obj({}, { description: "M45, on the concierge's connection: the policy in force (which of its tools it may use)." }),
+	"concierge-policy": empty({ description: "M45, on the concierge's connection: the policy in force (which of its tools it may use)." }),
 	"concierge-suggest": obj({ id: str(), text: str(), why: opt(str()) }, { description: "M45, on the concierge's connection: the answer it would give a session that waits for one, and why." }),
 	"concierge-reply": obj({ id: str(), text: str(), why: opt(str()) }, { description: "M45, on the concierge's connection: an answer in the user's place; refused (`policy`) unless the policy allows." }),
 	"concierge-act": ConciergeActArgsSchema,
