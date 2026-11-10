@@ -120,3 +120,9 @@ fake client that answers each op by its name.
 ### Candidate 04, closed (M71–M74)
 
 `hub/agent-view.ts` went from 4455 lines (before M71) to 3605: the screens (workspaces, review, task board and lines, orders, answer, schedules, log, usage, compare) are modules in `hub/overlays/` (8 files, 1,136 lines), built on `OverlayHost` and a slice of `RoostPort`; every daemon call of the hub goes through the port (69 inline requests gone). The view keeps the core (list, selection, input, dispatch, peek), the slash commands and what changes its own state. Tests: 8 overlay test files on a fake port and a fake host (the overlays' rules), mutation-checked (731 of 753 guards caught over M72–M74, the rest equivalent), plus snapshot tests of every moved screen in `test/agent-view.test.ts`, which keeps one wiring test per overlay.
+
+### After review (M74)
+
+- No drift found (compare, log and usage compared with the old code key by key).
+- Nothing pinned the order of Enter in compare (closed, then the view's cursor moved, then
+  attached); a test now records it and fails with the two calls swapped.

@@ -318,6 +318,16 @@ describe("M74: the compare overlay", () => {
 			expect(o.attached).toEqual(["b"]);
 		});
 
+		it("Enter: closed, then the cursor moved, then attached (in that order)", () => {
+			const order: string[] = [];
+			const o = open(fan(), {
+				host: { close: () => void order.push("close"), attachTo: async (id: string) => void order.push(`attach ${id}`) },
+				opts: { select: (id) => void order.push(`select ${id}`) },
+			});
+			o.overlay.handleInput!(KEY.enter);
+			expect(order).toEqual(["close", "select a", "attach a"]);
+		});
+
 		it("a failed attach is said as an error", async () => {
 			const o = open(fan(), { host: { attachTo: async () => Promise.reject(new Error("no terminal")) } });
 			o.overlay.handleInput!(KEY.enter);
