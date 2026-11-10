@@ -75,6 +75,7 @@ Claude Code's documented behaviour.
 | M67–M70 | [the daemon's timed parts as modules: schedules, watches, the concierge and its standing orders, by an injected clock](daemon-modules.md) | 0.1.20 |
 | M71–M74 | [the hub's overlays as modules and one typed daemon port](hub-overlays.md) | 0.1.20 |
 | M75–M77 | [one schema per op: the check, the type and the doc's op reference from one source](protocol-schema.md) | 0.1.20 |
+| M79–M80 | [the hub's input: one view and one layer instead of seven flags; its options in groups](hub-input.md) | — |
 | M78 | [no orphans: test daemons and hosts follow the run that started them; a sweep clears the leftovers](m78-no-orphans.md) | 0.1.20 |
 
 Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).

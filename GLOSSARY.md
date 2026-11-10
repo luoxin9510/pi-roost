@@ -72,6 +72,10 @@ _Avoid_: dashboard, agent view (the name of the class that is the hub's core)
 
 **Overlay**:
 A screen the Hub shows in place of its list (workspaces, review, the task board, the concierge, schedules, the log, usage, compare), with its own keys. It is built from a host (the port, the theme, a few verbs) and sees pushed events through `onEvent`; it does not hold the Hub.
+
+**Layer**:
+What is open on top of the Hub's view (the list, or a row's peek) and takes the keys: the help, a picker, a rename, or an Overlay. One at a time (M79): what opens last is what is open; the concierge's answer waits for the one open to close.
+_Avoid_: mode (the view and the layer are two things: a picker over a peek closes back to the peek)
 _Avoid_: modal, popup, panel (the subagent panel is another thing)
 
 ## The protocol

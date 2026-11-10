@@ -3074,3 +3074,79 @@ describe("M74: overlay renders, pinned", () => {
 		expect(shot(marked.view, 120)).toMatchSnapshot();
 	});
 });
+
+// M79: the view (the list, or a row's peek) and what is open on top of it (help, a picker, a
+// rename, an overlay), pinned before they became two fields: each sequence of keys, screen by screen
+describe("M79: views and layers, pinned", () => {
+	const shot = (view: AgentView) => view.render(100).join("\n");
+	const rowsFor = () => [row({ id: "m1", name: "alpha work", state: "blocked", status: "waiting", waitingFor: "question", question: "which db?", choices: ["postgres", "sqlite"] }), row({ id: "m2", name: "beta work" })];
+	const keys = async (view: AgentView, seq: string[]) => {
+		const out: string[] = [];
+		for (const k of seq) {
+			view.handleInput(k);
+			await sleep(30);
+			out.push(`--- ${JSON.stringify(k)}\n${shot(view)}`);
+		}
+		return out.join("\n");
+	};
+
+	it("peek, a picker over it (Ctrl+L), back to the peek, closed", async () => {
+		const { view } = setup(rowsFor());
+		await view.start();
+		expect(await keys(view, [" ", "\x0c", "\x1b[B", "\x1b", "\x1b"])).toMatchSnapshot();
+		view.dispose();
+	});
+
+	it("help over the list and over a peek; any key closes it", async () => {
+		const { view } = setup(rowsFor());
+		await view.start();
+		expect(await keys(view, ["?", "x", "\x7f", " ", "?", "j", "\x1b"])).toMatchSnapshot();
+		view.dispose();
+	});
+
+	it("a rename over a peek, cancelled; over the list, done", async () => {
+		const { view } = setup(rowsFor());
+		await view.start();
+		expect(await keys(view, [" ", "\x12", "z", "\x1b", "\x1b", "\x12", "\x7f", "\x7f", "q", "\r"])).toMatchSnapshot();
+		view.dispose();
+	});
+
+	it("an overlay over a peek (Ctrl+N), closed back to the peek; a digit then picks a choice", async () => {
+		const { view, client } = setup(rowsFor());
+		client.tasks = [];
+		await view.start();
+		expect(await keys(view, [" ", "\x0e", "\x1b", "1"])).toMatchSnapshot();
+		view.dispose();
+	});
+
+	it("the concierge's answer waits behind a picker too, not only an overlay (one layer at a time)", async () => {
+		const launch = { cwd: "/w", sessionFile: "/s/c.jsonl", command: ["pi"], env: {}, name: "concierge", origin: "dispatch" as const };
+		const { view, client } = setup(rowsFor(), { extra: { conciergeLaunch: () => launch } });
+		await view.start();
+		for (const line of ["/concierge on", "/ask what is blocked"]) {
+			type(view, line);
+			view.handleInput("\r");
+			await sleep(20);
+		}
+		view.handleInput("\x0c"); // the model picker
+		expect(view.render(100).join("\n")).toContain("a/one");
+		client.emit({ event: "concierge", status: { ...client.concierge, answer: { text: "nothing is blocked.", at: Date.now() } } });
+		let screen = view.render(100).join("\n");
+		expect(screen).toContain("a/one");
+		expect(screen).not.toContain("  nothing is blocked.");
+		// the picker still takes the keys (an answer over it took them before M79)
+		view.handleInput("\x1b");
+		screen = view.render(100).join("\n");
+		expect(screen).toContain("  nothing is blocked.");
+		expect(screen).not.toContain("a/one");
+		view.handleInput("\x1b");
+		view.dispose();
+	});
+
+	it("the list's own keys do nothing in a peek (Ctrl+O mark, Ctrl+F), and do in the list", async () => {
+		const { view } = setup(rowsFor());
+		await view.start();
+		expect(await keys(view, [" ", "\x0f", "\x06", "\x1b", "\x0f", "\x1b", "\x06"])).toMatchSnapshot();
+		view.dispose();
+	});
+});
