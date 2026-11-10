@@ -374,3 +374,358 @@ files
 
 s start again · a approve · n next · r reload · ↑↓ select · Esc close"
 `;
+
+exports[`M73: overlay renders, pinned > the concierge's answer: short, long and wrapped, scrolled; control characters and escapes cleaned 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+concierge · quiet
+Concierge
+
+  fix tests waits for a branch name.
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the concierge's answer: short, long and wrapped, scrolled; control characters and escapes cleaned 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────
+concierge · quiet
+Concierge
+
+  line 0: word word word word word word word word word word
+  word word word word word word word word word word word
+  word word word word word word word word word
+  line 1: word word word 
+  line 2: word word word 
+  line 3: word word word 
+  line 4: word word word 
+  line 5: word word word word word word word word word word
+  word word word word word word word word word word word
+  word word word word word word word word word
+  line 6: word word word 
+  line 7: word word word 
+  line 8: word word word 
+  line 9: word word word 
+  line 10: word word word word word word word word word word
+  word word word word word word word word word word word
+  word word word word word word word word word
+  line 11: word word word 
+  line 12: word word word 
+  line 13: word word word 
+  line 14: word word word 
+  line 15: word word word word word word word word word word
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the concierge's answer: short, long and wrapped, scrolled; control characters and escapes cleaned 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────
+concierge · quiet
+  line 2: word word word 
+  line 3: word word word 
+  line 4: word word word 
+  line 5: word word word word word word word word word word
+  word word word word word word word word word word word
+  word word word word word word word word word
+  line 6: word word word 
+  line 7: word word word 
+  line 8: word word word 
+  line 9: word word word 
+  line 10: word word word word word word word word word word
+  word word word word word word word word word word word
+  word word word word word word word word word
+  line 11: word word word 
+  line 12: word word word 
+  line 13: word word word 
+  line 14: word word word 
+  line 15: word word word word word word word word word word
+  word word word word word word word word word word word
+  word word word word word word word word word
+  line 16: word word word 
+  line 17: word word word 
+  line 18: word word word 
+  line 19: word word word 
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the concierge's answer: short, long and wrapped, scrolled; control characters and escapes cleaned 4`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+concierge · quiet
+Concierge
+
+  tab  separated red and bell
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the lines overlay (/tasks cleanup): what it would remove, what it did 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Left behind · /tasks cleanup yes removes it (never a worktree with changes, never an unmerged bra[0m...[0m
+
+  #3 dropped: remove /r/wt3 (branch kept)
+  remove 2 verify logs
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the lines overlay (/tasks cleanup): what it would remove, what it did 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Cleaned up
+
+  #3: worktree removed · branch kept
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the schedules: several, paused, never, a last skip, a long task; empty 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Schedules
+
+nightly  every 2h  · next in 1h 30m · last 30m ago
+  check the build  · pi · /w
+deps  daily 09:00  · next in 1h 30m · not run yet
+  update the dependencies and test  · codex · /w · o3-mini
+tests  weekdays 18:00  · paused · last 30m ago
+  ! npm test  · shell · /w
+once  every 2h  · never · last 30m ago
+    · pi · /w
+  skipped 5m ago: the previous run was still going
+
+/schedule run|pause|resume|rm <name> · ↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the schedules: several, paused, never, a last skip, a long task; empty 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+──────────────────────────────────────────────────
+Schedules
+
+nightly  every 2h  · next in 1h 30m · last 30m ago
+  check the build  · pi · /w
+deps  daily 09:00  · next in 1h 30m · not run yet
+  update the dependencies and test  · codex · /[0m...[0m
+tests  weekdays 18:00  · paused · last 30m ago
+  ! npm test  · shell · /w
+once  every 2h  · never · last 30m ago
+    · pi · /w
+  skipped 5m ago: the previous run was still going
+
+/schedule run|pause|resume|rm <name> · ↑↓ scrol[0m...[0m"
+`;
+
+exports[`M73: overlay renders, pinned > the schedules: several, paused, never, a last skip, a long task; empty 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+› ✽ lint      running bash                                                                     m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+no schedules: /schedule <name> <every 1h | daily 09:00 | weekdays 09:00 | cron "…"> <task>
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M73: overlay renders, pinned > the standing orders: newest first, yours marked, a clock, applied 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Standing orders · what the concierge keeps in mind
+
+  #3 daily 18:00 · a very long rule a very long rule a very long rule a very long rule a very lon[0m...[0m
+  #2 every 30m · say what is blocked
+  #1 when build ends, tell deploy its result (applied ×2, 1m ago) · yours
+
+/concierge orders add <rule> · /concierge orders rm <id>
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the standing orders: newest first, yours marked, a clock, applied 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+──────────────────────────────────────────────────
+Standing orders · what the concierge keeps in mind
+
+  #3 daily 18:00 · a very long rule a very long[0m...[0m
+  #2 every 30m · say what is blocked
+  #1 when build ends, tell deploy its result (a[0m...[0m
+
+/concierge orders add <rule> · /concierge order[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the standing orders: newest first, yours marked, a clock, applied 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ▾ Working (1)
+› ✽ lint      running bash                                                                     m  1m
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ _pi:c_pi:fc _pi:/fc describe a task and press Enter to start it in the background · Shift+Enter new line
+────────────────────────────────────────────────────────────────────────────────────────────────────
+no standing orders · /concierge orders add <rule> (or tell the concierge: ? remember …)
+↑↓ select · Enter/→ attach · Space peek · Ctrl+Enter start+attach · Ctrl+X stop · ? keys · Esc exit"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: open, blocked, claimed, a workspace, done; the done ones past 30 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 2 open · 1 claimed · 1 blocked · 1 in workspace (1 needs you) · 1 done · /tasks · Ctrl+N wo[0m...[0m
+Task board · all projects · 2 open · 1 claimed · 1 blocked · 1 in workspace (1 needs you) · 1 done
+
+  #1 open · the schema
+      tables for users and teams
+  #4 open · handed on · handed to lint 2m ago
+  #2 blocked on #1 · write the tests
+      the unit tests
+  #3 claimed by lint (5m) · wire the api
+  #5 in review · lint · in review (verified)
+
+  #6 done 10m ago by lint · done one → applied v2
+
+/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: open, blocked, claimed, a workspace, done; the done ones past 30 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 open · 33 done · /tasks
+Task board · all projects · 1 open · 33 done
+
+  #1 open · open
+
+  #10 done 1m ago · finished 0
+  #11 done 2m ago · finished 1
+  #12 done 3m ago · finished 2
+  #13 done 4m ago · finished 3
+  #14 done 5m ago · finished 4
+  #15 done 6m ago · finished 5
+  #16 done 7m ago · finished 6
+  #17 done 8m ago · finished 7
+  #18 done 9m ago · finished 8
+  #19 done 10m ago · finished 9
+  #20 done 11m ago · finished 10
+  #21 done 12m ago · finished 11
+  #22 done 13m ago · finished 12
+  #23 done 14m ago · finished 13
+  #24 done 15m ago · finished 14
+  #25 done 16m ago · finished 15
+  #26 done 17m ago · finished 16
+  #27 done 18m ago · finished 17
+  #28 done 19m ago · finished 18
+  #29 done 20m ago · finished 19
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: open, blocked, claimed, a workspace, done; the done ones past 30 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 open · 33 done · /tasks
+  #19 done 10m ago · finished 9
+  #20 done 11m ago · finished 10
+  #21 done 12m ago · finished 11
+  #22 done 13m ago · finished 12
+  #23 done 14m ago · finished 13
+  #24 done 15m ago · finished 14
+  #25 done 16m ago · finished 15
+  #26 done 17m ago · finished 16
+  #27 done 18m ago · finished 17
+  #28 done 19m ago · finished 18
+  #29 done 20m ago · finished 19
+  #30 done 21m ago · finished 20
+  #31 done 22m ago · finished 21
+  #32 done 23m ago · finished 22
+  #33 done 24m ago · finished 23
+  #34 done 25m ago · finished 24
+  #35 done 26m ago · finished 25
+  #36 done 27m ago · finished 26
+  #37 done 28m ago · finished 27
+  #38 done 29m ago · finished 28
+  #39 done 30m ago · finished 29
+  … 3 more done
+
+/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: open, blocked, claimed, a workspace, done; the done ones past 30 4`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 1 open · 33 done · /tasks
+  #18 done 9m ago · finished 8
+  #19 done 10m ago · finished 9
+  #20 done 11m ago · finished 10
+  #21 done 12m ago · finished 11
+  #22 done 13m ago · finished 12
+  #23 done 14m ago · finished 13
+  #24 done 15m ago · finished 14
+  #25 done 16m ago · finished 15
+  #26 done 17m ago · finished 16
+  #27 done 18m ago · finished 17
+  #28 done 19m ago · finished 18
+  #29 done 20m ago · finished 19
+  #30 done 21m ago · finished 20
+  #31 done 22m ago · finished 21
+  #32 done 23m ago · finished 22
+  #33 done 24m ago · finished 23
+  #34 done 25m ago · finished 24
+  #35 done 26m ago · finished 25
+  #36 done 27m ago · finished 26
+  #37 done 28m ago · finished 27
+  #38 done 29m ago · finished 28
+  #39 done 30m ago · finished 29
+  … 3 more done
+
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: several projects name each task's own; only done; empty 1`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+tasks 3 open · /tasks
+Task board · all projects · 3 open
+
+  #1 open · [alpha] in a
+  #2 open · [beta] in b
+  #3 open · [any] anywhere
+
+/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: several projects name each task's own; only done; empty 2`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Task board · all projects · 1 done
+
+  every task is done
+
+  #1 done 1m ago · finished
+
+/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
+
+exports[`M73: overlay renders, pinned > the task board: several projects name each task's own; only done; empty 3`] = `
+"pi agents  0 needs input · 1 working · 0 completed
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Task board · all projects · none
+
+  the board is empty
+
+/tasks all · add <title> [after #n] [-- detail] · assign <id> <session> · done <id> [result] · rm[0m...[0m
+
+↑↓ scroll · Esc close"
+`;
