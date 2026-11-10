@@ -85,7 +85,7 @@ import { termFrom } from "../lib/profiles.ts";
 import { inferTermState, lastLine, readTermSignals } from "../lib/term-signals.ts";
 import { type GhPr, isPrUrl, type PrInfo, prFromGh, prUrlsIn } from "../lib/pr.ts";
 import { ROOST_VERSION } from "../lib/version.ts";
-import { allow, callerOf, TASK_ACTIONS } from "../lib/callers.ts";
+import { allow, callerOf } from "../lib/callers.ts";
 import { OpError, realPath, str, taskText } from "../lib/op.ts";
 import { type BoardWho, createWorkspaces, WORKSPACE_ACTIONS, type WorkspaceAction } from "../lib/workspace.ts";
 import { type CleanupResult, cleanupWorktree, isInside, validWorktree, type WorktreeInfo, worktreeLine, worktreeStatus } from "../lib/worktree.ts";
@@ -562,12 +562,11 @@ async function taskOp(
 		return { tasks: all(), note: r.join("\n") };
 	}
 	if (action === "add") {
+		// M77: a title and a list (if any) checked at the entry; the tasks it names, here
 		const title = taskTitle(args?.title);
-		if (!title) throw new OpError("bad_request", "a task needs a title");
 		const after: number[] = [];
 		if (args?.after !== undefined) {
-			if (!Array.isArray(args.after)) throw new OpError("bad_request", "after must be a list of task ids");
-			for (const x of args.after) {
+			for (const x of args.after as unknown[]) {
 				const dep = taskId(x);
 				const d = dep !== undefined ? tasks.get(dep) : undefined;
 				if (dep === undefined || !d || d.state === "dropped") throw new OpError("bad_request", `after: no task #${String(x)} to wait on`);
@@ -598,8 +597,7 @@ async function taskOp(
 		pushBoard();
 		return { tasks: all(), task: t };
 	}
-	// the actions are the table's (lib/callers.ts): one list
-	if (typeof action !== "string" || !(TASK_ACTIONS as readonly string[]).includes(action)) throw new OpError("bad_request", `action must be one of ${TASK_ACTIONS.join(", ")}`);
+	// the actions are the table's (lib/callers.ts): one list, checked at the entry (M77)
 	const id = taskId(args?.id);
 	const t = id !== undefined ? tasks.get(id) : undefined;
 	if (!t) throw new OpError("not_found", `no task #${String(args?.id)}`);
@@ -2809,8 +2807,7 @@ async function spawnChild(conn: Conn, args: { launch?: DispatchArgs } | undefine
 	const peer = requirePeer(conn);
 	// M50: an agent of the protocol messages and watches; its children would have no panel to show in
 	if (peer.kind === "job" && isProtocolJob(recs.get(peer.id))) throw new OpError("unsupported", "an agent of the protocol does not spawn sessions (send, watch and the board are its)");
-	const launch = args?.launch;
-	if (!launch || typeof launch !== "object") throw new OpError("bad_request", "launch required");
+	const launch = args!.launch!; // M77: an object, checked at the entry
 	if (launch.kind === "shell") throw new OpError("unsupported", "roost_spawn starts pi sessions");
 	// M59: a child's first message is a task, never a command (a child's `/tasks merge` would be a person's)
 	firstMessage(launch.command);

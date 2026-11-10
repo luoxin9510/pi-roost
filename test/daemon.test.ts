@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DaemonClient, DaemonError } from "../lib/client.ts";
+import { TASK_ACTIONS } from "../lib/protocol-schema.ts";
 import { daemonSocketPath, jobDir } from "../lib/paths.ts";
 import { isAlive, processStartToken } from "../lib/proc.ts";
 import type { Event, JobRow } from "../lib/protocol.ts";
@@ -794,6 +795,12 @@ describe("M76: the entry check", () => {
 			[peer, "send", { to: " ", message: "hi" }, "to required"],
 			[peer, "send", { to: "alpha", message: " " }, "empty message"],
 			[peer, "watch", { id: "alpha", when: "soon" }, "when must be idle or ended"],
+			// M77
+			[client, "dispatch", { requestId: "a b" }, "requestId: 1-64 of A-Z a-z 0-9 _ . : -"],
+			[peer, "spawn", { launch: "x" }, "launch required"],
+			[client, "task", { action: "bogus" }, `action must be one of ${TASK_ACTIONS.join(", ")}`],
+			[client, "task", { action: "add", title: " " }, "a task needs a title"],
+			[client, "task", { action: "add", title: "t", after: "x" }, "after must be a list of task ids"],
 		];
 		for (const [c, op, a, words] of cases) await expect(bad(c, op, a), `${op} ${JSON.stringify(a)}`).rejects.toMatchObject({ code: "bad_request", message: words });
 		// what the daemon took before, it takes: a fractional cursor, capabilities that are not strings

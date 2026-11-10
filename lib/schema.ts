@@ -38,6 +38,8 @@ export interface Schema<T = unknown> extends Meta {
 	"x-max"?: "cut" | "op";
 	/** M76: a union picked by this field alone; another value fails with the union's message. */
 	"x-discriminant"?: string;
+	/** M77: `check` asks only that the value be an object (an array too); its fields are the op's to check. */
+	"x-shallow"?: true;
 }
 
 export type Infer<S> = S extends Schema<infer T> ? T : never;
@@ -90,8 +92,36 @@ export const loose = <S extends Schema>(s: S): S => {
 	looseOf.set(out, s);
 	return out;
 };
-/** The schema a loose one was made from (the doc names a shared shape by it). */
+/** The schema a loose (or shallow, or relaxed) one was made from (the doc names a shared shape by it). */
 export const looseOf = new WeakMap<Schema, Schema>();
+/** M77: the same schema, checked only for being an object (an array passes, as `typeof` let it), in these words. */
+export const shallow = <S extends Schema>(s: S, o: Meta = {}): S => {
+	const out = { ...s, "x-shallow": true, ...(o.message ? { message: o.message } : {}) } as S;
+	looseOf.set(out, looseOf.get(s) ?? s);
+	return out;
+};
+/** M77: an object schema whose fields are loose, but a literal one (a union's discriminant) and those given in `keep` (in their place). */
+export const relax = <S extends Schema>(s: S, keep: Record<string, Schema> = {}, o: Meta = {}): S => {
+	const properties: Record<string, Schema> = {};
+	for (const [k, p] of Object.entries(s.properties ?? {})) properties[k] = keep[k] ?? (p.const !== undefined ? p : loose(p));
+	const out = { ...s, properties, ...(o.message ? { message: o.message } : {}) } as S;
+	looseOf.set(out, looseOf.get(s) ?? s);
+	return out;
+};
+
+/** M77: a schema as plain JSON Schema for a tool's parameters: without `message` and the `x-` marks; a maximum the daemon cuts is left out. */
+export function jsonSchemaOf(s: Schema): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(s)) {
+		if (k === "message" || k.startsWith("x-") || k === "~type") continue;
+		if (k === "maxLength" && s["x-max"] === "cut") continue;
+		if (k === "properties") out[k] = Object.fromEntries(Object.entries(v as Record<string, Schema>).map(([n, p]) => [n, jsonSchemaOf(p)]));
+		else if (k === "anyOf") out[k] = (v as Schema[]).map(jsonSchemaOf);
+		else if (k === "items" || k === "additionalProperties") out[k] = jsonSchemaOf(v as Schema);
+		else out[k] = v;
+	}
+	return out;
+}
 export const nullable = <S extends Schema>(s: S, o: Meta = {}): Schema<Infer<S> | null> => union([s, nul()], o);
 export const arr = <S extends Schema>(item: S, o: Meta & { min?: number; max?: number } = {}): Schema<Infer<S>[]> =>
 	make({ type: "array", items: item, ...(o.min !== undefined ? { minItems: o.min } : {}), ...(o.max !== undefined ? { maxItems: o.max } : {}) }, o);
@@ -123,6 +153,7 @@ const join = (path: string, key: string) => (path ? `${path}.${key}` : key);
 export function check(schema: Schema, value: unknown, path = ""): CheckResult {
 	const s = schema;
 	if (s["x-loose"]) return { ok: true };
+	if (s["x-shallow"]) return typeof value === "object" && value !== null ? { ok: true } : fail(s, path, "must be an object");
 	if (s.anyOf) return checkAnyOf(s, value, path);
 	if (s.const !== undefined) return value === s.const ? { ok: true } : fail(s, path, `must be ${JSON.stringify(s.const)}`);
 	if (s.enum) return typeof value === "string" && s.enum.includes(value) ? { ok: true } : fail(s, path, `must be one of ${s.enum.join(", ")}`);
