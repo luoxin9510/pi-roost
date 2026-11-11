@@ -2,7 +2,7 @@
 
 > 目标读者：要在**公司内部 agent**（下文称"宿主 agent"）里重建 pi-roost 的工程师。
 > 用法：对照源码 `git checkout v0.1.21`（发布提交；代码与 main `890cbe9` 相同）逐节实现，每节末尾有验收标准。
-> **v0.1.21 是 pi-roost 独立仓库的最后一版**：之后的开发在 [xin-pi](https://github.com/luoxin9510/xin-pi) 里继续（`xpi roost`）。v0.1.21 = v0.1.20 之上再加 M79–M80 和 M78 的一处补充，**行为不变**：M79 把 hub 里记录"屏幕上是什么"的七个开关收成一个 view（列表或某行的 peek）加一个 layer（帮助、选择器、改名、某一屏），同时只开一层；M80 把 hub 的 44 个选项按用途分成七组类型（`HubCore`、`HubDisplay`、`HubLaunching`、`HubModels`、`HubResume`、`HubCommands`、`HubTasks`），调用方仍传一个扁平对象；M78 的补充让测试前的清扫也清掉 node-pty 遗留的 `spawn-helper`。移植时照新结构搭即可，下文各 Step 的内容不受影响。
+> **v0.1.21 是 pi-roost 独立仓库的最后一版（本文依据）**：之后的开发在 [xin-pi](https://github.com/luoxin9510/xin-pi) 里继续（将成为 `xpi roost`）。v0.1.21 = v0.1.20 之上再加 M79–M80 和 M78 的一处补充，详见 Step 67：M79 把 hub 里记录"屏幕上是什么"的六个开关收成一个 view（列表或某行的 peek）加一个 layer（帮助、选择器、改名、某一屏），`attached` 仍是单独的开关；**唯一的行为变化**是同时只开一层，值班 agent 的回答等任何一层关闭才出现（以前只等 overlay）。M80 把 hub 的 44 个选项按用途分成七组类型，调用方仍传一个扁平对象（只改类型）。M78 的补充让测试前的清扫也清掉 node-pty 遗留的 `spawn-helper`（只影响测试）。
 > **v0.1.20 = v0.1.19 之上再加 M62–M78；v0.1.19 = v0.1.18 之上再加 M59–M60；v0.1.18 = v0.1.17 之上再加 M57–M58；v0.1.17 = v0.1.16 之上再加 M54–M56 + M61；v0.1.16 = v0.1.15 之上再加 M50–M53；v0.1.15 = v0.1.14 之上再加 M49（加固）；v0.1.14 = v0.1.12 之上再加 M43–M48；v0.1.12 = v0.1.7 之上再加 M21–M42**，概括见本段末尾；下面这一段是 v0.1.7 时的范围，保留不动。
 > v0.1.7（`0d16cd4`）包含 M1–M20（计划文档 `docs/plans/m15-polish.md`，见 Step 14）：M8 模型/上下文、M9 agent 间通信、M10 worktree 隔离、M11 pi-mobile、M12/M12b 子 agent 面板、M13 子 agent 生命周期、M14 attach 如 resume、M15 打磨（`.worktreeinclude`、`list`、`cleanupDays`、host 回应终端查询）、M16 PR 状态、M17 任务输入框、M18 agent 预设、M19 子 agent 记录视图、M20 shell 环境。M11 之后的各步都是可选增强，核心（Step 1–8）不依赖它们。
 >
@@ -155,7 +155,7 @@
 
 ## 2. 适配层与分层（M29/M32 已落地；移植时仍建议先抽接口）
 
-**现状（v0.1.20；分层自 v0.1.12 的 M32 起未再变，M43–M58 与 M61 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`；v0.1.17 的 M54–M56 把 git 步骤放在 core 的 `lib/task-git.ts`、项目配置与批准放在 `lib/project-config.ts`、M61 的 pi 内建命令清单放在 `lib/pi-commands.ts`，task 的新动作在 `daemon/main.ts`；适配层只改 `adapters/pi/worker.ts`（写 `commands.json`、任务 worktree 的提示）、`agent-tools.ts`（`roost_task_done` 进 review 的回话）与 `hub-options.ts`（`taskMerge`、档案命令）；`/tasks start|merge|…` 和 peek 的命令菜单在 `hub/agent-view.ts`；host 多一个 control op `command`；v0.1.18 的 M57–M58 同样：core 新增纯函数 `lib/workspace-view.ts`（总览的分组、图标、按键、详情行）、`lib/task-diff.ts`（取 diff 并解析）、`lib/review.ts`（评论落在哪、终端文本），`lib/task-git.ts` 多了 `taskChanges`，`lib/board.ts` 多了 `reviewText`/`taskPrompt`；daemon 多了 `task` 的 `comment`/`uncomment`，并让值班 agent 可以 `start`；适配层只改 `adapters/pi/concierge.ts`（`hub_task_start`）；`/workspaces` 总览与评审界面在 `hub/agent-view.ts`；CLI `review` 在 `bin/pi-roost.ts`；v0.1.19 的 M59–M60 同样：适配层新增 `adapters/pi/tasks-command.ts`（pi 会话里的 `/tasks` 命令，经 `adapters/pi/index.ts` 注册）与 `adapters/pi/task-start.ts`（从 pi 进程建/恢复任务 worktree 并构造 launch，值班 agent 的 `hub_task_start` 与 `/tasks start` 共用，从 `adapters/pi/concierge.ts` 抽出）；core 的 `lib/task-git.ts` 多了 `removeTaskWorktree` `restoreTaskWorktree` `taskWorktrees` `prTarget` `ghRepoOf` `openTaskPr`，`lib/board.ts` 多了 `workspace.reviewTip` 与 `workspace.pr`，`lib/workspace-view.ts` 多了 `overlaps`；daemon 的 `shelve` `pr` `cleanup`、`settleHandMerges` 在 `daemon/main.ts`，`firstMessage` 在 `lib/concierge.ts`，`conciergeLaunch`（现为 `concierge.launch`）在 `lib/concierge-module.ts`；`h`（搁置）`o`（PR）键与重叠标记在 `hub/agent-view.ts`；v0.1.20 的 M62–M78 同样不改分层，新代码按层落位：core 新增 `lib/callers.ts`（谁能做什么的表）、`lib/workspace.ts`（Workspace 模块）、`lib/schedules.ts` `lib/watches.ts` `lib/concierge-module.ts`（定时部分的模块）、`lib/clock.ts`（注入的时钟）、`lib/op.ts`（`OpError` 等）、`lib/schema.ts` 与 `lib/protocol-schema.ts`（schema 与每个 op 的参数/结果）、`lib/orphans.ts`（M78，只给测试用）、`lib/task-worktree-worker.ts`（worker 线程里建 worktree）；`scripts/protocol-doc.ts` 生成文档；hub 新增 `hub/roost-port.ts`（`RoostPort`，hub 与 daemon 之间**唯一**的缝）、`hub/overlay-host.ts` 与 `hub/overlays/*`、`hub/text.ts`；适配层只改 `adapters/pi/task-start.ts`（改成 `task prepare` → 构造 launch → `task start`）和 `agent-tools.ts`（工具字段用协议的 schema）；`daemon/main.ts` 因此从约 4780 行降到 3170 行，`hub/agent-view.ts` 从约 4450 行降到 3605 行）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
+**现状（v0.1.20，v0.1.21 未变；分层自 v0.1.12 的 M32 起未再变，M43–M58 与 M61 的新代码都落在既有的层里：`lib/events.ts` `lib/concierge.ts` `lib/board.ts` 与 M51 的 `requestOnce`（`lib/client.ts`）在 core，`adapters/pi/concierge.ts` 与 M53 的 `adapters/pi/earlier-history.ts` 在适配层，`/log` `/concierge` `/tasks` 在 `hub/`；v0.1.17 的 M54–M56 把 git 步骤放在 core 的 `lib/task-git.ts`、项目配置与批准放在 `lib/project-config.ts`、M61 的 pi 内建命令清单放在 `lib/pi-commands.ts`，task 的新动作在 `daemon/main.ts`；适配层只改 `adapters/pi/worker.ts`（写 `commands.json`、任务 worktree 的提示）、`agent-tools.ts`（`roost_task_done` 进 review 的回话）与 `hub-options.ts`（`taskMerge`、档案命令）；`/tasks start|merge|…` 和 peek 的命令菜单在 `hub/agent-view.ts`；host 多一个 control op `command`；v0.1.18 的 M57–M58 同样：core 新增纯函数 `lib/workspace-view.ts`（总览的分组、图标、按键、详情行）、`lib/task-diff.ts`（取 diff 并解析）、`lib/review.ts`（评论落在哪、终端文本），`lib/task-git.ts` 多了 `taskChanges`，`lib/board.ts` 多了 `reviewText`/`taskPrompt`；daemon 多了 `task` 的 `comment`/`uncomment`，并让值班 agent 可以 `start`；适配层只改 `adapters/pi/concierge.ts`（`hub_task_start`）；`/workspaces` 总览与评审界面在 `hub/agent-view.ts`；CLI `review` 在 `bin/pi-roost.ts`；v0.1.19 的 M59–M60 同样：适配层新增 `adapters/pi/tasks-command.ts`（pi 会话里的 `/tasks` 命令，经 `adapters/pi/index.ts` 注册）与 `adapters/pi/task-start.ts`（从 pi 进程建/恢复任务 worktree 并构造 launch，值班 agent 的 `hub_task_start` 与 `/tasks start` 共用，从 `adapters/pi/concierge.ts` 抽出）；core 的 `lib/task-git.ts` 多了 `removeTaskWorktree` `restoreTaskWorktree` `taskWorktrees` `prTarget` `ghRepoOf` `openTaskPr`，`lib/board.ts` 多了 `workspace.reviewTip` 与 `workspace.pr`，`lib/workspace-view.ts` 多了 `overlaps`；daemon 的 `shelve` `pr` `cleanup`、`settleHandMerges` 在 `daemon/main.ts`，`firstMessage` 在 `lib/concierge.ts`，`conciergeLaunch`（现为 `concierge.launch`）在 `lib/concierge-module.ts`；`h`（搁置）`o`（PR）键与重叠标记在 `hub/agent-view.ts`；v0.1.20 的 M62–M78 同样不改分层，新代码按层落位：core 新增 `lib/callers.ts`（谁能做什么的表）、`lib/workspace.ts`（Workspace 模块）、`lib/schedules.ts` `lib/watches.ts` `lib/concierge-module.ts`（定时部分的模块）、`lib/clock.ts`（注入的时钟）、`lib/op.ts`（`OpError` 等）、`lib/schema.ts` 与 `lib/protocol-schema.ts`（schema 与每个 op 的参数/结果）、`lib/orphans.ts`（M78，只给测试用）、`lib/task-worktree-worker.ts`（worker 线程里建 worktree）；`scripts/protocol-doc.ts` 生成文档；hub 新增 `hub/roost-port.ts`（`RoostPort`，hub 与 daemon 之间**唯一**的缝）、`hub/overlay-host.ts` 与 `hub/overlays/*`、`hub/text.ts`；适配层只改 `adapters/pi/task-start.ts`（改成 `task prepare` → 构造 launch → `task start`）和 `agent-tools.ts`（工具字段用协议的 schema）；`daemon/main.ts` 因此从约 4780 行降到 3170 行，`hub/agent-view.ts` 从约 4450 行降到 3605 行）**：M29 把名字和数据中性化，M32 把"层"变成真实的目录，并用 `test/cli-deps.test.ts` 守住边界：
 
 | 层 | 目录 | 允许 import | 守护 |
 |---|---|---|---|
@@ -1333,6 +1333,23 @@ daemon 与 host 被设计成比父进程活得久（M38：重启 daemon 会续�
 
 移植提示：长寿的 daemon 一定要有"测试模式下跟着父进程死"的开关，并且**默认关闭**；清扫只对带明确测试标记、且其父进程已死的进程动手，认不准就跳过——宁可留下也不要误杀用户自己的 daemon。
 
+v0.1.21 的补充（PR #115）：host 在启动 worker 途中被杀时，node-pty 的 `spawn-helper` 会一直等下去（实测留下 44 个，有些在 M78 之后）。清扫现在也杀掉 worker 目录属于测试（`<tmp>/roost-*`）的孤儿 helper。
+
+### Step 67：hub 的输入：一个 view 加一个 layer；选项分组（M79–M80，`docs/plans/hub-input.md`）
+
+Step 64 之后 `hub/agent-view.ts` 里"屏幕上是什么"还是七个开关（`peek`、`peekId`、`help`、`picker`、`renaming`、`overlay`、`attached`），按键处理和渲染各按自己的顺序去读；`AgentViewOptions` 是 44 个平铺的字段。
+
+- **M79：view 加 layer**。`view` 是 `{ kind: "list" }` 或 `{ kind: "peek"; id }`；`layer` 是 `undefined`，或帮助、选择器（`picker`）、改名、某一屏（`overlay`）之一。原来的六个开关成为这两个字段上的只读访问器（读的代码不变），写只走 `openLayer`、`closeLayer(kind)`（只关该种类的层）和 `view =`。peek 可以留在一层之下（peek 里 Ctrl+L 打开模型选择器，Esc 回到 peek），所以是两个字段而不是一个。`attached` 仍是单独的开关：终端交给了会话，此时不画也不读键。`handleInput` 先把键交给打开的层，否则交给 view；列表自己的键（`Ctrl+P`、`Shift+Ctrl+P`、`Shift+Tab`、`Ctrl+O`、`Ctrl+F`）在 `listKey`。
+- **唯一的行为变化：同时只开一层**。后打开的那层取代先前的。值班 agent 的回答（Step 64 里的 `pendingAnswer`）以前只在有 overlay 打开时延后，盖在选择器、帮助或改名框上时会直接打开并抢走按键；现在它等任何一层关闭才出现。审查后修了一处：在选择器里再打开选择器（只输入 `/fanout`）时，被替换掉的回答重新排队而不是丢失。
+- **`OverlayHost.selectRow(id)`** 取代对比屏自己的 `select` 选项：一屏要让列表选中某行时都走它（影响按 Step 64 写的 overlay host）。
+- **M80：选项分组**。`AgentViewOptions` 是七个按用途命名的类型的交集：`HubCore`、`HubDisplay`、`HubLaunching`、`HubModels`、`HubResume`、`HubCommands`、`HubTasks`。调用方仍传一个扁平对象；`piHubOptions`（`adapters/pi/hub-options.ts`）按组说明 pi 提供什么。只改类型，没有做嵌套对象（会让适配器的展开和约 60 处测试变繁琐而无收益）。
+
+屏幕和按键其余不变（改之前先用按键序列的 snapshot 钉住）。`hub/agent-view.ts` 在 M79–M80 之后约 3690 行。
+
+**验收标准**：`agent-view.test`（按键序列的 snapshot 不变；回答在选择器、帮助、改名框关闭后才出现；选择器被替换时回答重新排队）；`tsc`（M80 只有类型）。
+
+移植提示：先分清"哪一屏在底下"（view）和"上面盖着什么"（layer），并规定同时只开一层；凡是会自己弹出来的东西（这里是值班 agent 的回答）都排在"当前这层关闭之后"，不要按具体是哪种层去判断。
+
 ---
 
 ## 5. 配置项（`lib/config.ts`）
@@ -1626,7 +1643,7 @@ v0.1.20 新增（M62–M78）：测试总数 **1234**（**70 个**文件）。�
 
 ---
 
-## 附录 A：daemon op 一览（v0.1.20）
+## 附录 A：daemon op 一览（v0.1.20，v0.1.21 未变）
 
 | op | 调用方 | 说明 |
 |---|---|---|
@@ -1873,8 +1890,12 @@ v0.1.20 新增（M62–M78）：测试总数 **1234**（**70 个**文件）。�
 | `ebb9888` | PR #109：M78 测试与压测不再留孤儿进程（插队，在 M76 之前合入） |
 | `ecf6511` | PR #110：M76 daemon 按 schema 检查简单 op 的参数 |
 | `f8ad3f5` | PR #111：M77 `dispatch` `spawn` `task` 与 pi 的工具走 schema |
-| （发布提交） | PR #112：发布 v0.1.20（本文依据，tag `v0.1.20`；代码与 `f8ad3f5` 相同） |
+| （发布提交） | PR #112：发布 v0.1.20（tag `v0.1.20`；代码与 `f8ad3f5` 相同） |
+| `d2727e3` | PR #113：M79 hub 的 view 与 layer（取代六个开关） |
+| `d62847e` | PR #114：M80 hub 的选项分成七组 |
+| `890cbe9` | PR #115：M78 的补充，清扫也清掉测试遗留的 node-pty helper |
+| （发布提交） | PR #116：发布 v0.1.21（本文依据，tag `v0.1.21`；代码与 `890cbe9` 相同；独立仓库的最后一版） |
 
-> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=`801e9e9`，`v0.1.17`=`5ce0be7`，`v0.1.18`=`3ea3e9e`，`v0.1.19`=`8b2eb6d`（PR #93 的 squash 提交），`v0.1.20`=PR #112 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
+> **关于 SHA**：M22（PR #38）之后 main 的历史被改写过。上表的 SHA 取自**当前 main** 的 `git log --first-parent`（PR #33–#49 是合并提交，#50 起是 squash 提交）。`gh pr list --state merged` 返回的 `mergeCommit` 对 PR #38 等是旧历史里的 SHA（如 #38 为 `f0a9e65`，该提交对象仍在库里但不在 first-parent 上），以本表为准；v0.1.8–v0.1.12 的 tag 指向各自的发布合并/提交（`v0.1.8`=`4cf69b9`，`v0.1.9`=`61c4615`，`v0.1.10`=`5c1f7d7`，`v0.1.11`=`199ae0b`，`v0.1.12`=`871ed9a`，`v0.1.13`=`2ffd947`，`v0.1.14`=`14a62bf`，`v0.1.15`=`3912808`，`v0.1.16`=`801e9e9`，`v0.1.17`=`5ce0be7`，`v0.1.18`=`3ea3e9e`，`v0.1.19`=`8b2eb6d`（PR #93 的 squash 提交），`v0.1.20`=PR #112 的 squash 提交，`v0.1.21`=PR #116 的 squash 提交）。PR #65 起全部是 squash 提交，`git log --first-parent` 与 `gh pr list --state merged` 的 SHA 一致。M32 的编号虽小于 M34–M37，但实际在它们之后合入（计划里特意先做度量再做分层）。
 
 所需 pi 最低版本（v0.1.20 / v0.1.19 / v0.1.18 / v0.1.17 / v0.1.16 / v0.1.15 / v0.1.14 仍以 **pi 1.5.0** 验证（`package.json` 的 devDependencies 仍钉 1.5.0；v0.1.20 的 M62 evals 与 M65–M77 的适配层改动都在 1.5.0 上）（v0.1.17 的 M61 内建命令清单对照 1.5.0 的 `slash-commands.js` 核对，并在真 pi 1.5.0 上验证了 bracketed paste 的 `/session`），M53 依赖的布局树结构也是在 1.5.0 上核对的，M44–M48 的 tmux 实测与 evals 都在 1.5.0 上做；v0.1.12 同样：`package.json` 的 devDependencies 钉在 1.5.0，M32 的安装验证、M33 的 tmux 实测和 M37 的 evals 都在 1.5.0 上做；级别 0/1 接入不需要 pi）：协议层以 `parentToolCallId`（0.99.0）为准，M8 用到的 `getContextUsage`（≥0.49）和 `thinking_level_select`（≥0.71）都更早；但 v0.1.7 的 README 与全部实机验收都基于 **pi 1.5.0 或更新**（M14 的全屏默认、`tui.stop({preserveScreen})`、M12/M19 的 `setWidget` placement 与 overlay 选项都是在 1.5.0 上验证的；仓库没有记录这些 TUI 选项各自从哪个 pi 版本开始提供，移植到别的宿主时按 §1.2 逐项核对）。
