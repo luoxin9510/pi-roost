@@ -75,10 +75,10 @@ Claude Code's documented behaviour.
 | M67–M70 | [the daemon's timed parts as modules: schedules, watches, the concierge and its standing orders, by an injected clock](daemon-modules.md) | 0.1.20 |
 | M71–M74 | [the hub's overlays as modules and one typed daemon port](hub-overlays.md) | 0.1.20 |
 | M75–M77 | [one schema per op: the check, the type and the doc's op reference from one source](protocol-schema.md) | 0.1.20 |
-| M79–M80 | [the hub's input: one view and one layer instead of seven flags; its options in groups](hub-input.md) | — |
+| M79–M80 | [the hub's input: one view and one layer instead of seven flags; its options in groups](hub-input.md) | 0.1.21 |
 | M78 | [no orphans: test daemons and hosts follow the run that started them; a sweep clears the leftovers](m78-no-orphans.md) | 0.1.20 |
 
-Next: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60).
+After 0.1.21 the work continues in [xin-pi](https://github.com/luoxin9510/xin-pi), where roost is being rebuilt as `xpi roost`. The last roadmap here: [toward an agent development environment](ade-roadmap.md) — task → worktree → verify → review in the TUI → local merge (M54–M60, done in 0.1.17–0.1.19).
 
 Before: [the hub as a control plane](hub-control-plane.md) — a resident concierge agent that reports, relays and, under a policy, answers, and a shared task board (M43–M47, all done); the any-agent route is in [any agent](any-agent.md); measured by the stress run and the evals.
 
