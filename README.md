@@ -4,6 +4,10 @@
 
 # pi-roost
 
+> **This project continues in [xin-pi](https://github.com/luoxin9510/xin-pi) as `xpi roost`.** pi-roost 0.1.21 is the last release here; this repository is frozen. It still works with pi as described below.
+>
+> **本项目已并入 [xin-pi](https://github.com/luoxin9510/xin-pi)，成为 `xpi roost`。** 0.1.21 是这里的最后一版，本仓库不再更新；下文的用法对 pi 仍然有效。
+
 **Every background pi session on one screen.**<br>
 **一个屏幕，管理所有后台 pi 会话。**
 
